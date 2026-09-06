@@ -1,0 +1,13 @@
+# Normalize text files to LF in the repository.
+* text=auto eol=lf
+
+# Keep binary fixtures and packaged assets out of text conversion and textual diffs.
+*.docx binary -eol
+*.pdf binary -eol
+*.png binary -eol
+*.jpg binary -eol
+*.jpeg binary -eol
+*.ttf binary -eol
+*.otf binary -eol
+*.woff binary -eol
+*.woff2 binary -eol
