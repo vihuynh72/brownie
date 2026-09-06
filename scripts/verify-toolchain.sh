@@ -83,7 +83,7 @@ if [ -x "$repository_root/backend/mvnw" ]; then
   maven_version="$("$repository_root/backend/mvnw" -version 2>&1 | awk '/Apache Maven/ {print $3; exit}')"
   check_exact "Maven Wrapper version" "$BROWNIE_MAVEN_VERSION" "$maven_version"
 else
-  info "Maven Wrapper is not present; Phase 03 owns backend/mvnw. Target $BROWNIE_MAVEN_VERSION is recorded."
+  info "Maven Wrapper is not present. Target $BROWNIE_MAVEN_VERSION is recorded."
 fi
 
 info "Spring Boot $BROWNIE_SPRING_BOOT_VERSION and Spring AI $BROWNIE_SPRING_AI_VERSION are verified when their build descriptors are introduced."
