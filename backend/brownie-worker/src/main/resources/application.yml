@@ -1,0 +1,48 @@
+spring:
+  application:
+    name: brownie-worker
+  main:
+    web-application-type: none
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN
