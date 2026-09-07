@@ -12,6 +12,9 @@ brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
 
 logging:
+  structured:
+    format:
+      console: ecs
   level:
     io.github.vihuynh72.brownie: INFO
 
