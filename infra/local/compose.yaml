@@ -1,0 +1,41 @@
+# Local development infrastructure only. brownie-api and brownie-worker
+# still run directly on the host (mvnw / java -jar) against this database --
+# they are not containerized here. Only Postgres exists as a real,
+# consumed dependency today; Azurite, the isolated document renderer, and
+# a reverse proxy are deliberately absent until the phases that actually
+# use them exist.
+#
+# Start:      docker compose -f infra/local/compose.yaml up -d --wait
+# Stop:       docker compose -f infra/local/compose.yaml down
+#             (the named volume below is untouched -- data survives)
+# Reset data: docker compose -f infra/local/compose.yaml down -v
+#             (deliberately destructive -- also drops the roles from
+#             01-app-roles.sql, since that script only ever runs again on
+#             a truly empty volume)
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: brownie
+      # Bootstrap-only superuser, used exactly once by Postgres itself to
+      # run 01-app-roles.sql. No application process ever authenticates
+      # with it. A fixed local-only placeholder, not a secret, exactly
+      # like the role passwords that script creates.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_bootstrap_only
+    ports:
+      # Loopback-only: reachable from this machine, not from the rest of
+      # the network. Compose's own default binds every interface.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  postgres-data:
