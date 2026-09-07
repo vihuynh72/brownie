@@ -1,6 +1,14 @@
 spring:
   application:
     name: brownie-api
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
+  flyway:
+    url: ${BROWNIE_DB_URL}
+    user: ${BROWNIE_DB_MIGRATION_USERNAME}
+    password: ${BROWNIE_DB_MIGRATION_PASSWORD}
 
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
