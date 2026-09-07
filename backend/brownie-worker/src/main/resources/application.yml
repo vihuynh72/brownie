@@ -3,6 +3,10 @@ spring:
     name: brownie-worker
   main:
     web-application-type: none
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
 
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
