@@ -1,0 +1,47 @@
+spring:
+  application:
+    name: brownie-api
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+  public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
+
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN
