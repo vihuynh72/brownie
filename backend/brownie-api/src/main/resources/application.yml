@@ -10,11 +10,32 @@ spring:
     user: ${BROWNIE_DB_MIGRATION_USERNAME}
     password: ${BROWNIE_DB_MIGRATION_PASSWORD}
 
+management:
+  # Deliberately a different port from the public API: health/readiness are
+  # an operator concern, not a route the public API surface should ever
+  # share. No reverse proxy exists yet to enforce this externally (that is
+  # a later phase); a separate port keeps the separation real today rather
+  # than only on paper.
+  server:
+    port: 8090
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
   public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
 
 logging:
+  structured:
+    format:
+      console: ecs
   level:
     io.github.vihuynh72.brownie: INFO
 
