@@ -17,6 +17,9 @@ Thumbs.db
 *.p12
 *.pfx
 
+# Locally fetched pinned toolchain binaries (JDK, Maven distribution)
+/.toolchains/
+
 # Generated Java and frontend output
 **/target/
 **/node_modules/
