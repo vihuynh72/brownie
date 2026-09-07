@@ -30,6 +30,11 @@ public final class SpikeRunner {
       writeQualified(outDir, layout, "two-items", MeetingMinutesData.sample());
       writeQualified(outDir, layout, "five-items", MeetingMinutesData.sampleWithActionItemCount(5));
       writeQualified(outDir, layout, "no-items", MeetingMinutesData.sampleWithNoActionItems());
+      writeQualified(outDir, layout, "short", MeetingMinutesData.sampleShort());
+      writeQualified(outDir, layout, "long", MeetingMinutesData.sampleLong());
+      writeQualified(outDir, layout, "empty", MeetingMinutesData.sampleEmpty());
+      writeQualified(outDir, layout, "accented-names", MeetingMinutesData.sampleAccentedNames());
+      writeQualified(outDir, layout, "multi-page", MeetingMinutesData.sampleWithActionItemCount(40));
     }
 
     System.out.println("Wrote spike documents to " + outDir.toAbsolutePath());
