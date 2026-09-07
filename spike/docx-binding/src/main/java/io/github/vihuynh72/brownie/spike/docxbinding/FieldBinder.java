@@ -50,26 +50,33 @@ final class FieldBinder {
 
   static void fillContentControls(XWPFDocument doc, Map<String, String> values) {
     for (CTSdtRun sdt : collectSdt(doc)) {
-      String tag = sdt.getSdtPr().getTag().getVal();
-      String value = values.get(tag);
-      if (value == null) {
-        continue;
+      String value = values.get(sdt.getSdtPr().getTag().getVal());
+      if (value != null) {
+        setContentControlText(sdt, value);
       }
-      CTSdtContentRun content = sdt.getSdtContent();
-      if (content.sizeOfRArray() == 0) {
-        CTR run = content.addNewR();
-        styleRawRun(run);
-        run.addNewT().setStringValue(value);
-        continue;
-      }
-      CTR first = content.getRArray(0);
-      while (first.sizeOfTArray() > 0) {
-        first.removeT(0);
-      }
-      first.addNewT().setStringValue(value);
-      for (int i = content.sizeOfRArray() - 1; i >= 1; i--) {
-        content.removeR(i);
-      }
+    }
+  }
+
+  /**
+   * Replaces one content control's text, keeping a single run so repeated calls (as happen when
+   * {@link RepeatingRegion} binds a freshly cloned, not-yet-attached row or paragraph) stay
+   * idempotent instead of accumulating extra runs.
+   */
+  static void setContentControlText(CTSdtRun sdt, String value) {
+    CTSdtContentRun content = sdt.getSdtContent();
+    if (content.sizeOfRArray() == 0) {
+      CTR run = content.addNewR();
+      styleRawRun(run);
+      run.addNewT().setStringValue(value);
+      return;
+    }
+    CTR first = content.getRArray(0);
+    while (first.sizeOfTArray() > 0) {
+      first.removeT(0);
+    }
+    first.addNewT().setStringValue(value);
+    for (int i = content.sizeOfRArray() - 1; i >= 1; i--) {
+      content.removeR(i);
     }
   }
 
