@@ -25,7 +25,24 @@ public final class SpikeRunner {
         Files.write(outDir.resolve(base + "-filled.docx"), filled);
       }
     }
+
+    for (LayoutKind layout : LayoutKind.values()) {
+      writeQualified(outDir, layout, "two-items", MeetingMinutesData.sample());
+      writeQualified(outDir, layout, "five-items", MeetingMinutesData.sampleWithActionItemCount(5));
+      writeQualified(outDir, layout, "no-items", MeetingMinutesData.sampleWithNoActionItems());
+    }
+
     System.out.println("Wrote spike documents to " + outDir.toAbsolutePath());
+  }
+
+  private static void writeQualified(Path outDir, LayoutKind layout, String caseName, MeetingMinutesData data)
+      throws IOException {
+    byte[] template = buildQualifiedTemplateBytes(layout);
+    byte[] filled = fillQualified(template, layout, data);
+
+    String base = "qualified-" + layout.name().toLowerCase() + "-" + caseName;
+    Files.write(outDir.resolve(base + "-template.docx"), template);
+    Files.write(outDir.resolve(base + "-filled.docx"), filled);
   }
 
   static byte[] buildTemplateBytes(LayoutKind layout, BindingMethod method) throws IOException {
@@ -44,6 +61,24 @@ public final class SpikeRunner {
       } else {
         FieldBinder.fillMergeFields(doc, data.asMap());
       }
+      doc.write(out);
+      return out.toByteArray();
+    }
+  }
+
+  static byte[] buildQualifiedTemplateBytes(LayoutKind layout) throws IOException {
+    try (XWPFDocument doc = LayoutBuilder.buildQualified(layout);
+        ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+      doc.write(out);
+      return out.toByteArray();
+    }
+  }
+
+  static byte[] fillQualified(byte[] templateBytes, LayoutKind layout, MeetingMinutesData data) throws IOException {
+    try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(templateBytes));
+        ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+      RepeatingRegion.bind(doc, layout, data.actionItems());
+      FieldBinder.fillContentControls(doc, data.asMap());
       doc.write(out);
       return out.toByteArray();
     }
