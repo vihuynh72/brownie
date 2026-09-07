@@ -7,7 +7,14 @@ import org.apache.poi.xwpf.usermodel.XWPFRun;
 
 final class ProfessionalStyle {
 
-  static final String FONT_FAMILY = "Calibri";
+  /**
+   * Liberation Sans, not Arial: Arial is a Monotype font licensed to Microsoft/Apple for OS
+   * bundling only, so it cannot be redistributed into a render container -- the same restriction
+   * that ruled out Calibri. Liberation Sans (SIL Open Font License, Red Hat's Liberation Fonts
+   * project) was built specifically as a metric-compatible substitute for Arial, so this is a
+   * direct house-font choice for Brownie's built-in templates, not a silent runtime substitution.
+   */
+  static final String FONT_FAMILY = "Liberation Sans";
   static final int BODY_POINTS = 11;
   static final int TITLE_POINTS = 16;
   static final String INK_COLOR = "000000";
