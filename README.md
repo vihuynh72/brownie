@@ -30,8 +30,20 @@ set +o allexport
 cd backend && ./mvnw -pl brownie-api spring-boot:run
 ```
 
-The API listens on Spring Boot's default port, 8080; health checks answer
-separately on 8090 (`curl http://localhost:8090/actuator/health`).
+The API listens on 8081, matching `BROWNIE_PUBLIC_ORIGIN` and the callback
+registered with the identity provider; health checks answer separately on
+8090 (`curl http://localhost:8090/actuator/health`).
+
+Login (`BROWNIE_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET`) requires an Entra
+External ID tenant and app registration that only the project owner can
+create -- see the master plan §18.6. Until those three are set in `.env`,
+`brownie-api` will fail to start on the `local` profile; the `test` profile
+used by `mvnw test`/`verify` does not need them. Once configured:
+
+- Start login: open `http://localhost:8081/oauth2/authorization/entra`.
+- Current identity: `GET /api/v1/me` (401 until logged in).
+- Log out: `POST /logout` (needs the `XSRF-TOKEN` cookie echoed back as an
+  `X-XSRF-TOKEN` header, like any other mutation -- see CSRF below).
 
 Stop Postgres, keeping its data for next time:
 
