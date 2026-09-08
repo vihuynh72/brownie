@@ -19,6 +19,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
 
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,6 +110,31 @@ class JdbcWorkspaceRepositoryTest {
         Workspace workspaceB = workspaceRepository.ensurePersonalWorkspace(ownerB);
 
         assertThat(workspaceA.id()).isNotEqualTo(workspaceB.id());
+    }
+
+    @Test
+    void revokedMembershipNoLongerGrantsARoleThroughTheRealApplicationRole() throws SQLException {
+        long ownerId = newUser("subject-e").id();
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(ownerId);
+        assertThat(workspaceRepository.findRole(workspace.id(), ownerId)).isPresent();
+
+        // brownie_api has no policy letting it delete a membership row at
+        // all -- there is no revoke-membership feature yet to exercise
+        // instead, since only single-owner personal workspaces exist so
+        // far. This reaches into the database the way an operator would
+        // have to today, as brownie_migration (the table-owning role RLS
+        // does not apply to), purely to set up the "membership is gone"
+        // state this test actually cares about checking.
+        try (Connection connection =
+                        DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM workspace_member WHERE workspace_id = ? AND user_id = ?")) {
+            delete.setLong(1, workspace.id());
+            delete.setLong(2, ownerId);
+            delete.executeUpdate();
+        }
+
+        assertThat(workspaceRepository.findRole(workspace.id(), ownerId)).isEmpty();
     }
 
     private UserIdentity newUser(String subject) {

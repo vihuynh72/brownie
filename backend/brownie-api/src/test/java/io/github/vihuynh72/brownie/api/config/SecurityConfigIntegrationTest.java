@@ -113,11 +113,11 @@ class SecurityConfigIntegrationTest {
     }
 
     /**
-     * Exists only in this test's own context, purely to give the real
-     * {@link JsonAccessDeniedHandler} something real to handle -- nothing
-     * in the shipped product throws {@link AccessDeniedException} from an
-     * unprotected route yet, but Spring Security's exception translation
-     * catches it exactly the same way regardless of where it is thrown.
+     * Exists only in this test's own context, purely to give {@code
+     * ApiExceptionHandler} a route that throws {@link AccessDeniedException}
+     * to handle -- nothing in the shipped product throws it from an
+     * unprotected route yet, but Spring MVC's exception handling catches it
+     * exactly the same way regardless of where it is thrown.
      */
     @TestConfiguration
     static class DeniedProbeConfiguration {

@@ -99,6 +99,15 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- @AutoConfigureMockMvc and the MockMvc bean it wires up: another
+           piece split out of the old, all-in-one starter-test bundle into
+           its own module in this Boot version, so it has to be listed
+           explicitly like the session-store modules above. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>

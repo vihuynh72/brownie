@@ -108,6 +108,35 @@ class WorkspaceRowLevelSecurityTest {
     }
 
     @Test
+    void aConnectionThatPreviouslySetContextSeesNothingOnceThatTransactionIsOver() throws SQLException {
+        UserIdentity userA = userIdentityRepository.recordLogin("https://issuer-rls", "subject-f", null, null);
+        UserIdentity userB = userIdentityRepository.recordLogin("https://issuer-rls", "subject-g", null, null);
+        Workspace workspaceB = workspaceRepository.ensurePersonalWorkspace(userB.id());
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            setLocalContext(connection, userA.id());
+            connection.rollback();
+
+            // The same physical connection, handed back to a pool and
+            // reused for a brand new, unrelated transaction -- exactly
+            // what every request after the first on this connection looks
+            // like. Nothing sets a context here on purpose: this is what
+            // distinguishes a real fix from one that only looks right,
+            // since Postgres answers current_setting(...) differently for
+            // "never touched in this session" versus "was set earlier and
+            // reset," and only the first of those is NULL.
+            try (PreparedStatement statement = connection.prepareStatement("SELECT id FROM workspace WHERE id = ?")) {
+                statement.setLong(1, workspaceB.id());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    assertThat(resultSet.next()).isFalse();
+                }
+            }
+            connection.rollback();
+        }
+    }
+
+    @Test
     void noContextAtAllSeesNothingRatherThanEverything() throws SQLException {
         UserIdentity user = userIdentityRepository.recordLogin("https://issuer-rls", "subject-e", null, null);
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(user.id());
@@ -131,11 +160,7 @@ class WorkspaceRowLevelSecurityTest {
     private Long queryAsUser(long userId, String sql, long parameter) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
-            try (PreparedStatement setContext =
-                    connection.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
-                setContext.setString(1, String.valueOf(userId));
-                setContext.executeQuery();
-            }
+            setLocalContext(connection, userId);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setLong(1, parameter);
                 try (ResultSet resultSet = statement.executeQuery()) {
@@ -144,6 +169,14 @@ class WorkspaceRowLevelSecurityTest {
                     return result;
                 }
             }
+        }
+    }
+
+    private void setLocalContext(Connection connection, long userId) throws SQLException {
+        try (PreparedStatement setContext =
+                connection.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
+            setContext.setString(1, String.valueOf(userId));
+            setContext.executeQuery();
         }
     }
 }
