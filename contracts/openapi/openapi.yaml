@@ -18,10 +18,11 @@ paths:
     get:
       operationId: getCurrentIdentity
       summary: >
-        Current identity. Login (/oauth2/authorization/entra) and logout
-        (/logout) are browser-redirect flows, not JSON operations, and are
-        not modeled here. Membership summaries and effective capabilities
-        (§12.2) are added once P04-02/P04-03 exist.
+        Current identity and workspace memberships. Login
+        (/oauth2/authorization/entra) and logout (/logout) are
+        browser-redirect flows, not JSON operations, and are not modeled
+        here. Effective capabilities are added once authorization checks
+        exist.
       responses:
         "200":
           description: Authenticated.
@@ -90,7 +91,7 @@ components:
   schemas:
     MeResponse:
       type: object
-      required: [userId, issuer, subject]
+      required: [userId, issuer, subject, memberships]
       properties:
         userId:
           type: integer
@@ -103,6 +104,21 @@ components:
           type: string
         displayName:
           type: string
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/MembershipResponse"
+
+    MembershipResponse:
+      type: object
+      required: [workspaceId, role]
+      properties:
+        workspaceId:
+          type: integer
+          format: int64
+        role:
+          type: string
+          description: "Only OWNER exists until team workspaces are supported."
 
     CreateProbeRequest:
       type: object

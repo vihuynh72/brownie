@@ -36,12 +36,14 @@ registered with the identity provider; health checks answer separately on
 
 Login (`BROWNIE_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET`) requires an Entra
 External ID tenant and app registration that only the project owner can
-create -- see the master plan §18.6. Until those three are set in `.env`,
+create. Until those three are set in `.env`,
 `brownie-api` will fail to start on the `local` profile; the `test` profile
 used by `mvnw test`/`verify` does not need them. Once configured:
 
 - Start login: open `http://localhost:8081/oauth2/authorization/entra`.
-- Current identity: `GET /api/v1/me` (401 until logged in).
+- Current identity and workspace memberships: `GET /api/v1/me` (401 until
+  logged in). A personal workspace is created automatically the first time
+  each identity logs in.
 - Log out: `POST /logout` (needs the `XSRF-TOKEN` cookie echoed back as an
   `X-XSRF-TOKEN` header, like any other mutation -- see CSRF below).
 
