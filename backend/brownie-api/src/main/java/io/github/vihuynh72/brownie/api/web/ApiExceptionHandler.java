@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -22,8 +23,7 @@ import java.util.Map;
  * Turns every error -- expected or not -- into the same structured shape:
  * a stable machine-readable {@code code}, a message safe to show a user,
  * this request's correlation ID, any affected fields, and a (currently
- * always empty) list of recovery actions, per the error-response contract
- * in the master plan's API conventions.
+ * always empty) list of recovery actions.
  *
  * <p>Extending {@link ResponseEntityExceptionHandler} means every
  * exception Spring MVC itself already recognizes (bad JSON, an
@@ -47,6 +47,24 @@ import java.util.Map;
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+    /**
+     * A denied capability check throws this from ordinary application
+     * code (a controller or a service it calls), not from a URL-pattern
+     * authorization rule -- Spring MVC's own dispatch resolves it here,
+     * through this catch-all advice, before it could ever reach Spring
+     * Security's separate, filter-level access-denied handling. Confirmed
+     * by tracing an actual denied request through this method, not
+     * assumed from how the two mechanisms are usually described.
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Object> handleAccessDenied(AccessDeniedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.FORBIDDEN);
+        problem.setTitle("Forbidden");
+        problem.setDetail("You do not have the required access for this resource.");
+        enrich(problem, "FORBIDDEN");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.FORBIDDEN, request);
+    }
 
     /**
      * Catches anything Spring MVC's own handling does not recognize -- an

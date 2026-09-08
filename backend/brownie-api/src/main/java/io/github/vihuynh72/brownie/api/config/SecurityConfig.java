@@ -18,10 +18,17 @@ import org.springframework.security.web.authentication.logout.LogoutSuccessHandl
  * login/logout wired to the {@code entra} registration whose callback is
  * registered exactly as {@code /login/oauth2/code/entra}.
  *
- * <p>{@code /api/v1/me} is the only route that requires authentication so
- * far -- it exists to prove the login flow end to end. Everything else
- * stays open because no workspace or capability model exists yet to check
- * against; real per-resource authorization will replace this once one does.
+ * <p>{@code /api/v1/me} is still the only route that requires
+ * authentication -- everything else stays open because no other
+ * per-resource endpoint exists yet. Capability checks
+ * ({@code WorkspaceAuthorizationService}) and row-level security are in
+ * place for the workspace data that does exist; a future controller calls
+ * into that service rather than repeating access logic of its own. A
+ * denied capability check is a plain exception thrown from application
+ * code, so {@code ApiExceptionHandler} -- not anything configured here --
+ * is what turns it into a 403; Spring MVC's own dispatch resolves it
+ * before it could ever reach a filter-level handler configured on this
+ * class.
  */
 @Configuration
 @EnableWebSecurity

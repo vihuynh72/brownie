@@ -43,17 +43,19 @@ spring:
     # Lets a server session survive an API replica change and be revoked on
     # demand, without introducing Redis. Flyway (brownie_migration) owns
     # the schema via V2__create_spring_session_tables.sql, so Spring
-    # Boot's own initializer is disabled here.
-    store-type: jdbc
+    # Boot's own initializer is disabled here. Which store backs the
+    # session is decided purely by which store-specific dependency is on
+    # the classpath (see the comment on spring-boot-session-jdbc in
+    # pom.xml) -- there is no store-type switch to set.
     jdbc:
       initialize-schema: never
 
 management:
   # Deliberately a different port from the public API: health/readiness are
   # an operator concern, not a route the public API surface should ever
-  # share. No reverse proxy exists yet to enforce this externally (that is
-  # a later phase); a separate port keeps the separation real today rather
-  # than only on paper.
+  # share. No reverse proxy exists yet to enforce this externally, so a
+  # separate port keeps the separation real today rather than only on
+  # paper.
   server:
     port: 8090
   endpoints:
@@ -127,8 +129,14 @@ spring:
             token-uri: http://localhost:65535/oauth2/token
             jwk-set-uri: http://localhost:65535/oauth2/jwks
             user-info-uri: http://localhost:65535/oauth2/userinfo
-  session:
-    store-type: none
+  # This profile's DataSource is H2, not Postgres, and H2 never gets the
+  # spring_session tables (see V2__create_spring_session_tables.sql, which
+  # only runs against real Postgres profiles). Having the JDBC session
+  # store's autoconfiguration on the classpath at all is enough for it to
+  # try INSERTing into a table that doesn't exist here, regardless of any
+  # session settings above, so it has to be turned off by name instead.
+  autoconfigure:
+    exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG

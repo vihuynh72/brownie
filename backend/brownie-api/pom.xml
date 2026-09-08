@@ -49,6 +49,33 @@
       <artifactId>spring-session-jdbc</artifactId>
     </dependency>
     <dependency>
+      <!-- The actual Boot-provided autoconfiguration that wires a real
+           JdbcIndexedSessionRepository bean, distinct from
+           org.springframework.session:spring-session-jdbc above, which is
+           only the underlying library: without this, nothing errors, but
+           no autoconfiguration ever activates, and the servlet
+           container's own native, non-persisted session silently takes
+           over instead. Confirmed by comparing a real request's actual
+           session cookie name against Spring Session's, not assumed.
+           There is no property that chooses this store over another one;
+           whichever store-specific module like this one is on the
+           classpath is the one that activates, which is why the test
+           profile has to exclude this autoconfiguration by class name
+           instead of setting a switch (see application.yml). -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-session-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Required by spring-boot-session-jdbc's own bean definitions,
+           which take a SessionTimeout bean as a plain, non-optional
+           constructor argument, and this module is what provides it,
+           along with the cookie-serializer bean. Without it, context
+           startup fails outright with a missing-bean error the moment
+           the JDBC session store tries to wire up. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-session</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
