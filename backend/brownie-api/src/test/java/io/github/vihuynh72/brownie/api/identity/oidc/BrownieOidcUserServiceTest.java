@@ -5,6 +5,7 @@ import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceMember;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
+import io.github.vihuynh72.brownie.core.workspace.WorkspaceRole;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
@@ -101,6 +102,11 @@ class BrownieOidcUserServiceTest {
 
         @Override
         public List<WorkspaceMember> findMembershipsForUser(long userId) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
             throw new UnsupportedOperationException("not needed by this test");
         }
     }

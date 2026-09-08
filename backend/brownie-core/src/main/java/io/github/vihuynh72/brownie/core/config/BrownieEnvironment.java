@@ -4,10 +4,9 @@ import java.util.Arrays;
 import java.util.stream.Collectors;
 
 /**
- * The validated deployment environments named in the master plan's
- * configuration contract. Every Brownie process resolves exactly one of
- * these from {@code BROWNIE_ENVIRONMENT} at startup and refuses to start
- * on anything else.
+ * The only deployment environments Brownie recognizes. Every Brownie
+ * process resolves exactly one of these from {@code BROWNIE_ENVIRONMENT}
+ * at startup and refuses to start on anything else.
  */
 public enum BrownieEnvironment {
 

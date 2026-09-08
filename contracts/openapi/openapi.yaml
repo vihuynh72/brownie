@@ -145,7 +145,7 @@ components:
     Error:
       description: >
         The shape of every error response in this API, regardless of
-        cause -- see the master plan's API conventions (§12.1).
+        cause.
       type: object
       required: [status, title, code, correlationId, fields, recoveryActions]
       properties:

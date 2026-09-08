@@ -75,5 +75,10 @@ class MeControllerTest {
         public List<WorkspaceMember> findMembershipsForUser(long userId) {
             return memberships;
         }
+
+        @Override
+        public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
     }
 }

@@ -4,13 +4,21 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.ObjectMapper;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,7 +94,44 @@ class SecurityConfigIntegrationTest {
         assertThat(response.statusCode()).isEqualTo(403);
     }
 
+    @Test
+    void aDeniedCapabilityCheckGetsTheSameStructuredJsonEveryOtherErrorUses() throws Exception {
+        HttpResponse<String> response = client.send(
+                HttpRequest.newBuilder(URI.create(url("/probe/denied"))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> body = new ObjectMapper().readValue(response.body(), Map.class);
+
+        assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(body).containsEntry("code", "FORBIDDEN");
+        assertThat(body.get("correlationId")).isNotNull();
+        assertThat(body.get("fields")).isEqualTo(List.of());
+        assertThat(body.get("recoveryActions")).isEqualTo(List.of());
+    }
+
     private String url(String path) {
         return "http://localhost:" + port + path;
+    }
+
+    /**
+     * Exists only in this test's own context, purely to give the real
+     * {@link JsonAccessDeniedHandler} something real to handle -- nothing
+     * in the shipped product throws {@link AccessDeniedException} from an
+     * unprotected route yet, but Spring Security's exception translation
+     * catches it exactly the same way regardless of where it is thrown.
+     */
+    @TestConfiguration
+    static class DeniedProbeConfiguration {
+        @Bean
+        DeniedProbeController deniedProbeController() {
+            return new DeniedProbeController();
+        }
+    }
+
+    @RestController
+    static class DeniedProbeController {
+        @GetMapping("/probe/denied")
+        String denied() {
+            throw new AccessDeniedException("denied for this test");
+        }
     }
 }

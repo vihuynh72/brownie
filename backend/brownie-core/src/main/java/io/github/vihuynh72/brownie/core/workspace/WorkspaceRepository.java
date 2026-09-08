@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.core.workspace;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Every method here takes workspace (or user) context explicitly rather
@@ -17,4 +18,7 @@ public interface WorkspaceRepository {
     Workspace ensurePersonalWorkspace(long ownerUserId);
 
     List<WorkspaceMember> findMembershipsForUser(long userId);
+
+    /** Empty when the user has no membership in that workspace at all. */
+    Optional<WorkspaceRole> findRole(long workspaceId, long userId);
 }
