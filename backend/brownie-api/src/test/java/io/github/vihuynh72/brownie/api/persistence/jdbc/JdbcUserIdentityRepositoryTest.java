@@ -19,11 +19,11 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Proves the actual issuer-subject identity mapping required by P04-01
- * against a real, disposable Postgres, run with {@code
- * WebEnvironment.NONE} since a repository test needs no servlet context or
- * security filter chain -- only Flyway's migrations (including {@code
- * V3__create_user_identity.sql}) and the {@code brownie_api} runtime role.
+ * Proves issuer-subject identity mapping against a real, disposable
+ * Postgres, run with {@code WebEnvironment.NONE} since a repository test
+ * needs no servlet context or security filter chain -- only Flyway's
+ * migrations (including {@code V3__create_user_identity.sql}) and the
+ * {@code brownie_api} runtime role.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")

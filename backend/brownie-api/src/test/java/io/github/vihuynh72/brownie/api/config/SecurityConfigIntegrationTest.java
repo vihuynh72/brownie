@@ -15,9 +15,9 @@ import java.net.http.HttpResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Proves the browser/session boundary contract from the master plan (§5.4,
- * §14.5) end to end, over real HTTP against the real filter chain: a
- * protected API route answers unauthenticated requests with a plain 401
+ * Proves the browser/session boundary contract end to end, over real HTTP
+ * against the real filter chain: a protected API route answers
+ * unauthenticated requests with a plain 401
  * rather than redirecting to the identity provider (this is a JSON API,
  * not a page a browser can be silently bounced through); login initiation
  * actually redirects to the configured authorization endpoint; and every

@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>The negative case (schema changes are refused) matters as much as the
  * positive one (ordinary reads/writes work): it is the actual security
- * property behind "separate runtime credentials" in the master plan, not
- * just an organizational convention.
+ * property behind "separate runtime credentials," not just an
+ * organizational convention.
  *
  * <p>Also proves the one persisted command/query demonstrated over real
  * HTTP: {@code io.github.vihuynh72.brownie.api.platform.PlatformProbeController}'s
