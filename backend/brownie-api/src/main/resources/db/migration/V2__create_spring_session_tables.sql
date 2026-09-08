@@ -2,8 +2,8 @@
 -- org/springframework/session/jdbc/schema-postgresql.sql (JdbcIndexedSessionRepository).
 -- Flyway/brownie_migration owns this schema, not Spring Boot's own
 -- initializer -- see spring.session.jdbc.initialize-schema: never in
--- application.yml -- so it is versioned and reviewed the same way as every
--- other table, per the master plan's Flyway migration ownership.
+-- application.yml -- so it is versioned and reviewed the same way as
+-- every other table.
 --
 -- Unquoted identifiers below fold to lowercase in Postgres's catalog either
 -- way, matching this project's own lowercase naming.
