@@ -53,6 +53,17 @@ spring:
   config:
     activate:
       on-profile: test
+  # A disposable in-memory database, not Postgres: this profile backs the
+  # fast, Docker-free context tests (BrownieApiApplicationTests,
+  # ApiExceptionHandlerIntegrationTest), which need some real DataSource
+  # bean for PlatformProbeController's repository to wire up but never run
+  # Flyway or touch platform_probe's actual schema. Tests that need real
+  # Postgres behavior (BrownieApiDatabaseIntegrationTest) override these
+  # with @DynamicPropertySource, which always wins over this file.
+  datasource:
+    url: jdbc:h2:mem:brownie-api-test;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG

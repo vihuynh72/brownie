@@ -11,6 +11,12 @@
 
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
+    <!-- Spring MVC resolves @PathVariable/@RequestParam by matching the
+         compiled parameter name unless one is given explicitly; without
+         -parameters, an unnamed @PathVariable fails at request time, not
+         at compile time. Every controller in every module benefits from
+         this, not just the one that first hit it. -->
+    <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <spring-boot.version>4.1.1</spring-boot.version>
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>

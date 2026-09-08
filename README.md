@@ -18,13 +18,16 @@ roles already created):
 docker compose -f infra/local/compose.yaml up -d --wait
 ```
 
-Then, from `backend/`, with `.env.example` copied to `.env` and loaded
-into your shell:
+The first time only, copy `.env.example` to `.env` and put any real
+values there, never in `.env.example` itself. Then, from the repository
+root:
 
 ```sh
-cp ../.env.example ../.env   # first time only; edit values there, not here
-set -o allexport && source ../.env && set +o allexport
-./mvnw -pl brownie-api spring-boot:run
+cp .env.example .env
+set -o allexport
+source .env
+set +o allexport
+cd backend && ./mvnw -pl brownie-api spring-boot:run
 ```
 
 The API listens on Spring Boot's default port, 8080; health checks answer

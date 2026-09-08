@@ -6,7 +6,6 @@ import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
-import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -35,9 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it is not shipped -- purely to give an unmapped route, an unexpected
  * exception, and a failed validation something real to happen against;
  * nothing about the exception-handling contract itself is test-only.
+ * Runs against the disposable in-memory H2 database from the {@code test}
+ * profile block in {@code application.yml} -- needed for {@code
+ * PlatformProbeController}'s repository to wire up, though this test
+ * never touches its actual schema -- with Flyway excluded, since its one
+ * migration is Postgres-specific SQL.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class, FlywayAutoConfiguration.class})
+@EnableAutoConfiguration(exclude = FlywayAutoConfiguration.class)
 @ActiveProfiles("test")
 class ApiExceptionHandlerIntegrationTest {
 

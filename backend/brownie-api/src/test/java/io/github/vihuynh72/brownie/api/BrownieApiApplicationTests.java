@@ -3,7 +3,6 @@ package io.github.vihuynh72.brownie.api;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
-import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -14,13 +13,19 @@ import org.springframework.test.context.ActiveProfiles;
  * directly since a JUnit-managed context does not go through that entry
  * point.
  *
- * <p>Database and Flyway autoconfiguration are excluded so this stays a
- * fast, Docker-free smoke test of the application's own wiring. The real
- * database connection, using real credentials against a real Postgres, is
- * proven separately in {@link io.github.vihuynh72.brownie.api.persistence.BrownieApiDatabaseIntegrationTest}.
+ * <p>Flyway is excluded because its one migration is written in
+ * Postgres-specific SQL ({@code BIGSERIAL}, {@code TIMESTAMPTZ}) and this
+ * test intentionally runs against a disposable in-memory H2 database (the
+ * {@code test} profile block in {@code application.yml}) so it stays fast
+ * and Docker-free. The
+ * datasource itself is not excluded: {@code PlatformProbeController}'s
+ * repository needs a real one to even wire up, so this context load is
+ * already the proof that it does. The real Postgres connection, using
+ * real credentials against a real Postgres, is proven separately in
+ * {@link io.github.vihuynh72.brownie.api.persistence.BrownieApiDatabaseIntegrationTest}.
  */
 @SpringBootTest
-@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class, FlywayAutoConfiguration.class})
+@EnableAutoConfiguration(exclude = FlywayAutoConfiguration.class)
 @ActiveProfiles("test")
 class BrownieApiApplicationTests {
 

@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.persistence;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -10,12 +11,18 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,9 +39,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * positive one (ordinary reads/writes work): it is the actual security
  * property behind "separate runtime credentials" in the master plan, not
  * just an organizational convention.
+ *
+ * <p>Also proves the one persisted command/query demonstrated over real
+ * HTTP: {@code io.github.vihuynh72.brownie.api.platform.PlatformProbeController}'s
+ * create-then-read round trip, exercised as a real client would.
  */
 
-@SpringBootTest
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 @Testcontainers
 class BrownieApiDatabaseIntegrationTest {
@@ -71,6 +82,12 @@ class BrownieApiDatabaseIntegrationTest {
     @Autowired
     private DataSource dataSource;
 
+    @LocalServerPort
+    private int port;
+
+    private final HttpClient client = HttpClient.newHttpClient();
+    private final ObjectMapper json = new ObjectMapper();
+
     @Test
     void flywayRanAsMigrationRoleAndApiRoleCanReadWhatItCreated() throws SQLException {
         try (Connection connection = dataSource.getConnection();
@@ -95,5 +112,57 @@ class BrownieApiDatabaseIntegrationTest {
                 })
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("permission denied");
+    }
+
+    @Test
+    void createThenReadAPlatformProbeOverRealHttp() throws Exception {
+        HttpRequest createRequest = HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes")))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"message\":\"end-to-end check\"}"))
+                .build();
+        HttpResponse<String> createResponse = client.send(createRequest, HttpResponse.BodyHandlers.ofString());
+        assertThat(createResponse.statusCode()).isEqualTo(201);
+        Map<String, Object> created = json.readValue(createResponse.body(), Map.class);
+        assertThat(created.get("message")).isEqualTo("end-to-end check");
+        assertThat(createResponse.headers().firstValue("Location")).isPresent();
+
+        long id = ((Number) created.get("id")).longValue();
+        HttpResponse<String> getResponse = client.send(
+                HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes/" + id))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> fetched = json.readValue(getResponse.body(), Map.class);
+
+        assertThat(getResponse.statusCode()).isEqualTo(200);
+        assertThat(fetched.get("id")).isEqualTo(created.get("id"));
+        assertThat(fetched.get("message")).isEqualTo("end-to-end check");
+    }
+
+    @Test
+    void readingAMissingProbeReturnsTheStandardErrorShape() throws Exception {
+        HttpResponse<String> response = client.send(
+                HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes/999999999"))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> body = json.readValue(response.body(), Map.class);
+
+        assertThat(response.statusCode()).isEqualTo(404);
+        assertThat(body).containsEntry("code", "NOT_FOUND");
+        assertThat(body.get("correlationId")).isNotNull();
+    }
+
+    @Test
+    void creatingAProbeWithAMissingMessageFailsValidation() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes")))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                .build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> body = json.readValue(response.body(), Map.class);
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(body).containsEntry("code", "VALIDATION_FAILED");
+    }
+
+    private String url(String path) {
+        return "http://localhost:" + port + path;
     }
 }
