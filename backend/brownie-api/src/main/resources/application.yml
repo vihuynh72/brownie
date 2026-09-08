@@ -1,0 +1,87 @@
+spring:
+  application:
+    name: brownie-api
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
+  flyway:
+    url: ${BROWNIE_DB_URL}
+    user: ${BROWNIE_DB_MIGRATION_USERNAME}
+    password: ${BROWNIE_DB_MIGRATION_PASSWORD}
+
+management:
+  # Deliberately a different port from the public API: health/readiness are
+  # an operator concern, not a route the public API surface should ever
+  # share. No reverse proxy exists yet to enforce this externally (that is
+  # a later phase); a separate port keeps the separation real today rather
+  # than only on paper.
+  server:
+    port: 8090
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+  public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  # A disposable in-memory database, not Postgres: this profile backs the
+  # fast, Docker-free context tests (BrownieApiApplicationTests,
+  # ApiExceptionHandlerIntegrationTest), which need some real DataSource
+  # bean for PlatformProbeController's repository to wire up but never run
+  # Flyway or touch platform_probe's actual schema. Tests that need real
+  # Postgres behavior (BrownieApiDatabaseIntegrationTest) override these
+  # with @DynamicPropertySource, which always wins over this file.
+  datasource:
+    url: jdbc:h2:mem:brownie-api-test;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN

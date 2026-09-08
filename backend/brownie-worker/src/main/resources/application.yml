@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: brownie-worker
+  main:
+    web-application-type: none
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN
