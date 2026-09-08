@@ -10,10 +10,28 @@ info:
     domain endpoint exists. It is expected to be removed once real
     endpoints are documented in its place.
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8081
     description: Local development
 
 paths:
+  /api/v1/me:
+    get:
+      operationId: getCurrentIdentity
+      summary: >
+        Current identity. Login (/oauth2/authorization/entra) and logout
+        (/logout) are browser-redirect flows, not JSON operations, and are
+        not modeled here. Membership summaries and effective capabilities
+        (§12.2) are added once P04-02/P04-03 exist.
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          description: Not logged in.
+
   /api/v1/platform/probes:
     post:
       operationId: createPlatformProbe
@@ -70,6 +88,22 @@ paths:
 
 components:
   schemas:
+    MeResponse:
+      type: object
+      required: [userId, issuer, subject]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        issuer:
+          type: string
+        subject:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+
     CreateProbeRequest:
       type: object
       required: [message]
