@@ -11,6 +11,17 @@ import org.springframework.core.env.ConfigurableEnvironment;
  * activates the matching Spring profile. Fails fast, with the message from
  * {@link BrownieEnvironment#fromValue(String)}, when the value is missing
  * or not one of the validated environments.
+ *
+ * <p>Must run strictly before Boot's own config-data loading
+ * ({@code EnvironmentPostProcessorApplicationListener} /
+ * {@code ConfigDataEnvironmentPostProcessor}, both ordered at {@code
+ * Ordered.HIGHEST_PRECEDENCE + 10}), or {@code application.yml} blocks
+ * gated by {@code spring.config.activate.on-profile} are resolved while no
+ * profile is active yet and are silently never applied -- the active
+ * profile still reports correctly afterward, which is what made this easy
+ * to miss. {@link Ordered#HIGHEST_PRECEDENCE} itself (rather than +10, which
+ * ties and loses to that listener) is what actually guarantees the
+ * ordering.
  */
 public class BrownieEnvironmentListener
         implements ApplicationListener<ApplicationEnvironmentPreparedEvent>, Ordered {
@@ -30,6 +41,6 @@ public class BrownieEnvironmentListener
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 10;
+        return Ordered.HIGHEST_PRECEDENCE;
     }
 }

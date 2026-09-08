@@ -85,8 +85,11 @@ class ApiExceptionHandlerIntegrationTest {
 
     @Test
     void failedValidationReportsTheAffectedField() throws Exception {
+        String csrfToken = fetchCsrfToken();
         HttpRequest request = HttpRequest.newBuilder(URI.create(url("/probe/validated")))
                 .header("Content-Type", "application/json")
+                .header("Cookie", "XSRF-TOKEN=" + csrfToken)
+                .header("X-XSRF-TOKEN", csrfToken)
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -109,6 +112,20 @@ class ApiExceptionHandlerIntegrationTest {
 
     private String url(String path) {
         return "http://localhost:" + port + path;
+    }
+
+    /**
+     * Spring Security's {@code csrf.spa()} sets the XSRF-TOKEN cookie on
+     * every response, even this unrelated GET, precisely so a JSON client
+     * never needs a dedicated endpoint just to obtain one before its first
+     * mutation.
+     */
+    private String fetchCsrfToken() throws IOException, InterruptedException {
+        HttpResponse<Void> response = client.send(
+                HttpRequest.newBuilder(URI.create(url("/does-not-exist"))).GET().build(),
+                HttpResponse.BodyHandlers.discarding());
+        String setCookie = response.headers().firstValue("set-cookie").orElseThrow();
+        return setCookie.split(";", 2)[0].split("=", 2)[1];
     }
 
     @TestConfiguration
