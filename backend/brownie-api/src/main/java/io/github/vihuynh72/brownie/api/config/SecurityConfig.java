@@ -13,16 +13,15 @@ import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
 
 /**
- * The browser and session boundary described in the master plan (§5.4,
- * §14.5): an opaque server session cookie for the browser, never a
- * provider token; CSRF checked on every mutation; and login/logout wired
- * to the {@code entra} registration whose callback is registered exactly
- * as {@code /login/oauth2/code/entra} (§18.6).
+ * The browser and session boundary: an opaque server session cookie for
+ * the browser, never a provider token; CSRF checked on every mutation; and
+ * login/logout wired to the {@code entra} registration whose callback is
+ * registered exactly as {@code /login/oauth2/code/entra}.
  *
  * <p>{@code /api/v1/me} is the only route that requires authentication so
  * far -- it exists to prove the login flow end to end. Everything else
  * stays open because no workspace or capability model exists yet to check
- * against; P04-03 is where real per-resource authorization replaces this.
+ * against; real per-resource authorization will replace this once one does.
  */
 @Configuration
 @EnableWebSecurity

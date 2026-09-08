@@ -13,8 +13,7 @@ import java.util.Optional;
 /**
  * The one infrastructure adapter for {@link UserIdentityRepository}: plain
  * SQL against the runtime {@code brownie_api} connection, matching the
- * stack's choice of Spring JDBC over an ORM (§5.2's {@code persistence.jdbc}
- * boundary).
+ * stack's choice of Spring JDBC over an ORM.
  */
 @Repository
 class JdbcUserIdentityRepository implements UserIdentityRepository {
