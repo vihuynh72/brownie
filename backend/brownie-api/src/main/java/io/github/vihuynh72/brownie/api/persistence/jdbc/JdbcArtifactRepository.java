@@ -2,6 +2,7 @@ package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStatus;
 import io.github.vihuynh72.brownie.core.artifact.SupportedMediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -126,13 +127,56 @@ class JdbcArtifactRepository implements ArtifactRepository {
         jdbcTemplate.update(
                 """
                 UPDATE artifact SET status = 'REJECTED', rejection_reason = ?
-                WHERE id = ? AND workspace_id = ? AND status = 'UPLOADING'
+                WHERE id = ? AND workspace_id = ? AND status IN ('UPLOADING', 'SCANNING')
                 """,
                 reason,
                 artifactId,
                 workspaceId);
         return find(workspaceId, userId, artifactId)
                 .orElseThrow(() -> new IllegalStateException("Artifact " + artifactId + " vanished while rejecting it."));
+    }
+
+    @Override
+    @Transactional
+    public Artifact beginScanning(long workspaceId, long userId, long artifactId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        int updated = jdbcTemplate.update(
+                "UPDATE artifact SET status = 'SCANNING' WHERE id = ? AND workspace_id = ? AND status = 'QUARANTINED'",
+                artifactId,
+                workspaceId);
+        if (updated == 0) {
+            String detail = find(workspaceId, userId, artifactId)
+                    .map(artifact -> "is " + artifact.status())
+                    .orElse("does not exist");
+            throw new ArtifactStateConflictException(
+                    "Artifact " + artifactId + " cannot begin scanning because it " + detail + ".");
+        }
+        return find(workspaceId, userId, artifactId)
+                .orElseThrow(() -> new IllegalStateException("Artifact " + artifactId + " vanished while beginning its scan."));
+    }
+
+    @Override
+    @Transactional
+    public Artifact markReady(long workspaceId, long userId, long artifactId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        jdbcTemplate.update(
+                "UPDATE artifact SET status = 'READY' WHERE id = ? AND workspace_id = ? AND status = 'SCANNING'",
+                artifactId,
+                workspaceId);
+        return find(workspaceId, userId, artifactId)
+                .orElseThrow(() -> new IllegalStateException("Artifact " + artifactId + " vanished while marking it ready."));
+    }
+
+    @Override
+    @Transactional
+    public Artifact revertToQuarantined(long workspaceId, long userId, long artifactId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        jdbcTemplate.update(
+                "UPDATE artifact SET status = 'QUARANTINED' WHERE id = ? AND workspace_id = ? AND status = 'SCANNING'",
+                artifactId,
+                workspaceId);
+        return find(workspaceId, userId, artifactId)
+                .orElseThrow(() -> new IllegalStateException("Artifact " + artifactId + " vanished while reverting its scan."));
     }
 
     private static SupportedMediaType mapMediaType(String value) {

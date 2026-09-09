@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.web;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
+import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,6 +108,20 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
+     * A scan that could not complete is not the caller's fault and not a
+     * verdict on their content -- 503, not 409 or 500, and the detail
+     * tells them this is worth retrying rather than reporting.
+     */
+    @ExceptionHandler(MalwareScannerUnavailableException.class)
+    public ResponseEntity<Object> handleMalwareScannerUnavailable(MalwareScannerUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "SCANNER_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
+    /**
      * Catches anything Spring MVC's own handling does not recognize -- an
      * unexpected {@code RuntimeException} from application code, for
      * instance. The real exception is logged in full server-side; the
@@ -189,6 +204,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             case 413 -> "CONTENT_TOO_LARGE";
             case 415 -> "UNSUPPORTED_MEDIA_TYPE";
             case 500 -> "INTERNAL_ERROR";
+            case 503 -> "SERVICE_UNAVAILABLE";
             default -> "REQUEST_FAILED";
         };
     }
