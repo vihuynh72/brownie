@@ -21,6 +21,16 @@
 
   <dependencies>
     <dependency>
+      <!-- A plain logging facade, not a delivery framework: this module's
+           own boundary (no Spring MVC, no Boot autoconfiguration) is about
+           not depending on how this code gets run, not about avoiding
+           observability. brownie-api supplies the actual backing
+           implementation, as every Spring Boot module here already does
+           via spring-boot-starter-logging's transitive Logback. -->
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
