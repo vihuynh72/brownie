@@ -1,9 +1,9 @@
 # Local development infrastructure only. brownie-api and brownie-worker
-# still run directly on the host (mvnw / java -jar) against this database
-# and this Azurite -- they are not containerized here. Only Postgres and
-# Azurite exist as real, consumed dependencies today; the isolated document
-# renderer and a reverse proxy are deliberately absent until the phases
-# that actually use them exist.
+# still run directly on the host (mvnw / java -jar) against this database,
+# this Azurite, and this ClamAV -- they are not containerized here. Only
+# Postgres, Azurite, and ClamAV exist as real, consumed dependencies today;
+# the isolated document renderer and a reverse proxy are deliberately
+# absent until the phases that actually use them exist.
 #
 # Start:      docker compose -f infra/local/compose.yaml up -d --wait
 # Stop:       docker compose -f infra/local/compose.yaml down
@@ -53,6 +53,29 @@ services:
       timeout: 5s
       retries: 15
 
+  clamav:
+    image: clamav/clamav-debian:1.4
+    ports:
+      # Loopback-only, matching the other services above.
+      - "127.0.0.1:3310:3310"
+    volumes:
+      # Signature databases persist across restarts so this doesn't
+      # re-download them every time; freshclam keeps them current on its
+      # own schedule inside the container.
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      # The image's own health-check script (PING/PONG against clamd on
+      # its default port) -- used as shipped rather than reimplemented.
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      # Loading virus definitions takes real time on first start; a short
+      # interval with many retries lets this converge as soon as it's
+      # actually ready instead of waiting out one long fixed delay.
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
 volumes:
   postgres-data:
   azurite-data:
+  clamav-data:
