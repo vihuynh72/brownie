@@ -22,9 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Exercises the upload lifecycle against fakes, not a real database or
- * blob store -- what matters here is the sequencing and state-transition
- * logic {@link ArtifactService} owns, independent of any infrastructure.
+ * Exercises the upload lifecycle against fakes, not a real database, blob
+ * store, or scanner -- what matters here is the sequencing and
+ * state-transition logic {@link ArtifactService} owns, independent of any
+ * infrastructure. The fake scanner defaults to reporting content clean,
+ * so every existing test's happy path now reaches READY exactly as a real
+ * scan of harmless test content would.
  */
 class ArtifactServiceTest {
 
@@ -35,7 +38,7 @@ class ArtifactServiceTest {
     void fullUploadLifecycleSucceeds() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service = new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "notes.txt");
         assertEquals(ArtifactStatus.UPLOADING, allocated.status());
@@ -50,15 +53,132 @@ class ArtifactServiceTest {
         assertEquals(SupportedMediaType.PLAIN_TEXT, afterUpload.detectedMediaType());
 
         Artifact finalized = service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
-        assertEquals(ArtifactStatus.QUARANTINED, finalized.status());
+        assertEquals(ArtifactStatus.READY, finalized.status());
         assertEquals((long) content.length, finalized.byteCount());
         assertEquals(afterUpload.sha256(), finalized.sha256());
     }
 
     @Test
+    void aCleanScanReachesReady() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+
+        Artifact result = service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertEquals(ArtifactStatus.READY, result.status());
+        assertEquals(1, scanner.scanCount);
+    }
+
+    @Test
+    void anInfectedScanRejectsTheArtifactButRetainsItsBlob() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        scanner.willReturn(ScanResult.infected("Eicar-Test-Signature"));
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("evil".getBytes()));
+
+        Artifact result = service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertEquals(ArtifactStatus.REJECTED, result.status());
+        assertEquals("MALWARE_DETECTED", result.rejectionReason());
+        // Unlike every other rejection path, a detected threat's blob is
+        // deliberately retained, not destroyed.
+        assertTrue(blobStore.objects.containsKey(allocated.blobKey()));
+    }
+
+    @Test
+    void aScannerFailureRevertsToQuarantinedRatherThanRejecting() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        scanner.willFail(new IOException("connection refused"));
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+
+        assertThrows(
+                MalwareScannerUnavailableException.class,
+                () -> service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id()));
+
+        Artifact afterFailure = repository.find(WORKSPACE_ID, USER_ID, allocated.id()).orElseThrow();
+        assertEquals(ArtifactStatus.QUARANTINED, afterFailure.status());
+        assertTrue(blobStore.objects.containsKey(allocated.blobKey()));
+    }
+
+    @Test
+    void completingAgainAfterAScannerFailureRetriesTheScan() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        scanner.willFail(new IOException("connection refused"));
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+        assertThrows(
+                MalwareScannerUnavailableException.class,
+                () -> service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id()));
+
+        scanner.willReturn(ScanResult.ok());
+        Artifact result = service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertEquals(ArtifactStatus.READY, result.status());
+        assertEquals(2, scanner.scanCount);
+    }
+
+    @Test
+    void completingTwiceAfterReadyDoesNotScanAgain() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+        service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        Artifact second = service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertEquals(ArtifactStatus.READY, second.status());
+        assertEquals(1, scanner.scanCount);
+    }
+
+    @Test
+    void aSecondScanAttemptWhileOneIsAlreadyInFlightIsRejectedAsAConflict() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+        // Drives the artifact to QUARANTINED, then claims the scan directly
+        // at the repository level -- simulating a first caller that is
+        // already mid-scan -- without going through the service, since
+        // ArtifactService#finalizeUpload would scan synchronously and leave
+        // nothing in flight to race against.
+        repository.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+        repository.beginScanning(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertThrows(
+                ArtifactStateConflictException.class,
+                () -> service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id()));
+    }
+
+    @Test
     void aFilenameIsSanitizedBeforeBeingPersisted() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
-        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "../../etc/passwd");
 
@@ -68,7 +188,8 @@ class ArtifactServiceTest {
     @Test
     void noFilenameSuppliedLeavesDisplayFilenameNull() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
-        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
 
@@ -79,7 +200,8 @@ class ArtifactServiceTest {
     void aRealZippedDocxIsClassifiedAsDocx() throws IOException {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1_000_000, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "minutes.docx");
         byte[] docx = minimalOoxmlPackage();
@@ -94,7 +216,8 @@ class ArtifactServiceTest {
     void aPdfSignatureIsClassifiedAsPdf() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "source.pdf");
         byte[] pdf = "%PDF-1.7\n...".getBytes();
@@ -109,7 +232,8 @@ class ArtifactServiceTest {
     void aZipThatIsNotAnOoxmlPackageIsRejectedAndItsBlobRemoved() throws IOException {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1_000_000, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "not-a-docx.zip");
         byte[] plainZip = zipOf(Map.of("readme.txt", "just a zip, not a docx"));
@@ -129,7 +253,8 @@ class ArtifactServiceTest {
     void randomBinaryContentIsRejectedAsUnsupported() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "mystery.bin");
         byte[] binary = {0x01, 0x02, 0x00, 0x03, (byte) 0xFF};
@@ -146,7 +271,8 @@ class ArtifactServiceTest {
     void aZipEntryEscapingItsPackageIsRejected() throws IOException {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1_000_000, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "evil.docx");
         byte[] maliciousZip = zipOf(Map.of(
@@ -163,7 +289,8 @@ class ArtifactServiceTest {
     void finalizingTwiceIsIdempotent() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
         service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("x".getBytes()));
@@ -177,7 +304,8 @@ class ArtifactServiceTest {
     @Test
     void finalizingBeforeContentUploadedIsAConflict() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
-        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
 
@@ -189,7 +317,8 @@ class ArtifactServiceTest {
     @Test
     void uploadingContentTwiceIsRejectedAsImmutable() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
-        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
         service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("first".getBytes()));
@@ -204,7 +333,8 @@ class ArtifactServiceTest {
     void contentExceedingTheLimitIsRejectedAndNothingIsRecorded() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 4, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 4, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
 
@@ -221,7 +351,8 @@ class ArtifactServiceTest {
     @Test
     void anAbandonedUploadCannotBeFinalized() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
-        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), 1024, Duration.ofMillis(1));
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofMillis(1));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
         repository.backdateCreatedAt(allocated.id(), OffsetDateTime.now().minusHours(1));
@@ -238,7 +369,8 @@ class ArtifactServiceTest {
     void finalizingWithAMismatchedStoredSizeIsAConflict() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
         service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("abcde".getBytes()));
@@ -254,7 +386,8 @@ class ArtifactServiceTest {
     void lazilyExpiringAnAbandonedUploadThatAlreadyHasContentRemovesItsOrphanedBlob() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
-        ArtifactService service = new ArtifactService(repository, blobStore, 1024, Duration.ofHours(24));
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
 
         Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
         service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("x".getBytes()));
@@ -344,7 +477,7 @@ class ArtifactServiceTest {
         @Override
         public Artifact reject(long workspaceId, long userId, long artifactId, String reason) {
             Artifact current = byId.get(artifactId);
-            if (current.status() == ArtifactStatus.UPLOADING) {
+            if (current.status() == ArtifactStatus.UPLOADING || current.status() == ArtifactStatus.SCANNING) {
                 Artifact updated = new Artifact(
                         current.id(), current.workspaceId(), current.blobKey(), ArtifactStatus.REJECTED,
                         current.byteCount(), current.sha256(), current.detectedMediaType(), current.displayFilename(),
@@ -353,6 +486,47 @@ class ArtifactServiceTest {
                 return updated;
             }
             return current;
+        }
+
+        @Override
+        public Artifact beginScanning(long workspaceId, long userId, long artifactId) {
+            Artifact current = byId.get(artifactId);
+            if (current.status() != ArtifactStatus.QUARANTINED) {
+                throw new ArtifactStateConflictException(
+                        "Artifact " + artifactId + " cannot begin scanning because it is " + current.status() + ".");
+            }
+            Artifact updated = withStatus(current, ArtifactStatus.SCANNING);
+            byId.put(artifactId, updated);
+            return updated;
+        }
+
+        @Override
+        public Artifact markReady(long workspaceId, long userId, long artifactId) {
+            Artifact current = byId.get(artifactId);
+            if (current.status() == ArtifactStatus.SCANNING) {
+                Artifact updated = withStatus(current, ArtifactStatus.READY);
+                byId.put(artifactId, updated);
+                return updated;
+            }
+            return current;
+        }
+
+        @Override
+        public Artifact revertToQuarantined(long workspaceId, long userId, long artifactId) {
+            Artifact current = byId.get(artifactId);
+            if (current.status() == ArtifactStatus.SCANNING) {
+                Artifact updated = withStatus(current, ArtifactStatus.QUARANTINED);
+                byId.put(artifactId, updated);
+                return updated;
+            }
+            return current;
+        }
+
+        private static Artifact withStatus(Artifact current, ArtifactStatus status) {
+            return new Artifact(
+                    current.id(), current.workspaceId(), current.blobKey(), status, current.byteCount(),
+                    current.sha256(), current.detectedMediaType(), current.displayFilename(),
+                    current.rejectionReason(), current.createdAt(), current.finalizedAt());
         }
 
         void backdateCreatedAt(long artifactId, OffsetDateTime createdAt) {
@@ -403,6 +577,33 @@ class ArtifactServiceTest {
         @Override
         public void delete(String objectKey) {
             objects.remove(objectKey);
+        }
+    }
+
+    /** Defaults to reporting content clean; a test switches it to an infected verdict or a thrown failure as needed. */
+    private static final class FakeMalwareScanner implements MalwareScanner {
+
+        private ScanResult nextResult = ScanResult.ok();
+        private IOException nextFailure;
+        int scanCount = 0;
+
+        @Override
+        public ScanResult scan(InputStream content) throws IOException {
+            scanCount++;
+            content.readAllBytes();
+            if (nextFailure != null) {
+                throw nextFailure;
+            }
+            return nextResult;
+        }
+
+        void willReturn(ScanResult result) {
+            this.nextResult = result;
+            this.nextFailure = null;
+        }
+
+        void willFail(IOException failure) {
+            this.nextFailure = failure;
         }
     }
 }

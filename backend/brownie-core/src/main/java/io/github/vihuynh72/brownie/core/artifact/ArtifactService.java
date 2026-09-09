@@ -22,16 +22,19 @@ public class ArtifactService {
 
     private final ArtifactRepository artifactRepository;
     private final BlobStore blobStore;
+    private final MalwareScanner malwareScanner;
     private final long maxUploadBytes;
     private final Duration abandonedUploadTtl;
 
     public ArtifactService(
             ArtifactRepository artifactRepository,
             BlobStore blobStore,
+            MalwareScanner malwareScanner,
             long maxUploadBytes,
             Duration abandonedUploadTtl) {
         this.artifactRepository = artifactRepository;
         this.blobStore = blobStore;
+        this.malwareScanner = malwareScanner;
         this.maxUploadBytes = maxUploadBytes;
         this.abandonedUploadTtl = abandonedUploadTtl;
     }
@@ -100,17 +103,37 @@ public class ArtifactService {
         }
     }
 
-    /** Verifies the uploaded object against what was recorded and transitions the artifact to QUARANTINED. Idempotent: calling this again once already QUARANTINED simply returns it unchanged. */
+    /**
+     * Verifies the uploaded object against what was recorded, quarantines
+     * it, then immediately scans it -- landing on READY (clean), REJECTED
+     * (malware found), or back on QUARANTINED (the scanner itself failed;
+     * retryable by calling this again). Only one caller can hold the scan
+     * for a given artifact at a time: a call that arrives while a scan is
+     * already in flight is rejected with a conflict rather than allowed to
+     * race it. A process that crashes after entering SCANNING leaves the
+     * artifact stuck there with no automatic recovery -- retrying this
+     * call will not un-stick it, since QUARANTINED is required to begin a
+     * scan; unsticking it is deferred to a future job/lease system, the
+     * same kind of gap as the abandoned-upload handling below. Idempotent
+     * once a terminal state (READY or REJECTED) is reached.
+     */
     public Artifact finalizeUpload(long workspaceId, long userId, long artifactId) {
         Artifact artifact = require(workspaceId, userId, artifactId);
 
-        if (artifact.status() == ArtifactStatus.QUARANTINED) {
+        if (artifact.status() == ArtifactStatus.READY) {
             return artifact;
         }
-        if (artifact.status() != ArtifactStatus.UPLOADING) {
+        if (artifact.status() == ArtifactStatus.UPLOADING) {
+            artifact = quarantine(workspaceId, userId, artifactId, artifact);
+        }
+        if (artifact.status() != ArtifactStatus.QUARANTINED) {
             throw new ArtifactStateConflictException(
                     "Artifact " + artifactId + " is " + artifact.status() + " and cannot be finalized.");
         }
+        return scan(workspaceId, userId, artifactId);
+    }
+
+    private Artifact quarantine(long workspaceId, long userId, long artifactId, Artifact artifact) {
         if (isAbandoned(artifact)) {
             expireAbandoned(workspaceId, userId, artifact);
         }
@@ -139,6 +162,53 @@ public class ArtifactService {
                     "Artifact " + artifactId + " changed to " + result.status() + " and could not be finalized.");
         }
         return result;
+    }
+
+    /**
+     * Scans the object currently in blob storage. Entering SCANNING is a
+     * strict, single-winner transition ({@link ArtifactRepository#beginScanning}
+     * throws rather than lets a second caller in), so at most one call is
+     * ever interpreting a scan result for a given artifact at a time -- a
+     * concurrent or already-in-flight scan is rejected with a conflict
+     * instead of being allowed to race this one. A scan that completes and
+     * finds nothing reaches READY; a scan that completes and finds
+     * something rejects the artifact but deliberately leaves its blob in
+     * place, unlike every other rejection path here -- a detected threat
+     * is retained rather than destroyed, since it may still be needed for
+     * review, the opposite instinct from an ordinary unsupported upload
+     * that is simply useless. A scan that cannot complete at all reverts
+     * the artifact back to QUARANTINED and reports the failure separately
+     * from a real verdict, so a transient scanner outage can never be
+     * mistaken for -- or silently treated as -- a clean result.
+     */
+    private Artifact scan(long workspaceId, long userId, long artifactId) {
+        Artifact scanning = artifactRepository.beginScanning(workspaceId, userId, artifactId);
+
+        ScanResult result;
+        try (InputStream content = blobStore.openStream(scanning.blobKey())) {
+            result = malwareScanner.scan(content);
+        } catch (IOException e) {
+            artifactRepository.revertToQuarantined(workspaceId, userId, artifactId);
+            throw new MalwareScannerUnavailableException(
+                    "The malware scanner is unavailable; try completing this upload again shortly.", e);
+        }
+
+        if (result.clean()) {
+            Artifact ready = artifactRepository.markReady(workspaceId, userId, artifactId);
+            if (ready.status() != ArtifactStatus.READY) {
+                throw new ArtifactStateConflictException(
+                        "Artifact " + artifactId + " changed to " + ready.status() + " and could not be marked ready.");
+            }
+            return ready;
+        }
+
+        log.warn("Artifact {} failed malware scanning: {}", artifactId, result.signatureName());
+        Artifact rejected = artifactRepository.reject(workspaceId, userId, artifactId, "MALWARE_DETECTED");
+        if (rejected.status() != ArtifactStatus.REJECTED) {
+            throw new ArtifactStateConflictException(
+                    "Artifact " + artifactId + " changed to " + rejected.status() + " and could not be rejected.");
+        }
+        return rejected;
     }
 
     private Artifact require(long workspaceId, long userId, long artifactId) {

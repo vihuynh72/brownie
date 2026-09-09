@@ -2,6 +2,10 @@ package io.github.vihuynh72.brownie.api.artifact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.vihuynh72.brownie.core.artifact.Artifact;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactStatus;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
@@ -27,16 +31,24 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.azure.AzuriteContainer;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -46,11 +58,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Proves the whole allocate/upload/complete flow end to end against real
- * infrastructure: a real Postgres (row-level security included) and a
- * real Azurite, driven entirely through MockMvc-issued HTTP requests
- * carrying a real authenticated session and a real CSRF token, the same
- * way {@code SessionRevocationIntegrationTest} builds one -- not a
- * fabricated principal handed straight to a controller method.
+ * infrastructure: a real Postgres (row-level security included), a real
+ * Azurite, and a real ClamAV, driven entirely through MockMvc-issued HTTP
+ * requests carrying a real authenticated session and a real CSRF token,
+ * the same way {@code SessionRevocationIntegrationTest} builds one -- not
+ * a fabricated principal handed straight to a controller method.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -75,6 +87,12 @@ class ArtifactUploadIntegrationTest {
     static final AzuriteContainer AZURITE =
             new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
 
+    @Container
+    static final GenericContainer<?> CLAMAV = new GenericContainer<>(DockerImageName.parse("clamav/clamav-debian:1.4"))
+            .withExposedPorts(3310)
+            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
+            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
@@ -84,6 +102,8 @@ class ArtifactUploadIntegrationTest {
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
         registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
+        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
+        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
     }
 
     private static Path initScriptPath() {
@@ -115,6 +135,9 @@ class ArtifactUploadIntegrationTest {
     @Autowired
     private FindByIndexNameSessionRepository<? extends Session> sessionRepository;
 
+    @Autowired
+    private ArtifactRepository artifactRepository;
+
     @Test
     void theWholeAllocateUploadCompleteFlowWorksAgainstRealPostgresAndRealAzurite() throws Exception {
         Cookie owner = loginAndGetSessionCookie("subject-owner");
@@ -130,15 +153,85 @@ class ArtifactUploadIntegrationTest {
         assertThat(uploadResponse.get("sha256").asText()).isEqualTo(expectedSha256);
 
         JsonNode completeResponse = complete(owner, workspaceId, artifactId);
-        assertThat(completeResponse.get("status").asText()).isEqualTo("QUARANTINED");
+        assertThat(completeResponse.get("status").asText()).isEqualTo("READY");
         assertThat(completeResponse.get("byteCount").asLong()).isEqualTo(content.length);
         assertThat(completeResponse.get("sha256").asText()).isEqualTo(expectedSha256);
 
-        // Idempotent: completing an already-QUARANTINED artifact again
-        // succeeds and returns the same, unchanged result.
+        // Idempotent: completing an already-READY artifact again succeeds
+        // and returns the same, unchanged result, without scanning again
+        // (nothing here asserts that directly -- ArtifactServiceTest
+        // already proves the no-rescan behavior against a fake scanner
+        // where the call count is actually observable).
         JsonNode secondComplete = complete(owner, workspaceId, artifactId);
-        assertThat(secondComplete.get("status").asText()).isEqualTo("QUARANTINED");
+        assertThat(secondComplete.get("status").asText()).isEqualTo("READY");
         assertThat(secondComplete.get("byteCount").asLong()).isEqualTo(content.length);
+    }
+
+    @Test
+    void theEicarTestFileIsDetectedAndRejectedAgainstRealClamAv() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-eicar-upload");
+        long workspaceId = workspaceIdFor("subject-eicar-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        // The industry-standard EICAR test string -- not real malware, but
+        // recognized by every antivirus engine including ClamAV by design,
+        // specifically so it's safe to use in a test exactly like this one.
+        byte[] eicar = ("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EI" + "CAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*")
+                .getBytes(StandardCharsets.US_ASCII);
+        uploadContent(owner, workspaceId, artifactId, eicar);
+
+        JsonNode completeResponse = complete(owner, workspaceId, artifactId);
+
+        assertThat(completeResponse.get("status").asText()).isEqualTo("REJECTED");
+        assertThat(completeResponse.get("rejectionReason").asText()).isEqualTo("MALWARE_DETECTED");
+    }
+
+    @Test
+    void concurrentScanAttemptsForTheSameArtifactHaveExactlyOneWinner() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-concurrent-scan");
+        long workspaceId = workspaceIdFor("subject-concurrent-scan");
+        long userId = userIdFor("subject-concurrent-scan");
+        long artifactId = allocate(owner, workspaceId);
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+
+        // Drives the artifact to QUARANTINED directly at the repository
+        // level, bypassing ArtifactService#finalizeUpload -- that method
+        // scans synchronously within the same call, which would leave
+        // nothing left to race once it returns.
+        Artifact quarantined = artifactRepository.finalizeUpload(workspaceId, userId, artifactId);
+        assertThat(quarantined.status()).isEqualTo(ArtifactStatus.QUARANTINED);
+
+        int attempts = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(attempts);
+        CyclicBarrier startLine = new CyclicBarrier(attempts);
+        try {
+            List<Future<Boolean>> results = new ArrayList<>();
+            for (int i = 0; i < attempts; i++) {
+                results.add(pool.submit(() -> {
+                    startLine.await();
+                    try {
+                        artifactRepository.beginScanning(workspaceId, userId, artifactId);
+                        return true;
+                    } catch (ArtifactStateConflictException e) {
+                        return false;
+                    }
+                }));
+            }
+            long winners = 0;
+            for (Future<Boolean> result : results) {
+                if (result.get()) {
+                    winners++;
+                }
+            }
+            // The real, motivating bug: a lenient "apply-or-return-current-state"
+            // WHERE clause let every one of these concurrent callers past the
+            // gate, each free to reach and act on its own scan verdict for the
+            // same artifact. Against real Postgres, the strict QUARANTINED-only
+            // transition must let exactly one caller through.
+            assertThat(winners).isEqualTo(1);
+        } finally {
+            pool.shutdown();
+        }
     }
 
     @Test
@@ -206,7 +299,7 @@ class ArtifactUploadIntegrationTest {
         assertThat(uploadResponse.get("detectedMediaType").asText()).isEqualTo("DOCX");
 
         JsonNode completeResponse = complete(owner, workspaceId, artifactId);
-        assertThat(completeResponse.get("status").asText()).isEqualTo("QUARANTINED");
+        assertThat(completeResponse.get("status").asText()).isEqualTo("READY");
         assertThat(completeResponse.get("detectedMediaType").asText()).isEqualTo("DOCX");
         assertThat(completeResponse.get("displayFilename").asText()).isEqualTo("minutes.docx");
     }
@@ -321,6 +414,13 @@ class ArtifactUploadIntegrationTest {
                 .findByIssuerAndSubject("https://issuer-artifact-upload", subject)
                 .orElseThrow();
         return workspaceRepository.ensurePersonalWorkspace(identity.id()).id();
+    }
+
+    private long userIdFor(String subject) {
+        return userIdentityRepository
+                .findByIssuerAndSubject("https://issuer-artifact-upload", subject)
+                .orElseThrow()
+                .id();
     }
 
     /**

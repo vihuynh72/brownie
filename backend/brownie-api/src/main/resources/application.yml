@@ -78,6 +78,10 @@ brownie:
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
   artifacts:
     max-upload-bytes: ${BROWNIE_MAX_UPLOAD_BYTES:10485760}
+  security:
+    clamav:
+      host: ${BROWNIE_CLAMAV_HOST}
+      port: ${BROWNIE_CLAMAV_PORT:3310}
 
 logging:
   structured:
@@ -156,6 +160,15 @@ brownie:
     # the same class of bug already found and fixed once in this profile
     # for BROWNIE_ENVIRONMENT.
     local-connection: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:65535/devstoreaccount1;"
+  security:
+    clamav:
+      # Same unreachable-port-65535 convention as the placeholders above --
+      # constructing ClamAvMalwareScanner never touches the network on its
+      # own (it only connects inside scan(), never at construction), and
+      # the fast, Docker-free tests that run under this profile never call
+      # scan() at all.
+      host: 127.0.0.1
+      port: 65535
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG

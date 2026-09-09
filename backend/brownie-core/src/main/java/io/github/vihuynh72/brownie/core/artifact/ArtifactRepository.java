@@ -34,5 +34,27 @@ public interface ArtifactRepository {
      */
     Artifact finalizeUpload(long workspaceId, long userId, long artifactId);
 
+    /** From UPLOADING or SCANNING (a scan can find something after either the first content upload or a retried scan). */
     Artifact reject(long workspaceId, long userId, long artifactId, String reason);
+
+    /**
+     * Transitions QUARANTINED to SCANNING. Unlike the other transitions
+     * here, this one is a strict single-winner exclusion rather than an
+     * apply-or-return-current-state idempotence: if the artifact is not
+     * QUARANTINED (including when it is already SCANNING) the call throws
+     * {@link ArtifactStateConflictException} instead of returning the
+     * current state. This is what makes it safe for the caller to treat
+     * a successful return as exclusive ownership of the scan -- two
+     * concurrent callers cannot both proceed to interpret a scan result
+     * for the same artifact. The tradeoff: a process that crashes after
+     * entering SCANNING leaves the artifact stuck there with no automatic
+     * retry.
+     */
+    Artifact beginScanning(long workspaceId, long userId, long artifactId);
+
+    /** Transitions SCANNING to READY: the scan completed and found nothing. */
+    Artifact markReady(long workspaceId, long userId, long artifactId);
+
+    /** Transitions SCANNING back to QUARANTINED: the scan itself failed, not the content -- retryable. */
+    Artifact revertToQuarantined(long workspaceId, long userId, long artifactId);
 }
