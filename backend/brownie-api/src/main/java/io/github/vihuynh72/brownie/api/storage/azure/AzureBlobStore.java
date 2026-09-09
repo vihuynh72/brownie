@@ -96,6 +96,18 @@ class AzureBlobStore implements BlobStore {
     }
 
     @Override
+    public InputStream openStream(String objectKey) throws IOException {
+        try {
+            // A real streaming download (BlobInputStream pulls bytes from
+            // Azure/Azurite on demand as its caller reads), not a call
+            // that resolves the whole object into memory upfront.
+            return containerClient().getBlobClient(objectKey).openInputStream();
+        } catch (BlobStorageException e) {
+            throw new IOException("Failed to open a read stream for " + objectKey, e);
+        }
+    }
+
+    @Override
     public void delete(String objectKey) throws IOException {
         try {
             containerClient().getBlobClient(objectKey).deleteIfExists();

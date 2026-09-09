@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.web;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
+import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -94,6 +95,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "CONTENT_TOO_LARGE");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONTENT_TOO_LARGE, request);
+    }
+
+    @ExceptionHandler(UnsupportedArtifactTypeException.class)
+    public ResponseEntity<Object> handleUnsupportedArtifactType(UnsupportedArtifactTypeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "UNSUPPORTED_MEDIA_TYPE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
     }
 
     /**

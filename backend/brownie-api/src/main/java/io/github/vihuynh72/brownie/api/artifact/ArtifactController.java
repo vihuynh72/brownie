@@ -3,7 +3,6 @@ package io.github.vihuynh72.brownie.api.artifact;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
-import io.github.vihuynh72.brownie.core.artifact.UploadResult;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import jakarta.servlet.http.HttpServletRequest;
@@ -13,6 +12,7 @@ import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -45,10 +45,14 @@ class ArtifactController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    ArtifactResponse allocate(@PathVariable long workspaceId, @AuthenticationPrincipal OidcUser principal) {
+    ArtifactResponse allocate(
+            @PathVariable long workspaceId,
+            @AuthenticationPrincipal OidcUser principal,
+            @RequestBody(required = false) AllocateUploadRequest request) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_ARTIFACTS);
-        return ArtifactResponse.from(artifactService.initiateUpload(workspaceId, userId));
+        String filename = request == null ? null : request.filename();
+        return ArtifactResponse.from(artifactService.initiateUpload(workspaceId, userId, filename));
     }
 
     @PutMapping("/{artifactId}/content")
@@ -60,9 +64,8 @@ class ArtifactController {
             throws IOException {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_ARTIFACTS);
-        UploadResult result =
-                artifactService.receiveContent(workspaceId, userId, artifactId, request.getInputStream());
-        return new ArtifactResponse(artifactId, "UPLOADING", result.byteCount(), result.sha256Hex(), null);
+        Artifact artifact = artifactService.receiveContent(workspaceId, userId, artifactId, request.getInputStream());
+        return ArtifactResponse.from(artifact);
     }
 
     @PostMapping("/{artifactId}/complete")
@@ -84,13 +87,26 @@ class ArtifactController {
                 .id();
     }
 
-    record ArtifactResponse(long id, String status, Long byteCount, String sha256, String rejectionReason) {
+    /** {@code filename} is optional, sanitized server-side into pure display metadata before it is ever persisted. */
+    record AllocateUploadRequest(String filename) {
+    }
+
+    record ArtifactResponse(
+            long id,
+            String status,
+            Long byteCount,
+            String sha256,
+            String detectedMediaType,
+            String displayFilename,
+            String rejectionReason) {
         static ArtifactResponse from(Artifact artifact) {
             return new ArtifactResponse(
                     artifact.id(),
                     artifact.status().name(),
                     artifact.byteCount(),
                     artifact.sha256(),
+                    artifact.detectedMediaType() == null ? null : artifact.detectedMediaType().name(),
+                    artifact.displayFilename(),
                     artifact.rejectionReason());
         }
     }

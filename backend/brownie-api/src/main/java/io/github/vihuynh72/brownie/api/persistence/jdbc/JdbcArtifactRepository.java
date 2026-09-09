@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.persistence.jdbc;
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStatus;
+import io.github.vihuynh72.brownie.core.artifact.SupportedMediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -25,12 +26,14 @@ class JdbcArtifactRepository implements ArtifactRepository {
             ArtifactStatus.valueOf(rs.getString("status")),
             (Long) rs.getObject("byte_count"),
             rs.getString("sha256"),
+            mapMediaType(rs.getString("detected_media_type")),
+            rs.getString("display_filename"),
             rs.getString("rejection_reason"),
             rs.getObject("created_at", OffsetDateTime.class),
             rs.getObject("finalized_at", OffsetDateTime.class));
 
-    private static final String SELECT_COLUMNS =
-            "id, workspace_id, blob_key, status, byte_count, sha256, rejection_reason, created_at, finalized_at";
+    private static final String SELECT_COLUMNS = "id, workspace_id, blob_key, status, byte_count, sha256,"
+            + " detected_media_type, display_filename, rejection_reason, created_at, finalized_at";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -40,19 +43,21 @@ class JdbcArtifactRepository implements ArtifactRepository {
 
     @Override
     @Transactional
-    public Artifact initiateUpload(long workspaceId, long userId) {
+    public Artifact initiateUpload(long workspaceId, long userId, String displayFilename) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         // Opaque and server-generated: no user input (a filename, a
         // client-declared type) is part of this key or reaches blob
-        // storage at all in this task's scope.
+        // storage at all.
         String blobKey = "workspace-" + workspaceId + "/" + UUID.randomUUID();
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcTemplate.update(
                 connection -> {
                     PreparedStatement ps = connection.prepareStatement(
-                            "INSERT INTO artifact (workspace_id, blob_key) VALUES (?, ?)", new String[] {"id"});
+                            "INSERT INTO artifact (workspace_id, blob_key, display_filename) VALUES (?, ?, ?)",
+                            new String[] {"id"});
                     ps.setLong(1, workspaceId);
                     ps.setString(2, blobKey);
+                    ps.setString(3, displayFilename);
                     return ps;
                 },
                 keyHolder);
@@ -77,15 +82,22 @@ class JdbcArtifactRepository implements ArtifactRepository {
 
     @Override
     @Transactional
-    public Artifact recordUploadedContent(long workspaceId, long userId, long artifactId, long byteCount, String sha256) {
+    public Artifact recordUploadedContent(
+            long workspaceId,
+            long userId,
+            long artifactId,
+            long byteCount,
+            String sha256,
+            SupportedMediaType detectedMediaType) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         jdbcTemplate.update(
                 """
-                UPDATE artifact SET byte_count = ?, sha256 = ?
+                UPDATE artifact SET byte_count = ?, sha256 = ?, detected_media_type = ?
                 WHERE id = ? AND workspace_id = ? AND status = 'UPLOADING' AND byte_count IS NULL
                 """,
                 byteCount,
                 sha256,
+                detectedMediaType.name(),
                 artifactId,
                 workspaceId);
         return find(workspaceId, userId, artifactId)
@@ -121,5 +133,9 @@ class JdbcArtifactRepository implements ArtifactRepository {
                 workspaceId);
         return find(workspaceId, userId, artifactId)
                 .orElseThrow(() -> new IllegalStateException("Artifact " + artifactId + " vanished while rejecting it."));
+    }
+
+    private static SupportedMediaType mapMediaType(String value) {
+        return value == null ? null : SupportedMediaType.valueOf(value);
     }
 }
