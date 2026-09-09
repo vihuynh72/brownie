@@ -71,6 +71,13 @@ management:
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
   public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
+  storage:
+    # Local/test only -- see BlobStorageConfig, which refuses this setting
+    # outright on pilot/production. No production Blob Storage adapter
+    # exists yet.
+    local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+  artifacts:
+    max-upload-bytes: ${BROWNIE_MAX_UPLOAD_BYTES:10485760}
 
 logging:
   structured:
@@ -137,6 +144,18 @@ spring:
   # session settings above, so it has to be turned off by name instead.
   autoconfigure:
     exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
+brownie:
+  storage:
+    # A syntactically valid but unreachable target (port 65535, the same
+    # convention the fake OIDC endpoints above use) -- BlobServiceClient
+    # construction never touches the network on its own, and the fast,
+    # Docker-free tests that run under this profile never call an
+    # operation that would. Fixed here rather than left to
+    # BROWNIE_LOCAL_STORAGE_CONNECTION so a value a developer happens to
+    # have exported in their own shell can never leak into a test run --
+    # the same class of bug already found and fixed once in this profile
+    # for BROWNIE_ENVIRONMENT.
+    local-connection: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:65535/devstoreaccount1;"
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG
