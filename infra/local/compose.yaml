@@ -1,9 +1,9 @@
 # Local development infrastructure only. brownie-api and brownie-worker
-# still run directly on the host (mvnw / java -jar) against this database --
-# they are not containerized here. Only Postgres exists as a real,
-# consumed dependency today; Azurite, the isolated document renderer, and
-# a reverse proxy are deliberately absent until the phases that actually
-# use them exist.
+# still run directly on the host (mvnw / java -jar) against this database
+# and this Azurite -- they are not containerized here. Only Postgres and
+# Azurite exist as real, consumed dependencies today; the isolated document
+# renderer and a reverse proxy are deliberately absent until the phases
+# that actually use them exist.
 #
 # Start:      docker compose -f infra/local/compose.yaml up -d --wait
 # Stop:       docker compose -f infra/local/compose.yaml down
@@ -37,5 +37,22 @@ services:
       timeout: 5s
       retries: 15
 
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    # Blob service only -- queue and table storage have no consumer in
+    # this codebase, so their ports are left unpublished.
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000"
+    ports:
+      # Loopback-only, matching the Postgres service above.
+      - "127.0.0.1:10000:10000"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
 volumes:
   postgres-data:
+  azurite-data:
