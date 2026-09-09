@@ -25,5 +25,13 @@ public interface BlobStore {
     /** Empty when no object exists at this key. */
     Optional<Long> sizeOf(String objectKey) throws IOException;
 
+    /**
+     * Streams the object's content back for inspection. A real streaming
+     * download, not a full in-memory read -- the returned stream pulls
+     * bytes on demand as its caller reads them.
+     */
+    InputStream openStream(String objectKey) throws IOException;
+
+    /** A no-op, not an error, when no object exists at this key -- callers may call this defensively without checking existence first. */
     void delete(String objectKey) throws IOException;
 }

@@ -55,7 +55,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@TestPropertySource(properties = {"spring.autoconfigure.exclude=", "brownie.artifacts.max-upload-bytes=20"})
+@TestPropertySource(properties = {"spring.autoconfigure.exclude=", "brownie.artifacts.max-upload-bytes=2000"})
 @Testcontainers
 class ArtifactUploadIntegrationTest {
 
@@ -165,7 +165,8 @@ class ArtifactUploadIntegrationTest {
         long workspaceId = workspaceIdFor("subject-large-upload");
         long artifactId = allocate(owner, workspaceId);
 
-        byte[] tooLarge = "this string is definitely over twenty bytes".getBytes(StandardCharsets.UTF_8);
+        byte[] tooLarge = "this string is definitely over the configured 2000-byte test limit, ".repeat(40)
+                .getBytes(StandardCharsets.UTF_8);
         mockMvc.perform(put(
                                 "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
                                 workspaceId,
@@ -191,15 +192,98 @@ class ArtifactUploadIntegrationTest {
                 .andExpect(status().isConflict());
     }
 
+    @Test
+    void aRealDocxIsClassifiedCorrectlyAndItsFilenameSanitized() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-docx-upload");
+        long workspaceId = workspaceIdFor("subject-docx-upload");
+
+        JsonNode allocated = allocate(owner, workspaceId, "../minutes.docx");
+        assertThat(allocated.get("displayFilename").asText()).isEqualTo("minutes.docx");
+        long artifactId = allocated.get("id").asLong();
+
+        byte[] docx = minimalOoxmlPackage();
+        JsonNode uploadResponse = uploadContent(owner, workspaceId, artifactId, docx);
+        assertThat(uploadResponse.get("detectedMediaType").asText()).isEqualTo("DOCX");
+
+        JsonNode completeResponse = complete(owner, workspaceId, artifactId);
+        assertThat(completeResponse.get("status").asText()).isEqualTo("QUARANTINED");
+        assertThat(completeResponse.get("detectedMediaType").asText()).isEqualTo("DOCX");
+        assertThat(completeResponse.get("displayFilename").asText()).isEqualTo("minutes.docx");
+    }
+
+    @Test
+    void contentThatMatchesNoSupportedTypeIsRejectedWith415AgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-unsupported-upload");
+        long workspaceId = workspaceIdFor("subject-unsupported-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        byte[] binary = {0x01, 0x02, 0x00, 0x03, (byte) 0xFF, 0x04};
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .content(binary))
+                .andExpect(status().isUnsupportedMediaType());
+    }
+
+    @Test
+    void aZipThatIsNotAnOoxmlPackageIsRejectedWith415AgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-plain-zip-upload");
+        long workspaceId = workspaceIdFor("subject-plain-zip-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        byte[] plainZip = zipOf(java.util.Map.of("readme.txt", "just a zip, not a docx"));
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .content(plainZip))
+                .andExpect(status().isUnsupportedMediaType());
+    }
+
+    private static byte[] minimalOoxmlPackage() throws java.io.IOException {
+        return zipOf(java.util.Map.of(
+                "[Content_Types].xml",
+                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>",
+                "word/document.xml",
+                "<w:document/>"));
+    }
+
+    private static byte[] zipOf(java.util.Map<String, String> entries) throws java.io.IOException {
+        var buffer = new java.io.ByteArrayOutputStream();
+        try (var zip = new java.util.zip.ZipOutputStream(buffer)) {
+            for (var entry : entries.entrySet()) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(entry.getKey()));
+                zip.write(entry.getValue().getBytes());
+                zip.closeEntry();
+            }
+        }
+        return buffer.toByteArray();
+    }
+
     private long allocate(Cookie sessionCookie, long workspaceId) throws Exception {
-        String body = mockMvc.perform(post("/api/v1/workspaces/{workspaceId}/uploads", workspaceId)
-                        .cookie(sessionCookie)
-                        .with(csrf()))
+        return allocate(sessionCookie, workspaceId, null).get("id").asLong();
+    }
+
+    private JsonNode allocate(Cookie sessionCookie, long workspaceId, String filename) throws Exception {
+        var requestBuilder = post("/api/v1/workspaces/{workspaceId}/uploads", workspaceId)
+                .cookie(sessionCookie)
+                .with(csrf());
+        if (filename != null) {
+            requestBuilder = requestBuilder
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .content("{\"filename\":\"" + filename.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}");
+        }
+        String body = mockMvc.perform(requestBuilder)
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
-        return OBJECT_MAPPER.readTree(body).get("id").asLong();
+        return OBJECT_MAPPER.readTree(body);
     }
 
     private JsonNode uploadContent(Cookie sessionCookie, long workspaceId, long artifactId, byte[] content)

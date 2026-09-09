@@ -36,12 +36,20 @@ public class ArtifactService {
         this.abandonedUploadTtl = abandonedUploadTtl;
     }
 
-    public Artifact initiateUpload(long workspaceId, long userId) {
-        return artifactRepository.initiateUpload(workspaceId, userId);
+    /** {@code rawFilename} is whatever the client sent, sanitized here into pure display metadata before it is ever persisted. */
+    public Artifact initiateUpload(long workspaceId, long userId, String rawFilename) {
+        return artifactRepository.initiateUpload(workspaceId, userId, DisplayFilenames.sanitize(rawFilename));
     }
 
-    /** Streams {@code content} straight into blob storage; the returned result is what was actually observed, not what any caller declared. */
-    public UploadResult receiveContent(long workspaceId, long userId, long artifactId, InputStream content) {
+    /**
+     * Streams {@code content} straight into blob storage, then classifies
+     * and validates what was actually written by reading it back -- an
+     * unsupported type or a package that fails its decompression bounds
+     * is rejected here, before anything downstream ever parses or
+     * previews it. Returns the artifact as actually recorded, not what
+     * any caller declared.
+     */
+    public Artifact receiveContent(long workspaceId, long userId, long artifactId, InputStream content) {
         Artifact artifact = requireUploadable(workspaceId, userId, artifactId);
         if (artifact.byteCount() != null) {
             throw new ArtifactStateConflictException(
@@ -58,15 +66,38 @@ public class ArtifactService {
             throw new ArtifactStorageException("Failed to store uploaded content for artifact " + artifactId, e);
         }
 
+        SupportedMediaType detectedMediaType = classifyOrReject(workspaceId, userId, artifact);
+
         Artifact recorded = artifactRepository.recordUploadedContent(
-                workspaceId, userId, artifactId, result.byteCount(), result.sha256Hex());
+                workspaceId, userId, artifactId, result.byteCount(), result.sha256Hex(), detectedMediaType);
         boolean matches = Objects.equals(recorded.byteCount(), result.byteCount())
                 && Objects.equals(recorded.sha256(), result.sha256Hex());
         if (!matches) {
             throw new ArtifactStateConflictException(
                     "Artifact " + artifactId + " already has different recorded content.");
         }
-        return result;
+        return recorded;
+    }
+
+    /**
+     * Reads back what was just written and classifies it. On any
+     * validation failure, the artifact is rejected and its now-useless
+     * blob removed before the exception propagates -- a rejected artifact
+     * never sits around looking like it might still be usable.
+     */
+    private SupportedMediaType classifyOrReject(long workspaceId, long userId, Artifact artifact) {
+        try (InputStream stored = blobStore.openStream(artifact.blobKey())) {
+            return ArtifactContentInspector.inspect(stored);
+        } catch (UnsupportedArtifactTypeException e) {
+            rejectAndCleanUp(workspaceId, userId, artifact, "UNSUPPORTED_MEDIA_TYPE");
+            throw e;
+        } catch (ArtifactTooLargeException e) {
+            rejectAndCleanUp(workspaceId, userId, artifact, "DECOMPRESSION_LIMIT_EXCEEDED");
+            throw e;
+        } catch (IOException e) {
+            throw new ArtifactStorageException(
+                    "Failed to read back uploaded content for artifact " + artifact.id() + " to classify it.", e);
+        }
     }
 
     /** Verifies the uploaded object against what was recorded and transitions the artifact to QUARANTINED. Idempotent: calling this again once already QUARANTINED simply returns it unchanged. */
@@ -142,15 +173,25 @@ public class ArtifactService {
      * being abandoned.
      */
     private void expireAbandoned(long workspaceId, long userId, Artifact artifact) {
-        artifactRepository.reject(workspaceId, userId, artifact.id(), "EXPIRED_ABANDONED_UPLOAD");
-        if (artifact.byteCount() != null) {
-            try {
-                blobStore.delete(artifact.blobKey());
-            } catch (IOException e) {
-                log.warn("Failed to delete blob {} for expired artifact {}.", artifact.blobKey(), artifact.id(), e);
-            }
-        }
+        rejectAndCleanUp(workspaceId, userId, artifact, "EXPIRED_ABANDONED_UPLOAD");
         throw new ArtifactStateConflictException(
                 "Artifact " + artifact.id() + " was abandoned for too long and has expired.");
+    }
+
+    /**
+     * Marks the artifact REJECTED and best-effort deletes its blob.
+     * Callers reach this either before any content was ever written (the
+     * delete is a harmless no-op, per {@link BlobStore#delete}) or right
+     * after a just-written object failed classification -- deleting
+     * unconditionally, rather than checking {@code artifact.byteCount()}
+     * on the possibly-stale copy in hand, is what makes both cases safe.
+     */
+    private void rejectAndCleanUp(long workspaceId, long userId, Artifact artifact, String reason) {
+        artifactRepository.reject(workspaceId, userId, artifact.id(), reason);
+        try {
+            blobStore.delete(artifact.blobKey());
+        } catch (IOException e) {
+            log.warn("Failed to delete blob {} for rejected artifact {}.", artifact.blobKey(), artifact.id(), e);
+        }
     }
 }

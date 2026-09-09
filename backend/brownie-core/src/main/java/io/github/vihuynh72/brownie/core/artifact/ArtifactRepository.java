@@ -9,19 +9,21 @@ import java.util.Optional;
  */
 public interface ArtifactRepository {
 
-    Artifact initiateUpload(long workspaceId, long userId);
+    /** {@code displayFilename} is already-sanitized display metadata, or null when the caller supplied none. */
+    Artifact initiateUpload(long workspaceId, long userId, String displayFilename);
 
     Optional<Artifact> find(long workspaceId, long userId, long artifactId);
 
     /**
-     * Records the size and hash actually observed while writing content to
-     * blob storage. Only takes effect once per artifact, while it is still
-     * UPLOADING with no content recorded yet; a later call that cannot
-     * apply for that reason simply returns the artifact's current,
-     * unchanged state rather than throwing, leaving the caller to decide
-     * whether that is a conflict.
+     * Records the size, hash, and detected media type actually observed
+     * while writing content to blob storage. Only takes effect once per
+     * artifact, while it is still UPLOADING with no content recorded yet;
+     * a later call that cannot apply for that reason simply returns the
+     * artifact's current, unchanged state rather than throwing, leaving
+     * the caller to decide whether that is a conflict.
      */
-    Artifact recordUploadedContent(long workspaceId, long userId, long artifactId, long byteCount, String sha256);
+    Artifact recordUploadedContent(
+            long workspaceId, long userId, long artifactId, long byteCount, String sha256, SupportedMediaType detectedMediaType);
 
     /**
      * Transitions UPLOADING to QUARANTINED. Idempotent at the storage
