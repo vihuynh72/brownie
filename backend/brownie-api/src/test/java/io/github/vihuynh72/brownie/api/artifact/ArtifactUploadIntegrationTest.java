@@ -52,6 +52,7 @@ import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -184,6 +185,140 @@ class ArtifactUploadIntegrationTest {
 
         assertThat(completeResponse.get("status").asText()).isEqualTo("REJECTED");
         assertThat(completeResponse.get("rejectionReason").asText()).isEqualTo("MALWARE_DETECTED");
+    }
+
+    @Test
+    void downloadServesTheExactUploadedBytesWithAnAttachmentDisposition() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-download");
+        long workspaceId = workspaceIdFor("subject-download");
+        JsonNode allocated = allocate(owner, workspaceId, "minutes.txt");
+        long artifactId = allocated.get("id").asLong();
+        byte[] content = "hello world".getBytes(StandardCharsets.UTF_8);
+        uploadContent(owner, workspaceId, artifactId, content);
+        complete(owner, workspaceId, artifactId);
+
+        var response = mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse();
+
+        assertThat(response.getContentAsByteArray()).isEqualTo(content);
+        assertThat(response.getContentType()).isEqualTo("text/plain");
+        assertThat(response.getHeader("Content-Disposition"))
+                .contains("attachment")
+                .contains("filename=\"minutes.txt\"");
+        assertThat(response.getHeader("Cache-Control")).contains("no-store");
+    }
+
+    @Test
+    void previewServesTheSameBytesWithAnInlineDisposition() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-preview");
+        long workspaceId = workspaceIdFor("subject-preview");
+        long artifactId = allocate(owner, workspaceId);
+        byte[] content = "hello world".getBytes(StandardCharsets.UTF_8);
+        uploadContent(owner, workspaceId, artifactId, content);
+        complete(owner, workspaceId, artifactId);
+
+        var response = mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/preview",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse();
+
+        assertThat(response.getContentAsByteArray()).isEqualTo(content);
+        assertThat(response.getHeader("Content-Disposition")).contains("inline");
+    }
+
+    @Test
+    void downloadFallsBackToAGeneratedFilenameWhenNoneWasSupplied() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-download-noname");
+        long workspaceId = workspaceIdFor("subject-download-noname");
+        long artifactId = allocate(owner, workspaceId);
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        complete(owner, workspaceId, artifactId);
+
+        var response = mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse();
+
+        assertThat(response.getHeader("Content-Disposition")).contains("filename=\"artifact-" + artifactId + ".txt\"");
+    }
+
+    @Test
+    void downloadBeforeTheArtifactIsReadyIsAConflict() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-download-not-ready");
+        long workspaceId = workspaceIdFor("subject-download-not-ready");
+        long artifactId = allocate(owner, workspaceId);
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        // Deliberately never completed -- still UPLOADING.
+
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void downloadOfARejectedArtifactIsAConflictEvenThoughItsBlobStillExists() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-download-rejected");
+        long workspaceId = workspaceIdFor("subject-download-rejected");
+        long artifactId = allocate(owner, workspaceId);
+        byte[] eicar = ("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EI" + "CAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*")
+                .getBytes(StandardCharsets.US_ASCII);
+        uploadContent(owner, workspaceId, artifactId, eicar);
+        complete(owner, workspaceId, artifactId);
+
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void aNonMemberCannotDownloadOrPreviewSomeoneElsesArtifact() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-download-victim");
+        long workspaceId = workspaceIdFor("subject-download-victim");
+        long artifactId = allocate(owner, workspaceId);
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        complete(owner, workspaceId, artifactId);
+        Cookie outsider = loginAndGetSessionCookie("subject-download-outsider");
+
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(outsider))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/preview",
+                                workspaceId,
+                                artifactId)
+                        .cookie(outsider))
+                .andExpect(status().isForbidden());
+
+        // The legitimate owner can still read it normally.
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isOk());
     }
 
     @Test

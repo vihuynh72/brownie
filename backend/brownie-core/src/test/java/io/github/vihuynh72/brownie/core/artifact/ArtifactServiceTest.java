@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -150,6 +151,71 @@ class ArtifactServiceTest {
 
         assertEquals(ArtifactStatus.READY, second.status());
         assertEquals(1, scanner.scanCount);
+    }
+
+    @Test
+    void openContentReturnsTheExactBytesOfAReadyArtifact() throws IOException {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        byte[] content = "hello world".getBytes();
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream(content));
+        service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        try (ReadableArtifact readable = service.openContent(WORKSPACE_ID, USER_ID, allocated.id())) {
+            assertEquals(ArtifactStatus.READY, readable.artifact().status());
+            assertArrayEquals(content, readable.content().readAllBytes());
+        }
+    }
+
+    @Test
+    void openContentOnAnUnfinishedUploadIsAConflict() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+
+        assertThrows(
+                ArtifactStateConflictException.class,
+                () -> service.openContent(WORKSPACE_ID, USER_ID, allocated.id()));
+    }
+
+    @Test
+    void openContentOnARejectedArtifactIsAConflictEvenThoughItsBlobStillExists() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        scanner.willReturn(ScanResult.infected("Eicar-Test-Signature"));
+        ArtifactService service = new ArtifactService(repository, blobStore, scanner, 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("evil".getBytes()));
+        service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        assertThrows(
+                ArtifactStateConflictException.class,
+                () -> service.openContent(WORKSPACE_ID, USER_ID, allocated.id()));
+    }
+
+    @Test
+    void openContentForAnArtifactInAnotherWorkspaceIsNotFound() {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes()));
+        service.finalizeUpload(WORKSPACE_ID, USER_ID, allocated.id());
+
+        long otherWorkspaceId = WORKSPACE_ID + 1;
+        assertThrows(
+                ArtifactNotFoundException.class,
+                () -> service.openContent(otherWorkspaceId, USER_ID, allocated.id()));
     }
 
     @Test
