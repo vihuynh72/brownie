@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>The negative case (schema changes are refused) matters as much as the
  * positive one (ordinary reads/writes work): it is the actual security
- * property behind "separate runtime credentials" in the master plan, not
- * just an organizational convention.
+ * property behind "separate runtime credentials," not just an
+ * organizational convention.
  *
  * <p>Also proves the one persisted command/query demonstrated over real
  * HTTP: {@code io.github.vihuynh72.brownie.api.platform.PlatformProbeController}'s
@@ -116,8 +116,11 @@ class BrownieApiDatabaseIntegrationTest {
 
     @Test
     void createThenReadAPlatformProbeOverRealHttp() throws Exception {
+        String csrfToken = fetchCsrfToken();
         HttpRequest createRequest = HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes")))
                 .header("Content-Type", "application/json")
+                .header("Cookie", "XSRF-TOKEN=" + csrfToken)
+                .header("X-XSRF-TOKEN", csrfToken)
                 .POST(HttpRequest.BodyPublishers.ofString("{\"message\":\"end-to-end check\"}"))
                 .build();
         HttpResponse<String> createResponse = client.send(createRequest, HttpResponse.BodyHandlers.ofString());
@@ -151,8 +154,11 @@ class BrownieApiDatabaseIntegrationTest {
 
     @Test
     void creatingAProbeWithAMissingMessageFailsValidation() throws Exception {
+        String csrfToken = fetchCsrfToken();
         HttpRequest request = HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes")))
                 .header("Content-Type", "application/json")
+                .header("Cookie", "XSRF-TOKEN=" + csrfToken)
+                .header("X-XSRF-TOKEN", csrfToken)
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
                 .build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -164,5 +170,21 @@ class BrownieApiDatabaseIntegrationTest {
 
     private String url(String path) {
         return "http://localhost:" + port + path;
+    }
+
+    /**
+     * Spring Security's {@code csrf.spa()} sets the XSRF-TOKEN cookie on
+     * every response, even this unrelated GET, precisely so a JSON client
+     * never needs a dedicated endpoint just to obtain one before its first
+     * mutation.
+     */
+    private String fetchCsrfToken() throws Exception {
+        HttpResponse<Void> response = client.send(
+                HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes/999999999")))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.discarding());
+        String setCookie = response.headers().firstValue("set-cookie").orElseThrow();
+        return setCookie.split(";", 2)[0].split("=", 2)[1];
     }
 }

@@ -10,10 +10,29 @@ info:
     domain endpoint exists. It is expected to be removed once real
     endpoints are documented in its place.
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8081
     description: Local development
 
 paths:
+  /api/v1/me:
+    get:
+      operationId: getCurrentIdentity
+      summary: >
+        Current identity and workspace memberships. Login
+        (/oauth2/authorization/entra) and logout (/logout) are
+        browser-redirect flows, not JSON operations, and are not modeled
+        here. Effective capabilities are added once authorization checks
+        exist.
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          description: Not logged in.
+
   /api/v1/platform/probes:
     post:
       operationId: createPlatformProbe
@@ -70,6 +89,37 @@ paths:
 
 components:
   schemas:
+    MeResponse:
+      type: object
+      required: [userId, issuer, subject, memberships]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        issuer:
+          type: string
+        subject:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/MembershipResponse"
+
+    MembershipResponse:
+      type: object
+      required: [workspaceId, role]
+      properties:
+        workspaceId:
+          type: integer
+          format: int64
+        role:
+          type: string
+          description: "Only OWNER exists until team workspaces are supported."
+
     CreateProbeRequest:
       type: object
       required: [message]
@@ -95,7 +145,7 @@ components:
     Error:
       description: >
         The shape of every error response in this API, regardless of
-        cause -- see the master plan's API conventions (§12.1).
+        cause.
       type: object
       required: [status, title, code, correlationId, fields, recoveryActions]
       properties:

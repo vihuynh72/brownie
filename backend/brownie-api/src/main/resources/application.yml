@@ -1,3 +1,10 @@
+# No NGINX same-origin proxy exists yet, so brownie-api itself must be the
+# one loopback origin used for local development -- the same origin as
+# BROWNIE_PUBLIC_ORIGIN below and the callback registered with the
+# identity provider: http://localhost:8081/login/oauth2/code/entra.
+server:
+  port: 8081
+
 spring:
   application:
     name: brownie-api
@@ -9,13 +16,46 @@ spring:
     url: ${BROWNIE_DB_URL}
     user: ${BROWNIE_DB_MIGRATION_USERNAME}
     password: ${BROWNIE_DB_MIGRATION_PASSWORD}
+  security:
+    oauth2:
+      client:
+        registration:
+          # Registration ID "entra" is load-bearing, not cosmetic: Spring's
+          # default redirect-uri template turns it into
+          # /login/oauth2/code/entra, which is the exact path registered
+          # with the identity provider.
+          entra:
+            client-id: ${BROWNIE_OIDC_CLIENT_ID:}
+            client-secret: ${BROWNIE_OIDC_CLIENT_SECRET:}
+            authorization-grant-type: authorization_code
+            scope: openid,profile,email
+            redirect-uri: "{baseUrl}/login/oauth2/code/entra"
+        provider:
+          entra:
+            # issuer-uri itself is deliberately NOT set here: Spring Boot
+            # treats a merely-empty value the same as a real one and still
+            # attempts (and fails) OIDC discovery against it, so it must be
+            # genuinely absent, not blank, wherever no real tenant exists
+            # yet -- see the "test" profile block below, and local/pilot/
+            # production further down, which each set the real thing.
+            user-name-attribute: sub
+  session:
+    # Lets a server session survive an API replica change and be revoked on
+    # demand, without introducing Redis. Flyway (brownie_migration) owns
+    # the schema via V2__create_spring_session_tables.sql, so Spring
+    # Boot's own initializer is disabled here. Which store backs the
+    # session is decided purely by which store-specific dependency is on
+    # the classpath (see the comment on spring-boot-session-jdbc in
+    # pom.xml) -- there is no store-type switch to set.
+    jdbc:
+      initialize-schema: never
 
 management:
   # Deliberately a different port from the public API: health/readiness are
   # an operator concern, not a route the public API surface should ever
-  # share. No reverse proxy exists yet to enforce this externally (that is
-  # a later phase); a separate port keeps the separation real today rather
-  # than only on paper.
+  # share. No reverse proxy exists yet to enforce this externally, so a
+  # separate port keeps the separation real today rather than only on
+  # paper.
   server:
     port: 8090
   endpoints:
@@ -44,6 +84,12 @@ spring:
   config:
     activate:
       on-profile: local
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG
@@ -64,6 +110,33 @@ spring:
     url: jdbc:h2:mem:brownie-api-test;DB_CLOSE_DELAY=-1
     username: sa
     password:
+  # No real Entra tenant exists in this profile's fast, Docker-free context
+  # (see BrownieApiApplicationTests, ApiExceptionHandlerIntegrationTest):
+  # explicit, syntactically valid, never-actually-called endpoints let the
+  # oauth2Login security filter chain build without issuer discovery
+  # reaching the network, unlike the real profiles below it, which need
+  # BROWNIE_OIDC_ISSUER for that discovery to succeed.
+  security:
+    oauth2:
+      client:
+        registration:
+          entra:
+            client-id: test-client
+            client-secret: test-secret
+        provider:
+          entra:
+            authorization-uri: http://localhost:65535/oauth2/authorize
+            token-uri: http://localhost:65535/oauth2/token
+            jwk-set-uri: http://localhost:65535/oauth2/jwks
+            user-info-uri: http://localhost:65535/oauth2/userinfo
+  # This profile's DataSource is H2, not Postgres, and H2 never gets the
+  # spring_session tables (see V2__create_spring_session_tables.sql, which
+  # only runs against real Postgres profiles). Having the JDBC session
+  # store's autoconfiguration on the classpath at all is enough for it to
+  # try INSERTing into a table that doesn't exist here, regardless of any
+  # session settings above, so it has to be turned off by name instead.
+  autoconfigure:
+    exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG
@@ -73,6 +146,12 @@ spring:
   config:
     activate:
       on-profile: pilot
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
 logging:
   level:
     io.github.vihuynh72.brownie: INFO
@@ -82,6 +161,12 @@ spring:
   config:
     activate:
       on-profile: production
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
 logging:
   level:
     io.github.vihuynh72.brownie: WARN
