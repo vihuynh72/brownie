@@ -318,6 +318,11 @@ class SourceServiceTest {
         }
 
         @Override
+        public Optional<ExtractionVersion> findById(long workspaceId, long userId, long extractionVersionId) {
+            throw new UnsupportedOperationException("not used in this test");
+        }
+
+        @Override
         public ExtractionVersion saveComplete(
                 long workspaceId, long userId, long artifactId, String parserVersion,
                 io.github.vihuynh72.brownie.core.document.DocxStructuralGraph graph) {
