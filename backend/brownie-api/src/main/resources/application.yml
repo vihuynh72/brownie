@@ -49,6 +49,23 @@ spring:
     # pom.xml) -- there is no store-type switch to set.
     jdbc:
       initialize-schema: never
+  mvc:
+    formcontent:
+      filter:
+        # Spring's FormContentFilter is enabled by default and rewrites a
+        # PUT/PATCH/DELETE body into request parameters whenever the
+        # request declares Content-Type: application/x-www-form-urlencoded
+        # -- including the raw byte stream this API's content-upload route
+        # (PUT .../uploads/{id}/content) accepts, which is exactly the
+        # default Content-Type curl sends for a plain --data-binary
+        # upload. Doing so consumes the request's input stream to build
+        # the parameter map, leaving nothing for that route's own
+        # request.getInputStream() call to read -- the upload silently
+        # "succeeds" with zero bytes recorded instead of failing loudly.
+        # Nothing in this API ever wants a PUT/PATCH/DELETE body read as
+        # form parameters, so the filter is disabled outright rather than
+        # trusted to only affect routes that don't care.
+        enabled: false
 
 management:
   # Deliberately a different port from the public API: health/readiness are

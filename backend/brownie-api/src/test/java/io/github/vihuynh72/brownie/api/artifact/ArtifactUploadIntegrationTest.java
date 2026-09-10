@@ -388,6 +388,193 @@ class ArtifactUploadIntegrationTest {
     }
 
     @Test
+    void aNonMemberCannotUploadContentOrCompleteSomeoneElsesArtifact() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-upload-victim");
+        long workspaceId = workspaceIdFor("subject-upload-victim");
+        long artifactId = allocate(owner, workspaceId);
+        Cookie outsider = loginAndGetSessionCookie("subject-upload-outsider");
+
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(outsider)
+                        .with(csrf())
+                        .content("evil".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/complete",
+                                workspaceId,
+                                artifactId)
+                        .cookie(outsider)
+                        .with(csrf()))
+                .andExpect(status().isForbidden());
+
+        // The legitimate owner can still complete the flow normally --
+        // the outsider's rejected attempts left nothing behind.
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        JsonNode completed = complete(owner, workspaceId, artifactId);
+        assertThat(completed.get("status").asText()).isEqualTo("READY");
+    }
+
+    @Test
+    void aMemberCannotReadAnotherWorkspacesArtifactByIdEvenUnderTheirOwnAuthorizedWorkspacePath() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-id-confusion-owner");
+        long ownerWorkspaceId = workspaceIdFor("subject-id-confusion-owner");
+        long artifactId = allocate(owner, ownerWorkspaceId);
+        uploadContent(owner, ownerWorkspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        complete(owner, ownerWorkspaceId, artifactId);
+
+        Cookie otherMember = loginAndGetSessionCookie("subject-id-confusion-other");
+        long otherWorkspaceId = workspaceIdFor("subject-id-confusion-other");
+
+        // otherMember passes the capability check -- they really do manage
+        // artifacts in their own workspace -- but the artifact ID in the
+        // path belongs to a different workspace entirely. A different
+        // attack shape from a total outsider with no workspace at all:
+        // this is a legitimate member whose own workspace ID is valid,
+        // trying an artifact ID that isn't theirs. This proves the
+        // end-to-end outcome is a 404, not a leak; it does not by itself
+        // isolate which of the two independent layers behind that outcome
+        // -- this repository call's own workspace_id predicate, or
+        // Postgres row-level security, which in today's one-workspace-
+        // per-user membership model already denies this on its own --
+        // is what's actually stopping it. See ArtifactRowLevelSecurityTest
+        // for RLS tested in isolation, bypassing this layer entirely.
+        mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                otherWorkspaceId,
+                                artifactId)
+                        .cookie(otherMember))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void aMemberCannotWriteToAnotherWorkspacesArtifactByIdEvenUnderTheirOwnAuthorizedWorkspacePath() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-id-confusion-write-owner");
+        long ownerWorkspaceId = workspaceIdFor("subject-id-confusion-write-owner");
+        long artifactId = allocate(owner, ownerWorkspaceId);
+
+        Cookie otherMember = loginAndGetSessionCookie("subject-id-confusion-write-other");
+        long otherWorkspaceId = workspaceIdFor("subject-id-confusion-write-other");
+
+        // The write-side analog of the read-side test above: otherMember
+        // passes the capability check under their own workspace, but the
+        // artifact ID belongs to someone else's workspace entirely. A
+        // total outsider with no workspace membership at all (the
+        // aNonMemberCannot... tests above) is stopped earlier, by the
+        // capability check itself, before ever reaching this artifact-ID
+        // scoping -- this test is what actually exercises it for the
+        // content and complete routes, the way the download/preview test
+        // above already does for reads.
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                otherWorkspaceId,
+                                artifactId)
+                        .cookie(otherMember)
+                        .with(csrf())
+                        .content("hello".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/complete",
+                                otherWorkspaceId,
+                                artifactId)
+                        .cookie(otherMember)
+                        .with(csrf()))
+                .andExpect(status().isNotFound());
+
+        // The real owner's artifact was never touched and completes normally.
+        uploadContent(owner, ownerWorkspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        JsonNode completed = complete(owner, ownerWorkspaceId, artifactId);
+        assertThat(completed.get("status").asText()).isEqualTo("READY");
+    }
+
+    @Test
+    void aForgedContentTypeHeaderIsIgnoredInFavorOfTheRealBytes() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-forged-mime");
+        long workspaceId = workspaceIdFor("subject-forged-mime");
+        long artifactId = allocate(owner, workspaceId);
+        byte[] docx = minimalOoxmlPackage();
+
+        // Declares PDF via the HTTP Content-Type header; the real bytes
+        // are a DOCX. Classification must follow what was actually read
+        // back from storage, never a client-supplied header -- nothing in
+        // the upload path even looks at this header today, and this test
+        // is what keeps that true.
+        String body = mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .contentType(org.springframework.http.MediaType.APPLICATION_PDF)
+                        .content(docx))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(OBJECT_MAPPER.readTree(body).get("detectedMediaType").asText()).isEqualTo("DOCX");
+    }
+
+    @Test
+    void uploadingWithAFormUrlEncodedContentTypeStillRecordsTheRealBytes() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-form-urlencoded-upload");
+        long workspaceId = workspaceIdFor("subject-form-urlencoded-upload");
+        long artifactId = allocate(owner, workspaceId);
+        byte[] content = "hello world".getBytes(StandardCharsets.UTF_8);
+
+        // application/x-www-form-urlencoded is exactly what a plain curl
+        // --data-binary upload sends by default when no Content-Type is
+        // given explicitly -- an easy accident for a real client. Spring's
+        // FormContentFilter, enabled by default, rewrites a PUT body with
+        // this Content-Type into request parameters, consuming the raw
+        // stream before this route's own request.getInputStream() call
+        // ever runs -- silently recording zero bytes as a "successful"
+        // upload instead of failing. Disabled via
+        // spring.mvc.formcontent.filter.enabled: false specifically
+        // because of this.
+        String body = mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .contentType(org.springframework.http.MediaType.APPLICATION_FORM_URLENCODED)
+                        .content(content))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(OBJECT_MAPPER.readTree(body).get("byteCount").asLong()).isEqualTo(content.length);
+    }
+
+    @Test
+    void aFilenameAttemptingHeaderInjectionCannotCorruptTheDownloadResponse() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-header-injection");
+        long workspaceId = workspaceIdFor("subject-header-injection");
+        JsonNode allocated = allocate(owner, workspaceId, "evil\r\nX-Injected: true\r\n.txt");
+        long artifactId = allocated.get("id").asLong();
+        assertThat(allocated.get("displayFilename").asText()).doesNotContain("\r").doesNotContain("\n");
+        uploadContent(owner, workspaceId, artifactId, "hello world".getBytes(StandardCharsets.UTF_8));
+        complete(owner, workspaceId, artifactId);
+
+        var response = mockMvc.perform(get(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse();
+
+        assertThat(response.getHeader("X-Injected")).isNull();
+        assertThat(response.getHeaders("Content-Disposition")).hasSize(1);
+        assertThat(response.getHeader("Content-Disposition")).doesNotContain("\r").doesNotContain("\n");
+    }
+
+    @Test
     void contentOverTheConfiguredLimitIsRejected() throws Exception {
         Cookie owner = loginAndGetSessionCookie("subject-large-upload");
         long workspaceId = workspaceIdFor("subject-large-upload");
@@ -502,9 +689,13 @@ class ArtifactUploadIntegrationTest {
                 .cookie(sessionCookie)
                 .with(csrf());
         if (filename != null) {
+            // Real JSON serialization, not manual string concatenation --
+            // needed to correctly escape every character a test might put
+            // in a filename (control characters like CR/LF included), not
+            // just the two this used to handle by hand.
             requestBuilder = requestBuilder
                     .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                    .content("{\"filename\":\"" + filename.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}");
+                    .content(OBJECT_MAPPER.writeValueAsString(java.util.Map.of("filename", filename)));
         }
         String body = mockMvc.perform(requestBuilder)
                 .andExpect(status().isCreated())

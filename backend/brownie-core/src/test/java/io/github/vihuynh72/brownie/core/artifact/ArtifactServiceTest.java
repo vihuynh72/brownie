@@ -295,6 +295,26 @@ class ArtifactServiceTest {
     }
 
     @Test
+    void aDeclaredFilenameExtensionDoesNotInfluenceByteBasedClassification() throws IOException {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
+
+        // Named like a PDF, but the real bytes are a DOCX -- classification
+        // must follow what was actually read back, never the filename the
+        // client happened to allocate with.
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "report.pdf");
+        byte[] docx = minimalOoxmlPackage();
+
+        Artifact afterUpload =
+                service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream(docx));
+
+        assertEquals("report.pdf", afterUpload.displayFilename());
+        assertEquals(SupportedMediaType.DOCX, afterUpload.detectedMediaType());
+    }
+
+    @Test
     void aZipThatIsNotAnOoxmlPackageIsRejectedAndItsBlobRemoved() throws IOException {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         FakeBlobStore blobStore = new FakeBlobStore();
@@ -415,6 +435,42 @@ class ArtifactServiceTest {
     }
 
     @Test
+    void aClientDisconnectMidUploadLeavesNothingRecorded() {
+        // A genuine read failure partway through the body -- exactly what
+        // a truncated client connection looks like from this side -- is a
+        // different failure shape from the size-limit case above (that one
+        // is a length check this code enforces itself; this one is the
+        // input stream itself throwing), and it is not exercised by any
+        // other test.
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        InputStream interrupted = new InputStream() {
+            private int remaining = 5;
+
+            @Override
+            public int read() throws IOException {
+                if (remaining <= 0) {
+                    throw new IOException("simulated client disconnect");
+                }
+                remaining--;
+                return 'a';
+            }
+        };
+
+        assertThrows(
+                ArtifactStorageException.class,
+                () -> service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), interrupted));
+
+        Artifact stillUploading = repository.find(WORKSPACE_ID, USER_ID, allocated.id()).orElseThrow();
+        assertNull(stillUploading.byteCount());
+        assertTrue(blobStore.objects.isEmpty());
+    }
+
+    @Test
     void anAbandonedUploadCannotBeFinalized() {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         ArtifactService service =
@@ -429,6 +485,33 @@ class ArtifactServiceTest {
         Artifact rejected = repository.find(WORKSPACE_ID, USER_ID, allocated.id()).orElseThrow();
         assertEquals(ArtifactStatus.REJECTED, rejected.status());
         assertEquals("EXPIRED_ABANDONED_UPLOAD", rejected.rejectionReason());
+    }
+
+    @Test
+    void receivingContentForAnAbandonedUploadExpiresItRatherThanAcceptingContent() {
+        // finalizeUpload's own expiry check is covered above; receiveContent
+        // reaches an independent isAbandoned/expireAbandoned call of its
+        // own (via requireUploadable), never exercised by that test since
+        // it never gets as far as uploading content at all.
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService service =
+                new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofMillis(1));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, null);
+        repository.backdateCreatedAt(allocated.id(), OffsetDateTime.now().minusHours(1));
+
+        assertThrows(
+                ArtifactStateConflictException.class,
+                () -> service.receiveContent(
+                        WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream("hello".getBytes())));
+        Artifact rejected = repository.find(WORKSPACE_ID, USER_ID, allocated.id()).orElseThrow();
+        assertEquals(ArtifactStatus.REJECTED, rejected.status());
+        assertEquals("EXPIRED_ABANDONED_UPLOAD", rejected.rejectionReason());
+        // The expiry check runs before anything is ever written to
+        // storage -- "rather than accepting content" is a real claim
+        // this makes, not just a possible-looking name for the test.
+        assertTrue(blobStore.objects.isEmpty());
     }
 
     @Test
