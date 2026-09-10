@@ -12,6 +12,11 @@ import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
+import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
+import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
+import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
+import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
+import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -180,6 +185,69 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "INVALID_EVIDENCE_LOCATOR");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
+    }
+
+    @ExceptionHandler(TemplateNotFoundException.class)
+    public ResponseEntity<Object> handleTemplateNotFound(TemplateNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler(TemplateVersionStateConflictException.class)
+    public ResponseEntity<Object> handleTemplateVersionStateConflict(TemplateVersionStateConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONFLICT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /**
+     * The request is well-formed JSON but names a field ID that is blank,
+     * or a binding missing the sub-field its own kind requires -- a bad
+     * request, the same category {@link #handleInvalidEvidenceLocator}
+     * already covers for a different resource.
+     */
+    @ExceptionHandler(MalformedTemplateRequestException.class)
+    public ResponseEntity<Object> handleMalformedTemplateRequest(MalformedTemplateRequestException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Bad Request");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "MALFORMED_REQUEST");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
+    }
+
+    @ExceptionHandler(TemplateSourceNotExtractableException.class)
+    public ResponseEntity<Object> handleTemplateSourceNotExtractable(TemplateSourceNotExtractableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "SOURCE_NOT_EXTRACTABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * The request is well-formed and every field ID is unique, but at
+     * least one binding does not resolve to exactly one real node in the
+     * source's extracted structure -- semantically invalid, not malformed;
+     * {@code fields} names every failing field at once, the same
+     * affected-fields shape {@link #handleMethodArgumentNotValid} already
+     * uses for ordinary bean-validation failures.
+     */
+    @ExceptionHandler(TemplateBindingValidationException.class)
+    public ResponseEntity<Object> handleTemplateBindingValidation(TemplateBindingValidationException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("One or more field bindings are not supported. See the affected fields below.");
+        enrich(problem, "UNSUPPORTED_BINDING");
+        List<Map<String, String>> fields = ex.problems().stream()
+                .map(problemField -> Map.of("field", problemField.fieldId(), "message", problemField.reason().name()))
+                .toList();
+        problem.setProperty("fields", fields);
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
     /**
