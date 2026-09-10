@@ -5,8 +5,10 @@ import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
 import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
+import io.github.vihuynh72.brownie.core.document.ExtractionNotSupportedException;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
+import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -115,6 +117,24 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unsupported Media Type");
         problem.setDetail(ex.getMessage());
         enrich(problem, "NOT_A_DOCX");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    @ExceptionHandler(NotPdfArtifactException.class)
+    public ResponseEntity<Object> handleNotPdfArtifact(NotPdfArtifactException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_A_PDF");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    @ExceptionHandler(ExtractionNotSupportedException.class)
+    public ResponseEntity<Object> handleExtractionNotSupported(ExtractionNotSupportedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "EXTRACTION_NOT_SUPPORTED");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
     }
 

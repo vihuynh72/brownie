@@ -3,8 +3,11 @@ package io.github.vihuynh72.brownie.api.document;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
 import io.github.vihuynh72.brownie.core.document.DocxFeatureFinding;
+import io.github.vihuynh72.brownie.core.document.ExtractionResult;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
+import io.github.vihuynh72.brownie.core.document.PdfExtractionVersion;
+import io.github.vihuynh72.brownie.core.document.PdfPage;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,21 +21,23 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * Triggers DOCX structural extraction on a READY artifact and reads back
- * its result. Deliberately minimal: nothing downstream consumes this yet
+ * Triggers structural extraction on a READY artifact and reads back its
+ * result, dispatching by the artifact's own detected media type rather
+ * than asking the caller which extractor to run -- the server already
+ * knows. Deliberately minimal: nothing downstream consumes this yet
  * (template teaching and generation, which will, do not exist), so this is
  * a small, real, working surface rather than a placeholder -- extended
  * when an actual caller needs more than trigger-and-read.
  */
 @RestController
 @RequestMapping("/api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/extraction")
-class DocxExtractionController {
+class ExtractionController {
 
     private final DocumentExtractionService documentExtractionService;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
-    DocxExtractionController(
+    ExtractionController(
             DocumentExtractionService documentExtractionService,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
@@ -47,13 +52,13 @@ class DocxExtractionController {
      * successfully persisted answers, not error responses. A real HTTP
      * error means the request itself could not even be attempted: the
      * artifact does not exist (404), is not READY yet (409), or is READY
-     * but not a DOCX (415).
+     * but of a type with no extractor at all yet (415).
      */
     @PostMapping
     ExtractionResponse extract(@PathVariable long workspaceId, @PathVariable long artifactId, @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_ARTIFACTS);
-        return ExtractionResponse.from(documentExtractionService.extractDocx(workspaceId, userId, artifactId));
+        return ExtractionResponse.from(documentExtractionService.extract(workspaceId, userId, artifactId));
     }
 
     @GetMapping
@@ -61,7 +66,7 @@ class DocxExtractionController {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_ARTIFACTS);
         return documentExtractionService
-                .findLatest(workspaceId, userId, artifactId)
+                .findLatestResult(workspaceId, userId, artifactId)
                 .map(ExtractionResponse::from)
                 .orElseThrow(() -> new ExtractionVersionNotFoundException(artifactId));
     }
@@ -82,14 +87,63 @@ class DocxExtractionController {
         }
     }
 
+    record PageResponse(int pageNumber, double width, double height, int rotationDegrees, boolean hasExtractableText, int lineCount) {
+        static PageResponse from(PdfPage page) {
+            return new PageResponse(
+                    page.pageNumber(), page.width(), page.height(), page.rotationDegrees(), page.hasExtractableText(), page.lines().size());
+        }
+    }
+
+    /**
+     * One combined response shape for either format: {@code
+     * unsupportedFeatures} is populated only for a DOCX result, {@code
+     * unsupportedReason}/{@code pages} only for a PDF one -- the same
+     * per-format-optional-field convention {@code Artifact} itself already
+     * uses. Full page/line detail is deliberately not serialized here;
+     * only a per-page summary, since nothing downstream reads individual
+     * lines over HTTP yet and a multi-page document's full text easily
+     * dwarfs a status response.
+     */
     record ExtractionResponse(
-            long id, String parserVersion, String status, List<FeatureFindingResponse> unsupportedFeatures, String failureReason) {
-        static ExtractionResponse from(ExtractionVersion version) {
+            long id,
+            String format,
+            String parserVersion,
+            String status,
+            List<FeatureFindingResponse> unsupportedFeatures,
+            String unsupportedReason,
+            String unsupportedDetail,
+            List<PageResponse> pages,
+            String failureReason) {
+        static ExtractionResponse from(ExtractionResult result) {
+            return switch (result) {
+                case ExtractionResult.Docx docx -> fromDocx(docx.version());
+                case ExtractionResult.Pdf pdf -> fromPdf(pdf.version());
+            };
+        }
+
+        private static ExtractionResponse fromDocx(ExtractionVersion version) {
             List<FeatureFindingResponse> findings = version.featureReport() == null
                     ? List.of()
                     : version.featureReport().findings().stream().map(FeatureFindingResponse::from).toList();
             return new ExtractionResponse(
-                    version.id(), version.parserVersion(), version.status().name(), findings, version.failureReason());
+                    version.id(), "DOCX", version.parserVersion(), version.status().name(), findings, null, null, List.of(),
+                    version.failureReason());
+        }
+
+        private static ExtractionResponse fromPdf(PdfExtractionVersion version) {
+            List<PageResponse> pages = version.graph() == null
+                    ? List.of()
+                    : version.graph().pages().stream().map(PageResponse::from).toList();
+            return new ExtractionResponse(
+                    version.id(),
+                    "PDF",
+                    version.parserVersion(),
+                    version.status().name(),
+                    List.of(),
+                    version.unsupportedReason() == null ? null : version.unsupportedReason().name(),
+                    version.unsupportedDetail(),
+                    pages,
+                    version.failureReason());
         }
     }
 }

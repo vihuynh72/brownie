@@ -1,10 +1,13 @@
 package io.github.vihuynh72.brownie.api.document;
 
 import io.github.vihuynh72.brownie.api.document.docx.PoiDocxStructuralExtractor;
+import io.github.vihuynh72.brownie.api.document.pdf.PdfBoxStructuralExtractor;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralExtractor;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.document.PdfExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.document.PdfStructuralExtractor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -17,8 +20,18 @@ class DocumentExtractionConfig {
     }
 
     @Bean
+    PdfStructuralExtractor pdfStructuralExtractor() {
+        return new PdfBoxStructuralExtractor();
+    }
+
+    @Bean
     DocumentExtractionService documentExtractionService(
-            ArtifactService artifactService, DocxStructuralExtractor extractor, ExtractionVersionRepository extractionVersionRepository) {
-        return new DocumentExtractionService(artifactService, extractor, extractionVersionRepository);
+            ArtifactService artifactService,
+            DocxStructuralExtractor docxExtractor,
+            ExtractionVersionRepository extractionVersionRepository,
+            PdfStructuralExtractor pdfExtractor,
+            PdfExtractionVersionRepository pdfExtractionVersionRepository) {
+        return new DocumentExtractionService(
+                artifactService, docxExtractor, extractionVersionRepository, pdfExtractor, pdfExtractionVersionRepository);
     }
 }

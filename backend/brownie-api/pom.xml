@@ -112,6 +112,16 @@
       <version>5.5.1</version>
     </dependency>
     <dependency>
+      <!-- PDF structural extraction. Not managed by the Spring Boot BOM, so
+           pinned explicitly here, checked against Maven Central's own
+           published releases, not guessed: the same version (3.0.8)
+           already proven working against real rendered output by the
+           DOCX-binding spike's own render inspection. -->
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.8</version>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
