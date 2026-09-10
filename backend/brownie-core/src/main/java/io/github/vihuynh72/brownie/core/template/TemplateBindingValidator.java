@@ -32,7 +32,7 @@ public final class TemplateBindingValidator {
                 problems.add(new UnsupportedBinding(field.fieldId(), UnsupportedBindingReason.DUPLICATE_FIELD_ID));
                 continue;
             }
-            int matchCount = countMatches(graph, field.binding());
+            int matchCount = matchCount(graph, field.binding());
             if (matchCount == 0) {
                 problems.add(new UnsupportedBinding(field.fieldId(), UnsupportedBindingReason.NOT_FOUND));
             } else if (matchCount > 1) {
@@ -42,7 +42,15 @@ public final class TemplateBindingValidator {
         return problems;
     }
 
-    private static int countMatches(DocxStructuralGraph graph, FieldBindingTarget target) {
+    /**
+     * How many nodes in {@code graph} match {@code target} -- exactly one
+     * means the target unambiguously resolves; zero or more than one does
+     * not. Exposed for reuse by anything else that needs to resolve a
+     * {@link FieldBindingTarget} against a graph the same way {@link
+     * #validate} does per field, for example a rule whose own target is a
+     * binding rather than a named field.
+     */
+    public static int matchCount(DocxStructuralGraph graph, FieldBindingTarget target) {
         return switch (target) {
             case FieldBindingTarget.ContentControlTag(String tag) -> graph.parts().stream()
                     .mapToInt(part -> countContentControlTag(part.root(), tag))
