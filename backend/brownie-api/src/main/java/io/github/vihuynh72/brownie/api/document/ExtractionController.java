@@ -8,7 +8,9 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.document.PdfExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.PdfPage;
+import io.github.vihuynh72.brownie.core.document.PlainTextExtractionVersion;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.text.CodePoints;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
@@ -51,8 +53,7 @@ class ExtractionController {
      * actually reached -- COMPLETE, UNSUPPORTED, or FAILED are all real,
      * successfully persisted answers, not error responses. A real HTTP
      * error means the request itself could not even be attempted: the
-     * artifact does not exist (404), is not READY yet (409), or is READY
-     * but of a type with no extractor at all yet (415).
+     * artifact does not exist (404), or is not READY yet (409).
      */
     @PostMapping
     ExtractionResponse extract(@PathVariable long workspaceId, @PathVariable long artifactId, @AuthenticationPrincipal OidcUser principal) {
@@ -95,14 +96,15 @@ class ExtractionController {
     }
 
     /**
-     * One combined response shape for either format: {@code
+     * One combined response shape for every format: {@code
      * unsupportedFeatures} is populated only for a DOCX result, {@code
-     * unsupportedReason}/{@code pages} only for a PDF one -- the same
+     * unsupportedReason}/{@code pages} only for a PDF one, {@code
+     * normalizedTextLength} only for a plain-text one -- the same
      * per-format-optional-field convention {@code Artifact} itself already
-     * uses. Full page/line detail is deliberately not serialized here;
-     * only a per-page summary, since nothing downstream reads individual
-     * lines over HTTP yet and a multi-page document's full text easily
-     * dwarfs a status response.
+     * uses. Full page/line/text detail is deliberately not serialized
+     * here; only summaries, since nothing downstream reads any of it over
+     * HTTP yet and a real transcript's full text easily dwarfs a status
+     * response.
      */
     record ExtractionResponse(
             long id,
@@ -113,11 +115,13 @@ class ExtractionController {
             String unsupportedReason,
             String unsupportedDetail,
             List<PageResponse> pages,
+            Integer normalizedTextLength,
             String failureReason) {
         static ExtractionResponse from(ExtractionResult result) {
             return switch (result) {
                 case ExtractionResult.Docx docx -> fromDocx(docx.version());
                 case ExtractionResult.Pdf pdf -> fromPdf(pdf.version());
+                case ExtractionResult.PlainText plainText -> fromPlainText(plainText.version());
             };
         }
 
@@ -126,7 +130,7 @@ class ExtractionController {
                     ? List.of()
                     : version.featureReport().findings().stream().map(FeatureFindingResponse::from).toList();
             return new ExtractionResponse(
-                    version.id(), "DOCX", version.parserVersion(), version.status().name(), findings, null, null, List.of(),
+                    version.id(), "DOCX", version.parserVersion(), version.status().name(), findings, null, null, List.of(), null,
                     version.failureReason());
         }
 
@@ -143,6 +147,23 @@ class ExtractionController {
                     version.unsupportedReason() == null ? null : version.unsupportedReason().name(),
                     version.unsupportedDetail(),
                     pages,
+                    null,
+                    version.failureReason());
+        }
+
+        private static ExtractionResponse fromPlainText(PlainTextExtractionVersion version) {
+            Integer normalizedTextLength =
+                    version.graph() == null ? null : CodePoints.length(version.graph().normalizedText());
+            return new ExtractionResponse(
+                    version.id(),
+                    "PLAIN_TEXT",
+                    version.parserVersion(),
+                    version.status().name(),
+                    List.of(),
+                    null,
+                    null,
+                    List.of(),
+                    normalizedTextLength,
                     version.failureReason());
         }
     }

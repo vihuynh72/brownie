@@ -5,10 +5,10 @@ import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
 import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
-import io.github.vihuynh72.brownie.core.document.ExtractionNotSupportedException;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
+import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -129,12 +129,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
     }
 
-    @ExceptionHandler(ExtractionNotSupportedException.class)
-    public ResponseEntity<Object> handleExtractionNotSupported(ExtractionNotSupportedException ex, WebRequest request) {
+    @ExceptionHandler(NotPlainTextArtifactException.class)
+    public ResponseEntity<Object> handleNotPlainTextArtifact(NotPlainTextArtifactException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
         problem.setTitle("Unsupported Media Type");
         problem.setDetail(ex.getMessage());
-        enrich(problem, "EXTRACTION_NOT_SUPPORTED");
+        enrich(problem, "NOT_PLAIN_TEXT");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
     }
 
