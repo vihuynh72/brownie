@@ -115,8 +115,70 @@ class PoiDocxStructuralExtractorTest {
     }
 
     @Test
+    void repeatedHeadingParagraphsGetDistinctCorrectlyAddressedNodesRatherThanColliding() throws IOException {
+        var graph = supported(DocxFixtures.repeatedHeadingsDocument());
+        var body = partOfKind(graph.parts(), DocumentPartKind.MAIN_DOCUMENT).root();
+
+        StructuralNode firstHeading = body.children().get(0);
+        StructuralNode firstBody = body.children().get(1);
+        StructuralNode secondHeading = body.children().get(2);
+        StructuralNode secondBody = body.children().get(3);
+
+        // Identical heading text at two different, distinct node paths --
+        // each keeps its own correct following content, proving they were
+        // never merged or had their content swapped.
+        assertEquals("Agenda", firstHeading.children().get(0).text());
+        assertEquals("Agenda", secondHeading.children().get(0).text());
+        assertEquals("p0", firstHeading.nodeId());
+        assertEquals("p2", secondHeading.nodeId());
+        assertEquals("Approve last meeting's minutes.", firstBody.children().get(0).text());
+        assertEquals("Discuss the budget.", secondBody.children().get(0).text());
+    }
+
+    @Test
+    void multiRowTableCellsAreDistinctlyAddressedWithCorrectText() throws IOException {
+        var graph = supported(DocxFixtures.multiRowTableDocument());
+        StructuralNode table = partOfKind(graph.parts(), DocumentPartKind.MAIN_DOCUMENT).root().children().get(0);
+        assertEquals(StructuralNodeKind.TABLE, table.kind());
+        assertEquals(3, table.children().size(), "expected three rows");
+
+        String[][] expectedText = {{"Task", "Owner"}, {"Draft agenda", "Jordan Lee"}, {"Book the room", "Priya Nair"}};
+        java.util.Set<String> nodeIds = new java.util.HashSet<>();
+        for (int row = 0; row < 3; row++) {
+            StructuralNode rowNode = table.children().get(row);
+            assertEquals(StructuralNodeKind.TABLE_ROW, rowNode.kind());
+            assertEquals(2, rowNode.children().size(), "expected two cells in row " + row);
+            for (int cell = 0; cell < 2; cell++) {
+                StructuralNode cellNode = rowNode.children().get(cell);
+                assertEquals(StructuralNodeKind.TABLE_CELL, cellNode.kind());
+                String cellText = cellNode.children().get(0).children().get(0).text();
+                assertEquals(expectedText[row][cell], cellText, "row " + row + " cell " + cell);
+                assertTrue(nodeIds.add(cellNode.nodeId()), "cell node id must be unique: " + cellNode.nodeId());
+            }
+        }
+    }
+
+    @Test
+    void headerAndFooterTextContentIsCorrectlyExtractedNotJustTheirPartNames() throws IOException {
+        var graph = supported(DocxFixtures.qualifiedDocument());
+        StructuralNode headerBody = partOfKind(graph.parts(), DocumentPartKind.HEADER).root();
+        StructuralNode footerBody = partOfKind(graph.parts(), DocumentPartKind.FOOTER).root();
+
+        String headerText = headerBody.children().get(0).children().get(0).text();
+        String footerText = footerBody.children().get(0).children().get(0).text();
+        assertEquals("Brownie Meeting Minutes Template", headerText);
+        assertEquals("Footer", footerText);
+    }
+
+    @Test
     void corruptPackageThrowsDocxParseException() {
         assertThrows(DocxParseException.class, () -> extractor.extract(new ByteArrayInputStream(DocxFixtures.corruptPackage())));
+    }
+
+    private io.github.vihuynh72.brownie.core.document.DocxStructuralGraph supported(byte[] bytes) throws IOException {
+        DocxExtractionOutcome outcome = extract(bytes);
+        assertTrue(outcome instanceof DocxExtractionOutcome.Supported, "expected supported, got " + outcome);
+        return ((DocxExtractionOutcome.Supported) outcome).graph();
     }
 
     private void assertUnsupported(byte[] bytes, UnsupportedDocxFeature expected) throws IOException {

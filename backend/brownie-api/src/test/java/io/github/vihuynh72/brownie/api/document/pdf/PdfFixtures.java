@@ -132,6 +132,27 @@ final class PdfFixtures {
         }
     }
 
+    /**
+     * Two separate rows, each with the same side-by-side-columns shape --
+     * a borderless, table-like grid -- proving the ambiguous-reading-order
+     * flag is scoped to the one geometric line it actually applies to,
+     * not leaking across the whole page once detected on the first line.
+     */
+    static byte[] twoRowGridDocument() throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            PDFont font = helvetica();
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                writeLine(cs, font, 72, 720, "Task");
+                writeLine(cs, font, 400, 720, "Owner");
+                writeLine(cs, font, 72, 700, "Draft agenda");
+                writeLine(cs, font, 400, 700, "Jordan Lee");
+            }
+            return write(doc);
+        }
+    }
+
     static byte[] encryptedDocument() throws Exception {
         try (PDDocument doc = new PDDocument()) {
             PDPage page = new PDPage(PDRectangle.LETTER);

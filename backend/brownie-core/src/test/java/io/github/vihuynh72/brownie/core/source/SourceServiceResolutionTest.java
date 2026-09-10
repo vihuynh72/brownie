@@ -53,6 +53,40 @@ class SourceServiceResolutionTest {
     }
 
     @Test
+    void resolvesARunInsideATableCellReachedThroughTheFullTableRowCellPath() {
+        // TABLE -> TABLE_ROW -> TABLE_CELL -> PARAGRAPH -> RUN: the one
+        // node shape no earlier resolution test exercised, even though
+        // real qualified documents always have a table.
+        StructuralNode run = new StructuralNode("tbl0/row1/cell0/p0/r0", StructuralNodeKind.RUN, null, "Draft agenda", null, null, List.of());
+        StructuralNode paragraph =
+                new StructuralNode("tbl0/row1/cell0/p0", StructuralNodeKind.PARAGRAPH, null, null, null, null, List.of(run));
+        StructuralNode cell = new StructuralNode("tbl0/row1/cell0", StructuralNodeKind.TABLE_CELL, null, null, null, null, List.of(paragraph));
+        StructuralNode row = new StructuralNode("tbl0/row1", StructuralNodeKind.TABLE_ROW, null, null, null, null, List.of(cell));
+        StructuralNode table = new StructuralNode("tbl0", StructuralNodeKind.TABLE, null, null, null, null, List.of(row));
+        StructuralNode body = new StructuralNode("", StructuralNodeKind.BODY, null, null, null, null, List.of(table));
+        DocxStructuralGraph graph =
+                new DocxStructuralGraph("v1", List.of(new DocumentPart("word/document.xml", DocumentPartKind.MAIN_DOCUMENT, body)));
+
+        String excerpt = SourceService.resolveDocx(graph, new EvidenceLocator.Docx("word/document.xml", "tbl0/row1/cell0/p0/r0", 0, 5));
+        assertEquals("Draft", excerpt);
+    }
+
+    @Test
+    void resolvesTextFromAHeaderPartNotOnlyTheMainDocumentPart() {
+        // Every earlier DOCX resolution test addressed word/document.xml;
+        // nothing before this proved a locator naming a HEADER/FOOTER part
+        // actually resolves -- a real, previously unexercised path.
+        StructuralNode run = new StructuralNode("p0/r0", StructuralNodeKind.RUN, null, "Brownie Meeting Minutes Template", null, null, List.of());
+        StructuralNode paragraph = new StructuralNode("p0", StructuralNodeKind.PARAGRAPH, null, null, null, null, List.of(run));
+        StructuralNode body = new StructuralNode("", StructuralNodeKind.BODY, null, null, null, null, List.of(paragraph));
+        DocxStructuralGraph graph =
+                new DocxStructuralGraph("v1", List.of(new DocumentPart("word/header1.xml", DocumentPartKind.HEADER, body)));
+
+        String excerpt = SourceService.resolveDocx(graph, new EvidenceLocator.Docx("word/header1.xml", "p0/r0", 0, 7));
+        assertEquals("Brownie", excerpt);
+    }
+
+    @Test
     void aDocxLocatorNamingAMissingPartThrows() {
         DocxStructuralGraph graph = new DocxStructuralGraph(
                 "v1",
@@ -110,6 +144,22 @@ class SourceServiceResolutionTest {
 
         String excerpt = SourceService.resolvePdf(graph, new EvidenceLocator.Pdf(1, 0, 11, 21));
         assertEquals("Jordan Lee", excerpt);
+    }
+
+    @Test
+    void resolvesAPdfLineTheSameWayRegardlessOfThePagesOwnRotation() {
+        // A page's rotationDegrees is a display-time fact recorded
+        // alongside its geometry, never baked into the line's own text or
+        // position (see PdfBoxStructuralExtractor's own reasoning) -- so
+        // resolution must not care about it at all. Proven, not assumed:
+        // the exact same locator against otherwise-identical rotated pages
+        // (0, 90, 180, 270) must all resolve to the same excerpt.
+        PdfTextLine line = new PdfTextLine(0, "Meeting called to order.", 72, 72, 200, 12, false);
+        for (int rotation : new int[] {0, 90, 180, 270}) {
+            PdfStructuralGraph graph = new PdfStructuralGraph("v1", List.of(new PdfPage(1, 612, 792, rotation, true, List.of(line))));
+            String excerpt = SourceService.resolvePdf(graph, new EvidenceLocator.Pdf(1, 0, 0, 7));
+            assertEquals("Meeting", excerpt, "rotation " + rotation);
+        }
     }
 
     @Test

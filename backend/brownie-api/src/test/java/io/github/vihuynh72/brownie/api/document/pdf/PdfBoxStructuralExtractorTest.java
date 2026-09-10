@@ -134,6 +134,22 @@ class PdfBoxStructuralExtractorTest {
     }
 
     @Test
+    void ambiguousReadingOrderIsScopedPerLineNotAcrossTheWholePage() throws IOException {
+        PdfStructuralGraph graph = supported(PdfFixtures.twoRowGridDocument());
+        PdfPage page = graph.pages().get(0);
+        assertEquals(2, page.lines().size());
+
+        PdfTextLine firstRow = page.lines().get(0);
+        PdfTextLine secondRow = page.lines().get(1);
+        assertTrue(firstRow.ambiguousReadingOrder(), "first row should be independently flagged ambiguous");
+        assertTrue(secondRow.ambiguousReadingOrder(), "second row should be independently flagged ambiguous");
+        assertTrue(firstRow.text().contains("Task"));
+        assertTrue(firstRow.text().contains("Owner"));
+        assertTrue(secondRow.text().contains("Draft agenda"));
+        assertTrue(secondRow.text().contains("Jordan Lee"));
+    }
+
+    @Test
     void encryptedDocumentIsUnsupported() throws Exception {
         PdfExtractionOutcome outcome = extract(PdfFixtures.encryptedDocument());
         assertTrue(outcome instanceof PdfExtractionOutcome.Unsupported, "expected unsupported, got " + outcome);

@@ -96,6 +96,47 @@ final class DocxFixtures {
         return write(doc);
     }
 
+    /**
+     * The same heading text, styled identically, appearing twice with
+     * different body content under each -- proving repeated headings do
+     * not collide or get merged: each must keep its own distinct,
+     * correctly addressed node with its own following content, even
+     * though their own text is identical.
+     */
+    static byte[] repeatedHeadingsDocument() throws IOException {
+        XWPFDocument doc = new XWPFDocument();
+        buildStyles(doc);
+
+        XWPFParagraph firstHeading = doc.createParagraph();
+        firstHeading.setStyle("Heading1");
+        firstHeading.createRun().setText("Agenda");
+        doc.createParagraph().createRun().setText("Approve last meeting's minutes.");
+
+        XWPFParagraph secondHeading = doc.createParagraph();
+        secondHeading.setStyle("Heading1");
+        secondHeading.createRun().setText("Agenda");
+        doc.createParagraph().createRun().setText("Discuss the budget.");
+
+        return write(doc);
+    }
+
+    /**
+     * A three-row table (one header row, two data rows), each cell holding
+     * distinct text -- proving every row and cell gets its own distinct,
+     * correctly addressed node rather than only the first row/cell working.
+     */
+    static byte[] multiRowTableDocument() throws IOException {
+        XWPFDocument doc = new XWPFDocument();
+        XWPFTable table = doc.createTable(3, 2);
+        table.getRow(0).getCell(0).setText("Task");
+        table.getRow(0).getCell(1).setText("Owner");
+        table.getRow(1).getCell(0).setText("Draft agenda");
+        table.getRow(1).getCell(1).setText("Jordan Lee");
+        table.getRow(2).getCell(0).setText("Book the room");
+        table.getRow(2).getCell(1).setText("Priya Nair");
+        return write(doc);
+    }
+
     /** A single paragraph containing a tracked insertion. */
     static byte[] withTrackedChange() throws IOException {
         XWPFDocument doc = new XWPFDocument();
