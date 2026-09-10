@@ -9,6 +9,9 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundExcept
 import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
+import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
+import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
+import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -145,6 +148,38 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "NOT_FOUND");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler(SourceSnapshotNotFoundException.class)
+    public ResponseEntity<Object> handleSourceSnapshotNotFound(SourceSnapshotNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler(SourceSpanNotFoundException.class)
+    public ResponseEntity<Object> handleSourceSpanNotFound(SourceSpanNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    /**
+     * An invalid evidence locator means the *request's own content* does
+     * not correspond to anything real in the source's extraction -- a bad
+     * request, not a conflict or a missing resource.
+     */
+    @ExceptionHandler(InvalidEvidenceLocatorException.class)
+    public ResponseEntity<Object> handleInvalidEvidenceLocator(InvalidEvidenceLocatorException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Bad Request");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "INVALID_EVIDENCE_LOCATOR");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
     }
 
     /**
