@@ -99,18 +99,7 @@ class JdbcWorkspaceRepository implements WorkspaceRepository {
         return roles.stream().findFirst().map(WorkspaceRole::valueOf);
     }
 
-    /**
-     * The row-level security policies on workspace/workspace_member read
-     * this value back via current_setting('app.current_user_id', ...).
-     * is_local=true (set_config's third argument) is what makes it
-     * transaction-local: Postgres clears it automatically the instant this
-     * transaction ends, so it can never leak into whatever request reuses
-     * this pooled connection next. Must run as a query, not an update --
-     * the Postgres driver rejects executeUpdate() on any statement that
-     * returns a result set, which SELECT always does.
-     */
     private void setCurrentUser(long userId) {
-        jdbcTemplate.queryForObject(
-                "SELECT set_config('app.current_user_id', ?, true)", String.class, String.valueOf(userId));
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
     }
 }

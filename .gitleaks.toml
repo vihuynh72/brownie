@@ -1,0 +1,10 @@
+title = "brownie gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Azurite's fixed, publicly documented local-emulator development account key -- identical on every Azurite installation everywhere, not tied to any real Azure resource, and meaningless outside a local emulator instance."
+regexes = [
+  '''Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==''',
+]

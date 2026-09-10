@@ -1,5 +1,10 @@
 package io.github.vihuynh72.brownie.api.web;
 
+import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
+import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
+import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -64,6 +69,56 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail("You do not have the required access for this resource.");
         enrich(problem, "FORBIDDEN");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.FORBIDDEN, request);
+    }
+
+    @ExceptionHandler(ArtifactNotFoundException.class)
+    public ResponseEntity<Object> handleArtifactNotFound(ArtifactNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler(ArtifactStateConflictException.class)
+    public ResponseEntity<Object> handleArtifactStateConflict(ArtifactStateConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONFLICT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(ArtifactTooLargeException.class)
+    public ResponseEntity<Object> handleArtifactTooLarge(ArtifactTooLargeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONTENT_TOO_LARGE);
+        problem.setTitle("Content Too Large");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONTENT_TOO_LARGE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONTENT_TOO_LARGE, request);
+    }
+
+    @ExceptionHandler(UnsupportedArtifactTypeException.class)
+    public ResponseEntity<Object> handleUnsupportedArtifactType(UnsupportedArtifactTypeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "UNSUPPORTED_MEDIA_TYPE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    /**
+     * A scan that could not complete is not the caller's fault and not a
+     * verdict on their content -- 503, not 409 or 500, and the detail
+     * tells them this is worth retrying rather than reporting.
+     */
+    @ExceptionHandler(MalwareScannerUnavailableException.class)
+    public ResponseEntity<Object> handleMalwareScannerUnavailable(MalwareScannerUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "SCANNER_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
     }
 
     /**
@@ -145,8 +200,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             case 400 -> "BAD_REQUEST";
             case 404 -> "NOT_FOUND";
             case 405 -> "METHOD_NOT_ALLOWED";
+            case 409 -> "CONFLICT";
+            case 413 -> "CONTENT_TOO_LARGE";
             case 415 -> "UNSUPPORTED_MEDIA_TYPE";
             case 500 -> "INTERNAL_ERROR";
+            case 503 -> "SERVICE_UNAVAILABLE";
             default -> "REQUEST_FAILED";
         };
     }

@@ -94,6 +94,15 @@
       <scope>runtime</scope>
     </dependency>
     <dependency>
+      <!-- The one blob storage adapter this codebase has: Azurite locally
+           via a connection string, no production Azure Blob wiring yet.
+           Not managed by the Spring Boot BOM, so pinned explicitly here,
+           checked against the SDK's own published releases, not guessed. -->
+      <groupId>com.azure</groupId>
+      <artifactId>azure-storage-blob</artifactId>
+      <version>12.35.1</version>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
@@ -108,6 +117,14 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- SecurityMockMvcRequestPostProcessors.csrf(), needed once a test
+           actually drives a real mutation through the CSRF-protected
+           filter chain rather than only GET /api/v1/me. -->
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
@@ -115,6 +132,14 @@
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- A real, disposable Azurite container for integration tests that
+           need to prove an actual upload round-trip, rather than trusting
+           that the Azure SDK's own client code behaves as documented. -->
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-azure</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
