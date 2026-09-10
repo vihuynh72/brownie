@@ -5,6 +5,8 @@ import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
 import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
+import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
+import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -105,6 +107,24 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "UNSUPPORTED_MEDIA_TYPE");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    @ExceptionHandler(NotDocxArtifactException.class)
+    public ResponseEntity<Object> handleNotDocxArtifact(NotDocxArtifactException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_A_DOCX");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    @ExceptionHandler(ExtractionVersionNotFoundException.class)
+    public ResponseEntity<Object> handleExtractionVersionNotFound(ExtractionVersionNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
     /**

@@ -103,6 +103,15 @@
       <version>12.35.1</version>
     </dependency>
     <dependency>
+      <!-- DOCX structural extraction. Not managed by the Spring Boot BOM,
+           so pinned explicitly here, checked against Maven Central's own
+           published releases, not guessed. poi-ooxml pulls in poi and
+           xmlbeans transitively. -->
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>5.5.1</version>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
