@@ -8,4 +8,7 @@ public sealed interface ExtractionResult {
 
     record Pdf(PdfExtractionVersion version) implements ExtractionResult {
     }
+
+    record PlainText(PlainTextExtractionVersion version) implements ExtractionResult {
+    }
 }

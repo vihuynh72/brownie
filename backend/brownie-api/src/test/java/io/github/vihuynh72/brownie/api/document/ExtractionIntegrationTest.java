@@ -166,6 +166,27 @@ class ExtractionIntegrationTest {
     }
 
     @Test
+    void aRealPlainTextFileIsUploadedExtractedAndReadBackAsCompleteWithNormalizedLength() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-extraction-text");
+        long workspaceId = ensureWorkspace("https://issuer-extraction-integration", "subject-extraction-text").id();
+        String rawText = "Meeting called to order.\r\nAttendees: Jordan Lee.";
+        long artifactId = uploadAndFinalize(session, workspaceId, rawText.getBytes(StandardCharsets.UTF_8), "notes.txt");
+
+        JsonNode extractResponse = readJson(mockMvc.perform(post(extractionPath(workspaceId, artifactId)).cookie(session).with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(extractResponse.get("format").asText()).isEqualTo("PLAIN_TEXT");
+        assertThat(extractResponse.get("status").asText()).isEqualTo("COMPLETE");
+        // Computed from the raw text itself (\r\n -> \n loses exactly one
+        // character) rather than a hand-counted literal -- a hand count of
+        // this exact string was tried first and was wrong by 2, caught by
+        // the test itself failing, not by re-reading the count more
+        // carefully.
+        int expectedNormalizedLength = rawText.replace("\r\n", "\n").length();
+        assertThat(extractResponse.get("normalizedTextLength").asInt()).isEqualTo(expectedNormalizedLength);
+    }
+
+    @Test
     void extractionOnAnArtifactThatIsStillUploadingReturnsConflict() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-extraction-not-ready");
         long workspaceId = ensureWorkspace("https://issuer-extraction-integration", "subject-extraction-not-ready").id();
