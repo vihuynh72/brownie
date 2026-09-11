@@ -163,6 +163,10 @@ class JdbcTemplateRepositoryTest {
         assertThrows(
                 TemplateVersionStateConflictException.class,
                 () -> templateRepository.replaceDraftBindings(workspaceId, userId, template.id(), 7, List.of()));
+
+        TemplateVersion stillDraft = templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow();
+        assertThat(stillDraft.versionNumber()).isEqualTo(1);
+        assertThat(stillDraft.fieldDefinitions()).isEmpty();
     }
 
     @Test
@@ -210,6 +214,11 @@ class JdbcTemplateRepositoryTest {
         assertThrows(
                 TemplateVersionStateConflictException.class,
                 () -> templateRepository.activate(workspaceId, userId, template.id(), 5));
+
+        TemplateVersion stillDraft = templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow();
+        assertThat(stillDraft.status()).isEqualTo(TemplateVersionStatus.DRAFT);
+        assertThat(templateRepository.find(workspaceId, userId, template.id()).orElseThrow().status())
+                .isEqualTo(TemplateStatus.DRAFT);
     }
 
     @Test

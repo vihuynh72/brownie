@@ -16,6 +16,7 @@ import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
 import io.github.vihuynh72.brownie.core.rule.RuleRevisionStatus;
 import io.github.vihuynh72.brownie.core.rule.RuleScope;
+import io.github.vihuynh72.brownie.core.rule.RuleTemplateVersionStateException;
 import io.github.vihuynh72.brownie.core.rule.RuleVocabulary;
 import io.github.vihuynh72.brownie.core.source.SourceKind;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
@@ -48,6 +49,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Proves the JSON round-trip of {@link RuleScope} and every {@link
@@ -166,6 +168,38 @@ class JdbcRuleRepositoryTest {
     }
 
     @Test
+    void proposingAgainstAnActivatedTemplateVersionIsRejectedAtTheDatabaseBoundary() {
+        long userId = newUser("subject-active-version").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        TemplateVersion activated = templateRepository.activate(workspaceId, userId, draft.templateId(), draft.versionNumber());
+
+        assertThatThrownBy(() -> ruleRepository.propose(
+                        workspaceId,
+                        userId,
+                        activated.templateId(),
+                        activated.id(),
+                        new RuleScope.SingleField("meeting.title"),
+                        new RulePayload.MaxTextLength("meeting.title", 100),
+                        RuleVocabulary.SCHEMA_VERSION,
+                        null))
+                .isInstanceOf(RuleTemplateVersionStateException.class);
+        assertThat(ruleRepository.findByTemplateVersion(workspaceId, userId, activated.id())).isEmpty();
+    }
+
+    @Test
+    void anUnknownStoredOperatorFailsClosedInsteadOfBeingReconstitutedAsARule() {
+        long userId = newUser("subject-unknown-operator").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        long ruleId = insertUnknownOperatorRow(workspaceId, userId, draft);
+
+        assertThatThrownBy(() -> ruleRepository.find(workspaceId, userId, draft.templateId(), ruleId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Unknown stored rule payload kind: SCRIPT");
+    }
+
+    @Test
     void oneUsersContextCannotReadAnotherWorkspacesRuleRevision() {
         var userA = newUser("subject-rls-a");
         var userB = newUser("subject-rls-b");
@@ -209,6 +243,36 @@ class JdbcRuleRepositoryTest {
 
     private UserIdentity newUser(String subject) {
         return userIdentityRepository.recordLogin("https://issuer-rule-tests", subject, null, null);
+    }
+
+    private long insertUnknownOperatorRow(long workspaceId, long userId, TemplateVersion draft) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            setLocalContext(connection, userId);
+            try (PreparedStatement statement = connection.prepareStatement(
+                    """
+                    INSERT INTO rule_revision
+                        (workspace_id, template_id, template_version_id, category, scope, payload, schema_version, author_user_id)
+                    VALUES (?, ?, ?, 'BEHAVIOR', ?::jsonb, ?::jsonb, ?, ?)
+                    RETURNING id
+                    """)) {
+                statement.setLong(1, workspaceId);
+                statement.setLong(2, draft.templateId());
+                statement.setLong(3, draft.id());
+                statement.setString(4, "{\"kind\":\"WHOLE_TEMPLATE\"}");
+                statement.setString(5, "{\"kind\":\"SCRIPT\",\"source\":\"not executable\"}");
+                statement.setString(6, RuleVocabulary.SCHEMA_VERSION);
+                statement.setLong(7, userId);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    long id = resultSet.getLong(1);
+                    connection.commit();
+                    return id;
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private long insertArtifact(long workspaceId, long userId) {

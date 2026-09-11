@@ -10,6 +10,7 @@ import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
 import io.github.vihuynh72.brownie.core.rule.RuleRevisionStatus;
 import io.github.vihuynh72.brownie.core.rule.RuleScope;
+import io.github.vihuynh72.brownie.core.rule.RuleTemplateVersionStateException;
 import io.github.vihuynh72.brownie.core.source.SourceKind;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -62,11 +63,20 @@ class JdbcRuleRepository implements RuleRepository {
             String schemaVersion,
             String humanExplanation) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
-        long id = jdbcTemplate.queryForObject(
+        // The service checks this state before validation, but this query
+        // repeats the guard atomically with the insert. Otherwise a caller
+        // that reaches the repository after activation could add a rule to
+        // an immutable version, or pair one template with another version.
+        List<Long> ids = jdbcTemplate.queryForList(
                 """
                 INSERT INTO rule_revision
                     (workspace_id, template_id, template_version_id, category, scope, payload, schema_version, human_explanation, author_user_id)
-                VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?)
+                SELECT ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM template_version
+                    WHERE workspace_id = ? AND template_id = ? AND id = ? AND status = 'DRAFT'
+                )
                 RETURNING id
                 """,
                 Long.class,
@@ -78,7 +88,15 @@ class JdbcRuleRepository implements RuleRepository {
                 toJson(payloadToMap(payload)),
                 schemaVersion,
                 humanExplanation,
-                userId);
+                userId,
+                workspaceId,
+                templateId,
+                templateVersionId);
+        if (ids.isEmpty()) {
+            throw new RuleTemplateVersionStateException(
+                    "Template " + templateId + " version " + templateVersionId + " is not an open draft version.");
+        }
+        long id = ids.get(0);
         return find(workspaceId, userId, templateId, id)
                 .orElseThrow(() -> new IllegalStateException("Rule revision " + id + " vanished after proposing it."));
     }
