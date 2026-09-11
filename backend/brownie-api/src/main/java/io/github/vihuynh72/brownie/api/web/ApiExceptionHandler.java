@@ -12,6 +12,7 @@ import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
 import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
+import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
@@ -269,6 +270,25 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .toList();
         problem.setProperty("conflicts", conflicts);
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /**
+     * A rule that was valid when proposed can become invalid if the still-open
+     * draft's field definitions are replaced before activation. The caller
+     * must repair that draft rather than treating the invalid rule as absent.
+     */
+    @ExceptionHandler(RuleValidationException.class)
+    public ResponseEntity<Object> handleRuleValidation(RuleValidationException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("One or more proposed rules no longer apply to this draft. See the problems below.");
+        enrich(problem, "RULE_VALIDATION_FAILED");
+        List<Map<String, String>> problems = ex.problems().stream()
+                .map(ruleProblem -> Map.of(
+                        "reason", ruleProblem.reason().name(), "detail", ruleProblem.detail()))
+                .toList();
+        problem.setProperty("problems", problems);
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
     /**
