@@ -63,7 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * flow end to end, through real HTTP dispatch, real
  * Postgres/Azurite/ClamAV, and a real authenticated session -- the same
  * infrastructure pattern {@code ExtractionIntegrationTest} already
- * established for the phase this one builds directly on.
+ * established for the extraction workflow.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -147,7 +147,7 @@ class TemplateIntegrationTest {
         String bindingsBody = "{"
                 + "\"expectedVersionNumber\":1,"
                 + "\"fields\":[{"
-                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
                 + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
                 + "}]}";
         mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
@@ -175,6 +175,116 @@ class TemplateIntegrationTest {
                 .andReturn());
         assertThat(problem.get("conflicts")).hasSize(1);
         assertThat(problem.get("conflicts").get(0).get("reason").asText()).isEqualTo("DIRECT_CONTRADICTION");
+        var template = templateRepository.find(workspaceId, userId, templateId).orElseThrow();
+        assertThat(template.status().name()).isEqualTo("DRAFT");
+        assertThat(template.currentActiveVersionId()).isNull();
+    }
+
+    @Test
+    void activationRejectsARuleThatBecameStaleAfterTheDraftBindingsChanged() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-stale-rule");
+        long workspaceId = ensureWorkspace("subject-stale-rule").id();
+        long artifactId = uploadAndFinalize(
+                session, workspaceId, docxWithContentControl("meeting.title", "meeting.location"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        String titleBindings = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(titleBindings))
+                .andExpect(status().isOk());
+
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-stale-rule").orElseThrow().id();
+        long draftVersionId = templateRepository.findDraftVersion(workspaceId, userId, templateId).orElseThrow().id();
+        ruleRepository.propose(
+                workspaceId,
+                userId,
+                templateId,
+                draftVersionId,
+                new RuleScope.SingleField("meeting.title"),
+                new RulePayload.MaxTextLength("meeting.title", 100),
+                RuleVocabulary.SCHEMA_VERSION,
+                null);
+
+        String locationBindings = "{"
+                + "\"expectedVersionNumber\":2,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.location\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.location\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(locationBindings))
+                .andExpect(status().isOk());
+
+        JsonNode problem = readJson(mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":3}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andReturn());
+        assertThat(problem.get("code").asText()).isEqualTo("RULE_VALIDATION_FAILED");
+        var template = templateRepository.find(workspaceId, userId, templateId).orElseThrow();
+        assertThat(template.status().name()).isEqualTo("DRAFT");
+        assertThat(template.currentActiveVersionId()).isNull();
+    }
+
+    @Test
+    void anActivatedTemplateRejectsLaterBindingChangesAndKeepsItsVersionIntact() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-active-immutable");
+        long workspaceId = ensureWorkspace("subject-active-immutable").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+        String titleBindings = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(titleBindings))
+                .andExpect(status().isOk());
+        mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isCreated());
+
+        String changedBindings = "{"
+                + "\"expectedVersionNumber\":2,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.renamed\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(changedBindings))
+                .andExpect(status().isConflict());
+
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-active-immutable").orElseThrow().id();
+        var template = templateRepository.find(workspaceId, userId, templateId).orElseThrow();
+        var activated = templateRepository.findVersion(workspaceId, userId, templateId, template.currentActiveVersionId()).orElseThrow();
+        assertThat(activated.status().name()).isEqualTo("ACTIVATED");
+        assertThat(activated.versionNumber()).isEqualTo(2);
+        assertThat(activated.fieldDefinitions()).extracting(field -> field.fieldId()).containsExactly("meeting.title");
     }
 
     @Test
@@ -357,19 +467,21 @@ class TemplateIntegrationTest {
         return artifactId;
     }
 
-    /** A minimal real DOCX with one labeled paragraph and, inside it, one inline content control -- the built-in binding convention this phase validates against. */
-    private static byte[] docxWithContentControl(String tag) throws Exception {
+    /** A minimal real DOCX with one labeled paragraph and one inline content control for each tag. */
+    private static byte[] docxWithContentControl(String... tags) throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
-            XWPFParagraph paragraph = doc.createParagraph();
-            paragraph.createRun().setText("Title: ");
-            CTP ctp = paragraph.getCTP();
-            CTSdtRun sdt = ctp.addNewSdt();
-            CTSdtPr sdtPr = sdt.addNewSdtPr();
-            sdtPr.addNewTag().setVal(tag);
-            sdtPr.addNewAlias().setVal(tag);
-            CTSdtContentRun content = sdt.addNewSdtContent();
-            CTR run = content.addNewR();
-            run.addNewT().setStringValue("[title]");
+            for (String tag : tags) {
+                XWPFParagraph paragraph = doc.createParagraph();
+                paragraph.createRun().setText("Field: ");
+                CTP ctp = paragraph.getCTP();
+                CTSdtRun sdt = ctp.addNewSdt();
+                CTSdtPr sdtPr = sdt.addNewSdtPr();
+                sdtPr.addNewTag().setVal(tag);
+                sdtPr.addNewAlias().setVal(tag);
+                CTSdtContentRun content = sdt.addNewSdtContent();
+                CTR run = content.addNewR();
+                run.addNewT().setStringValue("[value]");
+            }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);

@@ -8,8 +8,11 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleConflict;
 import io.github.vihuynh72.brownie.core.rule.RuleConflictDetector;
 import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
+import io.github.vihuynh72.brownie.core.rule.RulePayloadValidator;
+import io.github.vihuynh72.brownie.core.rule.RuleProblem;
 import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
+import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 
 import java.util.List;
 import java.util.Optional;
@@ -98,10 +101,11 @@ public class TemplateService {
      * Re-validates the draft's own current bindings one more time -- a
      * belt-and-suspenders check, since nothing about a pinned extraction
      * graph can change after {@link #replaceDraftBindings} already
-     * validated the same list -- then requires every rule proposed against
-     * this draft to be free of conflicts with every other one before
-     * activating. Refuses an empty field list: an activated template with
-     * nothing bound could never actually fill a document.
+     * validated the same list -- then validates every rule against the final
+     * draft shape before checking conflicts. This catches a rule that was
+     * valid before a later binding replacement removed or reshaped its target.
+     * Refuses an empty field list: an activated template with nothing bound
+     * could never actually fill a document.
      */
     public TemplateVersion activate(long workspaceId, long userId, long templateId, int expectedVersionNumber) {
         TemplateVersion currentDraft = requireDraftVersion(workspaceId, userId, templateId);
@@ -112,14 +116,25 @@ public class TemplateService {
         }
         DocxStructuralGraph graph = requireGraph(workspaceId, userId, currentDraft);
         validateBindingsOrThrow(graph, currentDraft.fieldDefinitions());
-        requireNoRuleConflicts(workspaceId, userId, currentDraft, graph);
+        validateRulesAndRequireNoConflicts(workspaceId, userId, currentDraft, graph);
         return templateRepository.activate(workspaceId, userId, templateId, expectedVersionNumber);
     }
 
-    private void requireNoRuleConflicts(long workspaceId, long userId, TemplateVersion draft, DocxStructuralGraph graph) {
+    private void validateRulesAndRequireNoConflicts(
+            long workspaceId, long userId, TemplateVersion draft, DocxStructuralGraph graph) {
         List<RuleRevision> rules = ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id());
         if (rules.isEmpty()) {
             return;
+        }
+        List<RuleProblem> validationProblems = rules.stream()
+                .flatMap(rule -> RulePayloadValidator
+                        .validate(draft.fieldDefinitions(), graph, rule.scope(), rule.payload())
+                        .stream()
+                        .map(problem -> new RuleProblem(
+                                problem.reason(), "rule " + rule.id() + ": " + problem.detail())))
+                .toList();
+        if (!validationProblems.isEmpty()) {
+            throw new RuleValidationException(validationProblems);
         }
         List<RuleConflict> conflicts = RuleConflictDetector.detectConflicts(draft.fieldDefinitions(), graph, rules);
         if (!conflicts.isEmpty()) {

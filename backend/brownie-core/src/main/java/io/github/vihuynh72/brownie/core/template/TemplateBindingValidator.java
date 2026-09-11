@@ -13,9 +13,8 @@ import java.util.Set;
 
 /**
  * Decides whether a set of {@link FieldDefinition} bindings is actually
- * supported by one DOCX's extracted structure -- the "supported bindings"
- * half of this phase's job, kept separate from persistence so it can run
- * identically whether replacing draft bindings or re-checking them at
+ * supported by one DOCX's extracted structure, kept separate from
+ * persistence so it can run identically whether replacing draft bindings or re-checking them at
  * activation. A binding is supported only if it resolves to exactly one
  * node; zero or more than one is a real problem, not a warning, since
  * either leaves "which content is this field" undetermined.

@@ -30,8 +30,7 @@ import java.util.List;
 /**
  * Creates a template draft against an already-extracted DOCX source,
  * replaces its field definitions and bindings, and activates an immutable
- * version -- the three routes this phase's own scope covers ({@code
- * .../examples} and {@code .../rules/{r}/decisions} belong to later work).
+ * version. The examples and rule-decision endpoints are not exposed here.
  * Deliberately returns the draft version alongside the template on
  * creation, since a caller needs that version's own number for the very
  * next {@code PUT .../draft/bindings} call.
@@ -56,7 +55,9 @@ class TemplateController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     TemplateDraftResponse create(
-            @PathVariable long workspaceId, @AuthenticationPrincipal OidcUser principal, @RequestBody CreateTemplateRequest request) {
+            @PathVariable("workspaceId") long workspaceId,
+            @AuthenticationPrincipal OidcUser principal,
+            @RequestBody CreateTemplateRequest request) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
         Template template = templateService.createDraft(workspaceId, userId, request.displayName(), request.sourceArtifactId());
@@ -69,8 +70,8 @@ class TemplateController {
 
     @PutMapping("/{templateId}/draft/bindings")
     TemplateVersionResponse replaceBindings(
-            @PathVariable long workspaceId,
-            @PathVariable long templateId,
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
             @AuthenticationPrincipal OidcUser principal,
             @RequestBody ReplaceBindingsRequest request) {
         long userId = currentUserId(principal);
@@ -84,8 +85,8 @@ class TemplateController {
     @PostMapping("/{templateId}/versions")
     @ResponseStatus(HttpStatus.CREATED)
     TemplateVersionResponse activate(
-            @PathVariable long workspaceId,
-            @PathVariable long templateId,
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
             @AuthenticationPrincipal OidcUser principal,
             @RequestBody ActivateVersionRequest request) {
         long userId = currentUserId(principal);
