@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -76,7 +77,53 @@ public final class RulePayloadValidator {
                 }
             }
         }
+        validateScopeCompatibility(scope, payload, problems);
         return problems;
+    }
+
+    private static void validateScopeCompatibility(
+            RuleScope scope, RulePayload payload, List<RuleProblem> problems) {
+        if (!(scope instanceof RuleScope.SingleField(String scopedFieldId))) {
+            return;
+        }
+
+        switch (payload) {
+            case RulePayload.RequiredFields(List<String> fieldIds) -> {
+                if (fieldIds.size() != 1 || !fieldIds.contains(scopedFieldId)) {
+                    problems.add(new RuleProblem(
+                            RuleProblemReason.SCOPE_MISMATCH,
+                            "a field-scoped RequiredFields rule must name exactly its scoped field"));
+                }
+            }
+            case RulePayload.AllowedSectionOrder ignored -> problems.add(new RuleProblem(
+                    RuleProblemReason.SCOPE_MISMATCH,
+                    "this payload kind can only be scoped to the whole template"));
+            case RulePayload.ProtectedRegion ignored -> problems.add(new RuleProblem(
+                    RuleProblemReason.SCOPE_MISMATCH,
+                    "this payload kind can only be scoped to the whole template"));
+            default -> singleFieldIdOf(payload).ifPresent(payloadFieldId -> {
+                if (!payloadFieldId.equals(scopedFieldId)) {
+                    problems.add(new RuleProblem(
+                            RuleProblemReason.SCOPE_MISMATCH,
+                            "scope references field \"" + scopedFieldId + "\" but payload targets \"" + payloadFieldId + "\""));
+                }
+            });
+        }
+    }
+
+    private static Optional<String> singleFieldIdOf(RulePayload payload) {
+        return switch (payload) {
+            case RulePayload.MaxTextLength p -> Optional.of(p.fieldId());
+            case RulePayload.MaxItemCount p -> Optional.of(p.fieldId());
+            case RulePayload.DateDisplayFormat p -> Optional.of(p.fieldId());
+            case RulePayload.AllowedSourceKinds p -> Optional.of(p.fieldId());
+            case RulePayload.MissingValueBehavior p -> Optional.of(p.fieldId());
+            case RulePayload.AllowedOverflowBehavior p -> Optional.of(p.fieldId());
+            case RulePayload.RepeatableRegionEmptyBehavior p -> Optional.of(p.fieldId());
+            case RulePayload.RequiredFields ignored -> Optional.empty();
+            case RulePayload.AllowedSectionOrder ignored -> Optional.empty();
+            case RulePayload.ProtectedRegion ignored -> Optional.empty();
+        };
     }
 
     private static void requireKnownField(String fieldId, Map<String, FieldDefinition> byFieldId, List<RuleProblem> problems) {

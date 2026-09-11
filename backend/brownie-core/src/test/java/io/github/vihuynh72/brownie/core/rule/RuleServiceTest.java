@@ -77,6 +77,24 @@ class RuleServiceTest {
     }
 
     @Test
+    void proposeRejectsAMissingProtectedRegionTargetAndPersistsNothing() {
+        RuleService service = newService(fieldDefinitions());
+
+        RuleValidationException exception = assertThrows(
+                RuleValidationException.class,
+                () -> service.propose(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        TEMPLATE_ID,
+                        new RuleScope.WholeTemplate(),
+                        new RulePayload.ProtectedRegion(new FieldBindingTarget.ContentControlTag("no.such.tag")),
+                        null));
+
+        assertTrue(exception.problems().stream().anyMatch(problem -> problem.reason() == RuleProblemReason.UNSUPPORTED_TARGET));
+        assertTrue(service.findForDraft(WORKSPACE_ID, USER_ID, TEMPLATE_ID).isEmpty());
+    }
+
+    @Test
     void findForDraftReturnsEveryRuleProposedAgainstTheCurrentDraft() {
         RuleService service = newService(fieldDefinitions());
         service.propose(

@@ -30,14 +30,24 @@ class RuleConflictDetectorTest {
             new FieldBindingTarget.ContentControlTag("meeting.title")));
 
     private static DocxStructuralGraph graph() {
-        StructuralNode control = new StructuralNode("p0/sdt0", StructuralNodeKind.CONTENT_CONTROL, null, null, "meeting.title", null, List.of());
+        StructuralNode run = new StructuralNode("p0/sdt0/r0", StructuralNodeKind.RUN, null, "[title]", null, null, List.of());
+        StructuralNode control = new StructuralNode(
+                "p0/sdt0", StructuralNodeKind.CONTENT_CONTROL, null, null, "meeting.title", null, List.of(run));
         StructuralNode body = new StructuralNode("body", StructuralNodeKind.BODY, null, null, null, null, List.of(control));
         return new DocxStructuralGraph("test-v1", List.of(new DocumentPart("word/document.xml", DocumentPartKind.MAIN_DOCUMENT, body)));
     }
 
     private static RuleRevision rule(long id, RulePayload payload) {
+        return rule(id, new RuleScope.WholeTemplate(), payload);
+    }
+
+    private static RuleRevision fieldRule(long id, RulePayload payload) {
+        return rule(id, new RuleScope.SingleField("meeting.title"), payload);
+    }
+
+    private static RuleRevision rule(long id, RuleScope scope, RulePayload payload) {
         return new RuleRevision(
-                id, WORKSPACE_ID, TEMPLATE_ID, VERSION_ID, payload.category(), new RuleScope.WholeTemplate(), payload, "test-v1",
+                id, WORKSPACE_ID, TEMPLATE_ID, VERSION_ID, payload.category(), scope, payload, "test-v1",
                 RuleRevisionStatus.PROPOSED, null, USER_ID, OffsetDateTime.now());
     }
 
@@ -74,6 +84,28 @@ class RuleConflictDetectorTest {
     }
 
     @Test
+    void fieldScopedRuleOverridesAWholeTemplateDefault() {
+        var conflicts = RuleConflictDetector.detectConflicts(
+                FIELDS, graph(),
+                List.of(
+                        rule(1, new RulePayload.DateDisplayFormat("meeting.title", DateFormatStyle.LONG)),
+                        fieldRule(2, new RulePayload.DateDisplayFormat("meeting.title", DateFormatStyle.ISO))));
+        assertTrue(conflicts.isEmpty());
+    }
+
+    @Test
+    void conflictingFieldScopedRulesRemainADirectContradiction() {
+        var conflicts = RuleConflictDetector.detectConflicts(
+                FIELDS, graph(),
+                List.of(
+                        fieldRule(1, new RulePayload.DateDisplayFormat("meeting.title", DateFormatStyle.LONG)),
+                        fieldRule(2, new RulePayload.DateDisplayFormat("meeting.title", DateFormatStyle.ISO))));
+        assertEquals(1, conflicts.size());
+        assertEquals(RuleConflictReason.DIRECT_CONTRADICTION, conflicts.get(0).reason());
+        assertEquals(List.of(1L, 2L), conflicts.get(0).ruleIds());
+    }
+
+    @Test
     void twoDifferentRequiredFieldsListsAreAdditiveNotConflicting() {
         // RequiredFields is excluded from the direct-contradiction check since its own list is additive.
         var conflicts = RuleConflictDetector.detectConflicts(
@@ -85,7 +117,7 @@ class RuleConflictDetectorTest {
     }
 
     @Test
-    void requiredFieldWithAnOmitMissingValueRuleIsAConflict() {
+    void requiredFieldWithAnyMissingValueRuleIsAConflict() {
         var conflicts = RuleConflictDetector.detectConflicts(
                 FIELDS, graph(),
                 List.of(
@@ -97,13 +129,14 @@ class RuleConflictDetectorTest {
     }
 
     @Test
-    void requiredFieldWithABlankMissingValueRuleIsNotAConflict() {
+    void requiredFieldDefinitionWithABlankMissingValueRuleIsAConflict() {
         var conflicts = RuleConflictDetector.detectConflicts(
                 FIELDS, graph(),
                 List.of(
-                        rule(1, new RulePayload.RequiredFields(List.of("meeting.title"))),
                         rule(2, new RulePayload.MissingValueBehavior("meeting.title", EmptyValueResolution.BLANK))));
-        assertTrue(conflicts.isEmpty());
+        assertEquals(1, conflicts.size());
+        assertEquals(RuleConflictReason.REQUIREDNESS_VS_MISSING_VALUE, conflicts.get(0).reason());
+        assertEquals(List.of(2L), conflicts.get(0).ruleIds());
     }
 
     @Test
@@ -122,6 +155,19 @@ class RuleConflictDetectorTest {
                 FIELDS, graph(),
                 List.of(rule(
                         1, new RulePayload.ProtectedRegion(new FieldBindingTarget.StructuralNode(DocumentPartKind.MAIN_DOCUMENT, "p0/sdt0")))));
+        assertEquals(1, conflicts.size());
+        assertEquals(RuleConflictReason.PROTECTED_FIELD_BINDING, conflicts.get(0).reason());
+    }
+
+    @Test
+    void protectedRegionInsideAFieldsBindingIsStillAConflict() {
+        var conflicts = RuleConflictDetector.detectConflicts(
+                FIELDS,
+                graph(),
+                List.of(rule(
+                        1,
+                        new RulePayload.ProtectedRegion(
+                                new FieldBindingTarget.StructuralNode(DocumentPartKind.MAIN_DOCUMENT, "p0/sdt0/r0")))));
         assertEquals(1, conflicts.size());
         assertEquals(RuleConflictReason.PROTECTED_FIELD_BINDING, conflicts.get(0).reason());
     }

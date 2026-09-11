@@ -126,6 +126,24 @@ class RulePayloadValidatorTest {
     }
 
     @Test
+    void fieldScopedRuleRejectsAPayloadForAnotherField() {
+        var problems = RulePayloadValidator.validate(
+                FIELDS, graph(), new RuleScope.SingleField("meeting.title"),
+                new RulePayload.MissingValueBehavior("action.items", EmptyValueResolution.BLANK));
+        assertEquals(1, problems.size());
+        assertEquals(RuleProblemReason.SCOPE_MISMATCH, problems.get(0).reason());
+    }
+
+    @Test
+    void sectionOrderCannotBeScopedToOneField() {
+        var problems = RulePayloadValidator.validate(
+                FIELDS, graph(), new RuleScope.SingleField("meeting.title"),
+                new RulePayload.AllowedSectionOrder(List.of("agenda", "decisions")));
+        assertEquals(1, problems.size());
+        assertEquals(RuleProblemReason.SCOPE_MISMATCH, problems.get(0).reason());
+    }
+
+    @Test
     void allowedSourceKindsRejectsAnEmptyList() {
         var problems = RulePayloadValidator.validate(
                 FIELDS, graph(), new RuleScope.SingleField("meeting.title"),
