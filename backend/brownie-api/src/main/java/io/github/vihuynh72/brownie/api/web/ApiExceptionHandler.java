@@ -11,6 +11,7 @@ import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
+import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
@@ -248,6 +249,26 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .toList();
         problem.setProperty("fields", fields);
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * Two or more of the rules proposed against a template's own draft
+     * cannot both hold -- activation refuses rather than silently picking
+     * one, naming every conflict and every rule ID it involves so a human
+     * resolves it.
+     */
+    @ExceptionHandler(RuleConflictException.class)
+    public ResponseEntity<Object> handleRuleConflict(RuleConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("One or more proposed rules conflict with each other. See the conflicts below.");
+        enrich(problem, "RULE_CONFLICT");
+        List<Map<String, Object>> conflicts = ex.conflicts().stream()
+                .map(conflict -> Map.<String, Object>of(
+                        "reason", conflict.reason().name(), "ruleIds", conflict.ruleIds(), "detail", conflict.detail()))
+                .toList();
+        problem.setProperty("conflicts", conflicts);
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
     }
 
     /**
