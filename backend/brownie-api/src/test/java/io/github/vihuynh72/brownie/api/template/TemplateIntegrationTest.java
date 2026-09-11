@@ -3,6 +3,12 @@ package io.github.vihuynh72.brownie.api.template;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.rule.EmptyValueResolution;
+import io.github.vihuynh72.brownie.core.rule.RulePayload;
+import io.github.vihuynh72.brownie.core.rule.RuleRepository;
+import io.github.vihuynh72.brownie.core.rule.RuleScope;
+import io.github.vihuynh72.brownie.core.rule.RuleVocabulary;
+import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
@@ -124,6 +130,52 @@ class TemplateIntegrationTest {
 
     @Autowired
     private FindByIndexNameSessionRepository<? extends Session> sessionRepository;
+
+    @Autowired
+    private RuleRepository ruleRepository;
+
+    @Autowired
+    private TemplateRepository templateRepository;
+
+    @Test
+    void activationIsRefusedWhenTwoRealPersistedRulesDirectlyConflict() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-rule-conflict");
+        long workspaceId = ensureWorkspace("subject-rule-conflict").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+        String bindingsBody = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(bindingsBody))
+                .andExpect(status().isOk());
+
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-rule-conflict").orElseThrow().id();
+        long draftVersionId = templateRepository.findDraftVersion(workspaceId, userId, templateId).orElseThrow().id();
+        ruleRepository.propose(
+                workspaceId, userId, templateId, draftVersionId, new RuleScope.WholeTemplate(),
+                new RulePayload.MissingValueBehavior("meeting.title", EmptyValueResolution.OMIT), RuleVocabulary.SCHEMA_VERSION, null);
+        ruleRepository.propose(
+                workspaceId, userId, templateId, draftVersionId, new RuleScope.WholeTemplate(),
+                new RulePayload.MissingValueBehavior("meeting.title", EmptyValueResolution.BLANK), RuleVocabulary.SCHEMA_VERSION, null);
+
+        JsonNode problem = readJson(mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isConflict())
+                .andReturn());
+        assertThat(problem.get("conflicts")).hasSize(1);
+        assertThat(problem.get("conflicts").get(0).get("reason").asText()).isEqualTo("DIRECT_CONTRADICTION");
+    }
 
     @Test
     void theWholeDraftBindAndActivateFlowSucceedsAgainstARealExtractedDocx() throws Exception {

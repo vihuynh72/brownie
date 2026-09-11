@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.core.template;
 
+import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
@@ -7,6 +8,7 @@ import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -21,6 +23,10 @@ import java.util.Set;
 public final class TemplateBindingValidator {
 
     private TemplateBindingValidator() {
+    }
+
+    /** One physical location a {@link FieldBindingTarget} resolved to, identified the same way regardless of which binding kind found it -- so a {@code ContentControlTag} match and a {@code StructuralNode} match can be compared for whether they name the same real spot. */
+    public record ResolvedLocation(DocumentPartKind part, String nodeId) {
     }
 
     /** Every problem found, across every field -- empty means every binding in {@code fields} is valid and unambiguous. */
@@ -51,30 +57,47 @@ public final class TemplateBindingValidator {
      * binding rather than a named field.
      */
     public static int matchCount(DocxStructuralGraph graph, FieldBindingTarget target) {
+        return resolve(graph, target).size();
+    }
+
+    /** {@link #resolve}, narrowed to the single location a target names when it is actually unambiguous -- empty otherwise, the same NOT_FOUND-or-AMBIGUOUS-collapsed-to-nothing shape {@link #matchCount} already treats as "not usable." Exposed so a caller comparing two different bindings' own real locations (not just their own {@link FieldBindingTarget} shape, which can differ while still naming the same node) does not have to re-walk the graph itself. */
+    public static Optional<ResolvedLocation> resolveUnique(DocxStructuralGraph graph, FieldBindingTarget target) {
+        List<ResolvedLocation> locations = resolve(graph, target);
+        return locations.size() == 1 ? Optional.of(locations.get(0)) : Optional.empty();
+    }
+
+    private static List<ResolvedLocation> resolve(DocxStructuralGraph graph, FieldBindingTarget target) {
         return switch (target) {
             case FieldBindingTarget.ContentControlTag(String tag) -> graph.parts().stream()
-                    .mapToInt(part -> countContentControlTag(part.root(), tag))
-                    .sum();
+                    .flatMap(part -> collectContentControlTag(part.root(), tag).stream()
+                            .map(nodeId -> new ResolvedLocation(part.kind(), nodeId)))
+                    .toList();
             case FieldBindingTarget.StructuralNode(var part, String nodeId) -> graph.parts().stream()
                     .filter(p -> p.kind() == part)
-                    .mapToInt(p -> countNodeId(p.root(), nodeId))
-                    .sum();
+                    .flatMap(p -> collectNodeId(p.root(), nodeId).stream().map(id -> new ResolvedLocation(p.kind(), id)))
+                    .toList();
         };
     }
 
-    private static int countContentControlTag(StructuralNode node, String tag) {
-        int count = node.kind() == StructuralNodeKind.CONTENT_CONTROL && tag.equals(node.contentControlTag()) ? 1 : 0;
-        for (StructuralNode child : node.children()) {
-            count += countContentControlTag(child, tag);
+    private static List<String> collectContentControlTag(StructuralNode node, String tag) {
+        List<String> found = new ArrayList<>();
+        if (node.kind() == StructuralNodeKind.CONTENT_CONTROL && tag.equals(node.contentControlTag())) {
+            found.add(node.nodeId());
         }
-        return count;
+        for (StructuralNode child : node.children()) {
+            found.addAll(collectContentControlTag(child, tag));
+        }
+        return found;
     }
 
-    private static int countNodeId(StructuralNode node, String nodeId) {
-        int count = nodeId.equals(node.nodeId()) ? 1 : 0;
-        for (StructuralNode child : node.children()) {
-            count += countNodeId(child, nodeId);
+    private static List<String> collectNodeId(StructuralNode node, String nodeId) {
+        List<String> found = new ArrayList<>();
+        if (nodeId.equals(node.nodeId())) {
+            found.add(node.nodeId());
         }
-        return count;
+        for (StructuralNode child : node.children()) {
+            found.addAll(collectNodeId(child, nodeId));
+        }
+        return found;
     }
 }

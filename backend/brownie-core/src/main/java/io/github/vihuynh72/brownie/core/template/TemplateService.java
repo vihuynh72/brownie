@@ -5,6 +5,11 @@ import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.ExtractionStatus;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.rule.RuleConflict;
+import io.github.vihuynh72.brownie.core.rule.RuleConflictDetector;
+import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
+import io.github.vihuynh72.brownie.core.rule.RuleRepository;
+import io.github.vihuynh72.brownie.core.rule.RuleRevision;
 
 import java.util.List;
 import java.util.Optional;
@@ -13,12 +18,22 @@ import java.util.Optional;
  * A template's own lifecycle end to end: open a draft against an already-
  * extracted DOCX source, replace its field definitions and bindings while
  * validating each one against that source's real structure, and activate
- * an immutable version once every binding actually resolves. Depends only
- * on the interfaces above plus {@link TemplateBindingValidator}'s pure
- * logic, so it has no framework or infrastructure dependency of its own --
- * a JDBC repository and the real POI-backed extractor are supplied by
- * whichever module wires this up, the same shape {@code ArtifactService}
- * and {@code DocumentExtractionService} already follow.
+ * an immutable version once every binding actually resolves and every
+ * rule proposed against it can actually hold at once. Depends only on the
+ * interfaces above plus {@link TemplateBindingValidator}'s and {@link
+ * RuleConflictDetector}'s pure logic, so it has no framework or
+ * infrastructure dependency of its own -- a JDBC repository and the real
+ * POI-backed extractor are supplied by whichever module wires this up, the
+ * same shape {@code ArtifactService} and {@code DocumentExtractionService}
+ * already follow.
+ *
+ * <p>This depends on {@code core.rule}, which in turn depends on {@code
+ * Template}/{@code FieldDefinition} here -- a deliberate two-way
+ * dependency between the two packages, not an accident: a template's own
+ * activation gate is genuinely inseparable from its rules' own
+ * consistency, the same way an aggregate root's invariants in this
+ * codebase's other domains are never split across a boundary that would
+ * let one half change without the other noticing.
  *
  * <p>This does not trigger extraction itself -- {@code POST .../extraction}
  * is always a separate, prior request. Building a template requires an
@@ -31,14 +46,17 @@ public class TemplateService {
     private final TemplateRepository templateRepository;
     private final ExtractionVersionRepository extractionVersionRepository;
     private final DocxStructuralExtractor docxExtractor;
+    private final RuleRepository ruleRepository;
 
     public TemplateService(
             TemplateRepository templateRepository,
             ExtractionVersionRepository extractionVersionRepository,
-            DocxStructuralExtractor docxExtractor) {
+            DocxStructuralExtractor docxExtractor,
+            RuleRepository ruleRepository) {
         this.templateRepository = templateRepository;
         this.extractionVersionRepository = extractionVersionRepository;
         this.docxExtractor = docxExtractor;
+        this.ruleRepository = ruleRepository;
     }
 
     /** Opens a new template with an empty first draft, pinned to {@code sourceArtifactId}'s current COMPLETE DOCX extraction. */
@@ -71,7 +89,8 @@ public class TemplateService {
     public TemplateVersion replaceDraftBindings(
             long workspaceId, long userId, long templateId, int expectedVersionNumber, List<FieldDefinition> fieldDefinitions) {
         TemplateVersion currentDraft = requireDraftVersion(workspaceId, userId, templateId);
-        validateOrThrow(workspaceId, userId, currentDraft, fieldDefinitions);
+        DocxStructuralGraph graph = requireGraph(workspaceId, userId, currentDraft);
+        validateBindingsOrThrow(graph, fieldDefinitions);
         return templateRepository.replaceDraftBindings(workspaceId, userId, templateId, expectedVersionNumber, fieldDefinitions);
     }
 
@@ -79,9 +98,10 @@ public class TemplateService {
      * Re-validates the draft's own current bindings one more time -- a
      * belt-and-suspenders check, since nothing about a pinned extraction
      * graph can change after {@link #replaceDraftBindings} already
-     * validated the same list -- then activates it. Refuses an empty
-     * field list: an activated template with nothing bound could never
-     * actually fill a document.
+     * validated the same list -- then requires every rule proposed against
+     * this draft to be free of conflicts with every other one before
+     * activating. Refuses an empty field list: an activated template with
+     * nothing bound could never actually fill a document.
      */
     public TemplateVersion activate(long workspaceId, long userId, long templateId, int expectedVersionNumber) {
         TemplateVersion currentDraft = requireDraftVersion(workspaceId, userId, templateId);
@@ -90,12 +110,24 @@ public class TemplateService {
                     "Template " + templateId + " draft version " + currentDraft.versionNumber()
                             + " has no field definitions; a template cannot be activated with nothing bound.");
         }
-        validateOrThrow(workspaceId, userId, currentDraft, currentDraft.fieldDefinitions());
+        DocxStructuralGraph graph = requireGraph(workspaceId, userId, currentDraft);
+        validateBindingsOrThrow(graph, currentDraft.fieldDefinitions());
+        requireNoRuleConflicts(workspaceId, userId, currentDraft, graph);
         return templateRepository.activate(workspaceId, userId, templateId, expectedVersionNumber);
     }
 
-    private void validateOrThrow(long workspaceId, long userId, TemplateVersion draft, List<FieldDefinition> fieldDefinitions) {
-        DocxStructuralGraph graph = requireGraph(workspaceId, userId, draft);
+    private void requireNoRuleConflicts(long workspaceId, long userId, TemplateVersion draft, DocxStructuralGraph graph) {
+        List<RuleRevision> rules = ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id());
+        if (rules.isEmpty()) {
+            return;
+        }
+        List<RuleConflict> conflicts = RuleConflictDetector.detectConflicts(draft.fieldDefinitions(), graph, rules);
+        if (!conflicts.isEmpty()) {
+            throw new RuleConflictException(conflicts);
+        }
+    }
+
+    private void validateBindingsOrThrow(DocxStructuralGraph graph, List<FieldDefinition> fieldDefinitions) {
         List<UnsupportedBinding> problems = TemplateBindingValidator.validate(graph, fieldDefinitions);
         if (!problems.isEmpty()) {
             throw new TemplateBindingValidationException(problems);
