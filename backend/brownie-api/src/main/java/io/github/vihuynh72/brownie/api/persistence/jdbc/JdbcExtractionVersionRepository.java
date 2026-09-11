@@ -67,6 +67,20 @@ class JdbcExtractionVersionRepository implements ExtractionVersionRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public Optional<ExtractionVersion> findById(long workspaceId, long userId, long extractionVersionId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate
+                .query(
+                        "SELECT " + SELECT_COLUMNS + " FROM extraction_version WHERE workspace_id = ? AND id = ?",
+                        this::mapRow,
+                        workspaceId,
+                        extractionVersionId)
+                .stream()
+                .findFirst();
+    }
+
+    @Override
     @Transactional
     public ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph) {
         insertIgnoringConflict(

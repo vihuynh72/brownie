@@ -8,6 +8,16 @@ public interface ExtractionVersionRepository {
     Optional<ExtractionVersion> findByArtifact(long workspaceId, long userId, long artifactId, String parserVersion);
 
     /**
+     * Looks up one extraction version by its own ID rather than by
+     * re-deriving it from an artifact and the extractor's *current* parser
+     * version -- what a caller needs when it already holds a specific,
+     * previously pinned {@code extractionVersionId} (for example a template
+     * version's own bindings) and must read exactly that immutable row,
+     * unaffected by a parser upgrade that happened afterward.
+     */
+    Optional<ExtractionVersion> findById(long workspaceId, long userId, long extractionVersionId);
+
+    /**
      * Records a successful extraction. If a row for this exact (artifact,
      * parserVersion) pair already exists -- another caller raced this one
      * and won -- returns that existing row unchanged rather than
