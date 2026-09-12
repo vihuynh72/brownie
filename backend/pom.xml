@@ -25,6 +25,7 @@
 
   <modules>
     <module>brownie-core</module>
+    <module>brownie-storage</module>
     <module>brownie-api</module>
     <module>brownie-worker</module>
   </modules>

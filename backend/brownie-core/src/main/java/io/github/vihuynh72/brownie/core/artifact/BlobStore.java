@@ -22,6 +22,13 @@ public interface BlobStore {
      */
     UploadResult writeAndDigest(String objectKey, InputStream content, long maxBytes) throws IOException;
 
+    /**
+     * Writes one new immutable object. If the key already exists, this must
+     * fail without changing its current bytes; callers use that guarantee to
+     * make duplicate worker delivery converge on one staged object.
+     */
+    UploadResult writeNewAndDigest(String objectKey, InputStream content, long maxBytes) throws IOException;
+
     /** Empty when no object exists at this key. */
     Optional<Long> sizeOf(String objectKey) throws IOException;
 
