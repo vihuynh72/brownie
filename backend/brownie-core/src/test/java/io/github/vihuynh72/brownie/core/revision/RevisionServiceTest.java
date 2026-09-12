@@ -50,6 +50,7 @@ class RevisionServiceTest {
                 TEMPLATE_ID,
                 TEMPLATE_VERSION_ID,
                 initialContent(),
+                Map.of(),
                 "initial draft").document();
         DocumentRevision initial = documents.findCurrentRevision(WORKSPACE_ID, USER_ID, initialDocument.id()).orElseThrow();
 
@@ -64,6 +65,7 @@ class RevisionServiceTest {
                         new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("October minutes")),
                         new DocumentFieldEdit.SetValue(
                                 "action.tasks", new FieldValue.RepeatedTextValue(List.of("Send agenda", "Book room")))),
+                Map.of(),
                 "corrected meeting title").revision();
 
         assertEquals(initial.id(), edited.parentRevisionId());
@@ -91,6 +93,7 @@ class RevisionServiceTest {
                 TEMPLATE_ID,
                 TEMPLATE_VERSION_ID,
                 initialContent(),
+                Map.of(),
                 "initial draft").document();
         long initialRevisionId = document.currentRevisionId();
 
@@ -108,6 +111,7 @@ class RevisionServiceTest {
                                 new DocumentFieldEdit.SetValue("unknown.field", new FieldValue.TextValue("no")),
                                 new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("one")),
                                 new DocumentFieldEdit.ClearValue("meeting.title")),
+                        Map.of(),
                         "invalid change"));
 
         assertTrue(exception.problems().stream().anyMatch(problem ->
@@ -132,6 +136,7 @@ class RevisionServiceTest {
                 TEMPLATE_ID,
                 TEMPLATE_VERSION_ID,
                 initialContent(),
+                Map.of(),
                 "initial draft").document();
         long initialRevisionId = document.currentRevisionId();
         service.applyUserEdits(
@@ -142,6 +147,7 @@ class RevisionServiceTest {
                 document.id(),
                 initialRevisionId,
                 List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Updated"))),
+                Map.of(),
                 "first edit");
 
         DocumentRevisionConflictException exception = assertThrows(
@@ -154,6 +160,7 @@ class RevisionServiceTest {
                         document.id(),
                         initialRevisionId,
                         List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Stale"))),
+                        Map.of(),
                         "stale edit"));
 
         assertEquals(initialRevisionId, exception.expectedRevisionId());
@@ -173,6 +180,7 @@ class RevisionServiceTest {
                 TEMPLATE_ID,
                 TEMPLATE_VERSION_ID,
                 initialContent(),
+                Map.of(),
                 "initial draft").document();
         long initialRevisionId = document.currentRevisionId();
 
@@ -184,6 +192,7 @@ class RevisionServiceTest {
                 document.id(),
                 initialRevisionId,
                 List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Updated"))),
+                Map.of(),
                 "first edit");
         DocumentMutationResult replay = service.applyUserEdits(
                 WORKSPACE_ID,
@@ -193,6 +202,7 @@ class RevisionServiceTest {
                 document.id(),
                 initialRevisionId,
                 List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Updated"))),
+                Map.of(),
                 "first edit");
 
         assertEquals(first.commandId(), replay.commandId());
@@ -208,6 +218,7 @@ class RevisionServiceTest {
                         document.id(),
                         initialRevisionId,
                         List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Different"))),
+                        Map.of(),
                         "different edit"));
     }
 
@@ -228,6 +239,90 @@ class RevisionServiceTest {
 
         assertEquals(firstHash, secondHash);
         assertNotEquals(firstHash, changedHash);
+    }
+
+    @Test
+    void evidenceIsCarriedForwardForUntouchedFieldsAndClearedForFieldsAnEditSets() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        key("create-with-evidence"),
+                        hash("create-with-evidence"),
+                        "Minutes",
+                        TEMPLATE_ID,
+                        TEMPLATE_VERSION_ID,
+                        initialContent(),
+                        Map.of("meeting.title", List.of(501L), "meeting.date", List.of(502L, 503L)),
+                        "initial draft")
+                .revision();
+        assertEquals(List.of(501L), initial.evidence().get("meeting.title"));
+        assertEquals(List.of(502L, 503L), initial.evidence().get("meeting.date"));
+
+        DocumentRevision edited = service.applyUserEdits(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        key("edit-with-evidence"),
+                        hash("edit-with-evidence"),
+                        initial.documentId(),
+                        initial.id(),
+                        List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("October minutes"))),
+                        Map.of("meeting.title", List.of(504L)),
+                        "corrected title from a new source")
+                .revision();
+
+        assertEquals(List.of(504L), edited.evidence().get("meeting.title"));
+        assertEquals(List.of(502L, 503L), edited.evidence().get("meeting.date"));
+
+        DocumentRevision cleared = service.applyUserEdits(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        key("clear-with-evidence"),
+                        hash("clear-with-evidence"),
+                        initial.documentId(),
+                        edited.id(),
+                        List.of(new DocumentFieldEdit.ClearValue("meeting.date")),
+                        Map.of(),
+                        "removed unconfirmed date")
+                .revision();
+
+        assertTrue(!cleared.evidence().containsKey("meeting.date"));
+        assertEquals(List.of(504L), cleared.evidence().get("meeting.title"));
+    }
+
+    @Test
+    void rejectsEvidenceForAFieldTheEditDoesNotSet() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository());
+        Document document = service.createDocument(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        key("create-for-evidence-rejection"),
+                        hash("create-for-evidence-rejection"),
+                        "Minutes",
+                        TEMPLATE_ID,
+                        TEMPLATE_VERSION_ID,
+                        initialContent(),
+                        Map.of(),
+                        "initial draft")
+                .document();
+
+        DocumentContentValidationException exception = assertThrows(
+                DocumentContentValidationException.class,
+                () -> service.applyUserEdits(
+                        WORKSPACE_ID,
+                        USER_ID,
+                        key("edit-unrelated-evidence"),
+                        hash("edit-unrelated-evidence"),
+                        document.id(),
+                        document.currentRevisionId(),
+                        List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Updated"))),
+                        Map.of("meeting.date", List.of(9L)),
+                        "unrelated evidence"));
+
+        assertTrue(exception.problems().stream().anyMatch(problem ->
+                problem.reason() == DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE));
     }
 
     private static DocumentContent initialContent() {
@@ -341,6 +436,7 @@ class RevisionServiceTest {
                 long templateId,
                 long templateVersionId,
                 DocumentContent initialContent,
+                Map<String, List<Long>> initialEvidence,
                 String initialRevisionReason) {
             Optional<DocumentMutationResult> existing = findMutationResult(
                     workspaceId, userId, DocumentCommandType.CREATE, idempotencyKey, requestHash);
@@ -359,7 +455,8 @@ class RevisionServiceTest {
                     DocumentContentHasher.sha256Hex(initialContent),
                     userId,
                     initialRevisionReason,
-                    OffsetDateTime.now());
+                    OffsetDateTime.now(),
+                    initialEvidence);
             Document document = new Document(
                     documentId,
                     workspaceId,
@@ -414,6 +511,7 @@ class RevisionServiceTest {
                 long documentId,
                 long expectedRevisionId,
                 DocumentContent content,
+                Map<String, List<Long>> evidence,
                 String editReason) {
             Optional<DocumentMutationResult> existing = findMutationResult(
                     workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
@@ -435,7 +533,8 @@ class RevisionServiceTest {
                     DocumentContentHasher.sha256Hex(content),
                     userId,
                     editReason,
-                    OffsetDateTime.now());
+                    OffsetDateTime.now(),
+                    evidence);
             history.add(revision);
             documents.put(documentId, new Document(
                     document.id(),
