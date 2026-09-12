@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           if [ -f backend/pom.xml ]; then
-            ./backend/mvnw -B verify
+            ./backend/mvnw -f backend/pom.xml -B verify
           else
             echo "INFO: Backend scaffold is not present."
           fi

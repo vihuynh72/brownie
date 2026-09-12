@@ -1,0 +1,63 @@
+spring:
+  application:
+    name: brownie-worker
+  main:
+    web-application-type: none
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+  storage:
+    local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+brownie:
+  storage:
+    # A syntactically valid but unreachable endpoint keeps the fast context
+    # test offline. Blob client construction is lazy; real output tests set
+    # this to their disposable Azurite connection string.
+    local-connection: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:65535/devstoreaccount1/"
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN

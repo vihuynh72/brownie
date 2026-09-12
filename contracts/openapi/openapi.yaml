@@ -1,0 +1,731 @@
+openapi: 3.1.0
+info:
+  title: Brownie API
+  version: "0.1.0"
+  description: >
+    The public API surface under /api/v1. It includes the platform
+    self-check routes and the implemented workspace document, job, and
+    persisted progress-event routes.
+servers:
+  - url: http://localhost:8081
+    description: Local development
+
+paths:
+  /api/v1/me:
+    get:
+      operationId: getCurrentIdentity
+      summary: >
+        Current identity and workspace memberships. Login
+        (/oauth2/authorization/entra) and logout (/logout) are
+        browser-redirect flows, not JSON operations, and are not modeled
+        here. Effective capabilities are added once authorization checks
+        exist.
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          description: Not logged in.
+
+  /api/v1/platform/probes:
+    post:
+      operationId: createPlatformProbe
+      summary: Record a platform self-check message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProbeRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URL of the created probe.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeResponse"
+        "400":
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/platform/probes/{id}:
+    get:
+      operationId: getPlatformProbe
+      summary: Read back a previously recorded platform self-check message.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeResponse"
+        "404":
+          description: No probe with that id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/documents:
+    post:
+      operationId: createDocument
+      summary: Create a document with its initial immutable revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDocumentRequest"
+      responses:
+        "201":
+          description: Created, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}:
+    get:
+      operationId: getDocument
+      summary: Get a document and its selected immutable revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/content:
+    patch:
+      operationId: patchDocumentContent
+      summary: Apply typed edits against the expected current revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchDocumentContentRequest"
+      responses:
+        "200":
+          description: The newly selected revision, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          description: The expected revision is no longer current.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions:
+    get:
+      operationId: listDocumentRevisions
+      summary: List immutable revision history in ascending revision order.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Revision history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}:
+    get:
+      operationId: getDocumentRevision
+      summary: Get one immutable revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/RevisionId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/jobs/{jobId}:
+    get:
+      operationId: getJob
+      summary: Get the authoritative durable job state.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/jobs/{jobId}/cancel:
+    post:
+      operationId: requestJobCancellation
+      summary: Request cooperative cancellation of a non-terminal job.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandReceiptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/jobs/{jobId}/resume:
+    post:
+      operationId: resumeWaitingJob
+      summary: Make a durable human-wait job eligible for another claim.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandReceiptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/events:
+    get:
+      operationId: streamWorkspaceEvents
+      summary: Stream persisted progress events. Reconnect with Last-Event-ID.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        "200":
+          description: Server-sent event stream. A resync-required event instructs the client to fetch authoritative state.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "429":
+          description: Concurrent stream limit reached.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/events/poll:
+    get:
+      operationId: pollWorkspaceEvents
+      summary: Poll persisted progress events when SSE is unavailable.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: afterEventId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Events after the cursor, or a resynchronization instruction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+components:
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    RevisionId:
+      name: revisionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+  responses:
+    BadRequest:
+      description: Request validation failed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The requested resource is not visible in this workspace.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The request conflicts with the current state or an idempotency key.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnprocessableContent:
+      description: The typed request is well formed but semantically invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    MeResponse:
+      type: object
+      required: [userId, issuer, subject, memberships]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        issuer:
+          type: string
+        subject:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/MembershipResponse"
+
+    MembershipResponse:
+      type: object
+      required: [workspaceId, role]
+      properties:
+        workspaceId:
+          type: integer
+          format: int64
+        role:
+          type: string
+          description: "Only OWNER exists until team workspaces are supported."
+
+    CreateProbeRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    ProbeResponse:
+      type: object
+      required: [id, message, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateDocumentRequest:
+      type: object
+      required: [title, templateId, templateVersionId, fields, initialRevisionReason]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        templateId:
+          type: integer
+          format: int64
+          minimum: 1
+        templateVersionId:
+          type: integer
+          format: int64
+          minimum: 1
+        fields:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/FieldValueRequest"
+        initialRevisionReason:
+          type: string
+          minLength: 1
+
+    PatchDocumentContentRequest:
+      type: object
+      required: [expectedRevisionId, edits, editReason]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        edits:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/FieldEditRequest"
+        editReason:
+          type: string
+          minLength: 1
+
+    FieldEditRequest:
+      type: object
+      required: [operation, fieldId]
+      properties:
+        operation:
+          type: string
+          enum: [SET, CLEAR]
+        fieldId:
+          type: string
+          minLength: 1
+        value:
+          $ref: "#/components/schemas/FieldValueRequest"
+
+    FieldValueRequest:
+      type: object
+      required: [type, cardinality]
+      properties:
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        value:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+
+    FieldValueResponse:
+      type: object
+      required: [type, cardinality]
+      properties:
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        value:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+
+    DocumentRevisionResponse:
+      type: object
+      required: [id, revisionNumber, fields, contentHash, editReason, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        revisionNumber:
+          type: integer
+          minimum: 1
+        parentRevisionId:
+          type: integer
+          format: int64
+          nullable: true
+        fields:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/FieldValueResponse"
+        contentHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        editReason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    DocumentResponse:
+      type: object
+      required: [id, title, templateId, templateVersionId, currentRevisionId, createdAt, currentRevision]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        templateId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        currentRevisionId:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time
+        currentRevision:
+          $ref: "#/components/schemas/DocumentRevisionResponse"
+
+    CommandReceiptResponse:
+      type: object
+      required: [commandId, jobId, operation, status, acceptedAt]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+        jobId:
+          type: integer
+          format: int64
+        operation:
+          type: string
+        status:
+          type: string
+          enum: [ACCEPTED]
+        acceptedAt:
+          type: string
+          format: date-time
+
+    JobResponse:
+      type: object
+      required: [id, type, resourceType, resourceId, resourceVersion, stage, state, attemptCount, availableAt, deadlineAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: integer
+          format: int64
+        resourceVersion:
+          type: integer
+          format: int64
+        stage:
+          type: string
+        state:
+          type: string
+        attemptCount:
+          type: integer
+          minimum: 0
+        availableAt:
+          type: string
+          format: date-time
+        deadlineAt:
+          type: string
+          format: date-time
+        cancellationRequestedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    EventResponse:
+      type: object
+      required: [eventId, workspaceId, jobId, resourceType, resourceId, resourceVersion, stage, jobSequence, type, state, occurredAt]
+      properties:
+        eventId:
+          type: integer
+          format: int64
+        workspaceId:
+          type: integer
+          format: int64
+        jobId:
+          type: integer
+          format: int64
+        resourceType:
+          type: string
+        resourceId:
+          type: integer
+          format: int64
+        resourceVersion:
+          type: integer
+          format: int64
+        stage:
+          type: string
+        jobSequence:
+          type: integer
+          format: int64
+        type:
+          type: string
+        state:
+          type: string
+        message:
+          type: string
+          nullable: true
+        progressCurrent:
+          type: integer
+          nullable: true
+        progressTotal:
+          type: integer
+          nullable: true
+        occurredAt:
+          type: string
+          format: date-time
+
+    EventBatchResponse:
+      type: object
+      required: [resyncRequired, nextEventId, events]
+      properties:
+        resyncRequired:
+          type: boolean
+        nextEventId:
+          type: integer
+          format: int64
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventResponse"
+
+    Error:
+      description: >
+        The shape of every error response in this API, regardless of
+        cause.
+      type: object
+      required: [status, title, code, correlationId, fields, recoveryActions]
+      properties:
+        status:
+          type: integer
+        title:
+          type: string
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          description: Stable, machine-readable error code (e.g. NOT_FOUND, VALIDATION_FAILED).
+        correlationId:
+          type: string
+          description: Echoes the X-Correlation-Id request/response header.
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        recoveryActions:
+          type: array
+          items:
+            type: string

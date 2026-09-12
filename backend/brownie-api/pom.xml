@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.vihuynh72.brownie</groupId>
+    <artifactId>brownie-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>brownie-api</artifactId>
+  <packaging>jar</packaging>
+
+  <description>
+    The public API and session boundary. Depends on brownie-core and shared
+    storage infrastructure; must never depend on brownie-worker.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-oauth2-client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.session</groupId>
+      <artifactId>spring-session-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <!-- The actual Boot-provided autoconfiguration that wires a real
+           JdbcIndexedSessionRepository bean, distinct from
+           org.springframework.session:spring-session-jdbc above, which is
+           only the underlying library: without this, nothing errors, but
+           no autoconfiguration ever activates, and the servlet
+           container's own native, non-persisted session silently takes
+           over instead. Confirmed by comparing a real request's actual
+           session cookie name against Spring Session's, not assumed.
+           There is no property that chooses this store over another one;
+           whichever store-specific module like this one is on the
+           classpath is the one that activates, which is why the test
+           profile has to exclude this autoconfiguration by class name
+           instead of setting a switch (see application.yml). -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-session-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Required by spring-boot-session-jdbc's own bean definitions,
+           which take a SessionTimeout bean as a plain, non-optional
+           constructor argument, and this module is what provides it,
+           along with the cookie-serializer bean. Without it, context
+           startup fails outright with a missing-bean error the moment
+           the JDBC session store tries to wire up. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-session</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-storage</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <!-- DOCX structural extraction. Not managed by the Spring Boot BOM,
+           so pinned explicitly here, checked against Maven Central's own
+           published releases, not guessed. poi-ooxml pulls in poi and
+           xmlbeans transitively. -->
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>5.5.1</version>
+    </dependency>
+    <dependency>
+      <!-- PDF structural extraction. Not managed by the Spring Boot BOM, so
+           pinned explicitly here, checked against Maven Central's own
+           published releases, not guessed: the same version (3.0.8)
+           already proven working against real rendered output by the
+           DOCX-binding spike's own render inspection. -->
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.8</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- @AutoConfigureMockMvc and the MockMvc bean it wires up: another
+           piece split out of the old, all-in-one starter-test bundle into
+           its own module in this Boot version, so it has to be listed
+           explicitly like the session-store modules above. -->
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- SecurityMockMvcRequestPostProcessors.csrf(), needed once a test
+           actually drives a real mutation through the CSRF-protected
+           filter chain rather than only GET /api/v1/me. -->
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- A real, disposable Azurite container for integration tests that
+           need to prove an actual upload round-trip, rather than trusting
+           that the Azure SDK's own client code behaves as documented. -->
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-azure</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

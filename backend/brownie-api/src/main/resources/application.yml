@@ -1,0 +1,221 @@
+# No NGINX same-origin proxy exists yet, so brownie-api itself must be the
+# one loopback origin used for local development -- the same origin as
+# BROWNIE_PUBLIC_ORIGIN below and the callback registered with the
+# identity provider: http://localhost:8081/login/oauth2/code/entra.
+server:
+  port: 8081
+
+spring:
+  application:
+    name: brownie-api
+  datasource:
+    url: ${BROWNIE_DB_URL}
+    username: ${BROWNIE_DB_USERNAME}
+    password: ${BROWNIE_DB_PASSWORD}
+  flyway:
+    url: ${BROWNIE_DB_URL}
+    user: ${BROWNIE_DB_MIGRATION_USERNAME}
+    password: ${BROWNIE_DB_MIGRATION_PASSWORD}
+  security:
+    oauth2:
+      client:
+        registration:
+          # Registration ID "entra" is load-bearing, not cosmetic: Spring's
+          # default redirect-uri template turns it into
+          # /login/oauth2/code/entra, which is the exact path registered
+          # with the identity provider.
+          entra:
+            client-id: ${BROWNIE_OIDC_CLIENT_ID:}
+            client-secret: ${BROWNIE_OIDC_CLIENT_SECRET:}
+            authorization-grant-type: authorization_code
+            scope: openid,profile,email
+            redirect-uri: "{baseUrl}/login/oauth2/code/entra"
+        provider:
+          entra:
+            # issuer-uri itself is deliberately NOT set here: Spring Boot
+            # treats a merely-empty value the same as a real one and still
+            # attempts (and fails) OIDC discovery against it, so it must be
+            # genuinely absent, not blank, wherever no real tenant exists
+            # yet -- see the "test" profile block below, and local/pilot/
+            # production further down, which each set the real thing.
+            user-name-attribute: sub
+  session:
+    # Lets a server session survive an API replica change and be revoked on
+    # demand, without introducing Redis. Flyway (brownie_migration) owns
+    # the schema via V2__create_spring_session_tables.sql, so Spring
+    # Boot's own initializer is disabled here. Which store backs the
+    # session is decided purely by which store-specific dependency is on
+    # the classpath (see the comment on spring-boot-session-jdbc in
+    # pom.xml) -- there is no store-type switch to set.
+    jdbc:
+      initialize-schema: never
+  mvc:
+    formcontent:
+      filter:
+        # Spring's FormContentFilter is enabled by default and rewrites a
+        # PUT/PATCH/DELETE body into request parameters whenever the
+        # request declares Content-Type: application/x-www-form-urlencoded
+        # -- including the raw byte stream this API's content-upload route
+        # (PUT .../uploads/{id}/content) accepts, which is exactly the
+        # default Content-Type curl sends for a plain --data-binary
+        # upload. Doing so consumes the request's input stream to build
+        # the parameter map, leaving nothing for that route's own
+        # request.getInputStream() call to read -- the upload silently
+        # "succeeds" with zero bytes recorded instead of failing loudly.
+        # Nothing in this API ever wants a PUT/PATCH/DELETE body read as
+        # form parameters, so the filter is disabled outright rather than
+        # trusted to only affect routes that don't care.
+        enabled: false
+
+management:
+  # Deliberately a different port from the public API: health/readiness are
+  # an operator concern, not a route the public API surface should ever
+  # share. No reverse proxy exists yet to enforce this externally, so a
+  # separate port keeps the separation real today rather than only on
+  # paper.
+  server:
+    port: 8090
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+brownie:
+  environment: ${BROWNIE_ENVIRONMENT:local}
+  public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
+  storage:
+    # Local/test only -- see AzureBlobStorageConfig, which refuses this setting
+    # outright on pilot/production. No production Blob Storage adapter
+    # exists yet.
+    local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+  artifacts:
+    max-upload-bytes: ${BROWNIE_MAX_UPLOAD_BYTES:10485760}
+  security:
+    clamav:
+      host: ${BROWNIE_CLAMAV_HOST}
+      port: ${BROWNIE_CLAMAV_PORT:3310}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  # A disposable in-memory database, not Postgres: this profile backs the
+  # fast, Docker-free context tests (BrownieApiApplicationTests,
+  # ApiExceptionHandlerIntegrationTest), which need some real DataSource
+  # bean for PlatformProbeController's repository to wire up but never run
+  # Flyway or touch platform_probe's actual schema. Tests that need real
+  # Postgres behavior (BrownieApiDatabaseIntegrationTest) override these
+  # with @DynamicPropertySource, which always wins over this file.
+  datasource:
+    url: jdbc:h2:mem:brownie-api-test;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  # No real Entra tenant exists in this profile's fast, Docker-free context
+  # (see BrownieApiApplicationTests, ApiExceptionHandlerIntegrationTest):
+  # explicit, syntactically valid, never-actually-called endpoints let the
+  # oauth2Login security filter chain build without issuer discovery
+  # reaching the network, unlike the real profiles below it, which need
+  # BROWNIE_OIDC_ISSUER for that discovery to succeed.
+  security:
+    oauth2:
+      client:
+        registration:
+          entra:
+            client-id: test-client
+            client-secret: test-secret
+        provider:
+          entra:
+            authorization-uri: http://localhost:65535/oauth2/authorize
+            token-uri: http://localhost:65535/oauth2/token
+            jwk-set-uri: http://localhost:65535/oauth2/jwks
+            user-info-uri: http://localhost:65535/oauth2/userinfo
+  # This profile's DataSource is H2, not Postgres, and H2 never gets the
+  # spring_session tables (see V2__create_spring_session_tables.sql, which
+  # only runs against real Postgres profiles). Having the JDBC session
+  # store's autoconfiguration on the classpath at all is enough for it to
+  # try INSERTing into a table that doesn't exist here, regardless of any
+  # session settings above, so it has to be turned off by name instead.
+  autoconfigure:
+    exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
+brownie:
+  storage:
+    # A syntactically valid but unreachable target (port 65535, the same
+    # convention the fake OIDC endpoints above use) -- BlobServiceClient
+    # construction never touches the network on its own, and the fast,
+    # Docker-free tests that run under this profile never call an
+    # operation that would. Fixed here rather than left to
+    # BROWNIE_LOCAL_STORAGE_CONNECTION so a value a developer happens to
+    # have exported in their own shell can never leak into a test run --
+    # the same class of bug already found and fixed once in this profile
+    # for BROWNIE_ENVIRONMENT.
+    local-connection: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:65535/devstoreaccount1;"
+  security:
+    clamav:
+      # Same unreachable-port-65535 convention as the placeholders above --
+      # constructing ClamAvMalwareScanner never touches the network on its
+      # own (it only connects inside scan(), never at construction), and
+      # the fast, Docker-free tests that run under this profile never call
+      # scan() at all.
+      host: 127.0.0.1
+      port: 65535
+logging:
+  level:
+    io.github.vihuynh72.brownie: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: pilot
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+logging:
+  level:
+    io.github.vihuynh72.brownie: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: production
+  security:
+    oauth2:
+      client:
+        provider:
+          entra:
+            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+logging:
+  level:
+    io.github.vihuynh72.brownie: WARN

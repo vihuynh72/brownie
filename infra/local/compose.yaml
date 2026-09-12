@@ -1,0 +1,81 @@
+# Local development infrastructure only. brownie-api and brownie-worker
+# still run directly on the host (mvnw / java -jar) against this database,
+# this Azurite, and this ClamAV -- they are not containerized here. Only
+# Postgres, Azurite, and ClamAV exist as real, consumed dependencies today;
+# the isolated document renderer and a reverse proxy are deliberately
+# absent until the phases that actually use them exist.
+#
+# Start:      docker compose -f infra/local/compose.yaml up -d --wait
+# Stop:       docker compose -f infra/local/compose.yaml down
+#             (the named volume below is untouched -- data survives)
+# Reset data: docker compose -f infra/local/compose.yaml down -v
+#             (deliberately destructive -- also drops the roles from
+#             01-app-roles.sql, since that script only ever runs again on
+#             a truly empty volume)
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: brownie
+      # Bootstrap-only superuser, used exactly once by Postgres itself to
+      # run 01-app-roles.sql. No application process ever authenticates
+      # with it. A fixed local-only placeholder, not a secret, exactly
+      # like the role passwords that script creates.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_bootstrap_only
+    ports:
+      # Loopback-only: reachable from this machine, not from the rest of
+      # the network. Compose's own default binds every interface.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    # Blob service only -- queue and table storage have no consumer in
+    # this codebase, so their ports are left unpublished.
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000"
+    ports:
+      # Loopback-only, matching the Postgres service above.
+      - "127.0.0.1:10000:10000"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  clamav:
+    image: clamav/clamav-debian:1.4
+    ports:
+      # Loopback-only, matching the other services above.
+      - "127.0.0.1:3310:3310"
+    volumes:
+      # Signature databases persist across restarts so this doesn't
+      # re-download them every time; freshclam keeps them current on its
+      # own schedule inside the container.
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      # The image's own health-check script (PING/PONG against clamd on
+      # its default port) -- used as shipped rather than reimplemented.
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      # Loading virus definitions takes real time on first start; a short
+      # interval with many retries lets this converge as soon as it's
+      # actually ready instead of waiting out one long fixed delay.
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  azurite-data:
+  clamav-data:
