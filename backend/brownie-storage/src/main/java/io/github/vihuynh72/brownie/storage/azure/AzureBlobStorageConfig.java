@@ -1,27 +1,16 @@
-package io.github.vihuynh72.brownie.api.storage.azure;
+package io.github.vihuynh72.brownie.storage.azure;
 
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
-/**
- * Builds the one {@link BlobServiceClient} this application uses.
- * Constructing a client here makes no network call of its own -- the
- * Azure SDK only reaches the network when an operation (upload, exists,
- * delete...) actually runs -- so this bean is safe to create even in the
- * fast, Docker-free test profile the rest of this application's context
- * tests already depend on; nothing here requires Azurite to be running.
- *
- * <p>Only a local, connection-string-based Azurite target exists today. A
- * production Azure Blob Storage adapter (managed identity, Key Vault) is
- * unresolved, the same way this codebase already leaves production
- * database credential rotation unresolved elsewhere.
- */
+/** Supplies the local/test Azure Blob adapter to a Brownie runtime. */
 @Configuration
-class BlobStorageConfig {
+public class AzureBlobStorageConfig {
 
     @Bean
     BlobServiceClient blobServiceClient(
@@ -40,5 +29,10 @@ class BlobStorageConfig {
             throw new IllegalStateException("BROWNIE_LOCAL_STORAGE_CONNECTION is required on this profile.");
         }
         return new BlobServiceClientBuilder().connectionString(localConnection).buildClient();
+    }
+
+    @Bean
+    BlobStore blobStore(BlobServiceClient blobServiceClient) {
+        return new AzureBlobStore(blobServiceClient);
     }
 }

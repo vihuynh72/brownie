@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.web;
 
+import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
+import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
+import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
@@ -11,6 +14,15 @@ import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
+import io.github.vihuynh72.brownie.core.job.IdempotencyConflictException;
+import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
+import io.github.vihuynh72.brownie.core.job.JobDeadlineExceededException;
+import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
+import io.github.vihuynh72.brownie.core.revision.DocumentContentValidationException;
+import io.github.vihuynh72.brownie.core.revision.DocumentIdempotencyConflictException;
+import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
+import io.github.vihuynh72.brownie.core.revision.DocumentRevisionConflictException;
+import io.github.vihuynh72.brownie.core.revision.DocumentTemplateVersionUnavailableException;
 import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
 import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
@@ -87,6 +99,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(ArtifactNotFoundException.class)
     public ResponseEntity<Object> handleArtifactNotFound(ArtifactNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler({DocumentNotFoundException.class, JobNotFoundException.class})
+    public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
         problem.setDetail(ex.getMessage());
@@ -205,6 +226,77 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "CONFLICT");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler({IdempotencyConflictException.class, InvalidJobTransitionException.class, JobDeadlineExceededException.class})
+    public ResponseEntity<Object> handleJobConflict(RuntimeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONFLICT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(DocumentIdempotencyConflictException.class)
+    public ResponseEntity<Object> handleDocumentIdempotencyConflict(
+            DocumentIdempotencyConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONFLICT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(DocumentRevisionConflictException.class)
+    public ResponseEntity<Object> handleDocumentRevisionConflict(DocumentRevisionConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.PRECONDITION_FAILED);
+        problem.setTitle("Precondition Failed");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "STALE_REVISION");
+        problem.setProperty("currentRevisionId", ex.currentRevisionId());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.PRECONDITION_FAILED, request);
+    }
+
+    @ExceptionHandler(DocumentContentValidationException.class)
+    public ResponseEntity<Object> handleDocumentContentValidation(DocumentContentValidationException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("One or more document fields do not match the selected template version.");
+        enrich(problem, "DOCUMENT_CONTENT_INVALID");
+        problem.setProperty(
+                "fields",
+                ex.problems().stream()
+                        .map(item -> Map.of("field", item.fieldId(), "reason", item.reason().name(), "message", item.detail()))
+                        .toList());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler(DocumentTemplateVersionUnavailableException.class)
+    public ResponseEntity<Object> handleDocumentTemplateVersionUnavailable(
+            DocumentTemplateVersionUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "TEMPLATE_VERSION_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler({JobRequestValidationException.class, DocumentRequestValidationException.class})
+    public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Bad Request");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "MALFORMED_REQUEST");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
+    }
+
+    @ExceptionHandler(EventStreamCapacityException.class)
+    public ResponseEntity<Object> handleEventStreamCapacity(EventStreamCapacityException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
+        problem.setTitle("Too Many Requests");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "EVENT_STREAM_LIMIT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.TOO_MANY_REQUESTS, request);
     }
 
     /**

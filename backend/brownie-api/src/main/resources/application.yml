@@ -89,7 +89,7 @@ brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
   public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
   storage:
-    # Local/test only -- see BlobStorageConfig, which refuses this setting
+    # Local/test only -- see AzureBlobStorageConfig, which refuses this setting
     # outright on pilot/production. No production Blob Storage adapter
     # exists yet.
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}

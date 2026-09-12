@@ -1,14 +1,14 @@
-package io.github.vihuynh72.brownie.api.storage.azure;
+package io.github.vihuynh72.brownie.storage.azure;
 
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.specialized.BlockBlobClient;
+import io.github.vihuynh72.brownie.core.artifact.BlobAlreadyExistsException;
 import io.github.vihuynh72.brownie.core.artifact.BlobSizeLimitExceededException;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import io.github.vihuynh72.brownie.core.artifact.UploadResult;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,20 +23,28 @@ import java.util.Optional;
  * key is opaque and server-generated before it ever reaches this class --
  * nothing here interprets or sanitizes a name.
  */
-@Component
-class AzureBlobStore implements BlobStore {
+public class AzureBlobStore implements BlobStore {
 
     private static final String CONTAINER_NAME = "artifacts";
     private static final int BUFFER_SIZE = 8192;
 
     private final BlobServiceClient blobServiceClient;
 
-    AzureBlobStore(BlobServiceClient blobServiceClient) {
+    public AzureBlobStore(BlobServiceClient blobServiceClient) {
         this.blobServiceClient = blobServiceClient;
     }
 
     @Override
     public UploadResult writeAndDigest(String objectKey, InputStream content, long maxBytes) throws IOException {
+        return write(objectKey, content, maxBytes, true);
+    }
+
+    @Override
+    public UploadResult writeNewAndDigest(String objectKey, InputStream content, long maxBytes) throws IOException {
+        return write(objectKey, content, maxBytes, false);
+    }
+
+    private UploadResult write(String objectKey, InputStream content, long maxBytes, boolean overwrite) throws IOException {
         BlobContainerClient container = containerClient();
         try {
             container.createIfNotExists();
@@ -44,20 +52,25 @@ class AzureBlobStore implements BlobStore {
             throw new IOException("Failed to prepare the artifact storage container.", e);
         }
 
-        BlockBlobClient blockBlobClient =
-                container.getBlobClient(objectKey).getBlockBlobClient();
+        BlockBlobClient blockBlobClient = container.getBlobClient(objectKey).getBlockBlobClient();
         MessageDigest digest = sha256Digest();
         byte[] buffer = new byte[BUFFER_SIZE];
         long total = 0;
         OutputStream out;
         try {
-            // Handles content of unknown length by staging blocks as they
-            // arrive, rather than needing the full size upfront -- the
-            // mechanism that lets this stay a single streaming pass with
-            // no in-memory buffering of the whole object.
-            out = blockBlobClient.getBlobOutputStream(true);
+            out = blockBlobClient.getBlobOutputStream(overwrite);
         } catch (BlobStorageException e) {
-            throw new IOException("Failed to open a blob output stream for " + objectKey, e);
+            throw writeFailure(objectKey, overwrite, e);
+        } catch (IllegalArgumentException e) {
+            // The Azure SDK's create-only convenience overload checks
+            // existence before opening its stream and reports that expected
+            // conflict as IllegalArgumentException. Confirm the object still
+            // exists before translating it, so malformed keys keep their
+            // normal caller-visible validation failure.
+            if (!overwrite && blockBlobClient.exists()) {
+                throw new BlobAlreadyExistsException(objectKey, e);
+            }
+            throw e;
         }
         try {
             int read;
@@ -69,17 +82,20 @@ class AzureBlobStore implements BlobStore {
                 digest.update(buffer, 0, read);
                 out.write(buffer, 0, read);
             }
+            out.close();
         } catch (BlobStorageException e) {
-            throw new IOException("Blob upload failed for " + objectKey, e);
+            throw writeFailure(objectKey, overwrite, e);
         }
-        // Reached only after a fully successful read-through. Closing here
-        // -- not in a finally block -- is deliberate: this is the one call
-        // that actually commits the staged blocks into a real blob. Azure
-        // (and Azurite) discard uncommitted staged blocks on their own, so
-        // any exception above, including the size-limit check, leaves
-        // nothing durable behind instead of a truncated object.
-        out.close();
+        // Closing only after the complete read commits all staged blocks. A
+        // failed read leaves no durable partial object in Azure or Azurite.
         return new UploadResult(total, HexFormat.of().formatHex(digest.digest()));
+    }
+
+    private static IOException writeFailure(String objectKey, boolean overwrite, BlobStorageException failure) {
+        if (!overwrite && (failure.getStatusCode() == 409 || failure.getStatusCode() == 412)) {
+            return new BlobAlreadyExistsException(objectKey, failure);
+        }
+        return new IOException("Blob upload failed for " + objectKey, failure);
     }
 
     @Override
@@ -98,9 +114,6 @@ class AzureBlobStore implements BlobStore {
     @Override
     public InputStream openStream(String objectKey) throws IOException {
         try {
-            // A real streaming download (BlobInputStream pulls bytes from
-            // Azure/Azurite on demand as its caller reads), not a call
-            // that resolves the whole object into memory upfront.
             return containerClient().getBlobClient(objectKey).openInputStream();
         } catch (BlobStorageException e) {
             throw new IOException("Failed to open a read stream for " + objectKey, e);

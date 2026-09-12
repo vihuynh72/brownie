@@ -2,6 +2,8 @@ package io.github.vihuynh72.brownie.api.storage.azure;
 
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import io.github.vihuynh72.brownie.core.artifact.BlobAlreadyExistsException;
+import io.github.vihuynh72.brownie.storage.azure.AzureBlobStore;
 import io.github.vihuynh72.brownie.core.artifact.BlobSizeLimitExceededException;
 import io.github.vihuynh72.brownie.core.artifact.UploadResult;
 import org.junit.jupiter.api.Test;
@@ -52,6 +54,23 @@ class AzureBlobStoreTest {
         assertThat(store.sizeOf(key)).contains((long) content.length);
         try (InputStream stored = store.openStream(key)) {
             assertThat(stored.readAllBytes()).isEqualTo(content);
+        }
+    }
+
+    @Test
+    void createOnlyWriteNeverReplacesExistingContent() throws IOException {
+        AzureBlobStore store = newStore();
+        String key = newKey();
+        byte[] first = "first object".getBytes(StandardCharsets.UTF_8);
+        byte[] replacement = "replacement object".getBytes(StandardCharsets.UTF_8);
+
+        store.writeNewAndDigest(key, new ByteArrayInputStream(first), 1024);
+
+        assertThrows(
+                BlobAlreadyExistsException.class,
+                () -> store.writeNewAndDigest(key, new ByteArrayInputStream(replacement), 1024));
+        try (InputStream stored = store.openStream(key)) {
+            assertThat(stored.readAllBytes()).isEqualTo(first);
         }
     }
 

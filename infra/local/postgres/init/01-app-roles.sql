@@ -36,11 +36,11 @@ ALTER SCHEMA public OWNER TO brownie_migration;
 GRANT CONNECT ON DATABASE brownie TO brownie_api, brownie_worker;
 GRANT USAGE ON SCHEMA public TO brownie_api, brownie_worker;
 
--- Any table or sequence brownie_migration creates from this point on
--- automatically grants ordinary read/write to both application roles.
--- Every later migration relies on this rule already being in place; none of
--- them need to repeat it.
+-- The API owns ordinary tenant-table access. Workers receive only explicit
+-- queue permissions from the migration that introduces each queue contract.
+-- This keeps a newly added tenant table inaccessible to a worker until its
+-- data boundary has been designed and reviewed.
 ALTER DEFAULT PRIVILEGES FOR ROLE brownie_migration IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO brownie_api, brownie_worker;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO brownie_api;
 ALTER DEFAULT PRIVILEGES FOR ROLE brownie_migration IN SCHEMA public
-  GRANT USAGE ON SEQUENCES TO brownie_api, brownie_worker;
+  GRANT USAGE ON SEQUENCES TO brownie_api;
