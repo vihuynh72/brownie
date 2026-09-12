@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.web;
 
+import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
+import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
+import io.github.vihuynh72.brownie.core.job.JobState;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -102,6 +105,19 @@ class ApiExceptionHandlerIntegrationTest {
         assertThat(fields).extracting(field -> field.get("field")).contains("name");
     }
 
+    @Test
+    void jobNotFoundAndInvalidStateAreMappedToNotFoundAndConflict() throws Exception {
+        HttpResponse<String> missing = get("/probe/job-not-found", null);
+        HttpResponse<String> conflict = get("/probe/job-conflict", null);
+        Map<String, Object> missingBody = json.readValue(missing.body(), Map.class);
+        Map<String, Object> conflictBody = json.readValue(conflict.body(), Map.class);
+
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(missingBody).containsEntry("code", "NOT_FOUND");
+        assertThat(conflict.statusCode()).isEqualTo(409);
+        assertThat(conflictBody).containsEntry("code", "CONFLICT");
+    }
+
     private HttpResponse<String> get(String path, String correlationId) throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url(path))).GET();
         if (correlationId != null) {
@@ -147,6 +163,16 @@ class ApiExceptionHandlerIntegrationTest {
         @PostMapping("/probe/validated")
         String validated(@Valid @RequestBody ProbeRequest request) {
             return "ok";
+        }
+
+        @GetMapping("/probe/job-not-found")
+        String jobNotFound() {
+            throw new JobNotFoundException(901L);
+        }
+
+        @GetMapping("/probe/job-conflict")
+        String jobConflict() {
+            throw new InvalidJobTransitionException(JobState.CANCELLED, JobState.CANCELLED);
         }
     }
 
