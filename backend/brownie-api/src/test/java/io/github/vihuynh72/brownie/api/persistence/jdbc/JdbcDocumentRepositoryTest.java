@@ -136,6 +136,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 firstEditContent,
+                Map.of(),
                 "corrected title").revision();
 
         assertThrows(
@@ -148,6 +149,7 @@ class JdbcDocumentRepositoryTest {
                         document.id(),
                         initial.id(),
                         content("stale title", LocalDate.of(2026, 10, 1)),
+                        Map.of(),
                         "stale edit"));
 
         List<DocumentRevision> history = documentRepository.findHistory(workspace.id(), user.id(), document.id());
@@ -175,6 +177,7 @@ class JdbcDocumentRepositoryTest {
                 templateVersion.templateId(),
                 templateVersion.id(),
                 content("September minutes", LocalDate.of(2026, 9, 1)),
+                Map.of(),
                 "initial draft");
         DocumentMutationResult replay = revisionService.createDocument(
                 workspace.id(),
@@ -185,6 +188,7 @@ class JdbcDocumentRepositoryTest {
                 templateVersion.templateId(),
                 templateVersion.id(),
                 content("September minutes", LocalDate.of(2026, 9, 1)),
+                Map.of(),
                 "initial draft");
 
         assertThat(replay.commandId()).isEqualTo(first.commandId());
@@ -208,6 +212,7 @@ class JdbcDocumentRepositoryTest {
                         templateVersion.templateId(),
                         templateVersion.id(),
                         content("September minutes", LocalDate.of(2026, 9, 1)),
+                        Map.of(),
                         "initial draft"));
     }
 
@@ -228,6 +233,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
+                Map.of(),
                 "first edit");
         DocumentMutationResult later = documentRepository.appendRevisionIdempotently(
                 workspace.id(),
@@ -237,6 +243,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 first.revision().id(),
                 content("November minutes", LocalDate.of(2026, 11, 1)),
+                Map.of(),
                 "later edit");
         DocumentMutationResult replay = documentRepository.appendRevisionIdempotently(
                 workspace.id(),
@@ -246,6 +253,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
+                Map.of(),
                 "first edit");
 
         assertThat(replay.commandId()).isEqualTo(first.commandId());
@@ -263,6 +271,7 @@ class JdbcDocumentRepositoryTest {
                         document.id(),
                         initial.id(),
                         content("Changed", LocalDate.of(2026, 10, 1)),
+                        Map.of(),
                         "different edit"));
     }
 
@@ -280,6 +289,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
+                Map.of(),
                 "first edit");
 
         try (Connection connection = dataSource.getConnection()) {
@@ -396,6 +406,52 @@ class JdbcDocumentRepositoryTest {
         }
     }
 
+    @Test
+    void evidenceRoundTripsThroughRealPostgresAndRejectsAnotherWorkspacesSpan() {
+        UserIdentity owner = newUser("evidence-owner");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
+        long titleSpanId = insertSourceSpan(workspace.id(), owner.id());
+        long dateSpanId = insertSourceSpan(workspace.id(), owner.id());
+
+        DocumentMutationResult created = revisionService.createDocument(
+                workspace.id(),
+                owner.id(),
+                key("evidence-create"),
+                hash("evidence-create"),
+                "Minutes",
+                templateVersion.templateId(),
+                templateVersion.id(),
+                content("September minutes", LocalDate.of(2026, 9, 1)),
+                Map.of("meeting.title", List.of(titleSpanId), "meeting.date", List.of(dateSpanId)),
+                "initial draft");
+
+        assertThat(created.revision().evidence().get("meeting.title")).containsExactly(titleSpanId);
+        assertThat(created.revision().evidence().get("meeting.date")).containsExactly(dateSpanId);
+        assertThat(documentRepository.findCurrentRevision(workspace.id(), owner.id(), created.document().id())
+                        .orElseThrow()
+                        .evidence())
+                .isEqualTo(created.revision().evidence());
+
+        Workspace otherWorkspace = workspaceRepository.ensurePersonalWorkspace(newUser("evidence-other").id());
+        long foreignSpanId = insertSourceSpan(otherWorkspace.id(), otherWorkspace.ownerUserId());
+
+        Exception exception = assertThrows(
+                Exception.class,
+                () -> revisionService.applyUserEdits(
+                        workspace.id(),
+                        owner.id(),
+                        key("evidence-foreign-span"),
+                        hash("evidence-foreign-span"),
+                        created.document().id(),
+                        created.revision().id(),
+                        List.of(new io.github.vihuynh72.brownie.core.revision.DocumentFieldEdit.SetValue(
+                                "meeting.title", new FieldValue.TextValue("October minutes"))),
+                        Map.of("meeting.title", List.of(foreignSpanId)),
+                        "cross-workspace evidence attempt"));
+        assertThat(exception).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
     private Document createDocument(long workspaceId, long userId, TemplateVersion templateVersion) {
         return revisionService.createDocument(
                 workspaceId,
@@ -406,6 +462,7 @@ class JdbcDocumentRepositoryTest {
                 templateVersion.templateId(),
                 templateVersion.id(),
                 content("September minutes", LocalDate.of(2026, 9, 1)),
+                Map.of(),
                 "initial draft").document();
     }
 
@@ -445,6 +502,57 @@ class JdbcDocumentRepositoryTest {
                     return id;
                 }
             }
+        } catch (SQLException exception) {
+            throw new RuntimeException(exception);
+        }
+    }
+
+    private long insertSourceSpan(long workspaceId, long userId) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            setLocalContext(connection, userId);
+            long artifactId;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    """
+                    INSERT INTO artifact (workspace_id, blob_key, status, byte_count, detected_media_type)
+                    VALUES (?, ?, 'READY', 42, 'PLAIN_TEXT')
+                    RETURNING id
+                    """)) {
+                statement.setLong(1, workspaceId);
+                statement.setString(2, "document-revision-evidence-test-" + UUID.randomUUID());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    artifactId = resultSet.getLong(1);
+                }
+            }
+            long snapshotId;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "INSERT INTO source_snapshot (workspace_id, artifact_id, kind) VALUES (?, ?, 'PLAIN_TEXT') RETURNING id")) {
+                statement.setLong(1, workspaceId);
+                statement.setLong(2, artifactId);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    snapshotId = resultSet.getLong(1);
+                }
+            }
+            long spanId;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    """
+                    INSERT INTO source_span (workspace_id, source_snapshot_id, extraction_parser_version, locator, excerpt_hash)
+                    VALUES (?, ?, 'test-parser-1', ?::jsonb, ?)
+                    RETURNING id
+                    """)) {
+                statement.setLong(1, workspaceId);
+                statement.setLong(2, snapshotId);
+                statement.setString(3, "{\"kind\":\"PLAIN_TEXT\",\"startCodePoint\":0,\"endCodePointExclusive\":5}");
+                statement.setString(4, "0".repeat(64));
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    spanId = resultSet.getLong(1);
+                }
+            }
+            connection.commit();
+            return spanId;
         } catch (SQLException exception) {
             throw new RuntimeException(exception);
         }
