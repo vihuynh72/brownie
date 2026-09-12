@@ -709,6 +709,14 @@ class ArtifactServiceTest {
         }
 
         @Override
+        public synchronized UploadResult writeNewAndDigest(String objectKey, InputStream content, long maxBytes) throws IOException {
+            if (objects.containsKey(objectKey)) {
+                throw new BlobAlreadyExistsException(objectKey, null);
+            }
+            return writeAndDigest(objectKey, content, maxBytes);
+        }
+
+        @Override
         public Optional<Long> sizeOf(String objectKey) {
             byte[] bytes = objects.get(objectKey);
             return bytes == null ? Optional.empty() : Optional.of((long) bytes.length);

@@ -299,6 +299,11 @@ class SourceServiceTest {
         }
 
         @Override
+        public UploadResult writeNewAndDigest(String objectKey, InputStream content, long maxBytes) {
+            throw new UnsupportedOperationException("not used in this test");
+        }
+
+        @Override
         public Optional<Long> sizeOf(String objectKey) {
             throw new UnsupportedOperationException("not used in this test");
         }
