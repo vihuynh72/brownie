@@ -34,6 +34,8 @@ jobs:
           node-version-file: .nvmrc
       - name: Verify pinned toolchain
         run: ./scripts/verify-toolchain.sh
+      - name: Build pinned isolated renderer image
+        run: docker build -t brownie-spike-renderer:pinned spike/docx-binding/render
       - name: Build scaffolds when present
         shell: bash
         run: |
