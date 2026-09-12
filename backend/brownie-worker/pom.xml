@@ -14,15 +14,20 @@
   <packaging>jar</packaging>
 
   <description>
-    The trusted job coordinator. Depends on brownie-core only; must never
-    depend on brownie-api and has no web starter, since it is not reached
-    directly by the browser.
+    The trusted job coordinator. Depends on brownie-core and shared storage
+    infrastructure; must never depend on brownie-api and has no web starter,
+    since it is not reached directly by the browser.
   </description>
 
   <dependencies>
     <dependency>
       <groupId>io.github.vihuynh72.brownie</groupId>
       <artifactId>brownie-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-storage</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
@@ -44,6 +49,16 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
@@ -51,6 +66,11 @@
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-azure</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
