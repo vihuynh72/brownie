@@ -14,8 +14,8 @@
   <packaging>jar</packaging>
 
   <description>
-    The public API and session boundary. Depends on brownie-core only; must
-    never depend on brownie-worker.
+    The public API and session boundary. Depends on brownie-core and shared
+    storage infrastructure; must never depend on brownie-worker.
   </description>
 
   <dependencies>
@@ -94,13 +94,9 @@
       <scope>runtime</scope>
     </dependency>
     <dependency>
-      <!-- The one blob storage adapter this codebase has: Azurite locally
-           via a connection string, no production Azure Blob wiring yet.
-           Not managed by the Spring Boot BOM, so pinned explicitly here,
-           checked against the SDK's own published releases, not guessed. -->
-      <groupId>com.azure</groupId>
-      <artifactId>azure-storage-blob</artifactId>
-      <version>12.35.1</version>
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-storage</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <!-- DOCX structural extraction. Not managed by the Spring Boot BOM,
