@@ -106,6 +106,16 @@ class ApiExceptionHandlerIntegrationTest {
     }
 
     @Test
+    void dataIntegrityViolationIsMappedToUnprocessableEntityNotAGeneric500() throws Exception {
+        HttpResponse<String> response = get("/probe/data-integrity-violation", null);
+        Map<String, Object> body = json.readValue(response.body(), Map.class);
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(body).containsEntry("code", "REFERENCED_DATA_UNAVAILABLE");
+        assertThat(body.get("correlationId")).isNotNull();
+    }
+
+    @Test
     void jobNotFoundAndInvalidStateAreMappedToNotFoundAndConflict() throws Exception {
         HttpResponse<String> missing = get("/probe/job-not-found", null);
         HttpResponse<String> conflict = get("/probe/job-conflict", null);
@@ -173,6 +183,11 @@ class ApiExceptionHandlerIntegrationTest {
         @GetMapping("/probe/job-conflict")
         String jobConflict() {
             throw new InvalidJobTransitionException(JobState.CANCELLED, JobState.CANCELLED);
+        }
+
+        @GetMapping("/probe/data-integrity-violation")
+        String dataIntegrityViolation() {
+            throw new org.springframework.dao.DataIntegrityViolationException("simulated foreign key violation");
         }
     }
 
