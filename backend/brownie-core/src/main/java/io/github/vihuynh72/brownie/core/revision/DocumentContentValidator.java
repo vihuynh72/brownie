@@ -24,6 +24,49 @@ final class DocumentContentValidator {
         throwIfProblems(problems);
     }
 
+    /** The same per-field checks as {@link #validate}, but for a bounded subset of fields -- a proposal is never required to touch every field a template defines. */
+    static void validatePartial(Map<String, FieldValue> proposedValues, List<FieldDefinition> definitions) {
+        Map<String, FieldDefinition> definitionsById = definitionsById(definitions);
+        List<DocumentContentProblem> problems = new ArrayList<>();
+        for (Map.Entry<String, FieldValue> entry : proposedValues.entrySet()) {
+            validateValue(entry.getKey(), entry.getValue(), definitionsById, problems);
+        }
+        throwIfProblems(problems);
+    }
+
+    /** The same shape check {@link #validateEvidence} applies, scoped to a proposal's own proposed field set rather than a full revision's content. */
+    static void validatePartialEvidence(Set<String> proposedFieldIds, Map<String, List<Long>> proposedEvidence) {
+        List<DocumentContentProblem> problems = new ArrayList<>();
+        for (Map.Entry<String, List<Long>> entry : proposedEvidence.entrySet()) {
+            String fieldId = entry.getKey();
+            if (!proposedFieldIds.contains(fieldId)) {
+                problems.add(new DocumentContentProblem(
+                        fieldId, DocumentContentProblemReason.UNKNOWN_FIELD,
+                        "Evidence cites a field this proposal does not propose a value for."));
+                continue;
+            }
+            if (entry.getValue().isEmpty()) {
+                problems.add(new DocumentContentProblem(
+                        fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                        "Evidence for a field must not be an empty list; omit the field instead."));
+                continue;
+            }
+            Set<Long> distinct = new HashSet<>();
+            for (Long spanId : entry.getValue()) {
+                if (spanId == null || spanId <= 0) {
+                    problems.add(new DocumentContentProblem(
+                            fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                            "Evidence source span IDs must be positive."));
+                } else if (!distinct.add(spanId)) {
+                    problems.add(new DocumentContentProblem(
+                            fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                            "Evidence source span " + spanId + " is cited more than once for the same field."));
+                }
+            }
+        }
+        throwIfProblems(problems);
+    }
+
     /**
      * A cited field must actually carry a value in this exact content, so a
      * stale citation left over from a removed field cannot silently survive.

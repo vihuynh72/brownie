@@ -11,10 +11,18 @@ import java.util.Objects;
  * evidence} names, for a subset of the fields in {@code content}, which
  * already-persisted {@code SourceSpan} IDs the actor says back that field's
  * value -- a user-asserted citation, not a validated or AI-composed support
- * relationship (that dimension belongs to later, model-assisted work). It is
- * kept separate from {@code content}/{@code contentHash} because provenance
- * about a value is not part of the value's own typed identity: two revisions
- * can carry the identical field values while citing different evidence.
+ * relationship. It is kept separate from {@code content}/{@code contentHash}
+ * because provenance about a value is not part of the value's own typed
+ * identity: two revisions can carry the identical field values while citing
+ * different evidence.
+ *
+ * <p>{@code fieldStates} names, for every {@link FieldItemRef} present in
+ * {@code content}, that field or item's full {@link FieldState} -- the
+ * richer authorship/evidence-support/validation/review/lock dimensions
+ * {@code evidence} above does not itself carry. A field this revision does
+ * not touch keeps its previous revision's own state; a field this revision
+ * sets or replaces gets a fresh one (see {@code RevisionService}'s own
+ * carry-forward rule for evidence, applied identically here).
  */
 public record DocumentRevision(
         long id,
@@ -27,7 +35,8 @@ public record DocumentRevision(
         long actorUserId,
         String editReason,
         OffsetDateTime createdAt,
-        Map<String, List<Long>> evidence) {
+        Map<String, List<Long>> evidence,
+        Map<FieldItemRef, FieldState> fieldStates) {
 
     public DocumentRevision {
         if (revisionNumber < 1) {
@@ -42,6 +51,7 @@ public record DocumentRevision(
         }
         Objects.requireNonNull(createdAt, "createdAt");
         evidence = copyOfEvidence(evidence);
+        fieldStates = fieldStates == null ? Map.of() : Map.copyOf(fieldStates);
     }
 
     private static Map<String, List<Long>> copyOfEvidence(Map<String, List<Long>> evidence) {
