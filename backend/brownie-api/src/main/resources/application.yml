@@ -8,6 +8,12 @@ server:
 spring:
   application:
     name: brownie-api
+  ai:
+    openai:
+      # No default: real profiles fail fast if unset, the same convention
+      # BROWNIE_CLAMAV_HOST below already uses. See the test profile block
+      # further down for why this cannot simply be blank.
+      api-key: ${BROWNIE_OPENAI_API_KEY}
   datasource:
     url: ${BROWNIE_DB_URL}
     username: ${BROWNIE_DB_USERNAME}
@@ -99,6 +105,14 @@ brownie:
     clamav:
       host: ${BROWNIE_CLAMAV_HOST}
       port: ${BROWNIE_CLAMAV_PORT:3310}
+  ai:
+    openai:
+      # The one evaluated snapshot this gateway is fixed to -- a code-level
+      # architecture decision, not a per-machine secret, so it defaults
+      # here rather than requiring every environment to set it. Changing
+      # it is a deliberate, recorded decision, never something a caller's
+      # request can select (see OpenAiModelGateway).
+      model: ${BROWNIE_OPENAI_MODEL:gpt-5.4-mini-2026-03-17}
 
 logging:
   structured:
@@ -165,6 +179,15 @@ spring:
   # session settings above, so it has to be turned off by name instead.
   autoconfigure:
     exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
+  ai:
+    openai:
+      # A syntactically valid but fake key, the same unreachable-endpoint
+      # convention used throughout this profile: building Spring AI's
+      # OpenAiChatModel bean needs some non-blank value, but constructing
+      # it never touches the network on its own -- only an actual
+      # complete() call does, and the fast, Docker-free tests that run
+      # under this profile never make one.
+      api-key: sk-test-not-a-real-key
 brownie:
   storage:
     # A syntactically valid but unreachable target (port 65535, the same
