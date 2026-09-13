@@ -1,6 +1,8 @@
 package io.github.vihuynh72.brownie.api.generation;
 
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
+import io.github.vihuynh72.brownie.core.generation.CompositionResponseParser;
+import io.github.vihuynh72.brownie.core.generation.CompositionService;
 import io.github.vihuynh72.brownie.core.generation.ExtractionResponseParser;
 import io.github.vihuynh72.brownie.core.generation.ExtractionService;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
@@ -18,5 +20,10 @@ class GenerationConfig {
             ModelGateway modelGateway,
             ExtractionResponseParser extractionResponseParser) {
         return new ExtractionService(documentExtractionService, sourceService, modelGateway, extractionResponseParser);
+    }
+
+    @Bean
+    CompositionService compositionService(ModelGateway modelGateway, CompositionResponseParser compositionResponseParser) {
+        return new CompositionService(modelGateway, compositionResponseParser);
     }
 }
