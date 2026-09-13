@@ -137,6 +137,7 @@ class JdbcDocumentRepositoryTest {
                 initial.id(),
                 firstEditContent,
                 Map.of(),
+                Map.of(),
                 "corrected title").revision();
 
         assertThrows(
@@ -149,6 +150,7 @@ class JdbcDocumentRepositoryTest {
                         document.id(),
                         initial.id(),
                         content("stale title", LocalDate.of(2026, 10, 1)),
+                        Map.of(),
                         Map.of(),
                         "stale edit"));
 
@@ -234,6 +236,7 @@ class JdbcDocumentRepositoryTest {
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
                 Map.of(),
+                Map.of(),
                 "first edit");
         DocumentMutationResult later = documentRepository.appendRevisionIdempotently(
                 workspace.id(),
@@ -244,6 +247,7 @@ class JdbcDocumentRepositoryTest {
                 first.revision().id(),
                 content("November minutes", LocalDate.of(2026, 11, 1)),
                 Map.of(),
+                Map.of(),
                 "later edit");
         DocumentMutationResult replay = documentRepository.appendRevisionIdempotently(
                 workspace.id(),
@@ -253,6 +257,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
+                Map.of(),
                 Map.of(),
                 "first edit");
 
@@ -272,6 +277,7 @@ class JdbcDocumentRepositoryTest {
                         initial.id(),
                         content("Changed", LocalDate.of(2026, 10, 1)),
                         Map.of(),
+                        Map.of(),
                         "different edit"));
     }
 
@@ -289,6 +295,7 @@ class JdbcDocumentRepositoryTest {
                 document.id(),
                 initial.id(),
                 content("October minutes", LocalDate.of(2026, 10, 1)),
+                Map.of(),
                 Map.of(),
                 "first edit");
 
@@ -449,6 +456,170 @@ class JdbcDocumentRepositoryTest {
                                 "meeting.title", new FieldValue.TextValue("October minutes"))),
                         Map.of("meeting.title", List.of(foreignSpanId)),
                         "cross-workspace evidence attempt"));
+        assertThat(exception).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void fieldStatesRoundTripThroughRealPostgresIncludingRepeatedItemIndexes() {
+        UserIdentity owner = newUser("field-state-owner");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
+        Document document = createDocument(workspace.id(), owner.id(), templateVersion);
+        DocumentRevision initial = documentRepository.findCurrentRevision(workspace.id(), owner.id(), document.id()).orElseThrow();
+
+        assertThat(initial.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title")))
+                .isEqualTo(new io.github.vihuynh72.brownie.core.revision.FieldState(
+                        io.github.vihuynh72.brownie.core.revision.Authorship.USER_AUTHORED,
+                        io.github.vihuynh72.brownie.core.revision.EvidenceSupport.MISSING,
+                        io.github.vihuynh72.brownie.core.revision.ValidationState.NOT_RUN,
+                        io.github.vihuynh72.brownie.core.revision.ReviewState.UNREVIEWED,
+                        io.github.vihuynh72.brownie.core.revision.LockState.EDITABLE));
+
+        DocumentRevision edited = revisionService.applyUserEdits(
+                        workspace.id(),
+                        owner.id(),
+                        key("field-state-repeated-edit"),
+                        hash("field-state-repeated-edit"),
+                        document.id(),
+                        initial.id(),
+                        List.of(new io.github.vihuynh72.brownie.core.revision.DocumentFieldEdit.SetValue(
+                                "action.tasks", new FieldValue.RepeatedTextValue(List.of("Send agenda", "Book room")))),
+                        Map.of(),
+                        "add two tasks")
+                .revision();
+
+        DocumentRevision reloaded =
+                documentRepository.findRevision(workspace.id(), owner.id(), document.id(), edited.id()).orElseThrow();
+        assertThat(reloaded.fieldStates()).isEqualTo(edited.fieldStates());
+        assertThat(reloaded.fieldStates()).containsKey(io.github.vihuynh72.brownie.core.revision.FieldItemRef.item("action.tasks", 0));
+        assertThat(reloaded.fieldStates()).containsKey(io.github.vihuynh72.brownie.core.revision.FieldItemRef.item("action.tasks", 1));
+        assertThat(reloaded.fieldStates()).doesNotContainKey(io.github.vihuynh72.brownie.core.revision.FieldItemRef.item("action.tasks", 2));
+        // The untouched scalar field's state survives the edit and the round trip unchanged.
+        assertThat(reloaded.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.date")))
+                .isEqualTo(initial.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.date")));
+    }
+
+    @Test
+    void patchProposalsRoundTripThroughRealPostgresAndOnlyCleanFieldsApplyOnAccept() {
+        UserIdentity owner = newUser("patch-proposal-owner");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
+        long titleSpanId = insertSourceSpan(workspace.id(), owner.id());
+        Document document = createDocument(workspace.id(), owner.id(), templateVersion);
+        long baseRevisionId = document.currentRevisionId();
+
+        io.github.vihuynh72.brownie.core.revision.PatchProposal proposal = revisionService.proposePatch(
+                workspace.id(),
+                owner.id(),
+                document.id(),
+                baseRevisionId,
+                Map.of("meeting.title", new FieldValue.TextValue("Concise title")),
+                Map.of("meeting.title", List.of(titleSpanId)));
+
+        assertThat(proposal.status()).isEqualTo(io.github.vihuynh72.brownie.core.revision.PatchProposalStatus.PROPOSED);
+        assertThat(proposal.proposedEvidence().get("meeting.title")).containsExactly(titleSpanId);
+
+        // The user edits meeting.date themselves, unrelated to the proposal's own field, before it is accepted.
+        DocumentRevision userEdited = revisionService.applyUserEdits(
+                        workspace.id(),
+                        owner.id(),
+                        key("patch-proposal-unrelated-edit"),
+                        hash("patch-proposal-unrelated-edit"),
+                        document.id(),
+                        baseRevisionId,
+                        List.of(new io.github.vihuynh72.brownie.core.revision.DocumentFieldEdit.SetValue(
+                                "meeting.date", new FieldValue.DateValue(LocalDate.of(2026, 11, 1)))),
+                        Map.of(),
+                        "unrelated date correction")
+                .revision();
+
+        io.github.vihuynh72.brownie.core.revision.PatchAcceptanceResult result = revisionService.acceptPatch(
+                workspace.id(),
+                owner.id(),
+                key("accept-patch-proposal"),
+                hash("accept-patch-proposal"),
+                document.id(),
+                proposal.id(),
+                userEdited.id(),
+                "accepted composed title");
+
+        DocumentRevision accepted = result.mutation().orElseThrow().revision();
+        assertThat(((FieldValue.TextValue) accepted.content().fields().get("meeting.title")).value()).isEqualTo("Concise title");
+        assertThat(((FieldValue.DateValue) accepted.content().fields().get("meeting.date")).value())
+                .isEqualTo(LocalDate.of(2026, 11, 1));
+        assertThat(accepted.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title")).authorship())
+                .isEqualTo(io.github.vihuynh72.brownie.core.revision.Authorship.AI_COMPOSED);
+
+        // A second acceptance attempt on the now-already-accepted proposal is refused, proven against the real database.
+        assertThrows(
+                io.github.vihuynh72.brownie.core.revision.PatchProposalNotFoundException.class,
+                () -> revisionService.acceptPatch(
+                        workspace.id(), owner.id(), key("accept-patch-proposal-again"), hash("accept-patch-proposal-again"),
+                        document.id(), proposal.id(), accepted.id(), "second attempt"));
+    }
+
+    @Test
+    void reviewDecisionsLocksAndUndoRoundTripThroughRealPostgres() {
+        UserIdentity owner = newUser("review-lock-undo-owner");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
+        Document document = createDocument(workspace.id(), owner.id(), templateVersion);
+        long initialRevisionId = document.currentRevisionId();
+
+        DocumentRevision reviewed = revisionService.recordReviewDecision(
+                        workspace.id(), owner.id(), key("record-review"), hash("record-review"), document.id(), initialRevisionId,
+                        io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title"),
+                        io.github.vihuynh72.brownie.core.revision.ReviewState.ACCEPTED, "reviewer accepted the title")
+                .revision();
+        assertThat(reviewed.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title")).review())
+                .isEqualTo(io.github.vihuynh72.brownie.core.revision.ReviewState.ACCEPTED);
+
+        DocumentRevision locked = revisionService.setFieldLock(
+                        workspace.id(), owner.id(), key("set-lock"), hash("set-lock"), document.id(), reviewed.id(),
+                        io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title"),
+                        io.github.vihuynh72.brownie.core.revision.LockState.EXPLICITLY_LOCKED, "protect the finalized title")
+                .revision();
+        assertThat(locked.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title")).lock())
+                .isEqualTo(io.github.vihuynh72.brownie.core.revision.LockState.EXPLICITLY_LOCKED);
+        // The review decision from the previous revision survives a lock change that does not touch it.
+        assertThat(locked.fieldStates().get(io.github.vihuynh72.brownie.core.revision.FieldItemRef.scalar("meeting.title")).review())
+                .isEqualTo(io.github.vihuynh72.brownie.core.revision.ReviewState.ACCEPTED);
+
+        assertThrows(
+                io.github.vihuynh72.brownie.core.revision.FieldLockedException.class,
+                () -> revisionService.applyUserEdits(
+                        workspace.id(), owner.id(), key("blocked-edit"), hash("blocked-edit"), document.id(), locked.id(),
+                        List.of(new io.github.vihuynh72.brownie.core.revision.DocumentFieldEdit.SetValue(
+                                "meeting.title", new FieldValue.TextValue("Sneaky real-database change"))),
+                        Map.of(), "an edit the real database-backed lock must reject"));
+
+        DocumentRevision reloaded = documentRepository.findCurrentRevision(workspace.id(), owner.id(), document.id()).orElseThrow();
+        assertThat(reloaded.id()).isEqualTo(locked.id());
+
+        DocumentRevision undone = revisionService.undoToRevision(
+                        workspace.id(), owner.id(), key("undo-to-initial"), hash("undo-to-initial"), document.id(), locked.id(),
+                        initialRevisionId, "reverted the lock and review by undoing to the very first revision")
+                .revision();
+        assertThat(undone.fieldStates()).isEqualTo(
+                documentRepository.findRevision(workspace.id(), owner.id(), document.id(), initialRevisionId).orElseThrow().fieldStates());
+    }
+
+    @Test
+    void proposingAPatchWithAnotherWorkspacesEvidenceSpanIsRejectedByTheRealForeignKey() {
+        UserIdentity owner = newUser("patch-evidence-owner");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
+        Document document = createDocument(workspace.id(), owner.id(), templateVersion);
+
+        Workspace otherWorkspace = workspaceRepository.ensurePersonalWorkspace(newUser("patch-evidence-other").id());
+        long foreignSpanId = insertSourceSpan(otherWorkspace.id(), otherWorkspace.ownerUserId());
+
+        Exception exception = assertThrows(
+                Exception.class,
+                () -> revisionService.proposePatch(
+                        workspace.id(), owner.id(), document.id(), document.currentRevisionId(),
+                        Map.of("meeting.title", new FieldValue.TextValue("Unsupported assertion")),
+                        Map.of("meeting.title", List.of(foreignSpanId))));
         assertThat(exception).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 

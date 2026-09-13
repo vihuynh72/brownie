@@ -129,8 +129,9 @@ class ExtractionAdversarialIntegrationTest {
     private WorkspaceRepository workspaceRepository;
 
     /**
-     * Adversarial: a transcript with an embedded prompt-injection attempt,
-     * this plan's own named example (§10.4) almost verbatim. The strict
+     * Adversarial: a transcript with an embedded prompt-injection attempt
+     * asking the model to ignore its instructions and act on the attacker's
+     * own commands instead. The strict
      * JSON Schema itself (additionalProperties: false, an exact, closed
      * property set) already makes it structurally impossible for the
      * model to add a field this run never asked about, no matter what the

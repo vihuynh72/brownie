@@ -35,6 +35,7 @@ public interface DocumentRepository {
             long templateVersionId,
             DocumentContent initialContent,
             Map<String, List<Long>> initialEvidence,
+            Map<FieldItemRef, FieldState> initialFieldStates,
             String initialRevisionReason);
 
     Optional<Document> find(long workspaceId, long userId, long documentId);
@@ -58,5 +59,6 @@ public interface DocumentRepository {
             long expectedRevisionId,
             DocumentContent content,
             Map<String, List<Long>> evidence,
+            Map<FieldItemRef, FieldState> fieldStates,
             String editReason);
 }

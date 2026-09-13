@@ -522,10 +522,50 @@ components:
           enum: [SCALAR, REPEATED]
         value:
           type: string
+          nullable: true
         values:
           type: array
           items:
             type: string
+          nullable: true
+        evidenceSourceSpanIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+        fieldState:
+          allOf:
+            - $ref: "#/components/schemas/FieldStateResponse"
+          nullable: true
+          description: Present for a SCALAR field.
+        itemFieldStates:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/FieldStateResponse"
+            nullable: true
+          nullable: true
+          description: Present for a REPEATED field, one entry per item in the same order as values.
+
+    FieldStateResponse:
+      type: object
+      required: [authorship, evidenceSupport, validation, review, lock]
+      properties:
+        authorship:
+          type: string
+          enum: [IMPORTED, AI_COMPOSED, USER_AUTHORED, MIXED]
+        evidenceSupport:
+          type: string
+          enum: [DIRECT, TRANSFORMED, AMBIGUOUS, UNSUPPORTED, MISSING]
+        validation:
+          type: string
+          enum: [NOT_RUN, PASSED, WARNING, BLOCKING, UNAVAILABLE]
+        review:
+          type: string
+          enum: [UNREVIEWED, ACCEPTED, REJECTED, NEEDS_CLARIFICATION]
+        lock:
+          type: string
+          enum: [EDITABLE, PRESERVE_ON_REGENERATION, EXPLICITLY_LOCKED]
 
     DocumentRevisionResponse:
       type: object

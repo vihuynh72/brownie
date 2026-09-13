@@ -11,6 +11,8 @@ import io.github.vihuynh72.brownie.core.revision.DocumentFieldEdit;
 import io.github.vihuynh72.brownie.core.revision.DocumentMutationResult;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
+import io.github.vihuynh72.brownie.core.revision.FieldItemRef;
+import io.github.vihuynh72.brownie.core.revision.FieldState;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
@@ -312,7 +314,9 @@ class DocumentController {
         static DocumentRevisionResponse from(DocumentRevision revision) {
             Map<String, FieldValueResponse> fields = new LinkedHashMap<>();
             revision.content().fields().forEach((fieldId, value) -> fields.put(
-                    fieldId, FieldValueResponse.from(value, revision.evidence().getOrDefault(fieldId, List.of()))));
+                    fieldId,
+                    FieldValueResponse.from(
+                            fieldId, value, revision.evidence().getOrDefault(fieldId, List.of()), revision.fieldStates())));
             return new DocumentRevisionResponse(
                     revision.id(),
                     revision.revisionNumber(),
@@ -325,19 +329,55 @@ class DocumentController {
     }
 
     record FieldValueResponse(
-            String type, String cardinality, String value, List<String> values, List<Long> evidenceSourceSpanIds) {
+            String type,
+            String cardinality,
+            String value,
+            List<String> values,
+            List<Long> evidenceSourceSpanIds,
+            FieldStateResponse fieldState,
+            List<FieldStateResponse> itemFieldStates) {
 
-        static FieldValueResponse from(FieldValue value, List<Long> evidenceSourceSpanIds) {
+        static FieldValueResponse from(
+                String fieldId, FieldValue value, List<Long> evidenceSourceSpanIds, Map<FieldItemRef, FieldState> fieldStates) {
             return switch (value) {
-                case FieldValue.TextValue(String text) ->
-                        new FieldValueResponse("TEXT", "SCALAR", text, null, evidenceSourceSpanIds);
-                case FieldValue.DateValue(LocalDate date) ->
-                        new FieldValueResponse("DATE", "SCALAR", date.toString(), null, evidenceSourceSpanIds);
-                case FieldValue.RepeatedTextValue(List<String> texts) ->
-                        new FieldValueResponse("TEXT", "REPEATED", null, texts, evidenceSourceSpanIds);
+                case FieldValue.TextValue(String text) -> new FieldValueResponse(
+                        "TEXT", "SCALAR", text, null, evidenceSourceSpanIds,
+                        stateOf(fieldStates, FieldItemRef.scalar(fieldId)), null);
+                case FieldValue.DateValue(LocalDate date) -> new FieldValueResponse(
+                        "DATE", "SCALAR", date.toString(), null, evidenceSourceSpanIds,
+                        stateOf(fieldStates, FieldItemRef.scalar(fieldId)), null);
+                case FieldValue.RepeatedTextValue(List<String> texts) -> new FieldValueResponse(
+                        "TEXT", "REPEATED", null, texts, evidenceSourceSpanIds, null, itemStatesOf(fieldStates, fieldId, texts.size()));
                 case FieldValue.RepeatedDateValue(List<LocalDate> dates) -> new FieldValueResponse(
-                        "DATE", "REPEATED", null, dates.stream().map(LocalDate::toString).toList(), evidenceSourceSpanIds);
+                        "DATE", "REPEATED", null, dates.stream().map(LocalDate::toString).toList(), evidenceSourceSpanIds,
+                        null, itemStatesOf(fieldStates, fieldId, dates.size()));
             };
+        }
+
+        private static FieldStateResponse stateOf(Map<FieldItemRef, FieldState> fieldStates, FieldItemRef ref) {
+            FieldState state = fieldStates.get(ref);
+            return state == null ? null : FieldStateResponse.from(state);
+        }
+
+        private static List<FieldStateResponse> itemStatesOf(
+                Map<FieldItemRef, FieldState> fieldStates, String fieldId, int itemCount) {
+            List<FieldStateResponse> states = new java.util.ArrayList<>(itemCount);
+            for (int index = 0; index < itemCount; index++) {
+                states.add(stateOf(fieldStates, FieldItemRef.item(fieldId, index)));
+            }
+            return states;
+        }
+    }
+
+    record FieldStateResponse(String authorship, String evidenceSupport, String validation, String review, String lock) {
+
+        static FieldStateResponse from(FieldState state) {
+            return new FieldStateResponse(
+                    state.authorship().name(),
+                    state.evidenceSupport().name(),
+                    state.validation().name(),
+                    state.review().name(),
+                    state.lock().name());
         }
     }
 
