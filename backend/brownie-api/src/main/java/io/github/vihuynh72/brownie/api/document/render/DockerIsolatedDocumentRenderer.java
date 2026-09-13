@@ -67,6 +67,7 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
             Path input = inDir.resolve("input.docx");
             Files.write(input, docxBytes);
             makeReadOnly(input);
+            makeWorldWritable(outDir);
 
             String containerName = "brownie-render-" + UUID.randomUUID();
             List<String> command = renderCommand(inDir, outDir, containerName);
@@ -248,6 +249,33 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
         } catch (UnsupportedOperationException | IOException e) {
             // Best effort: the mount into the container is already read-only regardless of host file permissions.
             log.debug("Could not mark staged input read-only on this filesystem.", e);
+        }
+    }
+
+    /**
+     * Without this, the output directory keeps the default {@code
+     * createDirectory} mode (owner rwx, group/other r-x) -- which denies
+     * write access to the container's fixed, non-root {@code uid=10001}
+     * (baked into the pinned image's {@code USER renderer}), since that uid
+     * matches neither the host JVM's owning user nor its group. A real
+     * Linux Docker host enforces that host-side mode on the bind-mounted
+     * directory, so the container's own {@code soffice} process cannot
+     * create {@code /out/input.pdf} and the conversion silently produces no
+     * output despite the container itself exiting 0. macOS Docker Desktop's
+     * bind-mount layer does not enforce these bits the same way, which is
+     * why this was never caught testing only on that platform -- confirmed
+     * directly by running the pinned image as uid 10001 against a 0755 host
+     * directory on both platforms. The job directory is single-use,
+     * unpredictably named, and deleted immediately after this call
+     * returns, so widening only this short-lived directory to
+     * world-writable is a contained trade-off for a uid we cannot chown to
+     * without host root.
+     */
+    private void makeWorldWritable(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxrwxrwx"));
+        } catch (UnsupportedOperationException | IOException e) {
+            log.debug("Could not widen render output directory permissions on this filesystem.", e);
         }
     }
 

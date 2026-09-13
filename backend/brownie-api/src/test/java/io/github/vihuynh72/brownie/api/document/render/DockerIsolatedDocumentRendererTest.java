@@ -115,8 +115,16 @@ class DockerIsolatedDocumentRendererTest {
         }
     }
 
+    /**
+     * A generous 15-second budget, not 5: this runs right after two other
+     * tests in this class each launched their own {@code --cpus=1
+     * --memory=512m} LibreOffice container, and on a shared, 2-vCPU CI
+     * runner (unlike this author's own faster local machine) the daemon
+     * scheduling a fresh container while those cgroups are still settling
+     * can genuinely take longer than a locally-tuned constant assumed.
+     */
     private static void awaitRunning(String containerName) throws Exception {
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 150; i++) {
             if (isRunning(containerName)) {
                 return;
             }
@@ -126,7 +134,7 @@ class DockerIsolatedDocumentRendererTest {
     }
 
     private static boolean waitUntilGone(String containerName) throws Exception {
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 150; i++) {
             if (!isRunning(containerName)) {
                 return true;
             }
