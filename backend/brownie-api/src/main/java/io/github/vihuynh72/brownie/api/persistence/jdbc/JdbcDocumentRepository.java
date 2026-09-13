@@ -89,6 +89,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             long templateId,
             long templateVersionId,
             DocumentContent initialContent,
+            Map<String, List<Long>> initialEvidence,
             String initialRevisionReason) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         DocumentIdempotencyReservation reservation = reserveIdempotency(
@@ -136,6 +137,7 @@ class JdbcDocumentRepository implements DocumentRepository {
         if (!advanceCurrentRevision(workspaceId, documentId, null, initialRevisionId)) {
             throw new IllegalStateException("New document " + documentId + " did not accept its initial revision pointer.");
         }
+        insertEvidence(workspaceId, documentId, initialRevisionId, initialEvidence);
         createMutationReceipt(reservation.record(), documentId, initialRevisionId);
         return mutationResultFor(reservation.record());
     }
@@ -170,7 +172,8 @@ class JdbcDocumentRepository implements DocumentRepository {
                         workspaceId,
                         documentId)
                 .stream()
-                .findFirst();
+                .findFirst()
+                .map(this::withEvidence);
     }
 
     @Override
@@ -185,19 +188,21 @@ class JdbcDocumentRepository implements DocumentRepository {
                         documentId,
                         revisionId)
                 .stream()
-                .findFirst();
+                .findFirst()
+                .map(this::withEvidence);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<DocumentRevision> findHistory(long workspaceId, long userId, long documentId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
-        return jdbcTemplate.query(
+        List<DocumentRevision> revisions = jdbcTemplate.query(
                 "SELECT " + REVISION_COLUMNS
                         + " FROM document_revision WHERE workspace_id = ? AND document_id = ? ORDER BY revision_number",
                 this::mapRevision,
                 workspaceId,
                 documentId);
+        return revisions.stream().map(this::withEvidence).toList();
     }
 
     @Override
@@ -210,6 +215,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             long documentId,
             long expectedRevisionId,
             DocumentContent content,
+            Map<String, List<Long>> evidence,
             String editReason) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         DocumentIdempotencyReservation reservation = reserveIdempotency(
@@ -274,6 +280,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             throw new IllegalStateException(
                     "Document " + documentId + " rejected revision " + revisionId + " as its direct next revision.");
         }
+        insertEvidence(workspaceId, documentId, revisionId, evidence);
         createMutationReceipt(reservation.record(), documentId, revisionId);
         return mutationResultFor(reservation.record());
     }
@@ -447,7 +454,62 @@ class JdbcDocumentRepository implements DocumentRepository {
                 contentHash,
                 rs.getLong("actor_user_id"),
                 rs.getString("edit_reason"),
-                rs.getObject("created_at", OffsetDateTime.class));
+                rs.getObject("created_at", OffsetDateTime.class),
+                Map.of());
+    }
+
+    private DocumentRevision withEvidence(DocumentRevision revision) {
+        Map<String, List<Long>> evidence = loadEvidence(revision.workspaceId(), revision.documentId(), revision.id());
+        return new DocumentRevision(
+                revision.id(),
+                revision.workspaceId(),
+                revision.documentId(),
+                revision.revisionNumber(),
+                revision.parentRevisionId(),
+                revision.content(),
+                revision.contentHash(),
+                revision.actorUserId(),
+                revision.editReason(),
+                revision.createdAt(),
+                evidence);
+    }
+
+    private Map<String, List<Long>> loadEvidence(long workspaceId, long documentId, long revisionId) {
+        Map<String, List<Long>> evidence = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                """
+                SELECT field_id, source_span_id
+                FROM document_revision_field_evidence
+                WHERE workspace_id = ? AND document_id = ? AND revision_id = ?
+                ORDER BY field_id, source_span_id
+                """,
+                (java.sql.ResultSet rs) -> {
+                    evidence.computeIfAbsent(rs.getString("field_id"), key -> new ArrayList<>())
+                            .add(rs.getLong("source_span_id"));
+                },
+                workspaceId,
+                documentId,
+                revisionId);
+        return evidence;
+    }
+
+    private void insertEvidence(
+            long workspaceId, long documentId, long revisionId, Map<String, List<Long>> evidence) {
+        for (Map.Entry<String, List<Long>> entry : evidence.entrySet()) {
+            for (Long sourceSpanId : entry.getValue()) {
+                jdbcTemplate.update(
+                        """
+                        INSERT INTO document_revision_field_evidence
+                            (workspace_id, document_id, revision_id, field_id, source_span_id)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        workspaceId,
+                        documentId,
+                        revisionId,
+                        entry.getKey(),
+                        sourceSpanId);
+            }
+        }
     }
 
     private DocumentIdempotencyRecord mapIdempotencyRecord(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {

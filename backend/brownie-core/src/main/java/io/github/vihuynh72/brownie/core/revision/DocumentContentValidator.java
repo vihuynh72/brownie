@@ -24,6 +24,44 @@ final class DocumentContentValidator {
         throwIfProblems(problems);
     }
 
+    /**
+     * A cited field must actually carry a value in this exact content, so a
+     * stale citation left over from a removed field cannot silently survive.
+     * Span-ID existence and workspace ownership are enforced by the
+     * database foreign key at persistence time, not repeated here.
+     */
+    static void validateEvidence(DocumentContent content, Map<String, List<Long>> evidence) {
+        List<DocumentContentProblem> problems = new ArrayList<>();
+        for (Map.Entry<String, List<Long>> entry : evidence.entrySet()) {
+            String fieldId = entry.getKey();
+            if (!content.fields().containsKey(fieldId)) {
+                problems.add(new DocumentContentProblem(
+                        fieldId, DocumentContentProblemReason.UNKNOWN_FIELD,
+                        "Evidence cites a field that has no value in this content."));
+                continue;
+            }
+            if (entry.getValue().isEmpty()) {
+                problems.add(new DocumentContentProblem(
+                        fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                        "Evidence for a field must not be an empty list; omit the field instead."));
+                continue;
+            }
+            Set<Long> distinct = new HashSet<>();
+            for (Long spanId : entry.getValue()) {
+                if (spanId == null || spanId <= 0) {
+                    problems.add(new DocumentContentProblem(
+                            fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                            "Evidence source span IDs must be positive."));
+                } else if (!distinct.add(spanId)) {
+                    problems.add(new DocumentContentProblem(
+                            fieldId, DocumentContentProblemReason.INVALID_EVIDENCE_REFERENCE,
+                            "Evidence source span " + spanId + " is cited more than once for the same field."));
+                }
+            }
+        }
+        throwIfProblems(problems);
+    }
+
     static DocumentContent applyEdits(
             DocumentContent current, List<DocumentFieldEdit> edits, List<FieldDefinition> definitions) {
         if (edits == null || edits.isEmpty()) {

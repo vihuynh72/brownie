@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -33,6 +34,7 @@ public interface DocumentRepository {
             long templateId,
             long templateVersionId,
             DocumentContent initialContent,
+            Map<String, List<Long>> initialEvidence,
             String initialRevisionReason);
 
     Optional<Document> find(long workspaceId, long userId, long documentId);
@@ -55,5 +57,6 @@ public interface DocumentRepository {
             long documentId,
             long expectedRevisionId,
             DocumentContent content,
+            Map<String, List<Long>> evidence,
             String editReason);
 }

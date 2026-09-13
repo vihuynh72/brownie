@@ -77,6 +77,7 @@ class DocumentController {
                 positive(request.templateId(), "templateId"),
                 positive(request.templateVersionId(), "templateVersionId"),
                 request.toContent(),
+                request.toEvidence(),
                 requireText(request.initialRevisionReason(), "initialRevisionReason"));
         return documentResponse(workspaceId, userId, mutation.document());
     }
@@ -134,6 +135,7 @@ class DocumentController {
                 documentId,
                 positive(request.expectedRevisionId(), "expectedRevisionId"),
                 request.toEdits(),
+                request.toEvidence(),
                 requireText(request.editReason(), "editReason"));
         return DocumentRevisionResponse.from(mutation.revision());
     }
@@ -220,6 +222,17 @@ class DocumentController {
             }
             return new DocumentContent(typed);
         }
+
+        Map<String, List<Long>> toEvidence() {
+            Map<String, List<Long>> evidence = new LinkedHashMap<>();
+            for (Map.Entry<String, FieldValueRequest> field : fields.entrySet()) {
+                List<Long> spanIds = field.getValue() == null ? null : field.getValue().evidenceSourceSpanIds();
+                if (spanIds != null && !spanIds.isEmpty()) {
+                    evidence.put(field.getKey(), spanIds);
+                }
+            }
+            return evidence;
+        }
     }
 
     record PatchDocumentContentRequest(long expectedRevisionId, List<FieldEditRequest> edits, String editReason) {
@@ -229,6 +242,17 @@ class DocumentController {
                 throw new DocumentRequestValidationException("edits must contain at least one typed field command.");
             }
             return edits.stream().map(FieldEditRequest::toDomain).toList();
+        }
+
+        Map<String, List<Long>> toEvidence() {
+            Map<String, List<Long>> evidence = new LinkedHashMap<>();
+            for (FieldEditRequest edit : edits) {
+                List<Long> spanIds = edit.value() == null ? null : edit.value().evidenceSourceSpanIds();
+                if (spanIds != null && !spanIds.isEmpty()) {
+                    evidence.put(edit.fieldId(), spanIds);
+                }
+            }
+            return evidence;
         }
     }
 
@@ -252,7 +276,7 @@ class DocumentController {
         }
     }
 
-    record FieldValueRequest(String type, String cardinality, String value, List<String> values) {
+    record FieldValueRequest(String type, String cardinality, String value, List<String> values, List<Long> evidenceSourceSpanIds) {
     }
 
     record DocumentResponse(
@@ -287,7 +311,8 @@ class DocumentController {
 
         static DocumentRevisionResponse from(DocumentRevision revision) {
             Map<String, FieldValueResponse> fields = new LinkedHashMap<>();
-            revision.content().fields().forEach((fieldId, value) -> fields.put(fieldId, FieldValueResponse.from(value)));
+            revision.content().fields().forEach((fieldId, value) -> fields.put(
+                    fieldId, FieldValueResponse.from(value, revision.evidence().getOrDefault(fieldId, List.of()))));
             return new DocumentRevisionResponse(
                     revision.id(),
                     revision.revisionNumber(),
@@ -299,15 +324,19 @@ class DocumentController {
         }
     }
 
-    record FieldValueResponse(String type, String cardinality, String value, List<String> values) {
+    record FieldValueResponse(
+            String type, String cardinality, String value, List<String> values, List<Long> evidenceSourceSpanIds) {
 
-        static FieldValueResponse from(FieldValue value) {
+        static FieldValueResponse from(FieldValue value, List<Long> evidenceSourceSpanIds) {
             return switch (value) {
-                case FieldValue.TextValue(String text) -> new FieldValueResponse("TEXT", "SCALAR", text, null);
-                case FieldValue.DateValue(LocalDate date) -> new FieldValueResponse("DATE", "SCALAR", date.toString(), null);
-                case FieldValue.RepeatedTextValue(List<String> texts) -> new FieldValueResponse("TEXT", "REPEATED", null, texts);
+                case FieldValue.TextValue(String text) ->
+                        new FieldValueResponse("TEXT", "SCALAR", text, null, evidenceSourceSpanIds);
+                case FieldValue.DateValue(LocalDate date) ->
+                        new FieldValueResponse("DATE", "SCALAR", date.toString(), null, evidenceSourceSpanIds);
+                case FieldValue.RepeatedTextValue(List<String> texts) ->
+                        new FieldValueResponse("TEXT", "REPEATED", null, texts, evidenceSourceSpanIds);
                 case FieldValue.RepeatedDateValue(List<LocalDate> dates) -> new FieldValueResponse(
-                        "DATE", "REPEATED", null, dates.stream().map(LocalDate::toString).toList());
+                        "DATE", "REPEATED", null, dates.stream().map(LocalDate::toString).toList(), evidenceSourceSpanIds);
             };
         }
     }

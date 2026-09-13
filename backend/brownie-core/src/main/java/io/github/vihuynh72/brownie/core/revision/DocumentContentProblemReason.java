@@ -5,5 +5,6 @@ public enum DocumentContentProblemReason {
     UNKNOWN_FIELD,
     TYPE_MISMATCH,
     CARDINALITY_MISMATCH,
-    DUPLICATE_EDIT
+    DUPLICATE_EDIT,
+    INVALID_EVIDENCE_REFERENCE
 }

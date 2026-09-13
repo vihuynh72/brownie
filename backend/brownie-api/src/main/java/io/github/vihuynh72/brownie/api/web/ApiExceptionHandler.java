@@ -4,6 +4,8 @@ import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
 import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
+import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
+import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
 import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
@@ -34,6 +36,7 @@ import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictExc
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -106,7 +109,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
-    @ExceptionHandler({DocumentNotFoundException.class, JobNotFoundException.class})
+    @ExceptionHandler({DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -278,6 +281,45 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unprocessable Entity");
         problem.setDetail(ex.getMessage());
         enrich(problem, "TEMPLATE_VERSION_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * A typed field's own {@code evidenceSourceSpanIds} is deliberately
+     * only checked for shape (positive, non-duplicate) before persistence
+     * -- existence and workspace ownership of the cited span are enforced
+     * by the database's own foreign key at write time, not re-checked in
+     * application code (see {@code DocumentContentValidator}). A span ID
+     * that is well-formed but does not exist, or belongs to a different
+     * workspace, is therefore a normal, expected client mistake (a typo, a
+     * deleted span, a span copied from elsewhere) surfacing as this
+     * exception -- it must read as the 422 it actually is, not fall
+     * through to the generic 500 an unclassified server error would get.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Object> handleDataIntegrityViolation(DataIntegrityViolationException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("The request references data that does not exist or is not available in this workspace.");
+        enrich(problem, "REFERENCED_DATA_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * A broken or stale binding contract, or content whose repeated
+     * fields disagree on item count -- a real, if unusual, problem with
+     * the request's own data rather than a server defect, so it gets a
+     * 422 like the other "this content does not fit this template"
+     * failures above, not the generic 500 an unclassified server error
+     * would get.
+     */
+    @ExceptionHandler(TemplateFillException.class)
+    public ResponseEntity<Object> handleTemplateFill(
+            TemplateFillException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "TEMPLATE_FILL_" + ex.reason().name());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
