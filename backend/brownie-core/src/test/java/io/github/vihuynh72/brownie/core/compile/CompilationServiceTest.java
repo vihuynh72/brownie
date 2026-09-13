@@ -48,7 +48,7 @@ class CompilationServiceTest {
     @Test
     void missingDocumentIsReportedBeforeTouchingAnyOtherDependency() {
         CompilationService service = new CompilationService(
-                new RevisionService(new EmptyDocumentRepository(), new UnreachableTemplateRepository()),
+                new RevisionService(new EmptyDocumentRepository(), new UnreachableTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new UnreachableTemplateRepository(),
                 null, null, null, null);
 
@@ -59,7 +59,7 @@ class CompilationServiceTest {
     void inactiveTemplateVersionIsRefusedBeforeReadingAnyArtifact() {
         FakeDocumentRepository documents = new FakeDocumentRepository();
         CompilationService service = new CompilationService(
-                new RevisionService(documents, new DraftOnlyTemplateRepository()),
+                new RevisionService(documents, new DraftOnlyTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new DraftOnlyTemplateRepository(),
                 null, null, null, null);
 
@@ -83,7 +83,7 @@ class CompilationServiceTest {
                 REVISION_ID, WORKSPACE_ID, DOCUMENT_ID, 1, null,
                 content,
                 io.github.vihuynh72.brownie.core.revision.DocumentContentHasher.sha256Hex(content),
-                USER_ID, "initial draft", OffsetDateTime.now(), Map.of());
+                USER_ID, "initial draft", OffsetDateTime.now(), Map.of(), Map.of());
         private final boolean present;
 
         FakeDocumentRepository() {
@@ -107,6 +107,7 @@ class CompilationServiceTest {
                 long workspaceId, long userId, io.github.vihuynh72.brownie.core.job.IdempotencyKey idempotencyKey,
                 io.github.vihuynh72.brownie.core.job.CanonicalRequestHash requestHash, String title, long templateId,
                 long templateVersionId, DocumentContent initialContent, Map<String, List<Long>> initialEvidence,
+                Map<io.github.vihuynh72.brownie.core.revision.FieldItemRef, io.github.vihuynh72.brownie.core.revision.FieldState> initialFieldStates,
                 String initialRevisionReason) {
             throw new UnsupportedOperationException();
         }
@@ -135,7 +136,9 @@ class CompilationServiceTest {
         public io.github.vihuynh72.brownie.core.revision.DocumentMutationResult appendRevisionIdempotently(
                 long workspaceId, long userId, io.github.vihuynh72.brownie.core.job.IdempotencyKey idempotencyKey,
                 io.github.vihuynh72.brownie.core.job.CanonicalRequestHash requestHash, long documentId,
-                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence, String editReason) {
+                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence,
+                Map<io.github.vihuynh72.brownie.core.revision.FieldItemRef, io.github.vihuynh72.brownie.core.revision.FieldState> fieldStates,
+                String editReason) {
             throw new UnsupportedOperationException();
         }
     }
@@ -213,6 +216,32 @@ class CompilationServiceTest {
         @Override
         public TemplateVersion activate(long workspaceId, long userId, long templateId, int expectedVersionNumber) {
             throw new TemplateVersionStateConflictException("Not activated in this test fake.");
+        }
+    }
+
+    private static final class UnreachablePatchProposalRepository
+            implements io.github.vihuynh72.brownie.core.revision.PatchProposalRepository {
+
+        @Override
+        public io.github.vihuynh72.brownie.core.revision.PatchProposal create(
+                long workspaceId,
+                long userId,
+                long documentId,
+                long baseRevisionId,
+                Map<String, io.github.vihuynh72.brownie.core.revision.FieldValue> proposedValues,
+                Map<String, List<Long>> proposedEvidence) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public java.util.Optional<io.github.vihuynh72.brownie.core.revision.PatchProposal> find(
+                long workspaceId, long userId, long documentId, long proposalId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void markAccepted(long workspaceId, long userId, long documentId, long proposalId) {
+            throw new UnsupportedOperationException();
         }
     }
 }
