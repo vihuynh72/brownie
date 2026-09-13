@@ -13,22 +13,25 @@ import io.github.vihuynh72.brownie.core.revision.DocumentRepository;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevisionConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentTemplateVersionUnavailableException;
+import io.github.vihuynh72.brownie.core.revision.Authorship;
+import io.github.vihuynh72.brownie.core.revision.EvidenceSupport;
+import io.github.vihuynh72.brownie.core.revision.FieldItemRef;
+import io.github.vihuynh72.brownie.core.revision.FieldState;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
+import io.github.vihuynh72.brownie.core.revision.LockState;
+import io.github.vihuynh72.brownie.core.revision.ReviewState;
+import io.github.vihuynh72.brownie.core.revision.ValidationState;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
-import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -50,7 +53,6 @@ class JdbcDocumentRepository implements DocumentRepository {
             "id, workspace_id, actor_user_id, operation, idempotency_key, request_hash, command_id, created_at";
     private static final String DOCUMENT_MUTATION_RECEIPT_COLUMNS =
             "command_id, workspace_id, actor_user_id, idempotency_record_id, document_id, revision_id, operation, request_hash, accepted_at";
-    private static final int CONTENT_SCHEMA_VERSION = 1;
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -90,6 +92,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             long templateVersionId,
             DocumentContent initialContent,
             Map<String, List<Long>> initialEvidence,
+            Map<FieldItemRef, FieldState> initialFieldStates,
             String initialRevisionReason) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         DocumentIdempotencyReservation reservation = reserveIdempotency(
@@ -138,6 +141,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             throw new IllegalStateException("New document " + documentId + " did not accept its initial revision pointer.");
         }
         insertEvidence(workspaceId, documentId, initialRevisionId, initialEvidence);
+        insertFieldStates(workspaceId, documentId, initialRevisionId, initialFieldStates);
         createMutationReceipt(reservation.record(), documentId, initialRevisionId);
         return mutationResultFor(reservation.record());
     }
@@ -173,7 +177,8 @@ class JdbcDocumentRepository implements DocumentRepository {
                         documentId)
                 .stream()
                 .findFirst()
-                .map(this::withEvidence);
+                .map(this::withEvidence)
+                .map(this::withFieldStates);
     }
 
     @Override
@@ -189,7 +194,8 @@ class JdbcDocumentRepository implements DocumentRepository {
                         revisionId)
                 .stream()
                 .findFirst()
-                .map(this::withEvidence);
+                .map(this::withEvidence)
+                .map(this::withFieldStates);
     }
 
     @Override
@@ -202,7 +208,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                 this::mapRevision,
                 workspaceId,
                 documentId);
-        return revisions.stream().map(this::withEvidence).toList();
+        return revisions.stream().map(this::withEvidence).map(this::withFieldStates).toList();
     }
 
     @Override
@@ -216,6 +222,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             long expectedRevisionId,
             DocumentContent content,
             Map<String, List<Long>> evidence,
+            Map<FieldItemRef, FieldState> fieldStates,
             String editReason) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         DocumentIdempotencyReservation reservation = reserveIdempotency(
@@ -281,6 +288,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                     "Document " + documentId + " rejected revision " + revisionId + " as its direct next revision.");
         }
         insertEvidence(workspaceId, documentId, revisionId, evidence);
+        insertFieldStates(workspaceId, documentId, revisionId, fieldStates);
         createMutationReceipt(reservation.record(), documentId, revisionId);
         return mutationResultFor(reservation.record());
     }
@@ -455,6 +463,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                 rs.getLong("actor_user_id"),
                 rs.getString("edit_reason"),
                 rs.getObject("created_at", OffsetDateTime.class),
+                Map.of(),
                 Map.of());
     }
 
@@ -471,7 +480,78 @@ class JdbcDocumentRepository implements DocumentRepository {
                 revision.actorUserId(),
                 revision.editReason(),
                 revision.createdAt(),
-                evidence);
+                evidence,
+                revision.fieldStates());
+    }
+
+    private DocumentRevision withFieldStates(DocumentRevision revision) {
+        Map<FieldItemRef, FieldState> fieldStates =
+                loadFieldStates(revision.workspaceId(), revision.documentId(), revision.id());
+        return new DocumentRevision(
+                revision.id(),
+                revision.workspaceId(),
+                revision.documentId(),
+                revision.revisionNumber(),
+                revision.parentRevisionId(),
+                revision.content(),
+                revision.contentHash(),
+                revision.actorUserId(),
+                revision.editReason(),
+                revision.createdAt(),
+                revision.evidence(),
+                fieldStates);
+    }
+
+    private Map<FieldItemRef, FieldState> loadFieldStates(long workspaceId, long documentId, long revisionId) {
+        Map<FieldItemRef, FieldState> fieldStates = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                """
+                SELECT field_id, item_index, authorship, evidence_support, validation, review, lock_state
+                FROM document_revision_field_state
+                WHERE workspace_id = ? AND document_id = ? AND revision_id = ?
+                ORDER BY field_id, item_index
+                """,
+                (java.sql.ResultSet rs) -> {
+                    int itemIndex = rs.getInt("item_index");
+                    Integer itemIndexOrNull = rs.wasNull() ? null : itemIndex;
+                    fieldStates.put(
+                            new FieldItemRef(rs.getString("field_id"), itemIndexOrNull),
+                            new FieldState(
+                                    Authorship.valueOf(rs.getString("authorship")),
+                                    EvidenceSupport.valueOf(rs.getString("evidence_support")),
+                                    ValidationState.valueOf(rs.getString("validation")),
+                                    ReviewState.valueOf(rs.getString("review")),
+                                    LockState.valueOf(rs.getString("lock_state"))));
+                },
+                workspaceId,
+                documentId,
+                revisionId);
+        return fieldStates;
+    }
+
+    private void insertFieldStates(
+            long workspaceId, long documentId, long revisionId, Map<FieldItemRef, FieldState> fieldStates) {
+        for (Map.Entry<FieldItemRef, FieldState> entry : fieldStates.entrySet()) {
+            FieldItemRef ref = entry.getKey();
+            FieldState state = entry.getValue();
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO document_revision_field_state
+                        (workspace_id, document_id, revision_id, field_id, item_index,
+                         authorship, evidence_support, validation, review, lock_state)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    workspaceId,
+                    documentId,
+                    revisionId,
+                    ref.fieldId(),
+                    ref.itemIndex(),
+                    state.authorship().name(),
+                    state.evidenceSupport().name(),
+                    state.validation().name(),
+                    state.review().name(),
+                    state.lock().name());
+        }
     }
 
     private Map<String, List<Long>> loadEvidence(long workspaceId, long documentId, long revisionId) {
@@ -538,147 +618,11 @@ class JdbcDocumentRepository implements DocumentRepository {
     }
 
     private String toJson(DocumentContent content) {
-        List<Map<String, Object>> fields = new ArrayList<>();
-        content.fields().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
-            Map<String, Object> field = new LinkedHashMap<>();
-            field.put("fieldId", entry.getKey());
-            switch (entry.getValue()) {
-                case FieldValue.TextValue(String value) -> {
-                    field.put("type", "TEXT");
-                    field.put("cardinality", "SCALAR");
-                    field.put("value", value);
-                }
-                case FieldValue.DateValue(LocalDate value) -> {
-                    field.put("type", "DATE");
-                    field.put("cardinality", "SCALAR");
-                    field.put("value", value.toString());
-                }
-                case FieldValue.RepeatedTextValue(List<String> values) -> {
-                    field.put("type", "TEXT");
-                    field.put("cardinality", "REPEATED");
-                    field.put("values", values);
-                }
-                case FieldValue.RepeatedDateValue(List<LocalDate> values) -> {
-                    field.put("type", "DATE");
-                    field.put("cardinality", "REPEATED");
-                    field.put("values", values.stream().map(LocalDate::toString).toList());
-                }
-            }
-            fields.add(field);
-        });
-        try {
-            return objectMapper.writeValueAsString(Map.of("schemaVersion", CONTENT_SCHEMA_VERSION, "fields", fields));
-        } catch (JacksonException e) {
-            throw new IllegalStateException("Failed to serialize typed document content.", e);
-        }
+        return DocumentContentJson.encode(objectMapper, content.fields());
     }
 
-    @SuppressWarnings("unchecked")
     private DocumentContent fromJson(String json) {
-        try {
-            Object decoded = objectMapper.readValue(json, Object.class);
-            Map<String, Object> root = objectMap(decoded, "document content");
-            requireKeys(root, Set.of("schemaVersion", "fields"), "document content");
-            if (!(root.get("schemaVersion") instanceof Number schemaVersion)
-                    || schemaVersion.intValue() != CONTENT_SCHEMA_VERSION) {
-                throw malformedContent("Document content has an unsupported schema version.");
-            }
-            if (!(root.get("fields") instanceof List<?> rawFields)) {
-                throw malformedContent("Document content fields must be an array.");
-            }
-            Map<String, FieldValue> fields = new LinkedHashMap<>();
-            for (Object rawField : rawFields) {
-                Map<String, Object> field = objectMap(rawField, "document content field");
-                String fieldId = requiredString(field, "fieldId", "document content field");
-                FieldValue value = valueFromMap(field);
-                if (fields.putIfAbsent(fieldId, value) != null) {
-                    throw malformedContent("Document content repeats field ID " + fieldId + ".");
-                }
-            }
-            return new DocumentContent(fields);
-        } catch (JacksonException e) {
-            throw new IllegalStateException("Failed to deserialize typed document content.", e);
-        }
-    }
-
-    private FieldValue valueFromMap(Map<String, Object> field) {
-        String type = requiredString(field, "type", "document content field");
-        String cardinality = requiredString(field, "cardinality", "document content field");
-        return switch (type + ":" + cardinality) {
-            case "TEXT:SCALAR" -> {
-                requireKeys(field, Set.of("fieldId", "type", "cardinality", "value"), "TEXT scalar field");
-                yield new FieldValue.TextValue(requiredString(field, "value", "TEXT scalar field"));
-            }
-            case "DATE:SCALAR" -> {
-                requireKeys(field, Set.of("fieldId", "type", "cardinality", "value"), "DATE scalar field");
-                yield new FieldValue.DateValue(parseDate(requiredString(field, "value", "DATE scalar field")));
-            }
-            case "TEXT:REPEATED" -> {
-                requireKeys(field, Set.of("fieldId", "type", "cardinality", "values"), "TEXT repeated field");
-                yield new FieldValue.RepeatedTextValue(requiredStringList(field, "values", "TEXT repeated field"));
-            }
-            case "DATE:REPEATED" -> {
-                requireKeys(field, Set.of("fieldId", "type", "cardinality", "values"), "DATE repeated field");
-                yield new FieldValue.RepeatedDateValue(requiredStringList(field, "values", "DATE repeated field")
-                        .stream()
-                        .map(this::parseDate)
-                        .toList());
-            }
-            default -> throw malformedContent("Unsupported document field shape " + type + ":" + cardinality + ".");
-        };
-    }
-
-    private static Map<String, Object> objectMap(Object value, String description) {
-        if (!(value instanceof Map<?, ?> rawMap)) {
-            throw malformedContent("Expected " + description + " to be an object.");
-        }
-        Map<String, Object> mapped = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-            if (!(entry.getKey() instanceof String key)) {
-                throw malformedContent("Expected " + description + " keys to be strings.");
-            }
-            mapped.put(key, entry.getValue());
-        }
-        return mapped;
-    }
-
-    private static void requireKeys(Map<String, Object> value, Set<String> expected, String description) {
-        if (!value.keySet().equals(expected)) {
-            throw malformedContent("Unexpected properties in " + description + ".");
-        }
-    }
-
-    private static String requiredString(Map<String, Object> value, String key, String description) {
-        if (!(value.get(key) instanceof String string)) {
-            throw malformedContent("Expected " + description + " property " + key + " to be a string.");
-        }
-        return string;
-    }
-
-    private static List<String> requiredStringList(Map<String, Object> value, String key, String description) {
-        if (!(value.get(key) instanceof List<?> rawValues)) {
-            throw malformedContent("Expected " + description + " property " + key + " to be an array.");
-        }
-        List<String> values = new ArrayList<>();
-        for (Object rawValue : rawValues) {
-            if (!(rawValue instanceof String string)) {
-                throw malformedContent("Expected " + description + " values to be strings.");
-            }
-            values.add(string);
-        }
-        return values;
-    }
-
-    private LocalDate parseDate(String date) {
-        try {
-            return LocalDate.parse(date);
-        } catch (DateTimeParseException e) {
-            throw malformedContent("Expected DATE value to use ISO local-date form.");
-        }
-    }
-
-    private static IllegalStateException malformedContent(String detail) {
-        return new IllegalStateException("Stored typed document content is invalid: " + detail);
+        return new DocumentContent(DocumentContentJson.decode(objectMapper, json));
     }
 
     private static DocumentCommandType commandType(String operation) {
