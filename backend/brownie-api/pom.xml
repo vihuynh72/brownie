@@ -18,6 +18,29 @@
     storage infrastructure; must never depend on brownie-worker.
   </description>
 
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <!-- The running application never touches Jetty itself (Spring
+             Boot's embedded Tomcat serves brownie-api); this exists only
+             so the test-scoped wiremock-jetty12 dependency below gets a
+             consistent Jetty version throughout. Without it, Spring Boot's
+             own BOM (imported in the parent POM) pins the plain
+             jetty-server/jetty-io/etc. modules to 12.1.12 while
+             wiremock-jetty12's own jetty-ee10-* modules stay at the older
+             12.0.30 they were actually built against, and the two
+             versions are not binary-compatible: confirmed directly, a
+             real WriteFlusher$Listener class present in 12.0.30's
+             jetty-io is genuinely absent from 12.1.12's. -->
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-bom</artifactId>
+        <version>12.0.30</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <dependency>
       <groupId>io.github.vihuynh72.brownie</groupId>
@@ -99,6 +122,14 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <!-- The model gateway's real adapter. Version is inherited from
+           spring-ai-bom, imported in the parent POM, the same way every
+           spring-boot-starter-* dependency above inherits its version from
+           the Spring Boot BOM. -->
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-starter-model-openai</artifactId>
+    </dependency>
+    <dependency>
       <!-- DOCX structural extraction. Not managed by the Spring Boot BOM,
            so pinned explicitly here, checked against Maven Central's own
            published releases, not guessed. poi-ooxml pulls in poi and
@@ -160,6 +191,63 @@
     <dependency>
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Stubs the real OpenAI HTTP endpoint so the real model gateway
+           adapter's request/response handling is tested against actual
+           wire traffic, the same role Testcontainers plays for Postgres
+           and Azurite above, without ever calling the real OpenAI API or
+           needing a real API key in CI. Not managed by the Spring Boot
+           BOM, so pinned explicitly, checked against Maven Central's own
+           published releases. -->
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock</artifactId>
+      <version>3.13.2</version>
+      <scope>test</scope>
+      <exclusions>
+        <!-- wiremock's own POM pins these three to a stray Jetty 11.0.26
+             (unrelated to wiremock-jetty12's own, newer Jetty 12.0.30 EE10
+             modules below), which Maven's nearest-wins mediation would
+             otherwise keep over the correct ones since both are equally
+             direct dependencies here. Confirmed by running dependency:tree
+             and reading the real resolved version mismatch, not guessed.
+             wiremock-jetty12's own jetty-ee10-servlet/jetty-ee10-webapp
+             supersede exactly these three once this exclusion is in place. -->
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlets</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-webapp</artifactId>
+        </exclusion>
+        <exclusion>
+          <!-- Jetty 11's old http2-server artifact id, superseded by
+               wiremock-jetty12's jetty-http2-server (a different
+               artifactId under the same groupId, so Maven's own conflict
+               resolution never sees these as the same dependency to
+               mediate between); both otherwise coexist on the classpath
+               and crash with IncompatibleClassChangeError the moment
+               either's HttpChannel class loads. -->
+          <groupId>org.eclipse.jetty.http2</groupId>
+          <artifactId>http2-server</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <!-- WireMock 3.13.x ships its embedded HTTP server as a separate
+           artifact rather than bundling Jetty directly, confirmed by
+           running the test above without this dependency first and
+           reading the real "Jetty 11 is not present" startup failure,
+           not assumed from WireMock's own release notes. -->
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-jetty12</artifactId>
+      <version>3.13.2</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
