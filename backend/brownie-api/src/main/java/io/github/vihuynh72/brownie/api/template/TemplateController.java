@@ -17,6 +17,7 @@ import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestExcepti
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
+import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -56,6 +57,34 @@ class TemplateController {
         this.templateService = templateService;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
+    }
+
+    /**
+     * Every template in the workspace, for a person choosing which one to
+     * start a new document from -- deliberately unfiltered by status
+     * (ACTIVE and DRAFT alike), since a caller building a "manage templates"
+     * view needs both; a caller building only a document-creation picker
+     * filters to {@code currentActiveVersionId != null} itself.
+     */
+    @GetMapping
+    List<TemplateResponse> findAll(@PathVariable("workspaceId") long workspaceId, @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return templateService.findAll(workspaceId, userId).stream().map(TemplateResponse::from).toList();
+    }
+
+    /** One template version by its own ID, so a caller can read an ACTIVATED version's field list before creating a document against it. */
+    @GetMapping("/{templateId}/versions/{versionId}")
+    TemplateVersionResponse findVersion(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @PathVariable("versionId") long versionId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return TemplateVersionResponse.from(templateService
+                .findVersion(workspaceId, userId, templateId, versionId)
+                .orElseThrow(() -> new TemplateVersionNotFoundException(templateId, versionId)));
     }
 
     @PostMapping
