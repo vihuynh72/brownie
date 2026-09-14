@@ -79,6 +79,10 @@ public class TemplateService {
         return templateRepository.find(workspaceId, userId, templateId);
     }
 
+    public List<Template> findAll(long workspaceId, long userId) {
+        return templateRepository.findAll(workspaceId, userId);
+    }
+
     public Optional<TemplateVersion> findVersion(long workspaceId, long userId, long templateId, long versionId) {
         return templateRepository.findVersion(workspaceId, userId, templateId, versionId);
     }

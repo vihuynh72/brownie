@@ -324,6 +324,11 @@ class TemplateExampleServiceTest {
         }
 
         @Override
+        public List<Template> findAll(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by TemplateExampleService");
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             return Optional.ofNullable(draftByTemplate.get(templateId));
         }
