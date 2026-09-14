@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.identity.oidc;
 
+import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
@@ -33,8 +34,8 @@ class BrownieOidcUserServiceTest {
     void recordsTheLoginByIssuerAndSubjectFromTheIdTokenAndReturnsTheDelegateResultUnchanged() {
         OidcUser fakeOidcUser = oidcUserWith("https://issuer-x", "subject-x", "person@example.com", "Person Name");
         RecordingUserIdentityRepository identityRepository = new RecordingUserIdentityRepository();
-        BrownieOidcUserService service =
-                new BrownieOidcUserService((request) -> fakeOidcUser, identityRepository, new RecordingWorkspaceRepository());
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser, identityRepository, new RecordingWorkspaceRepository(), noOpProvisioning());
 
         OidcUser result = service.loadUser(null);
 
@@ -50,11 +51,58 @@ class BrownieOidcUserServiceTest {
         OidcUser fakeOidcUser = oidcUserWith("https://issuer-y", "subject-y", "other@example.com", "Other Name");
         RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
         BrownieOidcUserService service = new BrownieOidcUserService(
-                (request) -> fakeOidcUser, new RecordingUserIdentityRepository(), workspaceRepository);
+                (request) -> fakeOidcUser, new RecordingUserIdentityRepository(), workspaceRepository, noOpProvisioning());
 
         service.loadUser(null);
 
         assertThat(workspaceRepository.ensuredForUserId).isEqualTo(1L);
+    }
+
+    @Test
+    void asksForBuiltInTemplatesInTheJustProvisionedWorkspace() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-z", "subject-z", "third@example.com", "Third Name");
+        long[] recordedWorkspaceId = {-1L};
+        long[] recordedUserId = {-1L};
+        BuiltInTemplateProvisioningService recordingProvisioning = new BuiltInTemplateProvisioningService(null, null, null) {
+            @Override
+            public void ensureBuiltInTemplates(long workspaceId, long userId) {
+                recordedWorkspaceId[0] = workspaceId;
+                recordedUserId[0] = userId;
+            }
+        };
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser, new RecordingUserIdentityRepository(), new RecordingWorkspaceRepository(), recordingProvisioning);
+
+        service.loadUser(null);
+
+        assertThat(recordedWorkspaceId[0]).isEqualTo(1L);
+        assertThat(recordedUserId[0]).isEqualTo(1L);
+    }
+
+    @Test
+    void aFailureProvisioningBuiltInTemplatesDoesNotFailTheLoginItself() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-w", "subject-w", "fourth@example.com", "Fourth Name");
+        BuiltInTemplateProvisioningService throwingProvisioning = new BuiltInTemplateProvisioningService(null, null, null) {
+            @Override
+            public void ensureBuiltInTemplates(long workspaceId, long userId) {
+                throw new IllegalStateException("the isolated renderer is unavailable right now");
+            }
+        };
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser, new RecordingUserIdentityRepository(), new RecordingWorkspaceRepository(), throwingProvisioning);
+
+        OidcUser result = service.loadUser(null);
+
+        assertThat(result).isSameAs(fakeOidcUser);
+    }
+
+    private static BuiltInTemplateProvisioningService noOpProvisioning() {
+        return new BuiltInTemplateProvisioningService(null, null, null) {
+            @Override
+            public void ensureBuiltInTemplates(long workspaceId, long userId) {
+                // Nothing to record; most tests here only care about identity/workspace behavior.
+            }
+        };
     }
 
     private static OidcUser oidcUserWith(String issuer, String subject, String email, String name) {

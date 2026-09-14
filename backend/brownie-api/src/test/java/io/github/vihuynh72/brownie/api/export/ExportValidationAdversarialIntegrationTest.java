@@ -141,10 +141,10 @@ class ExportValidationAdversarialIntegrationTest {
      * end to end by any of this phase's own earlier per-task tests (they
      * all used flowing-meeting-minutes). Five action items against the
      * table-led template's own two-sample-item baseline -- more than
-     * either P13-02 real-fixture run ever exercised -- proves the
-     * repeated-row exclusion (the second real bug that task's own journal
-     * entry names) holds for a genuinely different row count, not just
-     * the one count that happened to be tested before.
+     * either earlier real-fixture run ever exercised -- proves the
+     * repeated-row exclusion (the second real bug that earlier work's own
+     * journal entry names) holds for a genuinely different row count, not
+     * just the one count that happened to be tested before.
      */
     @Test
     void theHeldOutTableLedTemplateWithManyActionItemsExportsCleanly() throws Exception {
