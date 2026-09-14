@@ -161,6 +161,16 @@ class JdbcDocumentRepository implements DocumentRepository {
 
     @Override
     @Transactional(readOnly = true)
+    public List<Document> findAllForWorkspace(long workspaceId, long userId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                "SELECT " + DOCUMENT_COLUMNS + " FROM document WHERE workspace_id = ? ORDER BY created_at DESC, id DESC",
+                this::mapDocument,
+                workspaceId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<DocumentRevision> findCurrentRevision(long workspaceId, long userId, long documentId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.query(
