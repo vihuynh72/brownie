@@ -192,12 +192,26 @@ final class StyleResolver {
         return null;
     }
 
+    /**
+     * {@code CTColor.getVal()} returns {@code Object} for this union type
+     * (a real hex string like {@code "FF0000"}, or the literal {@code
+     * "auto"}) -- XMLBeans' own idiomatic path for such a union is {@code
+     * xgetVal().getStringValue()}, the exact XML text, not {@code
+     * getVal()} itself. {@code getVal()}'s actual runtime type here is a
+     * raw {@code byte[]}, so a naive {@code String.valueOf(val)} silently
+     * produced {@code Object.toString()}'s own identity-hash-code
+     * gibberish (for example {@code "[B@42721fe"}, different on every
+     * independent extraction of the identical color) instead of a real
+     * hex string -- confirmed directly, not assumed, after a real
+     * comparison against this exact field caught two independently
+     * extracted runs of identical black text comparing unequal.
+     */
     private static String firstColor(List<CTRPr> chain) {
         for (CTRPr rPr : chain) {
             if (rPr.sizeOfColorArray() > 0) {
-                Object val = rPr.getColorArray(0).getVal();
+                String val = rPr.getColorArray(0).xgetVal().getStringValue();
                 if (val != null) {
-                    return String.valueOf(val);
+                    return val;
                 }
             }
         }
