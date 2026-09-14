@@ -40,6 +40,9 @@ public interface DocumentRepository {
 
     Optional<Document> find(long workspaceId, long userId, long documentId);
 
+    /** Every document in the workspace, most recently created first. */
+    List<Document> findAllForWorkspace(long workspaceId, long userId);
+
     Optional<DocumentRevision> findCurrentRevision(long workspaceId, long userId, long documentId);
 
     Optional<DocumentRevision> findRevision(long workspaceId, long userId, long documentId, long revisionId);
