@@ -94,6 +94,13 @@ class QuestionServiceTest {
         }
 
         @Override
+        public List<Question> findAllForDocument(long workspaceId, long userId, long documentId) {
+            return rows.stream()
+                    .filter(q -> q.workspaceId() == workspaceId && q.documentId() == documentId)
+                    .toList();
+        }
+
+        @Override
         public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
             Question existing = find(workspaceId, userId, questionId)
                     .filter(q -> q.status() == QuestionStatus.OPEN)

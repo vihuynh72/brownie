@@ -227,6 +227,11 @@ class RuleServiceTest {
         }
 
         @Override
+        public List<Template> findAll(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by RuleService");
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             TemplateVersion draft = drafts.get(templateId);
             return draft != null && draft.workspaceId() == workspaceId ? Optional.of(draft) : Optional.empty();

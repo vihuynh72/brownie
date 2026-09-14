@@ -919,6 +919,11 @@ class RevisionServiceTest {
         }
 
         @Override
+        public List<Template> findAll(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             return Optional.empty();
         }
@@ -1036,6 +1041,11 @@ class RevisionServiceTest {
         @Override
         public Optional<Document> find(long workspaceId, long userId, long documentId) {
             return Optional.ofNullable(documents.get(documentId)).filter(document -> document.workspaceId() == workspaceId);
+        }
+
+        @Override
+        public List<Document> findAllForWorkspace(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
         }
 
         @Override
