@@ -5,7 +5,9 @@ import io.github.vihuynh72.brownie.core.rule.DateFormatStyle;
 import io.github.vihuynh72.brownie.core.rule.EmptyValueResolution;
 import io.github.vihuynh72.brownie.core.rule.OverflowResolution;
 import io.github.vihuynh72.brownie.core.rule.RuleCategory;
+import io.github.vihuynh72.brownie.core.rule.RuleDecisionConflictException;
 import io.github.vihuynh72.brownie.core.rule.RulePayload;
+import io.github.vihuynh72.brownie.core.rule.RuleProposalEvidence;
 import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
 import io.github.vihuynh72.brownie.core.rule.RuleRevisionStatus;
@@ -125,6 +127,72 @@ class JdbcRuleRepository implements RuleRepository {
                 this::mapRow,
                 workspaceId,
                 templateVersionId);
+    }
+
+    @Override
+    @Transactional
+    public RuleRevision decide(long workspaceId, long userId, long templateId, long ruleId, RuleRevisionStatus decision) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        List<Long> updated = jdbcTemplate.queryForList(
+                "UPDATE rule_revision SET status = ? WHERE workspace_id = ? AND template_id = ? AND id = ? AND status = 'PROPOSED' "
+                        + "RETURNING id",
+                Long.class,
+                decision.name(),
+                workspaceId,
+                templateId,
+                ruleId);
+        if (updated.isEmpty()) {
+            throw new RuleDecisionConflictException(ruleId);
+        }
+        return find(workspaceId, userId, templateId, ruleId)
+                .orElseThrow(() -> new IllegalStateException("Rule revision " + ruleId + " vanished after deciding it."));
+    }
+
+    @Override
+    @Transactional
+    public void recordProposalEvidence(long workspaceId, long userId, long ruleId, RuleProposalEvidence evidence) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        for (long exampleId : evidence.supportingExampleIds()) {
+            insertProposalEvidenceRow(workspaceId, ruleId, exampleId, true);
+        }
+        for (long exampleId : evidence.contradictingExampleIds()) {
+            insertProposalEvidenceRow(workspaceId, ruleId, exampleId, false);
+        }
+    }
+
+    private void insertProposalEvidenceRow(long workspaceId, long ruleId, long exampleId, boolean supports) {
+        jdbcTemplate.update(
+                "INSERT INTO rule_revision_proposal_evidence (workspace_id, rule_revision_id, template_example_id, supports) "
+                        + "VALUES (?, ?, ?, ?)",
+                workspaceId,
+                ruleId,
+                exampleId,
+                supports);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<RuleProposalEvidence> findProposalEvidence(long workspaceId, long userId, long ruleId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT template_example_id, supports FROM rule_revision_proposal_evidence "
+                        + "WHERE workspace_id = ? AND rule_revision_id = ? ORDER BY id",
+                workspaceId,
+                ruleId);
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        List<Long> supporting = new java.util.ArrayList<>();
+        List<Long> contradicting = new java.util.ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            long exampleId = ((Number) row.get("template_example_id")).longValue();
+            if ((Boolean) row.get("supports")) {
+                supporting.add(exampleId);
+            } else {
+                contradicting.add(exampleId);
+            }
+        }
+        return Optional.of(new RuleProposalEvidence(supporting, contradicting));
     }
 
     private RuleRevision mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
