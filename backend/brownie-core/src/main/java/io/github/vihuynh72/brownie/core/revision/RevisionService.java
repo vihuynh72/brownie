@@ -220,6 +220,53 @@ public class RevisionService {
     }
 
     /**
+     * Records a whole validation run's own per-field {@link
+     * ValidationState} results in one new revision -- unlike {@link
+     * #recordReviewDecision}/{@link #setFieldLock}, which each change one
+     * {@link FieldItemRef} at a time, a validation run always evaluates
+     * every field together, so it must not fragment into one appended
+     * revision per field. A ref this run did not evaluate keeps whatever
+     * validation state it already had, the same carry-forward discipline
+     * {@link #computeFieldStates} already applies to authorship/evidence
+     * for an untouched field.
+     */
+    public DocumentMutationResult applyValidationResults(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long expectedRevisionId,
+            Map<FieldItemRef, ValidationState> results,
+            String editReason) {
+        Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
+                workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
+        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Document " + documentId + " has no revision selected by its current pointer."));
+        if (current.id() != expectedRevisionId) {
+            throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
+        }
+        Map<FieldItemRef, FieldState> nextFieldStates = new LinkedHashMap<>(current.fieldStates());
+        for (Map.Entry<FieldItemRef, ValidationState> entry : results.entrySet()) {
+            FieldItemRef ref = entry.getKey();
+            FieldState previous = nextFieldStates.get(ref);
+            if (previous == null) {
+                throw new IllegalArgumentException("Document " + documentId + " revision " + current.id() + " has no state for " + ref + ".");
+            }
+            nextFieldStates.put(ref, new FieldState(
+                    previous.authorship(), previous.evidenceSupport(), entry.getValue(), previous.review(), previous.lock()));
+        }
+        return documentRepository.appendRevisionIdempotently(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                current.content(), current.evidence(), nextFieldStates, editReason);
+    }
+
+    /**
      * Explicitly sets one field or item's {@link LockState}, the only
      * route that ever changes it deliberately -- a direct edit through
      * {@link #applyUserEdits} always preserves whatever lock a field

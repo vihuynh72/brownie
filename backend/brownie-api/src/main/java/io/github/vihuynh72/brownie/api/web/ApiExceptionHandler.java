@@ -2,7 +2,9 @@ package io.github.vihuynh72.brownie.api.web;
 
 import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
 import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
+import io.github.vihuynh72.brownie.api.export.ExportRequestValidationException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
+import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
@@ -11,6 +13,10 @@ import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
 import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
+import io.github.vihuynh72.brownie.core.export.BlockingValidationFindingsException;
+import io.github.vihuynh72.brownie.core.export.ExportNotApprovedException;
+import io.github.vihuynh72.brownie.core.export.ExportReceiptNotFoundException;
+import io.github.vihuynh72.brownie.core.export.StaleExportApprovalException;
 import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
@@ -35,6 +41,7 @@ import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationExcept
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
+import io.github.vihuynh72.brownie.core.validation.ValidationManifestNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -111,7 +118,10 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
-    @ExceptionHandler({DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class})
+    @ExceptionHandler({
+            DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class,
+            ValidationManifestNotFoundException.class, ExportNotApprovedException.class,
+            ExportReceiptNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -262,6 +272,26 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.PRECONDITION_FAILED, request);
     }
 
+    @ExceptionHandler(StaleExportApprovalException.class)
+    public ResponseEntity<Object> handleStaleExportApproval(StaleExportApprovalException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.PRECONDITION_FAILED);
+        problem.setTitle("Precondition Failed");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "STALE_EXPORT_APPROVAL");
+        problem.setProperty("currentRevisionId", ex.currentRevisionId());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.PRECONDITION_FAILED, request);
+    }
+
+    /** The manifest named is real but still has an unresolved blocking finding -- semantically invalid, not malformed, the same category {@link #handleNoComparableFieldBindings} already uses. */
+    @ExceptionHandler(BlockingValidationFindingsException.class)
+    public ResponseEntity<Object> handleBlockingValidationFindings(BlockingValidationFindingsException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BLOCKING_VALIDATION_FINDINGS");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
     @ExceptionHandler(DocumentContentValidationException.class)
     public ResponseEntity<Object> handleDocumentContentValidation(DocumentContentValidationException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
@@ -325,7 +355,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
-    @ExceptionHandler({JobRequestValidationException.class, DocumentRequestValidationException.class})
+    @ExceptionHandler({
+            JobRequestValidationException.class, DocumentRequestValidationException.class,
+            ValidationRequestValidationException.class, ExportRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
