@@ -1,8 +1,13 @@
 package io.github.vihuynh72.brownie.api.template;
 
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
+import io.github.vihuynh72.brownie.core.document.DocumentPart;
 import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
+import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
+import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.template.CandidateBindingReport;
+import io.github.vihuynh72.brownie.core.template.CandidateFieldBinding;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
@@ -16,6 +21,7 @@ import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -80,6 +86,42 @@ class TemplateController {
         TemplateVersion updated =
                 templateService.replaceDraftBindings(workspaceId, userId, templateId, request.expectedVersionNumber(), fields);
         return TemplateVersionResponse.from(updated);
+    }
+
+    /**
+     * The draft's own pinned structural graph, for a person to browse when
+     * choosing an exact {@code STRUCTURAL_NODE} to bind a field to -- the
+     * same graph {@code PUT .../draft/bindings} validates every binding
+     * against. Deliberately serializes the whole node tree, unlike {@code
+     * ExtractionController}'s own summary-only response: that response has
+     * no caller needing more detail yet, and this one exists specifically
+     * so a caller can pick a real {@code nodeId} out of it.
+     */
+    @GetMapping("/{templateId}/draft/structure")
+    DraftStructureResponse draftStructure(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return DraftStructureResponse.from(templateService.findDraftStructuralGraph(workspaceId, userId, templateId));
+    }
+
+    /**
+     * Candidate field bindings proposed from the draft's own structure -- a
+     * starting point offered back for review, never applied by itself. A
+     * caller still submits its own chosen fields (accepted as proposed,
+     * retyped, renamed, or ignored entirely in favor of manual mapping)
+     * through the existing {@code PUT .../draft/bindings} call.
+     */
+    @GetMapping("/{templateId}/draft/candidate-bindings")
+    CandidateBindingReportResponse draftCandidateBindings(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return CandidateBindingReportResponse.from(templateService.proposeCandidateBindings(workspaceId, userId, templateId));
     }
 
     @PostMapping("/{templateId}/versions")
@@ -211,6 +253,61 @@ class TemplateController {
     record TemplateDraftResponse(TemplateResponse template, TemplateVersionResponse draftVersion) {
         static TemplateDraftResponse from(Template template, TemplateVersion draft) {
             return new TemplateDraftResponse(TemplateResponse.from(template), TemplateVersionResponse.from(draft));
+        }
+    }
+
+    /** A short, human-scannable stand-in for a node's own content -- never the full text of a large paragraph or table, since this response can otherwise easily dwarf the graph it describes. */
+    private static final int TEXT_PREVIEW_MAX_LENGTH = 80;
+
+    record StructuralNodeResponse(
+            String nodeId,
+            String kind,
+            String textPreview,
+            String contentControlTag,
+            String imageRelationshipId,
+            List<StructuralNodeResponse> children) {
+        static StructuralNodeResponse from(StructuralNode node) {
+            String preview = node.text() == null
+                    ? null
+                    : node.text().length() > TEXT_PREVIEW_MAX_LENGTH
+                            ? node.text().substring(0, TEXT_PREVIEW_MAX_LENGTH) + "…"
+                            : node.text();
+            return new StructuralNodeResponse(
+                    node.nodeId(),
+                    node.kind().name(),
+                    preview,
+                    node.contentControlTag(),
+                    node.imageRelationshipId(),
+                    node.children().stream().map(StructuralNodeResponse::from).toList());
+        }
+    }
+
+    record DocumentPartResponse(String partName, String kind, StructuralNodeResponse root) {
+        static DocumentPartResponse from(DocumentPart part) {
+            return new DocumentPartResponse(part.partName(), part.kind().name(), StructuralNodeResponse.from(part.root()));
+        }
+    }
+
+    record DraftStructureResponse(String parserVersion, List<DocumentPartResponse> parts) {
+        static DraftStructureResponse from(DocxStructuralGraph graph) {
+            return new DraftStructureResponse(graph.parserVersion(), graph.parts().stream().map(DocumentPartResponse::from).toList());
+        }
+    }
+
+    /** Every candidate this codebase's binding kinds can express is a {@code ContentControlTag} -- see {@code FieldBindingCandidateProposer}'s own javadoc for why a candidate is never proposed as a raw {@code StructuralNode}. */
+    record CandidateFieldBindingResponse(String fieldId, String type, String cardinality, String contentControlTag) {
+        static CandidateFieldBindingResponse from(CandidateFieldBinding candidate) {
+            String tag = ((FieldBindingTarget.ContentControlTag) candidate.binding()).tag();
+            return new CandidateFieldBindingResponse(candidate.fieldId(), candidate.type().name(), candidate.cardinality().name(), tag);
+        }
+    }
+
+    record CandidateBindingReportResponse(
+            List<CandidateFieldBindingResponse> candidates, List<String> ambiguousContentControlTags) {
+        static CandidateBindingReportResponse from(CandidateBindingReport report) {
+            return new CandidateBindingReportResponse(
+                    report.candidates().stream().map(CandidateFieldBindingResponse::from).toList(),
+                    report.ambiguousContentControlTags());
         }
     }
 }
