@@ -34,6 +34,24 @@ public class QuestionService {
         return questionRepository.findOpenForDocument(workspaceId, userId, documentId);
     }
 
+    public List<Question> allQuestions(long workspaceId, long userId, long documentId) {
+        return questionRepository.findAllForDocument(workspaceId, userId, documentId);
+    }
+
+    /**
+     * Persists a worker's own already-detected questions directly, skipping
+     * {@link QuestionDetectionService#detect}: the worker ran detection
+     * itself (it has the freshly extracted candidates; this service does
+     * not), so this is the "persist" half of {@link #detectAndPersist}
+     * alone, for a caller handed a {@link DetectedQuestionsBundle} instead
+     * of a raw {@code ExtractionResult}.
+     */
+    public List<Question> persistDetected(long workspaceId, long userId, long documentId, List<DetectedQuestion> detected) {
+        return detected.stream()
+                .map(d -> questionRepository.create(workspaceId, userId, documentId, d.fieldId(), d.reason(), d.candidates()))
+                .toList();
+    }
+
     public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
         if (answerValue == null || answerValue.isBlank()) {
             throw new IllegalArgumentException("An answer must not be blank.");
