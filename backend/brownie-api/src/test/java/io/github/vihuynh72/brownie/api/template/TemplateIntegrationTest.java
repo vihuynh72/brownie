@@ -14,6 +14,8 @@ import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.junit.jupiter.api.Test;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTP;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTR;
@@ -54,6 +56,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -418,6 +421,67 @@ class TemplateIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void draftStructureAndCandidateBindingsLetAPersonRecoverAllTheWayToActivationWithoutHandTypingATag() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-candidate-bindings");
+        long workspaceId = ensureWorkspace("subject-candidate-bindings").id();
+        long artifactId = uploadAndFinalize(
+                session, workspaceId, docxWithContentControlAndTableContentControl("meeting.title", "action.item.task"), "custom.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        JsonNode structure = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/draft/structure")
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(structure.get("parts")).isNotEmpty();
+        assertThat(structure.toString()).contains("meeting.title").contains("action.item.task").contains("TABLE_CELL");
+
+        JsonNode candidates = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/draft/candidate-bindings")
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(candidates.get("ambiguousContentControlTags")).isEmpty();
+        assertThat(candidates.get("candidates")).hasSize(2);
+        JsonNode titleCandidate = findCandidate(candidates, "meeting.title");
+        assertThat(titleCandidate.get("type").asText()).isEqualTo("TEXT");
+        assertThat(titleCandidate.get("cardinality").asText()).isEqualTo("SCALAR");
+        JsonNode taskCandidate = findCandidate(candidates, "action.item.task");
+        assertThat(taskCandidate.get("cardinality").asText()).isEqualTo("REPEATED");
+
+        String bindingsBody = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "},{"
+                + "\"fieldId\":\"action.item.task\",\"type\":\"TEXT\",\"cardinality\":\"REPEATED\",\"requiredness\":\"OPTIONAL\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"action.item.task\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(bindingsBody))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isCreated());
+    }
+
+    private static JsonNode findCandidate(JsonNode candidatesResponse, String fieldId) {
+        for (JsonNode candidate : candidatesResponse.get("candidates")) {
+            if (candidate.get("fieldId").asText().equals(fieldId)) {
+                return candidate;
+            }
+        }
+        throw new AssertionError("No candidate found for field \"" + fieldId + "\" in " + candidatesResponse);
+    }
+
     private static String templatesPath(long workspaceId) {
         return "/api/v1/workspaces/" + workspaceId + "/templates";
     }
@@ -471,22 +535,46 @@ class TemplateIntegrationTest {
     private static byte[] docxWithContentControl(String... tags) throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
             for (String tag : tags) {
-                XWPFParagraph paragraph = doc.createParagraph();
-                paragraph.createRun().setText("Field: ");
-                CTP ctp = paragraph.getCTP();
-                CTSdtRun sdt = ctp.addNewSdt();
-                CTSdtPr sdtPr = sdt.addNewSdtPr();
-                sdtPr.addNewTag().setVal(tag);
-                sdtPr.addNewAlias().setVal(tag);
-                CTSdtContentRun content = sdt.addNewSdtContent();
-                CTR run = content.addNewR();
-                run.addNewT().setStringValue("[value]");
+                addContentControlParagraph(doc.createParagraph(), tag);
             }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
             return out.toByteArray();
         }
+    }
+
+    /**
+     * A real DOCX with one plain, scalar content control (the same shape
+     * {@link #docxWithContentControl} builds) plus a one-row, one-cell
+     * table whose cell holds its own content control -- a real prototype
+     * row, the shape {@link FieldBindingCandidateProposer} infers a {@code
+     * REPEATED} candidate from.
+     */
+    private static byte[] docxWithContentControlAndTableContentControl(String scalarTag, String tableTag) throws Exception {
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addContentControlParagraph(doc.createParagraph(), scalarTag);
+
+            XWPFTable table = doc.createTable(1, 1);
+            XWPFTableCell cell = table.getRow(0).getCell(0);
+            addContentControlParagraph(cell.getParagraphs().get(0), tableTag);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    private static void addContentControlParagraph(XWPFParagraph paragraph, String tag) {
+        paragraph.createRun().setText("Field: ");
+        CTP ctp = paragraph.getCTP();
+        CTSdtRun sdt = ctp.addNewSdt();
+        CTSdtPr sdtPr = sdt.addNewSdtPr();
+        sdtPr.addNewTag().setVal(tag);
+        sdtPr.addNewAlias().setVal(tag);
+        CTSdtContentRun content = sdt.addNewSdtContent();
+        CTR run = content.addNewR();
+        run.addNewT().setStringValue("[value]");
     }
 
     private JsonNode readJson(org.springframework.test.web.servlet.MvcResult result) throws Exception {
