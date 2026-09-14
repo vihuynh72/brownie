@@ -170,6 +170,31 @@ class PoiDocxStructuralExtractorTest {
         assertEquals("Footer", footerText);
     }
 
+    /**
+     * A real, previously-latent bug: {@code CTColor.getVal()} returns
+     * {@code Object} for its hex-color-or-"auto" union type, and its
+     * actual runtime type is a raw {@code byte[]}; naively calling {@code
+     * String.valueOf(val)} on that silently produced {@code
+     * Object.toString()}'s own identity-hash-code text (for example
+     * {@code "[B@42721fe"}), different on every independent extraction of
+     * the identical color, rather than a real hex string. Never caught
+     * before because nothing before this task's own layout comparator
+     * ever compared two independently extracted {@code ResolvedStyle}
+     * values for equality. Asserts both the real hex value and that two
+     * separately extracted runs sharing the same color compare equal --
+     * the second assertion is what actually would have caught this bug.
+     */
+    @Test
+    void colorHexResolvesToARealHexStringNotObjectToString() throws IOException {
+        var graph = supported(DocxFixtures.documentWithTwoIdenticallyColoredRuns());
+        StructuralNode paragraph = graph.parts().get(0).root().children().get(0);
+        StructuralNode firstRun = paragraph.children().get(0);
+        StructuralNode secondRun = paragraph.children().get(1);
+
+        assertEquals("FF0000", firstRun.style().colorHex());
+        assertEquals(firstRun.style(), secondRun.style());
+    }
+
     @Test
     void corruptPackageThrowsDocxParseException() {
         assertThrows(DocxParseException.class, () -> extractor.extract(new ByteArrayInputStream(DocxFixtures.corruptPackage())));

@@ -321,6 +321,19 @@ final class DocxFixtures {
         headingRPr.addNewSz().setVal(BigInteger.valueOf(32));
     }
 
+    /** A single paragraph with two runs sharing the identical explicit red color -- exercises {@code colorHex} resolution and its own cross-run equality, independent of every other style property this fixture set intentionally leaves untouched. */
+    static byte[] documentWithTwoIdenticallyColoredRuns() throws IOException {
+        XWPFDocument doc = new XWPFDocument();
+        XWPFParagraph paragraph = doc.createParagraph();
+        XWPFRun first = paragraph.createRun();
+        first.setText("Red text one");
+        first.setColor("FF0000");
+        XWPFRun second = paragraph.createRun();
+        second.setText("Red text two");
+        second.setColor("FF0000");
+        return write(doc);
+    }
+
     private static byte[] write(XWPFDocument doc) throws IOException {
         try (doc) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
