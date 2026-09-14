@@ -7,11 +7,22 @@ spring:
     url: ${BROWNIE_DB_URL}
     username: ${BROWNIE_DB_USERNAME}
     password: ${BROWNIE_DB_PASSWORD}
+  ai:
+    openai:
+      # Same convention as brownie-api's identical entry: no default, so a
+      # real profile fails fast if unset.
+      api-key: ${BROWNIE_OPENAI_API_KEY}
 
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
   storage:
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+  ai:
+    openai:
+      # The one evaluated snapshot this gateway is fixed to -- must match
+      # brownie-api's own identical default, since both call the same
+      # model gateway adapter.
+      model: ${BROWNIE_OPENAI_MODEL:gpt-5.4-mini-2026-03-17}
 
 logging:
   structured:
@@ -34,6 +45,12 @@ spring:
   config:
     activate:
       on-profile: test
+  ai:
+    openai:
+      # Same unreachable-but-syntactically-valid convention as brownie-api's
+      # identical entry: building the ChatModel bean needs a non-blank
+      # value but never touches the network on its own.
+      api-key: sk-test-not-a-real-key
 brownie:
   storage:
     # A syntactically valid but unreachable endpoint keeps the fast context
