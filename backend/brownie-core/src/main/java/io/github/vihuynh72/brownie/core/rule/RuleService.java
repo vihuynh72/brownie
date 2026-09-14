@@ -70,6 +70,44 @@ public class RuleService {
         return ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id());
     }
 
+    /**
+     * Records which attached examples supported or contradicted an
+     * already-proposed rule. Called by {@code core.example}'s own
+     * example-driven proposer immediately after {@link #propose} persists
+     * the rule itself -- kept as two separate calls, not one combined
+     * method, since a manually proposed rule (an ordinary {@link #propose}
+     * call with no caller-supplied evidence) never calls this at all.
+     */
+    public void recordProposalEvidence(long workspaceId, long userId, long ruleId, RuleProposalEvidence evidence) {
+        ruleRepository.recordProposalEvidence(workspaceId, userId, ruleId, evidence);
+    }
+
+    /** The evidence recorded for one rule, if it was ever proposed from examples. */
+    public Optional<RuleProposalEvidence> findProposalEvidence(long workspaceId, long userId, long ruleId) {
+        return ruleRepository.findProposalEvidence(workspaceId, userId, ruleId);
+    }
+
+    /**
+     * Accepts a proposed rule as-is. Accepting a {@code ProtectedRegion}
+     * rule is this codebase's own "lock a region" action -- a person locks
+     * a region by accepting exactly that proposal, not through a separate
+     * mechanism.
+     */
+    public RuleRevision acceptRule(long workspaceId, long userId, long templateId, long ruleId) {
+        return ruleRepository.decide(workspaceId, userId, templateId, ruleId, RuleRevisionStatus.ACCEPTED);
+    }
+
+    /**
+     * Rejects a proposed rule. "Editing" a proposed rule is this same
+     * operation composed with a fresh {@link #propose} call carrying the
+     * edited payload -- a rule is immutable once created, the same way a
+     * document revision is, so there is no separate in-place edit
+     * mutation to call.
+     */
+    public RuleRevision rejectRule(long workspaceId, long userId, long templateId, long ruleId) {
+        return ruleRepository.decide(workspaceId, userId, templateId, ruleId, RuleRevisionStatus.REJECTED);
+    }
+
     private TemplateVersion requireDraftVersion(long workspaceId, long userId, long templateId) {
         return templateRepository
                 .findDraftVersion(workspaceId, userId, templateId)

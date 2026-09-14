@@ -12,6 +12,7 @@ import io.github.vihuynh72.brownie.core.rule.RulePayloadValidator;
 import io.github.vihuynh72.brownie.core.rule.RuleProblem;
 import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
+import io.github.vihuynh72.brownie.core.rule.RuleRevisionStatus;
 import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 
 import java.util.List;
@@ -50,16 +51,22 @@ public class TemplateService {
     private final ExtractionVersionRepository extractionVersionRepository;
     private final DocxStructuralExtractor docxExtractor;
     private final RuleRepository ruleRepository;
+    private final TemplateBaselineRenderer templateBaselineRenderer;
+    private final TemplateBaselineRenderRepository templateBaselineRenderRepository;
 
     public TemplateService(
             TemplateRepository templateRepository,
             ExtractionVersionRepository extractionVersionRepository,
             DocxStructuralExtractor docxExtractor,
-            RuleRepository ruleRepository) {
+            RuleRepository ruleRepository,
+            TemplateBaselineRenderer templateBaselineRenderer,
+            TemplateBaselineRenderRepository templateBaselineRenderRepository) {
         this.templateRepository = templateRepository;
         this.extractionVersionRepository = extractionVersionRepository;
         this.docxExtractor = docxExtractor;
         this.ruleRepository = ruleRepository;
+        this.templateBaselineRenderer = templateBaselineRenderer;
+        this.templateBaselineRenderRepository = templateBaselineRenderRepository;
     }
 
     /** Opens a new template with an empty first draft, pinned to {@code sourceArtifactId}'s current COMPLETE DOCX extraction. */
@@ -78,6 +85,30 @@ public class TemplateService {
 
     public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
         return templateRepository.findDraftVersion(workspaceId, userId, templateId);
+    }
+
+    /**
+     * The draft's own pinned structural graph, for a person browsing it to
+     * pick an exact {@link FieldBindingTarget.StructuralNode} to map a
+     * field to when no usable content control exists. The same graph
+     * {@link #replaceDraftBindings} and {@link #activate} already validate
+     * bindings against -- reading it does not create, extract, or change
+     * anything.
+     */
+    public DocxStructuralGraph findDraftStructuralGraph(long workspaceId, long userId, long templateId) {
+        return requireGraph(workspaceId, userId, requireDraftVersion(workspaceId, userId, templateId));
+    }
+
+    /**
+     * Candidate field bindings proposed from the draft's own pinned
+     * structure -- a starting point a person accepts, edits, or ignores in
+     * favor of manual mapping, never something applied on its own. See
+     * {@link FieldBindingCandidateProposer}'s own javadoc for exactly what
+     * it can and cannot infer.
+     */
+    public CandidateBindingReport proposeCandidateBindings(long workspaceId, long userId, long templateId) {
+        DocxStructuralGraph graph = findDraftStructuralGraph(workspaceId, userId, templateId);
+        return FieldBindingCandidateProposer.propose(graph);
     }
 
     /**
@@ -105,7 +136,12 @@ public class TemplateService {
      * draft shape before checking conflicts. This catches a rule that was
      * valid before a later binding replacement removed or reshaped its target.
      * Refuses an empty field list: an activated template with nothing bound
-     * could never actually fill a document.
+     * could never actually fill a document. Finally proves a real sample
+     * fill and render before activating -- "create a sample document with
+     * synthetic content, render it, inspect the capability report, and
+     * activate" run as this one method's own last precondition, not a
+     * separate prior step with its own state to track. The baseline is
+     * recorded only once activation itself has actually succeeded.
      */
     public TemplateVersion activate(long workspaceId, long userId, long templateId, int expectedVersionNumber) {
         TemplateVersion currentDraft = requireDraftVersion(workspaceId, userId, templateId);
@@ -117,12 +153,32 @@ public class TemplateService {
         DocxStructuralGraph graph = requireGraph(workspaceId, userId, currentDraft);
         validateBindingsOrThrow(graph, currentDraft.fieldDefinitions());
         validateRulesAndRequireNoConflicts(workspaceId, userId, currentDraft, graph);
-        return templateRepository.activate(workspaceId, userId, templateId, expectedVersionNumber);
+        BaselineRenderResult baseline = templateBaselineRenderer.renderBaseline(workspaceId, userId, currentDraft);
+        if (!baseline.passed()) {
+            throw new TemplateBaselineIntegrityException(baseline.failedFieldIds());
+        }
+        TemplateVersion activated = templateRepository.activate(workspaceId, userId, templateId, expectedVersionNumber);
+        templateBaselineRenderRepository.recordBaselineRender(workspaceId, userId, activated.id(), baseline);
+        return activated;
     }
 
+    /** The baseline render an activated version was proven against, if this version is activated. */
+    public Optional<BaselineRenderResult> findBaselineRender(long workspaceId, long userId, long templateVersionId) {
+        return templateBaselineRenderRepository.findBaselineRender(workspaceId, userId, templateVersionId);
+    }
+
+    /**
+     * A {@code REJECTED} rule is excluded before validation and conflict
+     * detection ever see it -- a rejected proposal will never apply to a
+     * generated document, so it must not be able to block activation (or
+     * be counted toward a conflict) the way a still-{@code PROPOSED} or
+     * {@code ACCEPTED} one correctly does.
+     */
     private void validateRulesAndRequireNoConflicts(
             long workspaceId, long userId, TemplateVersion draft, DocxStructuralGraph graph) {
-        List<RuleRevision> rules = ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id());
+        List<RuleRevision> rules = ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id()).stream()
+                .filter(rule -> rule.status() != RuleRevisionStatus.REJECTED)
+                .toList();
         if (rules.isEmpty()) {
             return;
         }

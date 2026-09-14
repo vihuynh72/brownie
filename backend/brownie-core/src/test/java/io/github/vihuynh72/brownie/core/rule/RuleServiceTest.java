@@ -104,6 +104,48 @@ class RuleServiceTest {
         assertEquals(1, service.findForDraft(WORKSPACE_ID, USER_ID, TEMPLATE_ID).size());
     }
 
+    @Test
+    void acceptRuleMovesItFromProposedToAccepted() {
+        RuleService service = newService(fieldDefinitions());
+        RuleRevision proposed = service.propose(
+                WORKSPACE_ID, USER_ID, TEMPLATE_ID, new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), null);
+
+        RuleRevision accepted = service.acceptRule(WORKSPACE_ID, USER_ID, TEMPLATE_ID, proposed.id());
+
+        assertEquals(RuleRevisionStatus.ACCEPTED, accepted.status());
+    }
+
+    @Test
+    void rejectRuleMovesItFromProposedToRejected() {
+        RuleService service = newService(fieldDefinitions());
+        RuleRevision proposed = service.propose(
+                WORKSPACE_ID, USER_ID, TEMPLATE_ID, new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), null);
+
+        RuleRevision rejected = service.rejectRule(WORKSPACE_ID, USER_ID, TEMPLATE_ID, proposed.id());
+
+        assertEquals(RuleRevisionStatus.REJECTED, rejected.status());
+    }
+
+    @Test
+    void decidingAnAlreadyDecidedRuleAgainFails() {
+        RuleService service = newService(fieldDefinitions());
+        RuleRevision proposed = service.propose(
+                WORKSPACE_ID, USER_ID, TEMPLATE_ID, new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), null);
+        service.acceptRule(WORKSPACE_ID, USER_ID, TEMPLATE_ID, proposed.id());
+
+        assertThrows(RuleDecisionConflictException.class, () -> service.rejectRule(WORKSPACE_ID, USER_ID, TEMPLATE_ID, proposed.id()));
+    }
+
+    @Test
+    void decidingANonexistentRuleFails() {
+        RuleService service = newService(fieldDefinitions());
+
+        assertThrows(RuleDecisionConflictException.class, () -> service.acceptRule(WORKSPACE_ID, USER_ID, TEMPLATE_ID, 999L));
+    }
+
     private static List<FieldDefinition> fieldDefinitions() {
         return List.of(new FieldDefinition(
                 "meeting.title", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED,
@@ -209,6 +251,7 @@ class RuleServiceTest {
 
     private static final class FakeRuleRepository implements RuleRepository {
         private final List<RuleRevision> revisions = new ArrayList<>();
+        private final Map<Long, RuleProposalEvidence> evidenceByRuleId = new HashMap<>();
         private final AtomicLong ids = new AtomicLong(1);
 
         @Override
@@ -236,6 +279,32 @@ class RuleServiceTest {
         @Override
         public List<RuleRevision> findByTemplateVersion(long workspaceId, long userId, long templateVersionId) {
             return revisions.stream().filter(r -> r.workspaceId() == workspaceId && r.templateVersionId() == templateVersionId).toList();
+        }
+
+        @Override
+        public void recordProposalEvidence(long workspaceId, long userId, long ruleId, RuleProposalEvidence evidence) {
+            evidenceByRuleId.put(ruleId, evidence);
+        }
+
+        @Override
+        public Optional<RuleProposalEvidence> findProposalEvidence(long workspaceId, long userId, long ruleId) {
+            return Optional.ofNullable(evidenceByRuleId.get(ruleId));
+        }
+
+        @Override
+        public RuleRevision decide(long workspaceId, long userId, long templateId, long ruleId, RuleRevisionStatus decision) {
+            for (int i = 0; i < revisions.size(); i++) {
+                RuleRevision current = revisions.get(i);
+                if (current.id() == ruleId && current.workspaceId() == workspaceId && current.status() == RuleRevisionStatus.PROPOSED) {
+                    RuleRevision decided = new RuleRevision(
+                            current.id(), current.workspaceId(), current.templateId(), current.templateVersionId(), current.category(),
+                            current.scope(), current.payload(), current.schemaVersion(), decision, current.humanExplanation(),
+                            current.authorUserId(), current.createdAt());
+                    revisions.set(i, decided);
+                    return decided;
+                }
+            }
+            throw new RuleDecisionConflictException(ruleId);
         }
     }
 }

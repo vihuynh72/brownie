@@ -7,10 +7,14 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
+import io.github.vihuynh72.brownie.core.example.ExampleAlignmentStatus;
+import io.github.vihuynh72.brownie.core.example.TemplateExample;
+import io.github.vihuynh72.brownie.core.example.TemplateExampleRepository;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.rule.DateFormatStyle;
 import io.github.vihuynh72.brownie.core.rule.RuleCategory;
+import io.github.vihuynh72.brownie.core.rule.RuleProposalEvidence;
 import io.github.vihuynh72.brownie.core.rule.RulePayload;
 import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRevision;
@@ -106,6 +110,9 @@ class JdbcRuleRepositoryTest {
 
     @Autowired
     private WorkspaceRepository workspaceRepository;
+
+    @Autowired
+    private TemplateExampleRepository templateExampleRepository;
 
     @Autowired
     private DataSource dataSource;
@@ -210,6 +217,137 @@ class JdbcRuleRepositoryTest {
                 new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
 
         assertThat(ruleRepository.find(workspaceBId, userA.id(), draft.templateId(), saved.id())).isEmpty();
+    }
+
+    @Test
+    void decideMovesARealProposedRuleToAcceptedOrRejected() {
+        long userId = newUser("subject-decide").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        RuleRevision accepted = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+        RuleRevision rejected = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.SingleField("meeting.title"),
+                new RulePayload.MaxTextLength("meeting.title", 100), RuleVocabulary.SCHEMA_VERSION, null);
+
+        RuleRevision decidedAccepted =
+                ruleRepository.decide(workspaceId, userId, draft.templateId(), accepted.id(), RuleRevisionStatus.ACCEPTED);
+        RuleRevision decidedRejected =
+                ruleRepository.decide(workspaceId, userId, draft.templateId(), rejected.id(), RuleRevisionStatus.REJECTED);
+
+        assertThat(decidedAccepted.status()).isEqualTo(RuleRevisionStatus.ACCEPTED);
+        assertThat(decidedRejected.status()).isEqualTo(RuleRevisionStatus.REJECTED);
+        assertThat(ruleRepository.find(workspaceId, userId, draft.templateId(), accepted.id()).orElseThrow().status())
+                .isEqualTo(RuleRevisionStatus.ACCEPTED);
+    }
+
+    @Test
+    void decidingAnAlreadyDecidedRuleAgainIsRejectedByTheRealUpdatePolicy() {
+        long userId = newUser("subject-decide-twice").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        RuleRevision rule = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+        ruleRepository.decide(workspaceId, userId, draft.templateId(), rule.id(), RuleRevisionStatus.ACCEPTED);
+
+        assertThatThrownBy(() -> ruleRepository.decide(workspaceId, userId, draft.templateId(), rule.id(), RuleRevisionStatus.REJECTED))
+                .isInstanceOf(io.github.vihuynh72.brownie.core.rule.RuleDecisionConflictException.class);
+    }
+
+    @Test
+    void oneUsersContextCannotDecideAnotherWorkspacesRule() {
+        var userA = newUser("subject-decide-rls-a");
+        var userB = newUser("subject-decide-rls-b");
+        long workspaceBId = workspaceRepository.ensurePersonalWorkspace(userB.id()).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceBId, userB.id());
+        RuleRevision rule = ruleRepository.propose(
+                workspaceBId, userB.id(), draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+
+        assertThatThrownBy(() -> ruleRepository.decide(workspaceBId, userA.id(), draft.templateId(), rule.id(), RuleRevisionStatus.ACCEPTED))
+                .isInstanceOf(io.github.vihuynh72.brownie.core.rule.RuleDecisionConflictException.class);
+        assertThat(ruleRepository.find(workspaceBId, userB.id(), draft.templateId(), rule.id()).orElseThrow().status())
+                .isEqualTo(RuleRevisionStatus.PROPOSED);
+    }
+
+    @Test
+    void recordProposalEvidenceRoundTripsSupportingAndContradictingExamplesSeparately() {
+        long userId = newUser("subject-evidence-round-trip").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        RuleRevision rule = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.SingleField("meeting.date"),
+                new RulePayload.DateDisplayFormat("meeting.date", DateFormatStyle.ISO), RuleVocabulary.SCHEMA_VERSION,
+                "Proposed from 2 aligned example(s).");
+        TemplateExample supporting = attachExample(workspaceId, userId, draft, ExampleAlignmentStatus.ALIGNED);
+        TemplateExample contradicting = attachExample(workspaceId, userId, draft, ExampleAlignmentStatus.ALIGNED);
+
+        assertThat(ruleRepository.findProposalEvidence(workspaceId, userId, rule.id())).isEmpty();
+
+        ruleRepository.recordProposalEvidence(
+                workspaceId, userId, rule.id(),
+                new RuleProposalEvidence(List.of(supporting.id()), List.of(contradicting.id())));
+
+        RuleProposalEvidence reloaded = ruleRepository.findProposalEvidence(workspaceId, userId, rule.id()).orElseThrow();
+        assertThat(reloaded.supportingExampleIds()).containsExactly(supporting.id());
+        assertThat(reloaded.contradictingExampleIds()).containsExactly(contradicting.id());
+    }
+
+    @Test
+    void aManuallyProposedRuleHasNoProposalEvidenceAtAll() {
+        long userId = newUser("subject-no-evidence").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        RuleRevision rule = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+
+        assertThat(ruleRepository.findProposalEvidence(workspaceId, userId, rule.id())).isEmpty();
+    }
+
+    @Test
+    void recordingEvidenceForAnotherWorkspacesExampleIsRejectedByTheRealForeignKey() {
+        long userId = newUser("subject-evidence-cross-workspace").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceId, userId);
+        RuleRevision rule = ruleRepository.propose(
+                workspaceId, userId, draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+
+        long otherUserId = newUser("subject-evidence-other-workspace").id();
+        long otherWorkspaceId = workspaceRepository.ensurePersonalWorkspace(otherUserId).id();
+        TemplateVersion otherDraft = newDraftTemplateVersion(otherWorkspaceId, otherUserId);
+        TemplateExample otherWorkspacesExample = attachExample(otherWorkspaceId, otherUserId, otherDraft, ExampleAlignmentStatus.ALIGNED);
+
+        assertThatThrownBy(() -> ruleRepository.recordProposalEvidence(
+                        workspaceId, userId, rule.id(), new RuleProposalEvidence(List.of(otherWorkspacesExample.id()), List.of())))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void oneUsersContextCannotReadAnotherWorkspacesProposalEvidence() {
+        var userB = newUser("subject-evidence-rls-b");
+        long workspaceBId = workspaceRepository.ensurePersonalWorkspace(userB.id()).id();
+        TemplateVersion draft = newDraftTemplateVersion(workspaceBId, userB.id());
+        RuleRevision rule = ruleRepository.propose(
+                workspaceBId, userB.id(), draft.templateId(), draft.id(), new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title")), RuleVocabulary.SCHEMA_VERSION, null);
+        TemplateExample example = attachExample(workspaceBId, userB.id(), draft, ExampleAlignmentStatus.ALIGNED);
+        ruleRepository.recordProposalEvidence(
+                workspaceBId, userB.id(), rule.id(), new RuleProposalEvidence(List.of(example.id()), List.of()));
+
+        var userA = newUser("subject-evidence-rls-a");
+        assertThat(ruleRepository.findProposalEvidence(workspaceBId, userA.id(), rule.id())).isEmpty();
+    }
+
+    private TemplateExample attachExample(long workspaceId, long userId, TemplateVersion draft, ExampleAlignmentStatus status) {
+        long exampleArtifactId = insertArtifact(workspaceId, userId);
+        ExtractionVersion exampleExtraction =
+                extractionVersionRepository.saveComplete(workspaceId, userId, exampleArtifactId, "test-parser-v1", sampleGraph());
+        return templateExampleRepository.attach(
+                workspaceId, userId, draft.templateId(), draft.id(), exampleArtifactId, exampleExtraction.id(), status);
     }
 
     private TemplateVersion newDraftTemplateVersion(long workspaceId, long userId) {
