@@ -15,6 +15,7 @@ import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
+import io.github.vihuynh72.brownie.core.example.NoComparableFieldBindingsException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
 import io.github.vihuynh72.brownie.core.job.IdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
@@ -29,6 +30,7 @@ import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
 import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
+import io.github.vihuynh72.brownie.core.template.TemplateBaselineIntegrityException;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
@@ -366,6 +368,20 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
+     * The draft has no field bound in a way an example can honestly be
+     * compared against yet -- the same "semantically invalid given current
+     * draft state" category as {@link #handleTemplateSourceNotExtractable}.
+     */
+    @ExceptionHandler(NoComparableFieldBindingsException.class)
+    public ResponseEntity<Object> handleNoComparableFieldBindings(NoComparableFieldBindingsException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NO_COMPARABLE_FIELD_BINDINGS");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
      * The request is well-formed and every field ID is unique, but at
      * least one binding does not resolve to exactly one real node in the
      * source's extracted structure -- semantically invalid, not malformed;
@@ -383,6 +399,22 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .map(problemField -> Map.of("field", problemField.fieldId(), "message", problemField.reason().name()))
                 .toList();
         problem.setProperty("fields", fields);
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * A sample-content baseline render did not survive into the reopened
+     * DOCX or the rendered PDF for one or more fields -- the same
+     * "cannot honestly prove this activates" category as {@link
+     * #handleTemplateBindingValidation}, naming every failing field.
+     */
+    @ExceptionHandler(TemplateBaselineIntegrityException.class)
+    public ResponseEntity<Object> handleTemplateBaselineIntegrity(TemplateBaselineIntegrityException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("The template's sample baseline render did not pass its own content-integrity check.");
+        enrich(problem, "BASELINE_INTEGRITY_FAILED");
+        problem.setProperty("fields", ex.failedFieldIds());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
