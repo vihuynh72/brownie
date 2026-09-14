@@ -1,9 +1,8 @@
-package io.github.vihuynh72.brownie.api.generation.json;
+package io.github.vihuynh72.brownie.ai.generation.json;
 
 import io.github.vihuynh72.brownie.core.generation.CompositionResponseParseException;
 import io.github.vihuynh72.brownie.core.generation.CompositionResponseParser;
 import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
-import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -20,7 +19,6 @@ import java.util.Set;
  * {@link JacksonExtractionResponseParser} already establishes for its own
  * sibling reply shape.
  */
-@Component
 class JacksonCompositionResponseParser implements CompositionResponseParser {
 
     private final ObjectMapper objectMapper;

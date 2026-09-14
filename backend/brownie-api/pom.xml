@@ -122,12 +122,11 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <!-- The model gateway's real adapter. Version is inherited from
-           spring-ai-bom, imported in the parent POM, the same way every
-           spring-boot-starter-* dependency above inherits its version from
-           the Spring Boot BOM. -->
-      <groupId>org.springframework.ai</groupId>
-      <artifactId>spring-ai-starter-model-openai</artifactId>
+      <!-- The real model gateway adapter, shared with brownie-worker;
+           see brownie-ai's own module description. -->
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-ai</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <!-- DOCX structural extraction. Not managed by the Spring Boot BOM,
