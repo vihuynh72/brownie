@@ -54,7 +54,7 @@ class TemplateServiceTest {
     void createDraftSucceedsWhenSourceHasACompleteExtraction() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
 
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
 
@@ -69,7 +69,7 @@ class TemplateServiceTest {
     @Test
     void createDraftFailsWhenSourceHasNeverBeenExtracted() {
         TemplateService service =
-                new TemplateService(new FakeTemplateRepository(), new FakeExtractionVersionRepository(), new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+                new TemplateService(new FakeTemplateRepository(), new FakeExtractionVersionRepository(), new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
 
         assertThrows(
                 TemplateSourceNotExtractableException.class,
@@ -80,7 +80,7 @@ class TemplateServiceTest {
     void createDraftFailsWhenSourceExtractionIsUnsupportedNotComplete() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putUnsupported(SOURCE_ARTIFACT_ID, PARSER_VERSION);
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
 
         assertThrows(
                 TemplateSourceNotExtractableException.class,
@@ -91,7 +91,7 @@ class TemplateServiceTest {
     void replaceDraftBindingsSucceedsAndAdvancesVersionNumber() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
 
         TemplateVersion updated = service.replaceDraftBindings(
@@ -109,7 +109,7 @@ class TemplateServiceTest {
     void replaceDraftBindingsRejectsAnUnsupportedTargetAndPersistsNothing() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
 
         assertThrows(
@@ -130,7 +130,7 @@ class TemplateServiceTest {
     void replaceDraftBindingsRejectsAStaleExpectedVersionNumber() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
 
         assertThrows(
@@ -142,7 +142,7 @@ class TemplateServiceTest {
     void activateSucceedsAndPointsTheTemplateAtTheNewActiveVersion() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID,
@@ -160,10 +160,54 @@ class TemplateServiceTest {
     }
 
     @Test
+    void activateRecordsTheBaselineRenderOnlyAfterActivationItselfSucceeds() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        FakeTemplateBaselineRenderRepository baselineRenders = new FakeTemplateBaselineRenderRepository();
+        TemplateService service = new TemplateService(
+                new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(),
+                new FakePassingTemplateBaselineRenderer(), baselineRenders);
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(field("meeting.title", new FieldBindingTarget.ContentControlTag("meeting.title"))));
+
+        TemplateVersion activated = service.activate(WORKSPACE_ID, USER_ID, template.id(), 2);
+
+        BaselineRenderResult recorded = service.findBaselineRender(WORKSPACE_ID, USER_ID, activated.id()).orElseThrow();
+        assertEquals("fake-renderer-v1", recorded.rendererVersion());
+    }
+
+    @Test
+    void activateRefusesWhenTheBaselineRenderFailsItsOwnIntegrityCheck() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        FakeTemplateBaselineRenderRepository baselineRenders = new FakeTemplateBaselineRenderRepository();
+        TemplateBaselineRenderer failingRenderer = (workspaceId, userId, draftVersion) ->
+                new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of("meeting.title"));
+        TemplateService service = new TemplateService(
+                new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), failingRenderer,
+                baselineRenders);
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(field("meeting.title", new FieldBindingTarget.ContentControlTag("meeting.title"))));
+        long draftVersionId = service.findDraftVersion(WORKSPACE_ID, USER_ID, template.id()).orElseThrow().id();
+
+        TemplateBaselineIntegrityException exception = assertThrows(
+                TemplateBaselineIntegrityException.class, () -> service.activate(WORKSPACE_ID, USER_ID, template.id(), 2));
+
+        assertEquals(List.of("meeting.title"), exception.failedFieldIds());
+        Template reloaded = service.find(WORKSPACE_ID, USER_ID, template.id()).orElseThrow();
+        assertEquals(TemplateStatus.DRAFT, reloaded.status());
+        assertTrue(baselineRenders.findBaselineRender(WORKSPACE_ID, USER_ID, draftVersionId).isEmpty());
+    }
+
+    @Test
     void activateRefusesAnEmptyDraft() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
 
         assertThrows(
@@ -175,7 +219,7 @@ class TemplateServiceTest {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
         FakeRuleRepository rules = new FakeRuleRepository();
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID, USER_ID, template.id(), 1,
@@ -188,12 +232,36 @@ class TemplateServiceTest {
     }
 
     @Test
+    void activateIgnoresARejectedRuleEvenWhenItWouldOtherwiseConflict() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        FakeRuleRepository rules = new FakeRuleRepository();
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(new FieldDefinition(
+                        "meeting.title", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                        new FieldBindingTarget.ContentControlTag("meeting.title"))));
+        TemplateVersion draft = service.findDraftVersion(WORKSPACE_ID, USER_ID, template.id()).orElseThrow();
+        rules.add(
+                draft.id(), new RuleScope.WholeTemplate(), new RulePayload.MissingValueBehavior("meeting.title", EmptyValueResolution.OMIT));
+        rules.add(
+                draft.id(), new RuleScope.WholeTemplate(), new RulePayload.MissingValueBehavior("meeting.title", EmptyValueResolution.BLANK),
+                RuleRevisionStatus.REJECTED);
+
+        TemplateVersion activated = service.activate(WORKSPACE_ID, USER_ID, template.id(), 2);
+
+        assertEquals(TemplateVersionStatus.ACTIVATED, activated.status());
+    }
+
+    @Test
     void activateRefusesWhenADraftBindingChangeMakesAnExistingRuleStale() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(
                 SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithTags("meeting.title", "meeting.location"));
         FakeRuleRepository rules = new FakeRuleRepository();
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID,
@@ -229,7 +297,7 @@ class TemplateServiceTest {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
         FakeRuleRepository rules = new FakeRuleRepository();
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID, USER_ID, template.id(), 1,
@@ -247,7 +315,7 @@ class TemplateServiceTest {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
         FakeRuleRepository rules = new FakeRuleRepository();
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID, USER_ID, template.id(), 1,
@@ -263,7 +331,7 @@ class TemplateServiceTest {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
         FakeRuleRepository rules = new FakeRuleRepository();
-        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), rules, new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
         Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
         service.replaceDraftBindings(
                 WORKSPACE_ID, USER_ID, template.id(), 1,
@@ -280,9 +348,44 @@ class TemplateServiceTest {
     }
 
     @Test
+    void findDraftStructuralGraphReturnsTheGraphTheDraftIsPinnedTo() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        DocxStructuralGraph graph = graphWithOneTag("meeting.title");
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graph);
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+
+        DocxStructuralGraph found = service.findDraftStructuralGraph(WORKSPACE_ID, USER_ID, template.id());
+
+        assertEquals(graph, found);
+    }
+
+    @Test
+    void proposeCandidateBindingsProposesFromTheDraftsOwnGraph() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+
+        var report = service.proposeCandidateBindings(WORKSPACE_ID, USER_ID, template.id());
+
+        assertEquals(1, report.candidates().size());
+        assertEquals("meeting.title", report.candidates().get(0).fieldId());
+    }
+
+    @Test
+    void proposeCandidateBindingsFailsWhenTemplateHasNoOpenDraft() {
+        TemplateService service =
+                new TemplateService(new FakeTemplateRepository(), new FakeExtractionVersionRepository(), new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+
+        assertThrows(
+                TemplateNotFoundException.class, () -> service.proposeCandidateBindings(WORKSPACE_ID, USER_ID, 999L));
+    }
+
+    @Test
     void actingOnATemplateThatDoesNotExistReportsNotFound() {
         TemplateService service =
-                new TemplateService(new FakeTemplateRepository(), new FakeExtractionVersionRepository(), new FakeDocxStructuralExtractor(), new FakeRuleRepository());
+                new TemplateService(new FakeTemplateRepository(), new FakeExtractionVersionRepository(), new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
 
         assertThrows(
                 TemplateNotFoundException.class, () -> service.replaceDraftBindings(WORKSPACE_ID, USER_ID, 999L, 1, List.of()));
@@ -382,9 +485,14 @@ class TemplateServiceTest {
         }
 
         void add(long templateVersionId, RuleScope scope, RulePayload payload) {
+            add(templateVersionId, scope, payload, RuleRevisionStatus.PROPOSED);
+        }
+
+        /** Lets a test seed an already-decided rule directly, to prove a decided rule's own effect on activation without exercising {@code decide} itself. */
+        void add(long templateVersionId, RuleScope scope, RulePayload payload, RuleRevisionStatus status) {
             revisions.add(new RuleRevision(
                     ids.getAndIncrement(), WORKSPACE_ID, 0L, templateVersionId, payload.category(), scope, payload,
-                    "test-v1", RuleRevisionStatus.PROPOSED, null, USER_ID, OffsetDateTime.now()));
+                    "test-v1", status, null, USER_ID, OffsetDateTime.now()));
         }
 
         @Override
@@ -408,6 +516,21 @@ class TemplateServiceTest {
         @Override
         public List<RuleRevision> findByTemplateVersion(long workspaceId, long userId, long templateVersionId) {
             return revisions.stream().filter(r -> r.templateVersionId() == templateVersionId).toList();
+        }
+
+        @Override
+        public void recordProposalEvidence(long workspaceId, long userId, long ruleId, io.github.vihuynh72.brownie.core.rule.RuleProposalEvidence evidence) {
+            throw new UnsupportedOperationException("not needed by TemplateService");
+        }
+
+        @Override
+        public Optional<io.github.vihuynh72.brownie.core.rule.RuleProposalEvidence> findProposalEvidence(long workspaceId, long userId, long ruleId) {
+            throw new UnsupportedOperationException("not needed by TemplateService");
+        }
+
+        @Override
+        public RuleRevision decide(long workspaceId, long userId, long templateId, long ruleId, RuleRevisionStatus decision) {
+            throw new UnsupportedOperationException("not needed by TemplateService");
         }
     }
 
@@ -494,6 +617,28 @@ class TemplateServiceTest {
                                 + expectedVersionNumber + ".");
             }
             return draft;
+        }
+    }
+
+    /** A baseline renderer that always reports every field passing -- what matters in this file is {@code TemplateService}'s own sequencing and exception mapping, not this pure interface's own implementation. */
+    private static final class FakePassingTemplateBaselineRenderer implements TemplateBaselineRenderer {
+        @Override
+        public BaselineRenderResult renderBaseline(long workspaceId, long userId, TemplateVersion draftVersion) {
+            return new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of());
+        }
+    }
+
+    private static final class FakeTemplateBaselineRenderRepository implements TemplateBaselineRenderRepository {
+        private final Map<Long, BaselineRenderResult> byTemplateVersionId = new HashMap<>();
+
+        @Override
+        public void recordBaselineRender(long workspaceId, long userId, long templateVersionId, BaselineRenderResult result) {
+            byTemplateVersionId.put(templateVersionId, result);
+        }
+
+        @Override
+        public Optional<BaselineRenderResult> findBaselineRender(long workspaceId, long userId, long templateVersionId) {
+            return Optional.ofNullable(byTemplateVersionId.get(templateVersionId));
         }
     }
 }
