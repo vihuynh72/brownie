@@ -19,6 +19,16 @@ public sealed interface FieldValue permits FieldValue.TextValue, FieldValue.Date
 
     FieldCardinality cardinality();
 
+    /** This value as plain comparison/display text, or {@code null} for a repeated value that has no single scalar text form. */
+    default String asPlainText() {
+        return switch (this) {
+            case TextValue text -> text.value();
+            case DateValue date -> date.value().toString();
+            case RepeatedTextValue ignored -> null;
+            case RepeatedDateValue ignored -> null;
+        };
+    }
+
     record TextValue(String value) implements FieldValue {
 
         public TextValue {
