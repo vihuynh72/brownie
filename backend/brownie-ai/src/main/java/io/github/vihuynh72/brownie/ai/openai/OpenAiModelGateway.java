@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.ai.openai;
+package io.github.vihuynh72.brownie.ai.openai;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,8 +26,6 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
 import java.util.List;
 
@@ -55,7 +53,6 @@ import java.util.List;
  * {@code "refusal"}, not the generation's metadata that {@code
  * finishReason} lives on.
  */
-@Component
 class OpenAiModelGateway implements ModelGateway {
 
     // A private, unmanaged mapper: this class only ever asks it "does this
@@ -68,7 +65,7 @@ class OpenAiModelGateway implements ModelGateway {
     private final ChatModel chatModel;
     private final String model;
 
-    OpenAiModelGateway(ChatModel chatModel, @Value("${brownie.ai.openai.model}") String model) {
+    OpenAiModelGateway(ChatModel chatModel, String model) {
         this.chatModel = chatModel;
         this.model = model;
     }

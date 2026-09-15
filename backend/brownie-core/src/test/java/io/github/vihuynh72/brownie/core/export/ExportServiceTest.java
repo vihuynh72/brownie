@@ -298,6 +298,11 @@ class ExportServiceTest {
         }
 
         @Override
+        public List<Document> findAllForWorkspace(long workspaceId, long userId) {
+            return List.of();
+        }
+
+        @Override
         public Optional<DocumentRevision> findCurrentRevision(long workspaceId, long userId, long documentId) {
             return Optional.empty();
         }
@@ -342,6 +347,11 @@ class ExportServiceTest {
         @Override
         public Optional<Document> find(long workspaceId, long userId, long documentId) {
             return documentId == DOCUMENT_ID ? Optional.of(document) : Optional.empty();
+        }
+
+        @Override
+        public List<Document> findAllForWorkspace(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

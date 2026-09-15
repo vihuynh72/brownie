@@ -20,6 +20,9 @@ public interface QuestionRepository {
 
     List<Question> findOpenForDocument(long workspaceId, long userId, long documentId);
 
+    /** Every question ever raised against this document, open or answered, oldest first. */
+    List<Question> findAllForDocument(long workspaceId, long userId, long documentId);
+
     /** Answers exactly one OPEN question. Throws if it does not exist, belongs to another workspace, or is already answered. */
     Question answer(long workspaceId, long userId, long questionId, String answerValue);
 }

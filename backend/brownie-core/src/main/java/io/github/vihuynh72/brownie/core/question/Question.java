@@ -35,4 +35,16 @@ public record Question(
             throw new IllegalArgumentException("A question's answer fields must be all-present when ANSWERED and all-absent when OPEN.");
         }
     }
+
+    /** The evidence of whichever offered candidate this question's own answer matches, or empty when OPEN or when the answer matches no offered option. */
+    public List<Long> answeredEvidenceSpanIds() {
+        if (status != QuestionStatus.ANSWERED) {
+            return List.of();
+        }
+        return candidates.stream()
+                .filter(option -> Objects.equals(answerValue, option.value()))
+                .map(QuestionCandidateOption::evidenceSpanIds)
+                .findFirst()
+                .orElse(List.of());
+    }
 }

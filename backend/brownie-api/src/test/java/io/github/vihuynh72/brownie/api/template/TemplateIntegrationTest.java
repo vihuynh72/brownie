@@ -473,6 +473,112 @@ class TemplateIntegrationTest {
                 .andExpect(status().isCreated());
     }
 
+    /** Proves {@code RuleController} for the first time: propose, list, find, and accept a rule through real HTTP against a real draft template. */
+    @Test
+    void proposingListingFindingAndAcceptingARuleWorksThroughRealHttp() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-rule-http-accept");
+        long workspaceId = ensureWorkspace("subject-rule-http-accept").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+        bindTitleField(session, workspaceId, templateId, "REQUIRED", 1);
+
+        JsonNode proposed = readJson(mockMvc.perform(post(rulesPath(workspaceId, templateId))
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"scope\":{\"kind\":\"SINGLE_FIELD\",\"fieldId\":\"meeting.title\"},"
+                                + "\"payload\":{\"kind\":\"MAX_TEXT_LENGTH\",\"fieldId\":\"meeting.title\",\"maxCharacters\":120},"
+                                + "\"humanExplanation\":\"Keep the title short.\"}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        long ruleId = proposed.get("id").asLong();
+        assertThat(proposed.get("status").asText()).isEqualTo("PROPOSED");
+        assertThat(proposed.get("category").asText()).isEqualTo("VALIDATION");
+        assertThat(proposed.get("payload").get("maxCharacters").asInt()).isEqualTo(120);
+
+        JsonNode listed = readJson(mockMvc.perform(get(rulesPath(workspaceId, templateId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).get("id").asLong()).isEqualTo(ruleId);
+
+        JsonNode found = readJson(mockMvc.perform(get(rulesPath(workspaceId, templateId) + "/" + ruleId).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(found.get("humanExplanation").asText()).isEqualTo("Keep the title short.");
+
+        JsonNode accepted = readJson(mockMvc.perform(post(rulesPath(workspaceId, templateId) + "/" + ruleId + "/accept")
+                        .cookie(session)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(accepted.get("status").asText()).isEqualTo("ACCEPTED");
+
+        // An already-decided rule cannot be decided again.
+        mockMvc.perform(post(rulesPath(workspaceId, templateId) + "/" + ruleId + "/accept").cookie(session).with(csrf()))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(get(rulesPath(workspaceId, templateId) + "/999999").cookie(session))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void rejectingARuleAndProposingAMalformedOneBothWorkThroughRealHttp() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-rule-http-reject");
+        long workspaceId = ensureWorkspace("subject-rule-http-reject").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+        bindTitleField(session, workspaceId, templateId, "OPTIONAL", 1);
+
+        JsonNode proposed = readJson(mockMvc.perform(post(rulesPath(workspaceId, templateId))
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"scope\":{\"kind\":\"WHOLE_TEMPLATE\"},"
+                                + "\"payload\":{\"kind\":\"REQUIRED_FIELDS\",\"fieldIds\":[\"meeting.title\"]}}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        long ruleId = proposed.get("id").asLong();
+
+        JsonNode rejected = readJson(mockMvc.perform(post(rulesPath(workspaceId, templateId) + "/" + ruleId + "/reject")
+                        .cookie(session)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(rejected.get("status").asText()).isEqualTo("REJECTED");
+
+        // A payload kind requiring maxCharacters but not given one is malformed input, not a valid-but-unsupported rule.
+        mockMvc.perform(post(rulesPath(workspaceId, templateId))
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"scope\":{\"kind\":\"SINGLE_FIELD\",\"fieldId\":\"meeting.title\"},"
+                                + "\"payload\":{\"kind\":\"MAX_TEXT_LENGTH\",\"fieldId\":\"meeting.title\"}}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    private void bindTitleField(Cookie session, long workspaceId, long templateId, String requiredness, int expectedVersionNumber)
+            throws Exception {
+        String bindingsBody = "{"
+                + "\"expectedVersionNumber\":" + expectedVersionNumber + ","
+                + "\"fields\":[{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"" + requiredness + "\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(bindingsBody))
+                .andExpect(status().isOk());
+    }
+
+    private static String rulesPath(long workspaceId, long templateId) {
+        return templatesPath(workspaceId) + "/" + templateId + "/rules";
+    }
+
     private static JsonNode findCandidate(JsonNode candidatesResponse, String fieldId) {
         for (JsonNode candidate : candidatesResponse.get("candidates")) {
             if (candidate.get("fieldId").asText().equals(fieldId)) {

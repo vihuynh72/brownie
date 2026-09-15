@@ -58,7 +58,7 @@ public final class QuestionDetectionService {
         if (existing == null) {
             return java.util.Optional.empty();
         }
-        String existingAsText = textOf(existing);
+        String existingAsText = existing.asPlainText();
         if (existingAsText == null || existingAsText.equals(candidate.value())) {
             return java.util.Optional.empty();
         }
@@ -68,14 +68,5 @@ public final class QuestionDetectionService {
                 List.of(
                         new QuestionCandidateOption(existingAsText, List.of()),
                         new QuestionCandidateOption(candidate.value(), candidate.evidenceSpanIds()))));
-    }
-
-    private static String textOf(FieldValue value) {
-        return switch (value) {
-            case FieldValue.TextValue text -> text.value();
-            case FieldValue.DateValue date -> date.value().toString();
-            case FieldValue.RepeatedTextValue ignored -> null;
-            case FieldValue.RepeatedDateValue ignored -> null;
-        };
     }
 }

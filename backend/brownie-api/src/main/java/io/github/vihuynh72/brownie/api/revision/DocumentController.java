@@ -14,6 +14,8 @@ import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
 import io.github.vihuynh72.brownie.core.revision.FieldItemRef;
 import io.github.vihuynh72.brownie.core.revision.FieldState;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
+import io.github.vihuynh72.brownie.core.revision.LockState;
+import io.github.vihuynh72.brownie.core.revision.ReviewState;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.http.HttpStatus;
@@ -84,6 +86,20 @@ class DocumentController {
         return documentResponse(workspaceId, userId, mutation.document());
     }
 
+    /**
+     * A lightweight summary per document, deliberately without its current
+     * revision's full field content -- a list view for choosing which
+     * document to open, not a place to review one. Not paginated: a
+     * personal workspace's document count stays small enough that a cursor
+     * here now would be speculative machinery ahead of any measured need.
+     */
+    @GetMapping
+    List<DocumentSummaryResponse> findAll(@PathVariable long workspaceId, @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        requireAccess(userId, workspaceId);
+        return revisionService.findAllDocuments(workspaceId, userId).stream().map(DocumentSummaryResponse::from).toList();
+    }
+
     @GetMapping("/{documentId}")
     DocumentResponse find(
             @PathVariable long workspaceId,
@@ -142,6 +158,54 @@ class DocumentController {
         return DocumentRevisionResponse.from(mutation.revision());
     }
 
+    /** Independent of every other dimension -- see {@code FieldState}'s own javadoc; the field's value, evidence, authorship, and lock are left exactly as they were. */
+    @PostMapping("/{documentId}/fields/review-decision")
+    DocumentRevisionResponse recordReviewDecision(
+            @PathVariable long workspaceId,
+            @PathVariable long documentId,
+            @RequestBody RecordReviewDecisionRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        requireAccess(userId, workspaceId);
+        DocumentMutationResult mutation = revisionService.recordReviewDecision(
+                workspaceId,
+                userId,
+                requireIdempotencyKey(idempotencyKey),
+                canonicalRequestHasher.hash(new RecordReviewDecisionHashInput(
+                        "document.record-review-decision", workspaceId, documentId, request)),
+                documentId,
+                positive(request.expectedRevisionId(), "expectedRevisionId"),
+                request.toRef(),
+                request.toReviewState(),
+                blankToDefault(request.editReason(), "Recorded a review decision."));
+        return DocumentRevisionResponse.from(mutation.revision());
+    }
+
+    /** The only route that ever changes a field's lock deliberately -- see {@code RevisionService#setFieldLock}'s own javadoc. */
+    @PostMapping("/{documentId}/fields/lock")
+    DocumentRevisionResponse setFieldLock(
+            @PathVariable long workspaceId,
+            @PathVariable long documentId,
+            @RequestBody SetFieldLockRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        requireAccess(userId, workspaceId);
+        DocumentMutationResult mutation = revisionService.setFieldLock(
+                workspaceId,
+                userId,
+                requireIdempotencyKey(idempotencyKey),
+                canonicalRequestHasher.hash(new SetFieldLockHashInput(
+                        "document.set-field-lock", workspaceId, documentId, request)),
+                documentId,
+                positive(request.expectedRevisionId(), "expectedRevisionId"),
+                request.toRef(),
+                request.toLockState(),
+                blankToDefault(request.editReason(), "Changed the field's lock state."));
+        return DocumentRevisionResponse.from(mutation.revision());
+    }
+
     private DocumentResponse documentResponse(long workspaceId, long userId, Document document) {
         DocumentRevision current = revisionService.findRevision(
                         workspaceId, userId, document.id(), document.currentRevisionId())
@@ -186,6 +250,10 @@ class DocumentController {
         return value;
     }
 
+    private static String blankToDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
+    }
+
     private static IdempotencyKey requireIdempotencyKey(String value) {
         if (value == null || value.isBlank() || value.length() > 200) {
             throw new DocumentRequestValidationException(
@@ -202,6 +270,52 @@ class DocumentController {
             long workspaceId,
             long documentId,
             PatchDocumentContentRequest request) {
+    }
+
+    private record RecordReviewDecisionHashInput(String operation, long workspaceId, long documentId, RecordReviewDecisionRequest request) {
+    }
+
+    private record SetFieldLockHashInput(String operation, long workspaceId, long documentId, SetFieldLockRequest request) {
+    }
+
+    record RecordReviewDecisionRequest(long expectedRevisionId, String fieldId, Integer itemIndex, String decision, String editReason) {
+
+        FieldItemRef toRef() {
+            return toFieldItemRef(fieldId, itemIndex);
+        }
+
+        ReviewState toReviewState() {
+            String value = requireText(decision, "decision");
+            try {
+                return ReviewState.valueOf(value);
+            } catch (IllegalArgumentException e) {
+                throw new DocumentRequestValidationException("decision must be one of " + java.util.Arrays.toString(ReviewState.values()) + ".");
+            }
+        }
+    }
+
+    record SetFieldLockRequest(long expectedRevisionId, String fieldId, Integer itemIndex, String lock, String editReason) {
+
+        FieldItemRef toRef() {
+            return toFieldItemRef(fieldId, itemIndex);
+        }
+
+        LockState toLockState() {
+            String value = requireText(lock, "lock");
+            try {
+                return LockState.valueOf(value);
+            } catch (IllegalArgumentException e) {
+                throw new DocumentRequestValidationException("lock must be one of " + java.util.Arrays.toString(LockState.values()) + ".");
+            }
+        }
+    }
+
+    private static FieldItemRef toFieldItemRef(String fieldId, Integer itemIndex) {
+        requireText(fieldId, "fieldId");
+        if (itemIndex != null && itemIndex < 0) {
+            throw new DocumentRequestValidationException("itemIndex must not be negative when present.");
+        }
+        return itemIndex == null ? FieldItemRef.scalar(fieldId) : FieldItemRef.item(fieldId, itemIndex);
     }
 
     record CreateDocumentRequest(
@@ -279,6 +393,15 @@ class DocumentController {
     }
 
     record FieldValueRequest(String type, String cardinality, String value, List<String> values, List<Long> evidenceSourceSpanIds) {
+    }
+
+    record DocumentSummaryResponse(
+            long id, String title, long templateId, long templateVersionId, long currentRevisionId, OffsetDateTime createdAt) {
+        static DocumentSummaryResponse from(Document document) {
+            return new DocumentSummaryResponse(
+                    document.id(), document.title(), document.templateId(), document.templateVersionId(),
+                    document.currentRevisionId(), document.createdAt());
+        }
     }
 
     record DocumentResponse(

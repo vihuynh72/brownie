@@ -15,6 +15,9 @@ public interface TemplateRepository {
 
     Optional<Template> find(long workspaceId, long userId, long templateId);
 
+    /** Every template in the workspace, in creation order -- oldest first, matching a document's own history ordering. */
+    List<Template> findAll(long workspaceId, long userId);
+
     /** The template's current open draft, if it has one -- at most one exists per template at a time. */
     Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId);
 

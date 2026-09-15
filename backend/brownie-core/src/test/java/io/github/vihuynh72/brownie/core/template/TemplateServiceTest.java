@@ -561,6 +561,11 @@ class TemplateServiceTest {
         }
 
         @Override
+        public List<Template> findAll(long workspaceId, long userId) {
+            return templates.values().stream().filter(t -> t.workspaceId() == workspaceId).toList();
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             return versions.values().stream()
                     .filter(v -> v.workspaceId() == workspaceId && v.templateId() == templateId && v.status() == TemplateVersionStatus.DRAFT)

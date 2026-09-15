@@ -78,15 +78,19 @@ public class ExtractionService {
      * structurally invalid reply only, per this plan's own single-repair
      * rule), and reject fabricated evidence -- everything this class does
      * that does not itself require a real artifact/extraction chain to
-     * exercise. Package-private, not private, precisely so a test can
-     * drive it directly with a {@code FakeModelGateway} and a hand-built
-     * parser double, without needing to fake {@link
+     * exercise. Public for two real callers with no access to a tenant
+     * database at all: a unit test using a {@code FakeModelGateway} and a
+     * hand-built parser double (avoiding the need to fake {@link
      * DocumentExtractionService}'s and {@link SourceService}'s own deep
-     * dependency chains just to prove this logic -- the same reasoning
-     * that keeps {@code CompilationServiceTest} scoped to paths that
-     * never reach {@code ArtifactService}.
+     * dependency chains just to prove this logic, the same reasoning that
+     * keeps {@code CompilationServiceTest} scoped to paths that never
+     * reach {@code ArtifactService}), and the trusted worker process,
+     * which is given only an already-frozen bundle of field definitions
+     * and cited excerpts (assembled ahead of time by a caller that does
+     * have tenant access) rather than a live {@code SourceSnapshot} to
+     * chase down itself.
      */
-    ExtractionResult extractFromExcerpts(
+    public ExtractionResult extractFromExcerpts(
             List<FieldDefinition> fieldDefinitions, List<LabeledExcerpt> excerpts, UsageBudget budget, CancellationSignal cancellationSignal)
             throws ModelTransportException, ExtractionFailedException, ExtractionResponseParseException, BudgetExceededException,
                     ExtractionCancelledException {
@@ -173,9 +177,12 @@ public class ExtractionService {
      * Segments the snapshot's current plain-text extraction into
      * paragraphs and creates a real, addressable {@link SourceSpan} for
      * each one -- the exact set of citations this run is allowed to
-     * receive back.
+     * receive back. Public so a caller that wants to freeze a bundle of
+     * excerpts ahead of an asynchronous {@link #extractFromExcerpts} call
+     * (rather than an immediate {@link #extract}) can still reuse this
+     * exact citation logic instead of duplicating it.
      */
-    private List<LabeledExcerpt> segmentAndCiteSource(long workspaceId, long userId, SourceSnapshot snapshot) {
+    public List<LabeledExcerpt> segmentAndCiteSource(long workspaceId, long userId, SourceSnapshot snapshot) {
         PlainTextExtractionVersion extraction = documentExtractionService.extractPlainText(workspaceId, userId, snapshot.artifactId());
         if (extraction.status() != ExtractionStatus.COMPLETE) {
             throw new SourceNotExtractableException(snapshot.id(), extraction.status());

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.vihuynh72.brownie</groupId>
+    <artifactId>brownie-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>brownie-ai</artifactId>
+  <packaging>jar</packaging>
+
+  <description>
+    Shared model-provider adapter, so both brownie-api and the trusted
+    brownie-worker can call the same real model gateway without brownie-worker
+    depending on brownie-api (which it must never do). Mirrors how
+    brownie-storage shares the blob-storage adapter between the two.
+  </description>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <!-- Same reasoning as brownie-api's own identical entry: keeps the
+             test-scoped wiremock-jetty12 dependency below on a Jetty
+             version binary-compatible with what Spring Boot's own BOM
+             otherwise pins the plain jetty-server/jetty-io/etc. modules to. -->
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-bom</artifactId>
+        <version>12.0.30</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.vihuynh72.brownie</groupId>
+      <artifactId>brownie-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-context</artifactId>
+    </dependency>
+    <dependency>
+      <!-- The model gateway's real adapter. Version is inherited from
+           spring-ai-bom, imported in the parent POM. -->
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-starter-model-openai</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Same real-wire-traffic testing role as brownie-api's own
+           identical entry: stubs the OpenAI HTTP endpoint so this
+           adapter's request/response handling is tested against actual
+           wire shapes, never the real OpenAI API. -->
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock</artifactId>
+      <version>3.13.2</version>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlets</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-webapp</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty.http2</groupId>
+          <artifactId>http2-server</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-jetty12</artifactId>
+      <version>3.13.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

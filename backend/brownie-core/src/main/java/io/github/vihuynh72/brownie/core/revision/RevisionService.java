@@ -73,6 +73,10 @@ public class RevisionService {
         return documentRepository.find(workspaceId, userId, documentId);
     }
 
+    public List<Document> findAllDocuments(long workspaceId, long userId) {
+        return documentRepository.findAllForWorkspace(workspaceId, userId);
+    }
+
     public Optional<DocumentRevision> findRevision(long workspaceId, long userId, long documentId, long revisionId) {
         return documentRepository.findRevision(workspaceId, userId, documentId, revisionId);
     }

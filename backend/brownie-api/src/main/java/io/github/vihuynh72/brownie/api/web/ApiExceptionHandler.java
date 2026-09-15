@@ -3,7 +3,11 @@ package io.github.vihuynh72.brownie.api.web;
 import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
 import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
 import io.github.vihuynh72.brownie.api.export.ExportRequestValidationException;
+import io.github.vihuynh72.brownie.api.generation.GenerationRequestValidationException;
+import io.github.vihuynh72.brownie.api.generation.GenerationResultEmptyException;
+import io.github.vihuynh72.brownie.api.generation.GenerationResultNotFoundException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
+import io.github.vihuynh72.brownie.core.generation.SourceNotExtractableException;
 import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
@@ -27,12 +31,19 @@ import io.github.vihuynh72.brownie.core.job.IdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
 import io.github.vihuynh72.brownie.core.job.JobDeadlineExceededException;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
+import io.github.vihuynh72.brownie.api.question.QuestionRequestValidationException;
+import io.github.vihuynh72.brownie.core.question.QuestionNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentContentValidationException;
 import io.github.vihuynh72.brownie.core.revision.DocumentIdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevisionConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentTemplateVersionUnavailableException;
+import io.github.vihuynh72.brownie.core.revision.FieldLockedException;
+import io.github.vihuynh72.brownie.core.revision.PatchProposalNotFoundException;
 import io.github.vihuynh72.brownie.core.rule.RuleConflictException;
+import io.github.vihuynh72.brownie.core.rule.RuleDecisionConflictException;
+import io.github.vihuynh72.brownie.core.rule.RuleNotFoundException;
+import io.github.vihuynh72.brownie.core.rule.RuleTemplateVersionStateException;
 import io.github.vihuynh72.brownie.core.rule.RuleValidationException;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
@@ -40,6 +51,7 @@ import io.github.vihuynh72.brownie.core.template.TemplateBaselineIntegrityExcept
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
+import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
 import io.github.vihuynh72.brownie.core.validation.ValidationManifestNotFoundException;
 import org.slf4j.Logger;
@@ -121,7 +133,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler({
             DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class,
             ValidationManifestNotFoundException.class, ExportNotApprovedException.class,
-            ExportReceiptNotFoundException.class})
+            ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
+            RuleNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -234,6 +247,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
+    @ExceptionHandler(TemplateVersionNotFoundException.class)
+    public ResponseEntity<Object> handleTemplateVersionNotFound(TemplateVersionNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
     @ExceptionHandler(TemplateVersionStateConflictException.class)
     public ResponseEntity<Object> handleTemplateVersionStateConflict(TemplateVersionStateConflictException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
@@ -270,6 +292,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         enrich(problem, "STALE_REVISION");
         problem.setProperty("currentRevisionId", ex.currentRevisionId());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.PRECONDITION_FAILED, request);
+    }
+
+    /** Reachable for the first time by a real caller now that a field can actually become EXPLICITLY_LOCKED (DocumentController's own lock route) -- a real, pre-existing gap this task's own new caller exposes, the same class of gap SourceNotExtractableException named once before. */
+    @ExceptionHandler(FieldLockedException.class)
+    public ResponseEntity<Object> handleFieldLocked(FieldLockedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "FIELD_LOCKED");
+        problem.setProperty("fieldId", ex.fieldId());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
     }
 
     @ExceptionHandler(StaleExportApprovalException.class)
@@ -357,7 +390,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler({
             JobRequestValidationException.class, DocumentRequestValidationException.class,
-            ValidationRequestValidationException.class, ExportRequestValidationException.class})
+            ValidationRequestValidationException.class, ExportRequestValidationException.class,
+            GenerationRequestValidationException.class, QuestionRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
@@ -396,6 +430,34 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unprocessable Entity");
         problem.setDetail(ex.getMessage());
         enrich(problem, "SOURCE_NOT_EXTRACTABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** Reachable for the first time by {@code GenerationController}: the attached source's own plain-text extraction never completed. */
+    @ExceptionHandler(SourceNotExtractableException.class)
+    public ResponseEntity<Object> handleSourceNotExtractable(SourceNotExtractableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "GENERATION_SOURCE_NOT_EXTRACTABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler(GenerationResultNotFoundException.class)
+    public ResponseEntity<Object> handleGenerationResultNotFound(GenerationResultNotFoundException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    @ExceptionHandler(GenerationResultEmptyException.class)
+    public ResponseEntity<Object> handleGenerationResultEmpty(GenerationResultEmptyException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "GENERATION_RESULT_EMPTY");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
@@ -448,6 +510,26 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         enrich(problem, "BASELINE_INTEGRITY_FAILED");
         problem.setProperty("fields", ex.failedFieldIds());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** A rule can only ever be proposed against a template's own currently open draft version. */
+    @ExceptionHandler(RuleTemplateVersionStateException.class)
+    public ResponseEntity<Object> handleRuleTemplateVersionState(RuleTemplateVersionStateException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "RULE_NO_OPEN_DRAFT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** A rule decision (accept or reject) only ever applies to a rule that still exists and is still PROPOSED. */
+    @ExceptionHandler(RuleDecisionConflictException.class)
+    public ResponseEntity<Object> handleRuleDecisionConflict(RuleDecisionConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "RULE_NOT_DECIDABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
     }
 
     /**

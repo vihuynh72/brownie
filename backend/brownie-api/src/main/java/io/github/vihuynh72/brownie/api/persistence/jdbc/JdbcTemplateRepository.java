@@ -89,6 +89,16 @@ class JdbcTemplateRepository implements TemplateRepository {
 
     @Override
     @Transactional(readOnly = true)
+    public List<Template> findAll(long workspaceId, long userId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                "SELECT " + TEMPLATE_COLUMNS + " FROM template WHERE workspace_id = ? ORDER BY created_at, id",
+                this::mapTemplate,
+                workspaceId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate

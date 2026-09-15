@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.generation.json;
+package io.github.vihuynh72.brownie.ai.generation.json;
 
 import io.github.vihuynh72.brownie.core.generation.ExtractionResponseParseException;
 import io.github.vihuynh72.brownie.core.generation.ExtractionResponseParser;
@@ -7,7 +7,6 @@ import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
 import io.github.vihuynh72.brownie.core.generation.RepeatedItemCandidate;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldType;
-import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -32,7 +31,6 @@ import java.util.Set;
  * data, this class reads a third party's reply, where a malformed shape
  * is an expected, recoverable outcome (see this port's own documentation).
  */
-@Component
 class JacksonExtractionResponseParser implements ExtractionResponseParser {
 
     private final ObjectMapper objectMapper;

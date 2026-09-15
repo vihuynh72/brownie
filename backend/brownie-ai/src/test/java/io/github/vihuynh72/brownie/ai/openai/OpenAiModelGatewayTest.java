@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.ai.openai;
+package io.github.vihuynh72.brownie.ai.openai;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.openai.client.OpenAIClient;

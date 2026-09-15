@@ -77,6 +77,17 @@ class JdbcQuestionRepository implements QuestionRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<Question> findAllForDocument(long workspaceId, long userId, long documentId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM question WHERE workspace_id = ? AND document_id = ? ORDER BY created_at, id",
+                this::mapQuestion,
+                workspaceId,
+                documentId);
+    }
+
+    @Override
     @Transactional
     public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);

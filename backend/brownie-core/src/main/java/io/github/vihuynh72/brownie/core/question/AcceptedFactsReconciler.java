@@ -6,7 +6,6 @@ import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * Turns one extraction's raw candidates into the final accepted-facts view
@@ -44,11 +43,6 @@ public final class AcceptedFactsReconciler {
     }
 
     private static FieldCandidate reconcileField(String fieldId, Question answered) {
-        List<Long> evidence = answered.candidates().stream()
-                .filter(option -> Objects.equals(answered.answerValue(), option.value()))
-                .map(QuestionCandidateOption::evidenceSpanIds)
-                .findFirst()
-                .orElse(List.of());
-        return new FieldCandidate(fieldId, answered.answerValue(), evidence, false, null);
+        return new FieldCandidate(fieldId, answered.answerValue(), answered.answeredEvidenceSpanIds(), false, null);
     }
 }

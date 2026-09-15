@@ -85,6 +85,23 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/documents:
+    get:
+      operationId: listDocuments
+      summary: >
+        Every document in the workspace, most recently created first, as a
+        lightweight summary without full revision content. Not paginated
+        yet.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: The workspace's documents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentSummaryResponse"
     post:
       operationId: createDocument
       summary: Create a document with its initial immutable revision.
@@ -164,6 +181,74 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/fields/review-decision:
+    post:
+      operationId: recordReviewDecision
+      summary: >
+        Records a person's own review decision for one field or repeated
+        item, independent of its value, evidence, authorship, and lock.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordReviewDecisionRequest"
+      responses:
+        "200":
+          description: The newly appended revision, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: The expected revision is no longer current.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/fields/lock:
+    post:
+      operationId: setFieldLock
+      summary: >
+        Explicitly sets one field or repeated item's lock -- the only
+        route that ever changes it deliberately.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetFieldLockRequest"
+      responses:
+        "200":
+          description: The newly appended revision, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRevisionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: The expected revision is no longer current.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions:
     get:
       operationId: listDocumentRevisions
@@ -200,6 +285,132 @@ paths:
                 $ref: "#/components/schemas/DocumentRevisionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations:
+    post:
+      operationId: startExtraction
+      summary: >
+        Start grounded fact extraction for a document from an attached
+        source. Returns immediately with a durable job to poll via
+        GET .../jobs/{jobId}; the trusted worker performs the actual model
+        call asynchronously. Today's first real slice covers extraction
+        only, not composition or question resolution.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartExtractionRequest"
+      responses:
+        "202":
+          description: Accepted, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandReceiptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/result:
+    get:
+      operationId: getExtractionResult
+      summary: >
+        The artifact a finished extraction job published, if any. 404
+        until the worker publishes one; poll GET .../jobs/{jobId} for the
+        job's own state first.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractionResultResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/questions:
+    get:
+      operationId: getGenerationQuestions
+      summary: >
+        This job's own open questions, materializing them the first time
+        they are asked for once the job leaves itself WAITING_FOR_INPUT
+        (poll GET .../jobs/{jobId} for that state first). Empty until then.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: This job's own questions, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QuestionResponse"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/apply:
+    post:
+      operationId: applyGenerationResult
+      summary: >
+        Turns this finished job's own published result into a real,
+        reviewable patch proposal against the document's current
+        revision. Nothing is applied to the document yet -- see
+        POST .../patch-proposals/{proposalId}/accept.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "201":
+          description: Proposed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PatchProposalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/resume:
+    post:
+      operationId: resumeGenerationAfterQuestions
+      summary: >
+        Freezes every currently answered question for this document and
+        requests the worker pick this job back up. A question left open
+        is simply not included; the worker's own re-detection raises it
+        again if so, the same durable wait as before.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandReceiptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/workspaces/{workspaceId}/jobs/{jobId}:
     get:
@@ -319,6 +530,458 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /api/v1/workspaces/{workspaceId}/uploads:
+    post:
+      operationId: allocateUpload
+      summary: Allocate an owned artifact upload.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AllocateUploadRequest"
+      responses:
+        "201":
+          description: Allocated, awaiting content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+
+  /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content:
+    put:
+      operationId: uploadArtifactContent
+      summary: Stream an allocated artifact's bytes. Content is immutable once received.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Content received and classified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          description: The upload exceeds the configured size limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The uploaded content is not a supported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/complete:
+    post:
+      operationId: completeUpload
+      summary: Verify and finalize an uploaded artifact, scanning it for malware.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: >
+            A real terminal or retryable outcome (READY, REJECTED, or still
+            QUARANTINED after a scanner failure) -- not necessarily success.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/extraction:
+    post:
+      operationId: extractArtifact
+      summary: >
+        Run structural extraction on a READY artifact. Always returns 200
+        with whichever terminal outcome extraction actually reached
+        (COMPLETE, UNSUPPORTED, or FAILED); a real HTTP error means the
+        request itself could not be attempted.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: The extraction's terminal outcome.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/templates:
+    get:
+      operationId: listTemplates
+      summary: >
+        Every template in the workspace (both ACTIVE and DRAFT), in
+        creation order. A caller building a document-creation picker
+        filters to entries with a non-null currentActiveVersionId itself.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: The workspace's templates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TemplateResponse"
+    post:
+      operationId: createTemplateDraft
+      summary: >
+        Creates a new custom template's own draft against an already-
+        extracted DOCX source. Deliberately returns the draft version
+        alongside the template, since a caller needs that version's own
+        number for the very next PUT .../draft/bindings call.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateDraftResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/draft/candidate-bindings:
+    get:
+      operationId: getDraftCandidateBindings
+      summary: >
+        Candidate field bindings proposed from the draft's own extracted
+        structure -- a starting point offered back for review, never
+        applied by itself. A caller still submits its own chosen fields
+        through PUT .../draft/bindings.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      responses:
+        "200":
+          description: The draft's own proposed candidates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateBindingReportResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/draft/bindings:
+    put:
+      operationId: replaceDraftBindings
+      summary: >
+        Validates every field's binding against the draft's own pinned
+        extraction graph before persisting anything -- a rejected set of
+        bindings never partially lands.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceBindingsRequest"
+      responses:
+        "200":
+          description: The draft's own newly appended version, with these bindings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions:
+    post:
+      operationId: activateTemplateVersion
+      summary: >
+        Activates the draft's current version after re-validating its
+        bindings and rules and proving a real sample fill and render --
+        refuses an empty field list.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivateVersionRequest"
+      responses:
+        "201":
+          description: Activated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}:
+    get:
+      operationId: getTemplateVersion
+      summary: >
+        One template version by its own ID, including its field
+        definitions -- read before creating a document against an
+        ACTIVATED version.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The template version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules:
+    post:
+      operationId: proposeRule
+      summary: >
+        Proposes one rule against the template's own currently open draft
+        version, validated against that draft's real field definitions and
+        pinned extraction graph before anything is persisted.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposeRuleRequest"
+      responses:
+        "201":
+          description: Proposed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The template does not exist, or has no currently open draft version to propose a rule against.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+    get:
+      operationId: listRules
+      summary: Every rule proposed against the template's current open draft version, in the order proposed.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      responses:
+        "200":
+          description: The draft's own proposed rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RuleResponse"
+        "409":
+          description: The template does not exist, or has no currently open draft version.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules/{ruleId}:
+    get:
+      operationId: getRule
+      summary: One rule by its own ID.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/RuleId"
+      responses:
+        "200":
+          description: The rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules/{ruleId}/accept:
+    post:
+      operationId: acceptRule
+      summary: >
+        Accepts a proposed rule as-is. Accepting a PROTECTED_REGION rule is
+        this app's own "lock a region" action -- a person locks a region by
+        accepting exactly that proposal, not through a separate mechanism.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/RuleId"
+      responses:
+        "200":
+          description: Accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "409":
+          description: The rule does not exist, or is no longer PROPOSED.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules/{ruleId}/reject:
+    post:
+      operationId: rejectRule
+      summary: >
+        Rejects a proposed rule. There is no separate edit route --
+        "editing" a rejected rule is proposing a fresh one with the
+        corrected payload.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/RuleId"
+      responses:
+        "200":
+          description: Rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleResponse"
+        "409":
+          description: The rule does not exist, or is no longer PROPOSED.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/sources:
+    post:
+      operationId: attachSource
+      summary: Attach a READY artifact as a source, or return the snapshot that already does.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachSourceRequest"
+      responses:
+        "201":
+          description: Attached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/patch-proposals/{proposalId}/accept:
+    post:
+      operationId: acceptPatchProposal
+      summary: >
+        Applies only the still-CLEAN subset of a proposal against the
+        document's real current revision -- a conflicting or locked field
+        is left exactly as it is, reported rather than silently skipped.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptPatchProposalRequest"
+      responses:
+        "200":
+          description: Acted on -- check `applied`; a fully blocked proposal still returns 200 with every field reported.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PatchAcceptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/questions/{questionId}/answer:
+    post:
+      operationId: answerQuestion
+      summary: Answer one open question. There is no route back to OPEN and no route to change an existing answer.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/QuestionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnswerQuestionRequest"
+      responses:
+        "200":
+          description: Answered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuestionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   parameters:
     WorkspaceId:
@@ -347,6 +1010,46 @@ components:
         minimum: 1
     JobId:
       name: jobId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    ArtifactId:
+      name: artifactId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    TemplateId:
+      name: templateId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    VersionId:
+      name: versionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    QuestionId:
+      name: questionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    RuleId:
+      name: ruleId
       in: path
       required: true
       schema:
@@ -479,6 +1182,54 @@ components:
         editReason:
           type: string
           minLength: 1
+
+    RecordReviewDecisionRequest:
+      type: object
+      required: [expectedRevisionId, fieldId, decision]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        fieldId:
+          type: string
+          minLength: 1
+        itemIndex:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Present only for one row of a repeated field; omitted for a whole scalar field.
+        decision:
+          type: string
+          enum: [UNREVIEWED, ACCEPTED, REJECTED, NEEDS_CLARIFICATION]
+        editReason:
+          type: string
+          nullable: true
+          description: Defaults to a fixed reason when blank or omitted.
+
+    SetFieldLockRequest:
+      type: object
+      required: [expectedRevisionId, fieldId, lock]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        fieldId:
+          type: string
+          minLength: 1
+        itemIndex:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Present only for one row of a repeated field; omitted for a whole scalar field.
+        lock:
+          type: string
+          enum: [EDITABLE, PRESERVE_ON_REGENERATION, EXPLICITLY_LOCKED]
+        editReason:
+          type: string
+          nullable: true
+          description: Defaults to a fixed reason when blank or omitted.
 
     FieldEditRequest:
       type: object
@@ -769,3 +1520,571 @@ components:
           type: array
           items:
             type: string
+        problems:
+          type: array
+          description: >
+            Present only when code is RULE_VALIDATION_FAILED: one entry per
+            way the proposed rule's payload does not hold against the
+            draft's own field definitions.
+          items:
+            type: object
+            properties:
+              reason:
+                type: string
+              detail:
+                type: string
+
+    DocumentSummaryResponse:
+      type: object
+      required: [id, title, templateId, templateVersionId, currentRevisionId, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        templateId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        currentRevisionId:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time
+
+    AllocateUploadRequest:
+      type: object
+      properties:
+        filename:
+          type: string
+          description: Client-supplied filename, sanitized server-side into display metadata.
+
+    ArtifactResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [UPLOADING, QUARANTINED, SCANNING, READY, REJECTED]
+        byteCount:
+          type: integer
+          format: int64
+          nullable: true
+        sha256:
+          type: string
+          nullable: true
+        detectedMediaType:
+          type: string
+          enum: [DOCX, PDF, PLAIN_TEXT]
+          nullable: true
+        displayFilename:
+          type: string
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+
+    ExtractionResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [COMPLETE, UNSUPPORTED, FAILED]
+        parserVersion:
+          type: string
+          nullable: true
+        failureReason:
+          type: string
+          nullable: true
+      description: >
+        The full shape carries format-specific fields (feature findings for
+        DOCX, page geometry for PDF) not modeled here yet -- the frontend
+        workspace only needs the terminal status today.
+
+    TemplateResponse:
+      type: object
+      required: [id, displayName, status, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        displayName:
+          type: string
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE]
+        currentActiveVersionId:
+          type: integer
+          format: int64
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    FieldDefinitionResponse:
+      type: object
+      required: [fieldId, type, cardinality, requiredness, bindingKind]
+      properties:
+        fieldId:
+          type: string
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        requiredness:
+          type: string
+          enum: [REQUIRED, OPTIONAL]
+        bindingKind:
+          type: string
+          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE]
+        tag:
+          type: string
+          nullable: true
+        part:
+          type: string
+          nullable: true
+        nodeId:
+          type: string
+          nullable: true
+
+    TemplateVersionResponse:
+      type: object
+      required: [id, templateId, versionNumber, sourceArtifactId, extractionVersionId, status, fields, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        templateId:
+          type: integer
+          format: int64
+        versionNumber:
+          type: integer
+          minimum: 1
+        sourceArtifactId:
+          type: integer
+          format: int64
+        extractionVersionId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [DRAFT, ACTIVATED]
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldDefinitionResponse"
+        createdAt:
+          type: string
+          format: date-time
+        activatedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateTemplateRequest:
+      type: object
+      required: [displayName, sourceArtifactId]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+        sourceArtifactId:
+          type: integer
+          format: int64
+          minimum: 1
+
+    TemplateDraftResponse:
+      type: object
+      required: [template, draftVersion]
+      properties:
+        template:
+          $ref: "#/components/schemas/TemplateResponse"
+        draftVersion:
+          $ref: "#/components/schemas/TemplateVersionResponse"
+
+    BindingRequest:
+      type: object
+      required: [kind]
+      description: Only tag (for CONTENT_CONTROL_TAG) or part/nodeId (for STRUCTURAL_NODE) is required, chosen by kind; the other is ignored.
+      properties:
+        kind:
+          type: string
+          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE]
+        tag:
+          type: string
+          nullable: true
+        part:
+          type: string
+          nullable: true
+        nodeId:
+          type: string
+          nullable: true
+
+    FieldDefinitionRequest:
+      type: object
+      required: [fieldId, type, cardinality, requiredness, binding]
+      properties:
+        fieldId:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        requiredness:
+          type: string
+          enum: [REQUIRED, OPTIONAL]
+        binding:
+          $ref: "#/components/schemas/BindingRequest"
+
+    ReplaceBindingsRequest:
+      type: object
+      required: [expectedVersionNumber, fields]
+      properties:
+        expectedVersionNumber:
+          type: integer
+          minimum: 1
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldDefinitionRequest"
+
+    ActivateVersionRequest:
+      type: object
+      required: [expectedVersionNumber]
+      properties:
+        expectedVersionNumber:
+          type: integer
+          minimum: 1
+
+    CandidateFieldBindingResponse:
+      type: object
+      required: [fieldId, type, cardinality, contentControlTag]
+      properties:
+        fieldId:
+          type: string
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        contentControlTag:
+          type: string
+
+    CandidateBindingReportResponse:
+      type: object
+      required: [candidates, ambiguousContentControlTags]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandidateFieldBindingResponse"
+        ambiguousContentControlTags:
+          type: array
+          items:
+            type: string
+
+    AttachSourceRequest:
+      type: object
+      required: [artifactId]
+      properties:
+        artifactId:
+          type: integer
+          format: int64
+          minimum: 1
+
+    SnapshotResponse:
+      type: object
+      required: [id, artifactId, kind, fetchedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        artifactId:
+          type: integer
+          format: int64
+        kind:
+          type: string
+        fetchedAt:
+          type: string
+          format: date-time
+
+    StartExtractionRequest:
+      type: object
+      required: [sourceArtifactId]
+      properties:
+        sourceArtifactId:
+          type: integer
+          format: int64
+          minimum: 1
+
+    ExtractionResultResponse:
+      type: object
+      required: [artifactId]
+      properties:
+        artifactId:
+          type: integer
+          format: int64
+          description: Download this artifact's bytes through the existing generic /uploads/{artifactId}/download route.
+
+    QuestionCandidateOptionResponse:
+      type: object
+      required: [value, evidenceSpanIds]
+      properties:
+        value:
+          type: string
+        evidenceSpanIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    QuestionResponse:
+      type: object
+      required: [id, fieldId, reason, candidates, status, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        fieldId:
+          type: string
+        reason:
+          type: string
+          enum: [MISSING_REQUIRED, CONFLICT]
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestionCandidateOptionResponse"
+        status:
+          type: string
+          enum: [OPEN, ANSWERED]
+        answerValue:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    AnswerQuestionRequest:
+      type: object
+      required: [answerValue]
+      properties:
+        answerValue:
+          type: string
+          minLength: 1
+
+    ProposedFieldResponse:
+      type: object
+      required: [type, value, evidenceSpanIds]
+      properties:
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        value:
+          type: string
+        evidenceSpanIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    PatchProposalResponse:
+      type: object
+      required: [id, documentId, baseRevisionId, proposedValues, status, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        baseRevisionId:
+          type: integer
+          format: int64
+        proposedValues:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ProposedFieldResponse"
+        status:
+          type: string
+          enum: [PROPOSED, ACCEPTED]
+        createdAt:
+          type: string
+          format: date-time
+
+    AcceptPatchProposalRequest:
+      type: object
+      required: [expectedRevisionId]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        editReason:
+          type: string
+          nullable: true
+          description: Defaults to a fixed reason when blank or omitted.
+
+    PatchAcceptResponse:
+      type: object
+      required: [applied, fieldStatuses]
+      properties:
+        applied:
+          type: boolean
+        fieldStatuses:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [CLEAN, CONFLICT, LOCKED]
+        revision:
+          allOf:
+            - $ref: "#/components/schemas/DocumentRevisionResponse"
+          nullable: true
+          description: Present only when at least one field actually applied.
+
+    RuleScopeRequest:
+      type: object
+      required: [kind]
+      description: fieldId is required only for a SINGLE_FIELD scope; ignored for WHOLE_TEMPLATE.
+      properties:
+        kind:
+          type: string
+          enum: [WHOLE_TEMPLATE, SINGLE_FIELD]
+        fieldId:
+          type: string
+          nullable: true
+
+    RulePayloadRequest:
+      type: object
+      required: [kind]
+      description: >
+        One flat shape for all ten rule payload kinds -- the same "only the
+        sub-fields the chosen kind actually needs are populated" convention
+        FieldDefinitionRequest's own binding already establishes for
+        choosing a field binding's own two kinds; every other property is
+        omitted or null.
+      properties:
+        kind:
+          type: string
+          enum:
+            - REQUIRED_FIELDS
+            - MAX_TEXT_LENGTH
+            - MAX_ITEM_COUNT
+            - ALLOWED_SECTION_ORDER
+            - DATE_DISPLAY_FORMAT
+            - ALLOWED_SOURCE_KINDS
+            - MISSING_VALUE_BEHAVIOR
+            - ALLOWED_OVERFLOW_BEHAVIOR
+            - REPEATABLE_REGION_EMPTY_BEHAVIOR
+            - PROTECTED_REGION
+        fieldId:
+          type: string
+          nullable: true
+          description: Required by every kind except REQUIRED_FIELDS, ALLOWED_SECTION_ORDER, and PROTECTED_REGION.
+        fieldIds:
+          type: array
+          nullable: true
+          description: REQUIRED_FIELDS only -- one or more real field IDs.
+          items:
+            type: string
+        maxCharacters:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: MAX_TEXT_LENGTH only.
+        maxItems:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: MAX_ITEM_COUNT only.
+        orderedSectionIds:
+          type: array
+          nullable: true
+          description: ALLOWED_SECTION_ORDER only -- a freeform ordered list of section identifiers the person types themselves.
+          items:
+            type: string
+        dateFormatStyle:
+          type: string
+          nullable: true
+          description: DATE_DISPLAY_FORMAT only.
+          enum: [LONG, SHORT, ISO]
+        allowedSourceKinds:
+          type: array
+          nullable: true
+          description: ALLOWED_SOURCE_KINDS only -- ARTIFACT is the only source kind this codebase produces today.
+          items:
+            type: string
+            enum: [ARTIFACT]
+        emptyValueResolution:
+          type: string
+          nullable: true
+          description: MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
+          enum: [OMIT, BLANK, PLACEHOLDER_TEXT]
+        overflowResolution:
+          type: string
+          nullable: true
+          description: ALLOWED_OVERFLOW_BEHAVIOR only.
+          enum: [BLOCK_EXPORT, ALLOW_REFLOW]
+        protectedRegionTarget:
+          allOf:
+            - $ref: "#/components/schemas/BindingRequest"
+          nullable: true
+          description: PROTECTED_REGION only.
+
+    ProposeRuleRequest:
+      type: object
+      required: [scope, payload]
+      properties:
+        scope:
+          $ref: "#/components/schemas/RuleScopeRequest"
+        payload:
+          $ref: "#/components/schemas/RulePayloadRequest"
+        humanExplanation:
+          type: string
+          nullable: true
+
+    RuleResponse:
+      type: object
+      required: [id, templateId, templateVersionId, category, scope, payload, status, authorUserId, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        templateId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        category:
+          type: string
+          enum: [VISUAL, CONTENT, BEHAVIOR, VALIDATION, SOURCE]
+        scope:
+          $ref: "#/components/schemas/RuleScopeRequest"
+        payload:
+          $ref: "#/components/schemas/RulePayloadRequest"
+        status:
+          type: string
+          enum: [PROPOSED, ACCEPTED, REJECTED]
+        humanExplanation:
+          type: string
+          nullable: true
+        authorUserId:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time

@@ -166,7 +166,7 @@ class ValidationIntegrationTest {
         assertThat(manifest.get("documentId").asLong()).isEqualTo(documentId);
         assertThat(manifest.get("templateVersionId").asLong()).isEqualTo(templateVersionId);
         assertThat(manifest.get("hasUnresolvedBlocking").asBoolean()).isFalse();
-        // Template activation already proved a real qualified baseline (Phase 12's own activation gate), so this
+        // Template activation already proved a real qualified baseline (its own activation gate), so this
         // run renders a real PDF and compares against it -- never null once a baseline actually exists.
         assertThat(manifest.get("pdfArtifactId").isNull()).isFalse();
         for (JsonNode finding : manifest.get("findings")) {
