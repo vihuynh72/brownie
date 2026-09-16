@@ -305,10 +305,22 @@ function describePayload(payload: RulePayloadRequest): string {
           <div class="rule-row__actions">
             <span v-if="rule.status !== 'PROPOSED'" class="badge">{{ rule.status }}</span>
             <template v-else>
-              <button class="button" type="button" :disabled="decidingRuleId === rule.id" @click="decide(rule, 'accept')">
+              <button
+                class="button"
+                type="button"
+                :disabled="decidingRuleId === rule.id"
+                :aria-label="`Accept rule: ${describePayload(rule.payload)}`"
+                @click="decide(rule, 'accept')"
+              >
                 Accept
               </button>
-              <button class="button" type="button" :disabled="decidingRuleId === rule.id" @click="decide(rule, 'reject')">
+              <button
+                class="button"
+                type="button"
+                :disabled="decidingRuleId === rule.id"
+                :aria-label="`Reject rule: ${describePayload(rule.payload)}`"
+                @click="decide(rule, 'reject')"
+              >
                 Reject
               </button>
             </template>
@@ -318,7 +330,7 @@ function describePayload(payload: RulePayloadRequest): string {
     </div>
 
     <div class="card rule-form">
-      <h3>Propose a rule</h3>
+      <h2>Propose a rule</h2>
 
       <div class="field">
         <label class="field-label" for="rule-scope-kind">Applies to</label>
@@ -423,6 +435,7 @@ function describePayload(payload: RulePayloadRequest): string {
       <button class="button button--primary" type="button" :disabled="!canSubmit || submitting" @click="submitProposal">
         {{ submitting ? 'Proposing…' : 'Propose rule' }}
       </button>
+      <p v-if="submitting" aria-live="polite">Proposing…</p>
     </div>
   </div>
 </template>

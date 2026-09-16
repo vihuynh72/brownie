@@ -619,6 +619,143 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run the deterministic validation pipeline against the document's current revision. Appends a new revision, so the caller passes expectedRevisionId the same way it does for a content edit. */
+        post: operations["validateDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/validation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The latest validation manifest recorded for this exact revision. */
+        get: operations["getLatestValidation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deterministically compile this exact, already-persisted revision into a filled DOCX and rendered PDF, without any model call. */
+        post: operations["compileRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/compilation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The latest compilation manifest recorded for this exact revision. */
+        get: operations["getLatestCompilation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/export-approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The latest export approval recorded for this document, if any. */
+        get: operations["getLatestExportApproval"];
+        put?: never;
+        /** Approve an already-clean validation manifest for export. Refused if the manifest is stale against the document's current revision or still has an unresolved blocking finding. */
+        post: operations["approveExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Produce an export receipt from the document's latest export approval. Refused if that approval is stale against the current revision, or if a named artifact no longer matches the hash its own validation manifest recorded. */
+        post: operations["exportDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/export-receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The latest export receipt recorded for this document, if any. */
+        get: operations["getLatestExportReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream a READY artifact's exact stored bytes with an attachment disposition, forcing a save-as -- used to fetch an export's compiled DOCX/PDF by the artifact ID an export receipt names. */
+        get: operations["downloadArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1107,6 +1244,115 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        ValidateDocumentRequest: {
+            /** Format: int64 */
+            expectedRevisionId: number;
+        };
+        ValidationFindingResponse: {
+            code: string;
+            /** @enum {string} */
+            severity: "BLOCKING" | "WARNING" | "INFORMATIONAL";
+            fieldId: string | null;
+            message: string;
+        };
+        ValidationManifestResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            /** Format: int64 */
+            docxArtifactId: number;
+            docxSha256: string;
+            /** Format: int64 */
+            pdfArtifactId?: number | null;
+            pdfSha256?: string | null;
+            findings: components["schemas"]["ValidationFindingResponse"][];
+            hasUnresolvedBlocking: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        IntegrityFindingResponse: {
+            fieldId: string;
+            expectedText: string;
+            foundInDocx: boolean;
+            foundInPdf: boolean;
+        };
+        CompilationManifestResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            /** Format: int64 */
+            docxArtifactId: number;
+            docxSha256: string;
+            /** Format: int64 */
+            pdfArtifactId: number;
+            pdfSha256: string;
+            rendererVersion: string;
+            integrityFindings: components["schemas"]["IntegrityFindingResponse"][];
+            allIntegrityChecksPassed: boolean;
+            /** Format: date-time */
+            compiledAt: string;
+        };
+        ApproveExportRequest: {
+            /** Format: int64 */
+            validationManifestId: number;
+            /** @enum {string} */
+            format: "DOCX" | "PDF" | "BOTH";
+        };
+        ExportApprovalResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            /** Format: int64 */
+            validationManifestId: number;
+            /** @enum {string} */
+            format: "DOCX" | "PDF" | "BOTH";
+            /** Format: date-time */
+            approvedAt: string;
+        };
+        ExportReceiptResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            /** Format: int64 */
+            exportApprovalId: number;
+            /** Format: int64 */
+            validationManifestId: number;
+            /** Format: int64 */
+            docxArtifactId: number;
+            docxSha256: string;
+            /** Format: int64 */
+            pdfArtifactId?: number | null;
+            pdfSha256?: string | null;
+            /** @enum {string} */
+            format: "DOCX" | "PDF" | "BOTH";
+            isCompletePair: boolean;
+            /** Format: date-time */
+            exportedAt: string;
+        };
     };
     responses: {
         /** @description Request validation failed. */
@@ -1138,6 +1384,15 @@ export interface components {
         };
         /** @description The typed request is well formed but semantically invalid. */
         UnprocessableContent: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The named approval or manifest is stale against the document's current revision. */
+        PreconditionFailed: {
             headers: {
                 [name: string]: unknown;
             };
@@ -2307,6 +2562,240 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    validateDocument: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidateDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated, or the stable result of an idempotent replay. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationManifestResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getLatestValidation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                revisionId: components["parameters"]["RevisionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationManifestResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    compileRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                revisionId: components["parameters"]["RevisionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compiled. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompilationManifestResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getLatestCompilation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                revisionId: components["parameters"]["RevisionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompilationManifestResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getLatestExportApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportApprovalResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    approveExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Approved. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportApprovalResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    exportDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exported. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportReceiptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    getLatestExportReceipt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportReceiptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                artifactId: components["parameters"]["ArtifactId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The artifact's stored bytes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
             404: components["responses"]["NotFound"];
         };
     };
