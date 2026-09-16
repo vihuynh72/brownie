@@ -3,10 +3,9 @@ package io.github.vihuynh72.brownie.core.export;
 /**
  * The document has moved past the exact revision an approval (or the
  * validation manifest a would-be approval names) was granted against --
- * an edit, a fresh validation run, or both happened since. Per this
- * plan's own §9.5, changing any of the things an approval is bound to
- * invalidates it; this is never silently ignored or re-approved
- * automatically.
+ * an edit, a fresh validation run, or both happened since. Changing any
+ * of the things an approval is bound to invalidates it; this is never
+ * silently ignored or re-approved automatically.
  */
 public class StaleExportApprovalException extends RuntimeException {
 
