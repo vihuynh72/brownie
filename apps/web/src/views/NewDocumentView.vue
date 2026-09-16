@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import {
@@ -44,6 +44,15 @@ async function loadTemplates(): Promise<void> {
 }
 
 onMounted(loadTemplates)
+// session.personalWorkspaceId can still be undefined the instant this component mounts -- App.vue's
+// own onMounted also calls loadIdentity(), and on a hard page load there is no guarantee the router's
+// beforeEach guard's own identity check wins that race (see main.ts: app.mount() is not gated on
+// router.isReady()). Without this, a document/workspace ID that resolves a moment later than this
+// mount never gets a retry and the page is stuck on "Loading templates…" forever, matching the same
+// defensive watch DocumentListView.vue and WorkspaceView.vue already carry for the same reason.
+watch(() => session.status, (status) => {
+  if (status === 'authenticated') void loadTemplates()
+})
 
 function onFileChange(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -141,6 +150,7 @@ async function submit(): Promise<void> {
       <button class="button button--primary" type="submit" :disabled="submitState === 'submitting' || title.trim() === ''">
         {{ submitState === 'submitting' ? 'Creating…' : 'Create document' }}
       </button>
+      <p v-if="submitState === 'submitting'" aria-live="polite">Creating…</p>
     </form>
   </section>
 </template>
