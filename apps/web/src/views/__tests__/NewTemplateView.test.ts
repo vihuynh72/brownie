@@ -5,6 +5,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import NewTemplateView from '@/views/NewTemplateView.vue'
 import { useSessionStore } from '@/stores/session'
 import { ApiRequestError, type RuleResponse } from '@/api/client'
+import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -339,5 +340,97 @@ describe('NewTemplateView', () => {
     // The rule row is still there, unchanged, rather than the list silently going stale.
     expect(wrapper.text()).toContain('Require: meeting.title')
     expect(listRules).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows an aria-live status region while activating the template', async () => {
+    authenticate()
+    const wrapper = await advanceToRulesStage()
+
+    // A deliberately-unresolved promise, so the in-flight "activating" state is observable rather
+    // than racing an already-resolved mock straight through to "activated".
+    let resolveActivate!: (value: Awaited<ReturnType<typeof activateTemplateVersion>>) => void
+    vi.mocked(activateTemplateVersion).mockReturnValue(
+      new Promise((resolve) => {
+        resolveActivate = resolve
+      }),
+    )
+
+    const activateButton = wrapper.findAll('button').find((b) => b.text() === 'Activate template')
+    await activateButton?.trigger('click')
+
+    expect(wrapper.find('[aria-live="polite"]').text()).toBe('Activating…')
+
+    resolveActivate({
+      id: 2, templateId: 42, versionNumber: 2, sourceArtifactId: 5, extractionVersionId: 9, status: 'ACTIVATED',
+      fields: [], createdAt: '2026-03-01T00:00:00Z', activatedAt: '2026-03-01T00:05:00Z',
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('is now active and ready to use')
+  })
+
+  it('gives each "Remove" button an accessible name naming the field it removes', async () => {
+    authenticate()
+    const wrapper = await mountWithRouter()
+    await wrapper.find('#display-name').setValue('Club Bylaws Minutes')
+
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'bylaws.docx' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'bylaws.docx' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'bylaws.docx' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+    vi.mocked(createTemplateDraft).mockResolvedValue({
+      template: { id: 42, displayName: 'Club Bylaws Minutes', status: 'DRAFT', currentActiveVersionId: null, createdAt: '2026-03-01T00:00:00Z' },
+      draftVersion: {
+        id: 1, templateId: 42, versionNumber: 1, sourceArtifactId: 5, extractionVersionId: 9, status: 'DRAFT', fields: [],
+        createdAt: '2026-03-01T00:00:00Z', activatedAt: null,
+      },
+    })
+    vi.mocked(getDraftCandidateBindings).mockResolvedValue({
+      candidates: [
+        { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', contentControlTag: 'meeting.title' },
+        { fieldId: 'meeting.date', type: 'DATE', cardinality: 'SCALAR', contentControlTag: 'meeting.date' },
+      ],
+      ambiguousContentControlTags: [],
+    })
+
+    const input = wrapper.find('#template-source')
+    const file = new File(['docx bytes'], 'bylaws.docx')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    // Every row's "Remove" button reads identically out of context -- the accessible name has to
+    // say which field it removes.
+    const removeButtons = wrapper.findAll('button').filter((b) => b.text() === 'Remove')
+    expect(removeButtons.map((b) => b.attributes('aria-label'))).toEqual(['Remove meeting.title', 'Remove meeting.date'])
+  })
+
+  it('has no automatically-detectable accessibility violations at the bind-fields stage', async () => {
+    authenticate()
+    const wrapper = await mountWithRouter()
+    await wrapper.find('#display-name').setValue('Club Bylaws Minutes')
+
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'bylaws.docx' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'bylaws.docx' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'bylaws.docx' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+    vi.mocked(createTemplateDraft).mockResolvedValue({
+      template: { id: 42, displayName: 'Club Bylaws Minutes', status: 'DRAFT', currentActiveVersionId: null, createdAt: '2026-03-01T00:00:00Z' },
+      draftVersion: {
+        id: 1, templateId: 42, versionNumber: 1, sourceArtifactId: 5, extractionVersionId: 9, status: 'DRAFT', fields: [],
+        createdAt: '2026-03-01T00:00:00Z', activatedAt: null,
+      },
+    })
+    vi.mocked(getDraftCandidateBindings).mockResolvedValue({
+      candidates: [{ fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', contentControlTag: 'meeting.title' }],
+      ambiguousContentControlTags: ['meeting.duplicate'],
+    })
+
+    const input = wrapper.find('#template-source')
+    const file = new File(['docx bytes'], 'bylaws.docx')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })

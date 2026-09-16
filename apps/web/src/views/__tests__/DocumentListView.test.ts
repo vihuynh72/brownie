@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import DocumentListView from '@/views/DocumentListView.vue'
 import { useSessionStore } from '@/stores/session'
+import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -67,6 +68,21 @@ describe('DocumentListView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("don't have any documents yet")
+  })
+
+  it('has no automatically-detectable accessibility violations with documents listed', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([
+      { id: 1, title: 'March Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-03-01T00:00:00Z' },
+      { id: 2, title: 'April Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-04-01T00:00:00Z' },
+    ])
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })
 
