@@ -16,10 +16,9 @@ paths:
       operationId: getCurrentIdentity
       summary: >
         Current identity and workspace memberships. Login
-        (/oauth2/authorization/entra) and logout (/logout) are
-        browser-redirect flows, not JSON operations, and are not modeled
-        here. Effective capabilities are added once authorization checks
-        exist.
+        (/oauth2/authorization/entra) is a browser-redirect flow and is
+        not modeled here; logout is (see POST /logout). Effective
+        capabilities are added once authorization checks exist.
       responses:
         "200":
           description: Authenticated.
@@ -29,6 +28,35 @@ paths:
                 $ref: "#/components/schemas/MeResponse"
         "401":
           description: Not logged in.
+
+  /logout:
+    post:
+      operationId: logout
+      summary: >
+        Ends the server session. Requires the same X-XSRF-TOKEN header as
+        every other mutation. With "Accept: application/json" the response
+        is a 200 carrying the identity provider's end-session URL as
+        redirectUrl, which the page then navigates to itself to finish
+        signing out at the provider and return to this app's origin;
+        without it, the response is the ordinary 302 to that same URL.
+      parameters:
+        - name: Accept
+          in: header
+          required: false
+          schema:
+            type: string
+            example: application/json
+      responses:
+        "200":
+          description: Session ended; navigate to redirectUrl to finish.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutResponse"
+        "302":
+          description: Session ended; redirected to the identity provider's end-session page.
+        "403":
+          description: Missing or invalid CSRF token.
 
   /api/v1/platform/probes:
     post:
@@ -2087,22 +2115,53 @@ components:
 
     ProposedFieldResponse:
       type: object
-      required: [type, value, evidenceSpanIds]
+      description: >
+        Exactly one of value (SCALAR) or values (REPEATED) is set, the
+        same shape FieldValueResponse uses for a stored field.
+      required: [type, cardinality, evidenceSpanIds]
       properties:
         type:
           type: string
           enum: [TEXT, DATE]
-        value:
+        cardinality:
           type: string
+          enum: [SCALAR, REPEATED]
+        value:
+          type: [string, "null"]
+        values:
+          type: [array, "null"]
+          items:
+            type: string
         evidenceSpanIds:
           type: array
           items:
             type: integer
             format: int64
 
+    SkippedRepeatedItemResponse:
+      type: object
+      description: >
+        A repeated row (an action item, in the built-in templates) the
+        extraction result contained but the proposal could not carry:
+        a row is only proposed whole, and the content model has no slot
+        for an unknown owner or due date. Reported by name rather than
+        dropped silently.
+      required: [itemIndex, unresolvedFieldIds]
+      properties:
+        itemIndex:
+          type: integer
+          description: The row's zero-based position in the extraction result.
+        unresolvedFieldIds:
+          type: array
+          items:
+            type: string
+        description:
+          type: [string, "null"]
+          description: The row's first usable text, typically the task itself, bounded in length.
+
     PatchProposalResponse:
       type: object
-      required: [id, documentId, baseRevisionId, proposedValues, status, createdAt]
+      required: [id, documentId, baseRevisionId, proposedValues, status, createdAt, proposedRepeatedItemCount, skippedRepeatedItems]
       properties:
         id:
           type: integer
@@ -2123,6 +2182,21 @@ components:
         createdAt:
           type: string
           format: date-time
+        proposedRepeatedItemCount:
+          type: integer
+          description: How many complete repeated rows the proposal carries.
+        skippedRepeatedItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkippedRepeatedItemResponse"
+
+    LogoutResponse:
+      type: object
+      required: [redirectUrl]
+      properties:
+        redirectUrl:
+          type: string
+          description: Where the page navigates next to finish signing out at the identity provider.
 
     AcceptPatchProposalRequest:
       type: object
