@@ -8,10 +8,28 @@ import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, listTemplates: vi.fn(), createDocument: vi.fn() }
+  return {
+    ...actual,
+    listTemplates: vi.fn(),
+    createDocument: vi.fn(),
+    allocateUpload: vi.fn(),
+    uploadArtifactContent: vi.fn(),
+    completeUpload: vi.fn(),
+    extractArtifact: vi.fn(),
+    attachSource: vi.fn(),
+  }
 })
 
-import { listTemplates, createDocument } from '@/api/client'
+import {
+  allocateUpload,
+  attachSource,
+  completeUpload,
+  createDocument,
+  extractArtifact,
+  listTemplates,
+  uploadArtifactContent,
+} from '@/api/client'
+import { readDocumentHandoff } from '@/router/handoff'
 
 async function mountWithRouter() {
   const router = createRouter({
@@ -36,6 +54,11 @@ describe('NewDocumentView', () => {
     setActivePinia(createPinia())
     vi.mocked(listTemplates).mockReset()
     vi.mocked(createDocument).mockReset()
+    vi.mocked(allocateUpload).mockReset()
+    vi.mocked(uploadArtifactContent).mockReset()
+    vi.mocked(completeUpload).mockReset()
+    vi.mocked(extractArtifact).mockReset()
+    vi.mocked(attachSource).mockReset()
   })
 
   it('prompts sign-in when the session is anonymous', async () => {
@@ -123,6 +146,79 @@ describe('NewDocumentView', () => {
       expect.objectContaining({ title: 'March Sync', templateId: 1, templateVersionId: 3 }),
     )
     expect(wrapper.vm.$router.currentRoute.value.fullPath).toBe('/documents/42')
+  })
+
+  const ONE_TEMPLATE = [
+    { id: 1, displayName: 'Flowing meeting minutes', status: 'ACTIVE' as const, currentActiveVersionId: 3, createdAt: '2026-03-01T00:00:00Z' },
+  ]
+  const CREATED = {
+    id: 42,
+    title: 'March Sync',
+    templateId: 1,
+    templateVersionId: 3,
+    currentRevisionId: 1,
+    createdAt: '2026-03-01T00:00:00Z',
+    currentRevision: { id: 1, revisionNumber: 1, parentRevisionId: null, fields: {}, contentHash: 'a'.repeat(64), editReason: 'x', createdAt: '2026-03-01T00:00:00Z' },
+  }
+
+  async function chooseAFile(wrapper: Awaited<ReturnType<typeof mountWithRouter>>) {
+    const input = wrapper.find('#source')
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+  }
+
+  /**
+   * A real browser finding: the old code set a local warning ref and then navigated away, so the
+   * warning died with this component before anyone could read it. The document really was
+   * created; the person was simply never told their file had not gone with it.
+   */
+  it('carries a failed optional source attachment into the destination route rather than losing it', async () => {
+    vi.mocked(listTemplates).mockResolvedValue(ONE_TEMPLATE)
+    vi.mocked(createDocument).mockResolvedValue(CREATED)
+    vi.mocked(allocateUpload).mockRejectedValue(new Error('upload outage'))
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.find('#title').setValue('March Sync')
+    await chooseAFile(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.vm.$router.currentRoute.value.path).toBe('/documents/42')
+    const handoff = readDocumentHandoff()
+    expect(handoff?.sourceWarning).toMatch(/could not be attached/i)
+    expect(handoff?.attachedSources).toEqual([])
+  })
+
+  it('hands a successfully attached source to the workspace so it can be used there straight away', async () => {
+    vi.mocked(listTemplates).mockResolvedValue(ONE_TEMPLATE)
+    vi.mocked(createDocument).mockResolvedValue(CREATED)
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'notes.txt' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'notes.txt' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'notes.txt' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+    const snapshot = { id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z' }
+    vi.mocked(attachSource).mockResolvedValue(snapshot)
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.find('#title').setValue('March Sync')
+    await chooseAFile(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(attachSource).toHaveBeenCalledWith(7, 5)
+    expect(wrapper.vm.$router.currentRoute.value.path).toBe('/documents/42')
+    const handoff = readDocumentHandoff()
+    expect(handoff?.attachedSources).toEqual([snapshot])
+    expect(handoff?.sourceWarning).toBeNull()
   })
 
   it('has no automatically-detectable accessibility violations with templates loaded', async () => {

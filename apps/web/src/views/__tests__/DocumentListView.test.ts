@@ -13,7 +13,7 @@ vi.mock('@/api/client', async () => {
 
 import { listDocuments } from '@/api/client'
 
-async function mountWithRouter() {
+async function mountWithRouter(path = '/') {
   const router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -22,7 +22,7 @@ async function mountWithRouter() {
       { path: '/documents/:id', component: { template: '<div />' } },
     ],
   })
-  router.push('/')
+  router.push(path)
   await router.isReady()
   return mount(DocumentListView, { global: { plugins: [router] } })
 }
@@ -40,7 +40,23 @@ describe('DocumentListView', () => {
     const wrapper = await mountWithRouter()
 
     expect(wrapper.text()).toContain('Sign in')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
+  })
+
+  /** The API sends a refused sign-in back here with only the provider's error code; the page must say so rather than look like a fresh visit. */
+  it('explains a failed sign-in, with its reason, and offers to try again', async () => {
+    const session = useSessionStore()
+    session.status = 'anonymous'
+
+    const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied')
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('Sign-in did not complete')
+    expect(alert.text()).toContain('access_denied')
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
   it('lists documents returned for the personal workspace once authenticated', async () => {

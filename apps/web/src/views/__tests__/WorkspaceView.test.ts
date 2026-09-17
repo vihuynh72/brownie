@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
@@ -67,6 +67,7 @@ import {
 } from '@/api/client'
 import type { ExportApprovalResponse, ExportReceiptResponse, ValidationManifestResponse } from '@/api/client'
 import { axe } from '@/test/axe'
+import { documentHandoffState, type DocumentHandoff } from '@/router/handoff'
 
 const DOCUMENT: DocumentResponse = {
   id: 1,
@@ -219,7 +220,7 @@ describe('WorkspaceView grounded extraction with questions', () => {
 
     const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
     await assistTab?.trigger('click')
-    await wrapper.find('button.button--primary').trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Try grounded extraction')?.trigger('click')
     await flushPromises()
 
     expect(getGenerationQuestions).toHaveBeenCalledWith(7, 1, 42)
@@ -256,9 +257,13 @@ describe('WorkspaceView grounded extraction with questions', () => {
       id: 501,
       documentId: 1,
       baseRevisionId: 1,
-      proposedValues: { 'meeting.title': { type: 'TEXT', value: 'Executive Committee Sync', evidenceSpanIds: [] } },
+      proposedValues: {
+        'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Executive Committee Sync', values: null, evidenceSpanIds: [] },
+      },
       status: 'PROPOSED',
       createdAt: '2026-03-01T00:00:00Z',
+      proposedRepeatedItemCount: 0,
+      skippedRepeatedItems: [],
     })
     const applyButton = wrapper.findAll('button').find((b) => b.text() === 'Apply to document')
     await applyButton?.trigger('click')
@@ -299,6 +304,149 @@ describe('WorkspaceView grounded extraction with questions', () => {
 
     expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 501, 1, expect.any(String))
     expect(wrapper.text()).toContain('Applied to the document.')
+  })
+})
+
+describe('WorkspaceView document handoff from the new-document screen', () => {
+  // jsdom keeps one window.history for the whole file, and a router push to the URL a previous
+  // test already left current is a no-op that leaves that test's handoff state in place -- so start
+  // and end every test here on a clean history entry, and never leak a handoff into later describes.
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/')
+    setActivePinia(createPinia())
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+  })
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+  })
+
+  async function mountWithHandoff(handoff: DocumentHandoff) {
+    const router = createRouter({
+      history: createWebHistory(),
+      routes: [
+        { path: '/', component: { template: '<div />' } },
+        { path: '/documents/:id', component: WorkspaceView },
+      ],
+    })
+    await router.push({ path: '/documents/1', state: documentHandoffState(handoff) })
+    await router.isReady()
+    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  /**
+   * A real browser finding: a source attached during document creation was invisible here, so the
+   * Assist tab told the person to attach a source they had attached seconds earlier.
+   */
+  it('shows a source attached during creation and lets Assist use it immediately', async () => {
+    const wrapper = await mountWithHandoff({
+      attachedSources: [{ id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z' }],
+      sourceWarning: null,
+    })
+
+    expect(wrapper.text()).toContain('Source #3 attached.')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+
+    const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
+    await assistTab?.trigger('click')
+    expect(wrapper.text()).not.toContain('Attach a source first')
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Try grounded extraction')).toBe(true)
+  })
+
+  it('shows the creation screen\'s failed-attachment warning here, where the person actually lands', async () => {
+    const wrapper = await mountWithHandoff({
+      attachedSources: [],
+      sourceWarning: 'Your source file could not be attached. The document was still created; attach it again from the Sources tab.',
+    })
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toMatch(/source file could not be attached/i)
+    expect(wrapper.text()).toContain('No sources attached yet.')
+  })
+
+  it('behaves exactly as before when nothing was handed over', async () => {
+    const router = createRouter({
+      history: createWebHistory(),
+      routes: [
+        { path: '/', component: { template: '<div />' } },
+        { path: '/documents/:id', component: WorkspaceView },
+      ],
+    })
+    await router.push('/documents/1')
+    await router.isReady()
+    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('No sources attached yet.')
+  })
+})
+
+describe('WorkspaceView proposal with action-item rows', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    vi.mocked(startExtraction).mockReset()
+    vi.mocked(getJob).mockReset()
+    vi.mocked(getExtractionResult).mockReset()
+    vi.mocked(applyGenerationResult).mockReset()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+  })
+
+  it('lists every proposed row per repeated field and names each row it could not propose', async () => {
+    const wrapper = await mountWorkspaceView()
+    await attachAFakeSource(wrapper)
+    vi.mocked(startExtraction).mockResolvedValue({
+      commandId: 'c1', jobId: 42, operation: 'generation.start-extraction', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z',
+    })
+    vi.mocked(getJob).mockResolvedValueOnce(jobResponse('SUCCEEDED'))
+    vi.mocked(getExtractionResult).mockResolvedValue({ artifactId: 77 })
+    vi.mocked(applyGenerationResult).mockResolvedValue({
+      id: 501,
+      documentId: 1,
+      baseRevisionId: 1,
+      proposedValues: {
+        'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Weekly Robotics Club Sync', values: null, evidenceSpanIds: [] },
+        'action.item.task': {
+          type: 'TEXT', cardinality: 'REPEATED', value: null,
+          values: ['finish wiring the practice robot', 'confirm the van reservation'], evidenceSpanIds: [],
+        },
+        'action.item.owner': { type: 'TEXT', cardinality: 'REPEATED', value: null, values: ['Alex Chen', 'Jose Nunez'], evidenceSpanIds: [] },
+        'action.item.due': { type: 'DATE', cardinality: 'REPEATED', value: null, values: ['2026-03-12', '2026-03-10'], evidenceSpanIds: [] },
+      },
+      status: 'PROPOSED',
+      createdAt: '2026-03-01T00:00:00Z',
+      proposedRepeatedItemCount: 2,
+      skippedRepeatedItems: [{ itemIndex: 2, unresolvedFieldIds: ['action.item.due'], description: 'order the new batteries' }],
+    })
+
+    const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
+    await assistTab?.trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Try grounded extraction')?.trigger('click')
+    await flushPromises()
+    const applyButton = wrapper.findAll('button').find((b) => b.text() === 'Apply to document')
+    await applyButton?.trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('finish wiring the practice robot')
+    expect(text).toContain('confirm the van reservation')
+    expect(text).toContain('Alex Chen')
+    expect(text).toContain('2026-03-10')
+    expect(text).toContain('2 action items proposed')
+    const status = wrapper.find('[role="status"]')
+    expect(status.exists()).toBe(true)
+    expect(status.text()).toContain('1 action item was found in your source but could not be proposed')
+    expect(status.text()).toContain('order the new batteries')
+    expect(status.text()).toContain('missing: action.item.due')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })
 
@@ -951,7 +1099,7 @@ describe('WorkspaceView accessibility', () => {
 
     const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
     await assistTab?.trigger('click')
-    await wrapper.find('button.button--primary').trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Try grounded extraction')?.trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Old Title')

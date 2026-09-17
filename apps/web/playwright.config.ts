@@ -7,10 +7,9 @@ const AUTH_STATE = fileURLToPath(new URL('./e2e/.auth/state.json', import.meta.u
  * Drives the real running app in a real browser against a real backend --
  * see e2e/README.md for what "real" means here (a live docker-compose
  * Postgres/Azurite/ClamAV stack and a live brownie-api process are
- * prerequisites this config does not start for you) and why these specs
- * never touch the AI extraction path (a live OpenAI key and a running
- * brownie-worker would be needed, and the frontend has no manual
- * field-value editing UI yet to fall back on instead).
+ * prerequisites this config does not start for you). Real AI extraction
+ * is separately opt-in because it spends money; see the README for the
+ * switch and for what the default run does and does not prove.
  */
 export default defineConfig({
   testDir: './e2e',
