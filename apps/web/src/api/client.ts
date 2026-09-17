@@ -25,6 +25,12 @@ export type RuleScopeRequest = components['schemas']['RuleScopeRequest']
 export type RulePayloadRequest = components['schemas']['RulePayloadRequest']
 export type ProposeRuleRequest = components['schemas']['ProposeRuleRequest']
 export type RuleResponse = components['schemas']['RuleResponse']
+export type ValidationManifestResponse = components['schemas']['ValidationManifestResponse']
+export type CompilationManifestResponse = components['schemas']['CompilationManifestResponse']
+export type ExportApprovalResponse = components['schemas']['ExportApprovalResponse']
+export type ExportReceiptResponse = components['schemas']['ExportReceiptResponse']
+export type ExportFormat = components['schemas']['ApproveExportRequest']['format']
+export type LogoutResponse = components['schemas']['LogoutResponse']
 export type ApiError = components['schemas']['Error']
 
 /** Thrown for any non-2xx response; carries the server's own structured problem body when it sent one. */
@@ -103,6 +109,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export function getCurrentIdentity(): Promise<MeResponse> {
   return request<MeResponse>('/api/v1/me')
+}
+
+/**
+ * Ends the server session. A CSRF-checked POST like every other mutation
+ * (the header is added by `request`); asking for JSON makes the server
+ * answer with the identity provider's end-session URL instead of a
+ * redirect a fetch could never follow across origins -- the caller then
+ * navigates the page there itself to finish signing out.
+ */
+export function logout(): Promise<LogoutResponse> {
+  return request<LogoutResponse>('/logout', { method: 'POST', headers: { Accept: 'application/json' } })
 }
 
 export function listDocuments(workspaceId: number): Promise<DocumentSummaryResponse[]> {
@@ -324,4 +341,85 @@ export function acceptRule(workspaceId: number, templateId: number, ruleId: numb
 
 export function rejectRule(workspaceId: number, templateId: number, ruleId: number): Promise<RuleResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/rules/${ruleId}/reject`, { method: 'POST' })
+}
+
+export function listDocumentRevisions(workspaceId: number, documentId: number): Promise<DocumentRevisionResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions`)
+}
+
+export function getDocumentRevision(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+): Promise<DocumentRevisionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}`)
+}
+
+export function validateDocument(
+  workspaceId: number,
+  documentId: number,
+  expectedRevisionId: number,
+  idempotencyKey: string,
+): Promise<ValidationManifestResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/validate`, {
+    method: 'POST',
+    body: { expectedRevisionId },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
+export function getLatestValidation(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+): Promise<ValidationManifestResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/validation`)
+}
+
+/** Not called from the Checks tab yet -- there is no Compile step in the UI, only Validate/Approve/Export. */
+export function compileRevision(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+): Promise<CompilationManifestResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/compile`, {
+    method: 'POST',
+  })
+}
+
+export function getLatestCompilation(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+): Promise<CompilationManifestResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/compilation`)
+}
+
+export function approveExport(
+  workspaceId: number,
+  documentId: number,
+  validationManifestId: number,
+  format: ExportFormat,
+): Promise<ExportApprovalResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/export-approval`, {
+    method: 'POST',
+    body: { validationManifestId, format },
+  })
+}
+
+export function getLatestExportApproval(workspaceId: number, documentId: number): Promise<ExportApprovalResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/export-approval`)
+}
+
+export function exportDocument(workspaceId: number, documentId: number): Promise<ExportReceiptResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/export`, { method: 'POST' })
+}
+
+export function getLatestExportReceipt(workspaceId: number, documentId: number): Promise<ExportReceiptResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/export-receipt`)
+}
+
+/** Not a fetch wrapper -- the same-origin session cookie authenticates this URL directly when used as a link's href. */
+export function artifactDownloadUrl(workspaceId: number, artifactId: number): string {
+  return `/api/v1/workspaces/${workspaceId}/uploads/${artifactId}/download`
 }

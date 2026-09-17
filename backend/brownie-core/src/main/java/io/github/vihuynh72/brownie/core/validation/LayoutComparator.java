@@ -114,8 +114,8 @@ public final class LayoutComparator {
      * this check cannot safely align them further (which leaf corresponds
      * to which is genuinely ambiguous), so it names the region as an
      * expected insertion/removal rather than asserting a specific,
-     * possibly-wrong defect -- §13.3's own "report findings it can
-     * actually detect" permission, not a claim of full precision.
+     * possibly-wrong defect -- reporting only what it can actually detect,
+     * not a claim of full precision.
      */
     private static List<ValidationFinding> compareLeaves(List<ProtectedLeaf> baselineLeaves, List<ProtectedLeaf> filledLeaves) {
         int prefixLength = commonPrefixLength(baselineLeaves, filledLeaves);

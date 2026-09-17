@@ -18,6 +18,7 @@ import io.github.vihuynh72.brownie.core.artifact.MalwareScannerUnavailableExcept
 import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeException;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.export.BlockingValidationFindingsException;
+import io.github.vihuynh72.brownie.core.export.ExportArtifactIntegrityException;
 import io.github.vihuynh72.brownie.core.export.ExportNotApprovedException;
 import io.github.vihuynh72.brownie.core.export.ExportReceiptNotFoundException;
 import io.github.vihuynh72.brownie.core.export.StaleExportApprovalException;
@@ -322,6 +323,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unprocessable Entity");
         problem.setDetail(ex.getMessage());
         enrich(problem, "BLOCKING_VALIDATION_FINDINGS");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** An artifact a validation manifest named no longer matches the hash recorded at validation time -- the same "cannot honestly ship this" category {@link #handleTemplateBaselineIntegrity} already uses. */
+    @ExceptionHandler(ExportArtifactIntegrityException.class)
+    public ResponseEntity<Object> handleExportArtifactIntegrity(ExportArtifactIntegrityException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "EXPORT_ARTIFACT_INTEGRITY_FAILED");
+        problem.setProperty("artifactId", ex.artifactId());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 

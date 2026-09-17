@@ -14,9 +14,12 @@ import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.URI;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -106,6 +109,71 @@ class SecurityConfigIntegrationTest {
         assertThat(body.get("correlationId")).isNotNull();
         assertThat(body.get("fields")).isEqualTo(List.of());
         assertThat(body.get("recoveryActions")).isEqualTo(List.of());
+    }
+
+    /**
+     * The exact shape of a real provider refusal: sign-in was started here
+     * (so a pending authorization request with its state exists in the
+     * session), and the provider's callback comes back with an error for
+     * that state instead of a code. This used to end on a JSON 404 at
+     * {@code /login?error}, a page this API never generates; it must land
+     * on the web app with the provider's own error code instead.
+     */
+    @Test
+    void aFailedSignInCallbackLandsOnTheWebAppWithTheProvidersErrorCodeInsteadOfA404() throws Exception {
+        HttpResponse<Void> started = client.send(
+                HttpRequest.newBuilder(URI.create(url("/oauth2/authorization/entra"))).GET().build(),
+                HttpResponse.BodyHandlers.discarding());
+        String authorizeLocation = started.headers().firstValue("Location").orElseThrow();
+        String state = queryParameter(authorizeLocation, "state");
+        // Every cookie the redirect set, not just the first: the CSRF cookie is set alongside the
+        // session cookie, and only the latter carries the pending authorization request's state.
+        String sessionCookie = String.join("; ", started.headers().allValues("Set-Cookie").stream()
+                .map(cookie -> cookie.split(";", 2)[0])
+                .toList());
+        assertThat(sessionCookie).contains("JSESSIONID=");
+
+        HttpResponse<String> callback = client.send(
+                HttpRequest.newBuilder(URI.create(url("/login/oauth2/code/entra"
+                                + "?error=access_denied"
+                                + "&error_description=" + URLEncoder.encode("AADSTS500208: not a valid login domain", StandardCharsets.UTF_8)
+                                + "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8))))
+                        .header("Cookie", sessionCookie)
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(callback.statusCode()).isEqualTo(302);
+        assertThat(callback.headers().firstValue("Location"))
+                .hasValueSatisfying(location -> assertThat(location)
+                        .startsWith("http://")
+                        .endsWith("/?signin=failed&reason=access_denied"));
+    }
+
+    /** A callback with no sign-in pending for it (a stale tab, a forged request) is still a failure with a real destination, never a 404. */
+    @Test
+    void aCallbackWithNoPendingSignInStillLandsSomewhereReal() throws Exception {
+        HttpResponse<String> callback = client.send(
+                HttpRequest.newBuilder(URI.create(url("/login/oauth2/code/entra?error=access_denied&state=nothing-pending")))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(callback.statusCode()).isEqualTo(302);
+        assertThat(callback.headers().firstValue("Location"))
+                .hasValueSatisfying(location -> assertThat(location)
+                        .endsWith("/?signin=failed&reason=authorization_request_not_found"));
+    }
+
+    private static String queryParameter(String url, String name) {
+        String query = URI.create(url).getRawQuery();
+        for (String pair : query.split("&")) {
+            int equals = pair.indexOf('=');
+            if (equals > 0 && pair.substring(0, equals).equals(name)) {
+                return URLDecoder.decode(pair.substring(equals + 1), StandardCharsets.UTF_8);
+            }
+        }
+        throw new AssertionError("No query parameter " + name + " in " + url);
     }
 
     private String url(String path) {

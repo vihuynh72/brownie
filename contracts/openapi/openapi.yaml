@@ -16,10 +16,9 @@ paths:
       operationId: getCurrentIdentity
       summary: >
         Current identity and workspace memberships. Login
-        (/oauth2/authorization/entra) and logout (/logout) are
-        browser-redirect flows, not JSON operations, and are not modeled
-        here. Effective capabilities are added once authorization checks
-        exist.
+        (/oauth2/authorization/entra) is a browser-redirect flow and is
+        not modeled here; logout is (see POST /logout). Effective
+        capabilities are added once authorization checks exist.
       responses:
         "200":
           description: Authenticated.
@@ -29,6 +28,35 @@ paths:
                 $ref: "#/components/schemas/MeResponse"
         "401":
           description: Not logged in.
+
+  /logout:
+    post:
+      operationId: logout
+      summary: >
+        Ends the server session. Requires the same X-XSRF-TOKEN header as
+        every other mutation. With "Accept: application/json" the response
+        is a 200 carrying the identity provider's end-session URL as
+        redirectUrl, which the page then navigates to itself to finish
+        signing out at the provider and return to this app's origin;
+        without it, the response is the ordinary 302 to that same URL.
+      parameters:
+        - name: Accept
+          in: header
+          required: false
+          schema:
+            type: string
+            example: application/json
+      responses:
+        "200":
+          description: Session ended; navigate to redirectUrl to finish.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutResponse"
+        "302":
+          description: Session ended; redirected to the identity provider's end-session page.
+        "403":
+          description: Missing or invalid CSRF token.
 
   /api/v1/platform/probes:
     post:
@@ -982,6 +1010,199 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/validate:
+    post:
+      operationId: validateDocument
+      summary: >
+        Run the deterministic validation pipeline against the document's
+        current revision. Appends a new revision, so the caller passes
+        expectedRevisionId the same way it does for a content edit.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateDocumentRequest"
+      responses:
+        "201":
+          description: Validated, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationManifestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/validation:
+    get:
+      operationId: getLatestValidation
+      summary: The latest validation manifest recorded for this exact revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/RevisionId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/compile:
+    post:
+      operationId: compileRevision
+      summary: >
+        Deterministically compile this exact, already-persisted revision
+        into a filled DOCX and rendered PDF, without any model call.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/RevisionId"
+      responses:
+        "201":
+          description: Compiled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompilationManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/compilation:
+    get:
+      operationId: getLatestCompilation
+      summary: The latest compilation manifest recorded for this exact revision.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/RevisionId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompilationManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/export-approval:
+    post:
+      operationId: approveExport
+      summary: >
+        Approve an already-clean validation manifest for export. Refused
+        if the manifest is stale against the document's current revision
+        or still has an unresolved blocking finding.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveExportRequest"
+      responses:
+        "201":
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportApprovalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+    get:
+      operationId: getLatestExportApproval
+      summary: The latest export approval recorded for this document, if any.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportApprovalResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/export:
+    post:
+      operationId: exportDocument
+      summary: >
+        Produce an export receipt from the document's latest export
+        approval. Refused if that approval is stale against the current
+        revision, or if a named artifact no longer matches the hash its
+        own validation manifest recorded.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "201":
+          description: Exported.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportReceiptResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/export-receipt:
+    get:
+      operationId: getLatestExportReceipt
+      summary: The latest export receipt recorded for this document, if any.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportReceiptResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download:
+    get:
+      operationId: downloadArtifact
+      summary: >
+        Stream a READY artifact's exact stored bytes with an attachment
+        disposition, forcing a save-as -- used to fetch an export's
+        compiled DOCX/PDF by the artifact ID an export receipt names.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: The artifact's stored bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   parameters:
     WorkspaceId:
@@ -1085,6 +1306,12 @@ components:
             $ref: "#/components/schemas/Error"
     UnprocessableContent:
       description: The typed request is well formed but semantically invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PreconditionFailed:
+      description: The named approval or manifest is stale against the document's current revision.
       content:
         application/problem+json:
           schema:
@@ -1888,22 +2115,55 @@ components:
 
     ProposedFieldResponse:
       type: object
-      required: [type, value, evidenceSpanIds]
+      description: >
+        Exactly one of value (SCALAR) or values (REPEATED) is set, the
+        same shape FieldValueResponse uses for a stored field.
+      required: [type, cardinality, evidenceSpanIds]
       properties:
+        fieldId:
+          type: string
         type:
           type: string
           enum: [TEXT, DATE]
-        value:
+        cardinality:
           type: string
+          enum: [SCALAR, REPEATED]
+        value:
+          type: [string, "null"]
+        values:
+          type: [array, "null"]
+          items:
+            type: string
         evidenceSpanIds:
           type: array
           items:
             type: integer
             format: int64
 
+    SkippedRepeatedItemResponse:
+      type: object
+      description: >
+        A repeated row (an action item, in the built-in templates) the
+        extraction result contained but the proposal could not carry:
+        a row is only proposed whole, and the content model has no slot
+        for an unknown owner or due date. Reported by name rather than
+        dropped silently.
+      required: [itemIndex, unresolvedFieldIds]
+      properties:
+        itemIndex:
+          type: integer
+          description: The row's zero-based position in the extraction result.
+        unresolvedFieldIds:
+          type: array
+          items:
+            type: string
+        description:
+          type: [string, "null"]
+          description: The row's first usable text, typically the task itself, bounded in length.
+
     PatchProposalResponse:
       type: object
-      required: [id, documentId, baseRevisionId, proposedValues, status, createdAt]
+      required: [id, documentId, baseRevisionId, proposedValues, status, createdAt, proposedRepeatedItemCount, skippedRepeatedItems]
       properties:
         id:
           type: integer
@@ -1924,6 +2184,21 @@ components:
         createdAt:
           type: string
           format: date-time
+        proposedRepeatedItemCount:
+          type: integer
+          description: How many complete repeated rows the proposal carries.
+        skippedRepeatedItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkippedRepeatedItemResponse"
+
+    LogoutResponse:
+      type: object
+      required: [redirectUrl]
+      properties:
+        redirectUrl:
+          type: string
+          description: Where the page navigates next to finish signing out at the identity provider.
 
     AcceptPatchProposalRequest:
       type: object
@@ -2060,7 +2335,20 @@ components:
       type: object
       required: [id, templateId, templateVersionId, category, scope, payload, status, authorUserId, createdAt]
       properties:
-        id:
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandidateFieldBindingResponse"
+        ambiguousContentControlTags:
+          type: array
+          items:
+            type: string
+
+    AttachSourceRequest:
+      type: object
+      required: [artifactId]
+      properties:
+        artifactId:
           type: integer
           format: int64
         templateId:
@@ -2086,5 +2374,232 @@ components:
           type: integer
           format: int64
         createdAt:
+          type: string
+          format: date-time
+
+    ValidateDocumentRequest:
+      type: object
+      required: [expectedRevisionId]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+
+    ValidationFindingResponse:
+      type: object
+      required: [code, severity, fieldId, message]
+      properties:
+        code:
+          type: string
+        severity:
+          type: string
+          enum: [BLOCKING, WARNING, INFORMATIONAL]
+        fieldId:
+          type: string
+          nullable: true
+        message:
+          type: string
+
+    ValidationManifestResponse:
+      type: object
+      required:
+        [id, documentId, revisionId, templateId, templateVersionId, docxArtifactId, docxSha256, findings, hasUnresolvedBlocking, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        revisionId:
+          type: integer
+          format: int64
+        templateId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        docxArtifactId:
+          type: integer
+          format: int64
+        docxSha256:
+          type: string
+        pdfArtifactId:
+          type: integer
+          format: int64
+          nullable: true
+        pdfSha256:
+          type: string
+          nullable: true
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationFindingResponse"
+        hasUnresolvedBlocking:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    IntegrityFindingResponse:
+      type: object
+      required: [fieldId, expectedText, foundInDocx, foundInPdf]
+      properties:
+        fieldId:
+          type: string
+        expectedText:
+          type: string
+        foundInDocx:
+          type: boolean
+        foundInPdf:
+          type: boolean
+
+    CompilationManifestResponse:
+      type: object
+      required:
+        [id, documentId, revisionId, templateId, templateVersionId, docxArtifactId, docxSha256, pdfArtifactId, pdfSha256,
+         rendererVersion, integrityFindings, allIntegrityChecksPassed, compiledAt]
+      properties:
+        artifactId:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        revisionId:
+          type: integer
+          format: int64
+        templateId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        docxArtifactId:
+          type: integer
+          format: int64
+        docxSha256:
+          type: string
+        pdfArtifactId:
+          type: integer
+          format: int64
+        pdfSha256:
+          type: string
+        rendererVersion:
+          type: string
+        integrityFindings:
+          type: array
+          items:
+            $ref: "#/components/schemas/IntegrityFindingResponse"
+        allIntegrityChecksPassed:
+          type: boolean
+        compiledAt:
+          type: string
+          minLength: 1
+
+    ApproveExportRequest:
+      type: object
+      required: [validationManifestId, format]
+      properties:
+        validationManifestId:
+          type: integer
+          format: int64
+        format:
+          type: string
+          enum: [DOCX, PDF, BOTH]
+
+    ExportApprovalResponse:
+      type: object
+      required: [id, documentId, revisionId, templateVersionId, validationManifestId, format, approvedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        revisionId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        validationManifestId:
+          type: integer
+          format: int64
+        format:
+          type: string
+          enum: [DOCX, PDF, BOTH]
+        approvedAt:
+          type: string
+          nullable: true
+          description: DATE_DISPLAY_FORMAT only.
+          enum: [LONG, SHORT, ISO]
+        allowedSourceKinds:
+          type: array
+          nullable: true
+          description: ALLOWED_SOURCE_KINDS only -- ARTIFACT is the only source kind this codebase produces today.
+          items:
+            type: string
+            enum: [ARTIFACT]
+        emptyValueResolution:
+          type: string
+          nullable: true
+          description: MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
+          enum: [OMIT, BLANK, PLACEHOLDER_TEXT]
+        overflowResolution:
+          type: string
+          nullable: true
+          description: ALLOWED_OVERFLOW_BEHAVIOR only.
+          enum: [BLOCK_EXPORT, ALLOW_REFLOW]
+        protectedRegionTarget:
+          allOf:
+            - $ref: "#/components/schemas/BindingRequest"
+          nullable: true
+          description: PROTECTED_REGION only.
+
+    ExportReceiptResponse:
+      type: object
+      required:
+        [id, documentId, revisionId, templateVersionId, exportApprovalId, validationManifestId, docxArtifactId, docxSha256,
+         format, isCompletePair, exportedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        revisionId:
+          type: integer
+          format: int64
+        templateVersionId:
+          type: integer
+          format: int64
+        exportApprovalId:
+          type: integer
+          format: int64
+        validationManifestId:
+          type: integer
+          format: int64
+        docxArtifactId:
+          type: integer
+          format: int64
+        docxSha256:
+          type: string
+        pdfArtifactId:
+          type: integer
+          format: int64
+          nullable: true
+        pdfSha256:
+          type: string
+          nullable: true
+        format:
+          type: string
+          enum: [DOCX, PDF, BOTH]
+        isCompletePair:
+          type: boolean
+        exportedAt:
           type: string
           format: date-time

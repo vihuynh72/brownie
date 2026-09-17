@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
+import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.question.QuestionService;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
@@ -36,6 +38,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -47,6 +50,8 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -134,6 +139,9 @@ class GenerationApplyIntegrationTest {
     @Autowired
     private BlobStore blobStore;
 
+    @Autowired
+    private QuestionService questionService;
+
     @Test
     void applyingAFinishedJobSResultCreatesAndAcceptsARealPatchProposal() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-generation-apply");
@@ -207,6 +215,221 @@ class GenerationApplyIntegrationTest {
                 .isEqualTo("Weekly Sync");
         assertThat(documentAfterAccept.get("currentRevision").get("fields").get("meeting.date").get("value").asText())
                 .isEqualTo("2026-03-12");
+    }
+
+    /**
+     * The whole point of the action-items table: a result carrying repeated
+     * rows must reach the exported file. Two complete rows are proposed as
+     * the template's three parallel repeated fields, accepted onto the
+     * document, and then read back out of the real DOCX that validation
+     * compiles -- while the one row whose due date the model could not
+     * determine is reported by name in the proposal instead of vanishing.
+     * Before this, the exported minutes said "No action items recorded."
+     * over exactly this kind of result.
+     */
+    @Test
+    void applyingAResultWithActionItemsProposesThemAndTheyReachTheExportedDocx() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-generation-apply-items");
+        long workspaceId = ensureWorkspace("subject-generation-apply-items").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-apply-items").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode flowing = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), flowing.get("currentActiveVersionId").asLong());
+        long sourceArtifactId = uploadAndFinalize(session, workspaceId, "Alex agreed to wire the robot by March 12.");
+        long jobId = startExtraction(session, workspaceId, documentId, sourceArtifactId);
+
+        String resultJson = """
+                {"scalarCandidates":{\
+                "meeting.title":{"fieldId":"meeting.title","value":"Weekly Robotics Club Sync","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "meeting.date":{"fieldId":"meeting.date","value":"2026-03-05","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null}},\
+                "repeatedItems":[\
+                {"fields":{\
+                "action.item.task":{"fieldId":"action.item.task","value":"finish wiring the practice robot","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.owner":{"fieldId":"action.item.owner","value":"Alex Chen","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.due":{"fieldId":"action.item.due","value":"2026-03-12","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null}}},\
+                {"fields":{\
+                "action.item.task":{"fieldId":"action.item.task","value":"confirm the van reservation","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.owner":{"fieldId":"action.item.owner","value":"Jose Nunez","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.due":{"fieldId":"action.item.due","value":"2026-03-10","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null}}},\
+                {"fields":{\
+                "action.item.task":{"fieldId":"action.item.task","value":"order the new batteries","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.owner":{"fieldId":"action.item.owner","value":"Priya Rao","evidenceSpanIds":[],"unresolved":false,"ambiguityReason":null},\
+                "action.item.due":{"fieldId":"action.item.due","value":null,"evidenceSpanIds":[],"unresolved":true,"ambiguityReason":"No due date was stated."}}}]}""";
+        fabricatePublishedResult(workspaceId, jobId, resultJson);
+
+        JsonNode proposal = readJson(mockMvc.perform(post(generationsPath(workspaceId, documentId) + "/" + jobId + "/apply")
+                        .cookie(session)
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andReturn());
+        JsonNode tasks = proposal.get("proposedValues").get("action.item.task");
+        assertThat(tasks.get("cardinality").asText()).isEqualTo("REPEATED");
+        assertThat(tasks.get("value").isNull()).isTrue();
+        assertThat(texts(tasks.get("values"))).containsExactly("finish wiring the practice robot", "confirm the van reservation");
+        assertThat(texts(proposal.get("proposedValues").get("action.item.owner").get("values"))).containsExactly("Alex Chen", "Jose Nunez");
+        assertThat(texts(proposal.get("proposedValues").get("action.item.due").get("values"))).containsExactly("2026-03-12", "2026-03-10");
+        assertThat(proposal.get("proposedValues").get("action.item.due").get("type").asText()).isEqualTo("DATE");
+        assertThat(proposal.get("proposedRepeatedItemCount").asInt()).isEqualTo(2);
+        JsonNode skipped = proposal.get("skippedRepeatedItems");
+        assertThat(skipped).hasSize(1);
+        assertThat(skipped.get(0).get("itemIndex").asInt()).isEqualTo(2);
+        assertThat(texts(skipped.get(0).get("unresolvedFieldIds"))).containsExactly("action.item.due");
+        assertThat(skipped.get(0).get("description").asText()).isEqualTo("order the new batteries");
+
+        long currentRevisionId = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn()).get("currentRevision").get("id").asLong();
+        JsonNode accepted = readJson(mockMvc.perform(
+                        post("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/patch-proposals/" + proposal.get("id").asLong() + "/accept")
+                                .cookie(session)
+                                .with(csrf())
+                                .header("Idempotency-Key", UUID.randomUUID().toString())
+                                .contentType("application/json")
+                                .content("{\"expectedRevisionId\":" + currentRevisionId + "}"))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(accepted.get("applied").asBoolean()).isTrue();
+        assertThat(accepted.get("fieldStatuses").get("action.item.task").asText()).isEqualTo("CLEAN");
+        JsonNode acceptedFields = accepted.get("revision").get("fields");
+        assertThat(texts(acceptedFields.get("action.item.task").get("values"))).containsExactly("finish wiring the practice robot", "confirm the van reservation");
+        assertThat(acceptedFields.get("action.item.task").get("itemFieldStates")).hasSize(2);
+        long acceptedRevisionId = accepted.get("revision").get("id").asLong();
+
+        JsonNode manifest = readJson(mockMvc.perform(post("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/validate")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + acceptedRevisionId + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(manifest.get("hasUnresolvedBlocking").asBoolean()).isFalse();
+        byte[] docx = mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/uploads/" + manifest.get("docxArtifactId").asLong() + "/download")
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsByteArray();
+        String exportedText = documentXmlText(docx);
+        assertThat(exportedText).contains("Weekly Robotics Club Sync");
+        assertThat(exportedText).contains("finish wiring the practice robot", "Alex Chen", "March 12, 2026");
+        assertThat(exportedText).contains("confirm the van reservation", "Jose Nunez", "March 10, 2026");
+        assertThat(exportedText).doesNotContain("No action items recorded.");
+        assertThat(exportedText).doesNotContain("order the new batteries");
+    }
+
+    /**
+     * The pending-questions and resolved-answers objects are keyed by the
+     * job ID alone -- a global sequence -- so every route that reads or
+     * writes one must first prove the job belongs to the caller's own
+     * workspace and to the document named in the URL. Guessing a job ID
+     * from another workspace, or naming one of your own documents that the
+     * job was never about, gets a plain 404 and touches nothing: no
+     * question is persisted anywhere, no answers blob is written, and the
+     * legitimate owner still reads its own questions afterwards exactly as
+     * if the attempt had never happened.
+     */
+    @Test
+    void generationQuestionsResumeAndApplyAreRefusedForAJobOfAnotherWorkspaceOrAnotherDocument() throws Exception {
+        Cookie ownerSession = loginAndGetSessionCookie("subject-generation-owner");
+        long ownerWorkspaceId = ensureWorkspace("subject-generation-owner").id();
+        long ownerUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-owner").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(ownerWorkspaceId, ownerUserId);
+        JsonNode ownerTemplate = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + ownerWorkspaceId + "/templates").cookie(ownerSession))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long ownerTemplateId = ownerTemplate.get("id").asLong();
+        long ownerTemplateVersionId = ownerTemplate.get("currentActiveVersionId").asLong();
+        long ownerDocumentId = createMinimalDocument(ownerSession, ownerWorkspaceId, ownerTemplateId, ownerTemplateVersionId);
+        long ownerOtherDocumentId = createMinimalDocument(ownerSession, ownerWorkspaceId, ownerTemplateId, ownerTemplateVersionId);
+        long ownerSourceId = uploadAndFinalize(ownerSession, ownerWorkspaceId, "A private transcript.");
+        long jobId = startExtraction(ownerSession, ownerWorkspaceId, ownerDocumentId, ownerSourceId);
+
+        // Exactly what the worker stages when it leaves a job waiting for input.
+        String secret = "Confidential candidate only workspace A should ever see";
+        String pendingJson = "{\"questions\":[{\"fieldId\":\"meeting.title\",\"reason\":\"MISSING_REQUIRED\","
+                + "\"candidates\":[{\"value\":\"" + secret + "\",\"evidenceSpanIds\":[]}]}]}";
+        blobStore.writeAndDigest(
+                GenerationJobTypes.pendingQuestionsObjectKey(jobId),
+                new ByteArrayInputStream(pendingJson.getBytes(StandardCharsets.UTF_8)),
+                100_000);
+
+        Cookie intruderSession = loginAndGetSessionCookie("subject-generation-intruder");
+        long intruderWorkspaceId = ensureWorkspace("subject-generation-intruder").id();
+        long intruderUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-intruder").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(intruderWorkspaceId, intruderUserId);
+        JsonNode intruderTemplate = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + intruderWorkspaceId + "/templates").cookie(intruderSession))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long intruderDocumentId = createMinimalDocument(
+                intruderSession, intruderWorkspaceId, intruderTemplate.get("id").asLong(), intruderTemplate.get("currentActiveVersionId").asLong());
+
+        // Another workspace, guessing the job ID: refused before any blob is read or written.
+        mockMvc.perform(get(generationsPath(intruderWorkspaceId, intruderDocumentId) + "/" + jobId + "/questions").cookie(intruderSession))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post(generationsPath(intruderWorkspaceId, intruderDocumentId) + "/" + jobId + "/resume")
+                        .cookie(intruderSession)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post(generationsPath(intruderWorkspaceId, intruderDocumentId) + "/" + jobId + "/apply")
+                        .cookie(intruderSession)
+                        .with(csrf()))
+                .andExpect(status().isNotFound());
+        assertThat(questionService.allQuestions(intruderWorkspaceId, intruderUserId, intruderDocumentId)).isEmpty();
+        assertThat(blobStore.sizeOf(GenerationJobTypes.resolvedAnswersObjectKey(jobId))).isEmpty();
+
+        // The same workspace, but a document the job was never about: also refused, nothing persisted.
+        mockMvc.perform(get(generationsPath(ownerWorkspaceId, ownerOtherDocumentId) + "/" + jobId + "/questions").cookie(ownerSession))
+                .andExpect(status().isNotFound());
+        assertThat(questionService.allQuestions(ownerWorkspaceId, ownerUserId, ownerOtherDocumentId)).isEmpty();
+
+        // The legitimate owner, through the document the job is really about: the staged questions are theirs.
+        JsonNode questions = readJson(mockMvc.perform(get(generationsPath(ownerWorkspaceId, ownerDocumentId) + "/" + jobId + "/questions").cookie(ownerSession))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(questions).hasSize(1);
+        assertThat(questions.get(0).get("fieldId").asText()).isEqualTo("meeting.title");
+        assertThat(questions.get(0).get("candidates").get(0).get("value").asText()).isEqualTo(secret);
+    }
+
+    private long startExtraction(Cookie session, long workspaceId, long documentId, long sourceArtifactId) throws Exception {
+        JsonNode started = readJson(mockMvc.perform(post(generationsPath(workspaceId, documentId))
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"sourceArtifactId\":" + sourceArtifactId + "}"))
+                .andExpect(status().isAccepted())
+                .andReturn());
+        return started.get("jobId").asLong();
+    }
+
+    private static List<String> texts(JsonNode array) {
+        List<String> values = new java.util.ArrayList<>();
+        array.forEach(node -> values.add(node.asText()));
+        return values;
+    }
+
+    /** The body text of {@code word/document.xml} inside the exported package, with its XML tags stripped -- the same inspection the browser journey performs with {@code unzip}. */
+    private static String documentXmlText(byte[] docx) throws IOException {
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(docx))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.getName().equals("word/document.xml")) {
+                    return new String(zip.readAllBytes(), StandardCharsets.UTF_8).replaceAll("<[^>]*>", "");
+                }
+            }
+        }
+        throw new AssertionError("The exported DOCX has no word/document.xml part.");
     }
 
     /**

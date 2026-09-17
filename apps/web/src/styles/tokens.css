@@ -4,6 +4,14 @@
  * secondary text on paper 5.10:1 -- all comfortably above WCAG AA for
  * normal text). White text on honey fails that threshold, so honey is
  * always paired with --color-text, never a light foreground.
+ *
+ * --color-honey-soft is used as a text background too (badges, and the
+ * revision-history "changed" row highlight): main text on honey-soft is
+ * 12.97:1, secondary text on honey-soft is 4.75:1 -- both still clear
+ * WCAG AA's 4.5:1 for normal text, so no separate token was needed for
+ * either. Finding severity (BLOCKING/WARNING/INFORMATIONAL) is conveyed
+ * as visible text on the shared badge style rather than by color alone,
+ * so it isn't a color-contrast pairing of its own.
  */
 :root {
   --color-paper: #fbfaf6;

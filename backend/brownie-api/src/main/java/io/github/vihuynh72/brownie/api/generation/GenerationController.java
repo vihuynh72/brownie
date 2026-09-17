@@ -140,7 +140,10 @@ class GenerationController {
      * GenerationOrchestrationService#applyResultAsPatchProposal}. Accepting
      * it is a separate, explicit step ({@code PatchProposalController}),
      * matching this codebase's own "AI output is proposed, never applied
-     * silently" rule for every other patch proposal.
+     * silently" rule for every other patch proposal. The response also
+     * names any repeated row (action item) the result contained that the
+     * proposal could not carry whole, so nothing the model found is ever
+     * lost without the person being told.
      */
     @PostMapping("/{jobId}/apply")
     @ResponseStatus(HttpStatus.CREATED)
@@ -151,8 +154,8 @@ class GenerationController {
             @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
-        PatchProposal proposal = generationOrchestrationService.applyResultAsPatchProposal(workspaceId, userId, documentId, jobId);
-        return PatchProposalResponse.from(proposal);
+        GenerationApplyOutcome outcome = generationOrchestrationService.applyResultAsPatchProposal(workspaceId, userId, documentId, jobId);
+        return PatchProposalResponse.from(outcome);
     }
 
     private long currentUserId(OidcUser principal) {
@@ -210,14 +213,25 @@ class GenerationController {
         }
     }
 
-    record ProposedFieldResponse(String type, String value, List<Long> evidenceSpanIds) {
+    /** Exactly one of {@code value} (SCALAR) or {@code values} (REPEATED) is set, the same shape {@code DocumentController.FieldValueResponse} already uses for a stored field. */
+    record ProposedFieldResponse(String type, String cardinality, String value, List<String> values, List<Long> evidenceSpanIds) {
         static ProposedFieldResponse from(FieldValue value, List<Long> evidenceSpanIds) {
             return switch (value) {
-                case FieldValue.TextValue(String text) -> new ProposedFieldResponse("TEXT", text, evidenceSpanIds);
-                case FieldValue.DateValue(java.time.LocalDate date) -> new ProposedFieldResponse("DATE", date.toString(), evidenceSpanIds);
-                case FieldValue.RepeatedTextValue ignored -> throw new IllegalStateException("A generation-proposed field is never repeated.");
-                case FieldValue.RepeatedDateValue ignored -> throw new IllegalStateException("A generation-proposed field is never repeated.");
+                case FieldValue.TextValue(String text) -> new ProposedFieldResponse("TEXT", "SCALAR", text, null, evidenceSpanIds);
+                case FieldValue.DateValue(java.time.LocalDate date) ->
+                        new ProposedFieldResponse("DATE", "SCALAR", date.toString(), null, evidenceSpanIds);
+                case FieldValue.RepeatedTextValue(List<String> texts) ->
+                        new ProposedFieldResponse("TEXT", "REPEATED", null, texts, evidenceSpanIds);
+                case FieldValue.RepeatedDateValue(List<java.time.LocalDate> dates) -> new ProposedFieldResponse(
+                        "DATE", "REPEATED", null, dates.stream().map(java.time.LocalDate::toString).toList(), evidenceSpanIds);
             };
+        }
+    }
+
+    /** A repeated row the result contained but the proposal could not carry whole -- see {@link GenerationApplyOutcome.SkippedRepeatedItem}. */
+    record SkippedRepeatedItemResponse(int itemIndex, List<String> unresolvedFieldIds, String description) {
+        static SkippedRepeatedItemResponse from(GenerationApplyOutcome.SkippedRepeatedItem item) {
+            return new SkippedRepeatedItemResponse(item.itemIndex(), item.unresolvedFieldIds(), item.description());
         }
     }
 
@@ -227,14 +241,24 @@ class GenerationController {
             long baseRevisionId,
             Map<String, ProposedFieldResponse> proposedValues,
             String status,
-            OffsetDateTime createdAt) {
-        static PatchProposalResponse from(PatchProposal proposal) {
+            OffsetDateTime createdAt,
+            int proposedRepeatedItemCount,
+            List<SkippedRepeatedItemResponse> skippedRepeatedItems) {
+        static PatchProposalResponse from(GenerationApplyOutcome outcome) {
+            PatchProposal proposal = outcome.proposal();
             Map<String, ProposedFieldResponse> fields = new java.util.LinkedHashMap<>();
             proposal.proposedValues().forEach((fieldId, value) -> fields.put(
                     fieldId,
                     ProposedFieldResponse.from(value, proposal.proposedEvidence().getOrDefault(fieldId, List.of()))));
             return new PatchProposalResponse(
-                    proposal.id(), proposal.documentId(), proposal.baseRevisionId(), fields, proposal.status().name(), proposal.createdAt());
+                    proposal.id(),
+                    proposal.documentId(),
+                    proposal.baseRevisionId(),
+                    fields,
+                    proposal.status().name(),
+                    proposal.createdAt(),
+                    outcome.proposedRepeatedItemCount(),
+                    outcome.skippedRepeatedItems().stream().map(SkippedRepeatedItemResponse::from).toList());
         }
     }
 

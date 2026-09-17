@@ -56,8 +56,7 @@ public class ExportService {
 
     /**
      * Rechecks membership, current approval, and required validation
-     * completeness -- per this plan's own §13.4 export-transaction
-     * contract -- then reopens each artifact the approved manifest names
+     * completeness, then reopens each artifact the approved manifest names
      * and confirms it still matches that manifest's own recorded hash
      * before issuing a receipt. The blocking-findings recheck can never
      * actually fire in practice (the bound manifest is immutable, and

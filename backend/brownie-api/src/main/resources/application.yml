@@ -94,6 +94,13 @@ management:
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
   public-origin: ${BROWNIE_PUBLIC_ORIGIN:http://localhost:8081}
+  web:
+    # Where a browser is sent after a sign-in succeeds or fails. Hosted
+    # environments serve the web app and this API from one public origin,
+    # so the default is that origin; the local profile below overrides it
+    # with the Vite dev server's own port, since the identity provider's
+    # callback must still arrive at this API's registered address.
+    origin: ${BROWNIE_WEB_ORIGIN:${brownie.public-origin}}
   storage:
     # Local/test only -- see AzureBlobStorageConfig, which refuses this setting
     # outright on pilot/production. No production Blob Storage adapter
@@ -131,7 +138,15 @@ spring:
       client:
         provider:
           entra:
+            # For an Entra External ID (customer) tenant this must be the
+            # tenant's own ciamlogin.com issuer, exactly as its discovery
+            # document states it -- the login.microsoftonline.com form of
+            # the same tenant only signs in admin and workforce accounts,
+            # and customer accounts get AADSTS500208 from it. See .env.example.
             issuer-uri: ${BROWNIE_OIDC_ISSUER}
+brownie:
+  web:
+    origin: ${BROWNIE_WEB_ORIGIN:http://localhost:5173}
 logging:
   level:
     io.github.vihuynh72.brownie: DEBUG

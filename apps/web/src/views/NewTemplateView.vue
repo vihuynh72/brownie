@@ -200,7 +200,14 @@ async function activateVersion(): Promise<void> {
           <option value="REQUIRED">Required</option>
         </select>
         <input v-model="field.tag" type="text" placeholder="content control tag" aria-label="Content control tag" />
-        <button class="button" type="button" @click="removeField(index)">Remove</button>
+        <button
+          class="button"
+          type="button"
+          :aria-label="`Remove ${field.fieldId.trim() || 'field ' + (index + 1)}`"
+          @click="removeField(index)"
+        >
+          Remove
+        </button>
       </div>
       <button class="button" type="button" @click="addField">Add field</button>
 
@@ -214,6 +221,7 @@ async function activateVersion(): Promise<void> {
       >
         {{ savingFields ? 'Saving…' : 'Save fields' }}
       </button>
+      <p v-if="savingFields" aria-live="polite">Saving…</p>
     </template>
 
     <template v-else-if="stage === 'rules' || stage === 'activating'">
@@ -237,6 +245,7 @@ async function activateVersion(): Promise<void> {
       <button class="button button--primary" type="button" :disabled="stage === 'activating'" @click="activateVersion">
         {{ stage === 'activating' ? 'Activating…' : 'Activate template' }}
       </button>
+      <p v-if="stage === 'activating'" aria-live="polite">Activating…</p>
     </template>
 
     <template v-else-if="stage === 'activated'">

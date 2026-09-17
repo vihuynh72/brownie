@@ -70,11 +70,11 @@ public final class DocumentValidator {
     /**
      * A field is required either because the template itself declares it
      * {@link FieldRequiredness#REQUIRED}, or because an accepted {@code
-     * RequiredFields} rule names it -- two independent sources §2.1 of the
-     * plan this codebase implements deliberately keeps separate (built-in
-     * template metadata vs. a user-approved rule), collapsed here into one
-     * finding code since a caller only needs to know a required field is
-     * missing, not which source demanded it.
+     * RequiredFields} rule names it -- two independent sources this
+     * codebase deliberately keeps separate (built-in template metadata
+     * vs. a user-approved rule), collapsed here into one finding code
+     * since a caller only needs to know a required field is missing, not
+     * which source demanded it.
      */
     public static List<ValidationFinding> checkRequiredness(
             DocumentContent content, List<FieldDefinition> fieldDefinitions, List<RuleRevision> acceptedRules) {

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import DocumentListView from '@/views/DocumentListView.vue'
 import { useSessionStore } from '@/stores/session'
+import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -12,7 +13,7 @@ vi.mock('@/api/client', async () => {
 
 import { listDocuments } from '@/api/client'
 
-async function mountWithRouter() {
+async function mountWithRouter(path = '/') {
   const router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -21,7 +22,7 @@ async function mountWithRouter() {
       { path: '/documents/:id', component: { template: '<div />' } },
     ],
   })
-  router.push('/')
+  router.push(path)
   await router.isReady()
   return mount(DocumentListView, { global: { plugins: [router] } })
 }
@@ -39,7 +40,23 @@ describe('DocumentListView', () => {
     const wrapper = await mountWithRouter()
 
     expect(wrapper.text()).toContain('Sign in')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
+  })
+
+  /** The API sends a refused sign-in back here with only the provider's error code; the page must say so rather than look like a fresh visit. */
+  it('explains a failed sign-in, with its reason, and offers to try again', async () => {
+    const session = useSessionStore()
+    session.status = 'anonymous'
+
+    const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied')
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('Sign-in did not complete')
+    expect(alert.text()).toContain('access_denied')
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
   it('lists documents returned for the personal workspace once authenticated', async () => {
@@ -67,6 +84,21 @@ describe('DocumentListView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("don't have any documents yet")
+  })
+
+  it('has no automatically-detectable accessibility violations with documents listed', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([
+      { id: 1, title: 'March Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-03-01T00:00:00Z' },
+      { id: 2, title: 'April Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-04-01T00:00:00Z' },
+    ])
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })
 
