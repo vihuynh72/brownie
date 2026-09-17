@@ -12,11 +12,14 @@ import io.github.vihuynh72.brownie.core.generation.ExtractionService;
 import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
 import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.generation.LabeledExcerpt;
+import io.github.vihuynh72.brownie.core.generation.RepeatedItemCandidate;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.EnqueueJobCommand;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
+import io.github.vihuynh72.brownie.core.job.Job;
 import io.github.vihuynh72.brownie.core.job.JobCommandRepository;
+import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.core.job.JobOutputArtifactRepository;
 import io.github.vihuynh72.brownie.core.job.JobStage;
 import io.github.vihuynh72.brownie.core.job.JobTarget;
@@ -36,6 +39,7 @@ import io.github.vihuynh72.brownie.core.revision.PatchProposal;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.source.SourceService;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshot;
+import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
@@ -49,7 +53,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -66,6 +73,14 @@ import java.util.Set;
  * GenerationExtractionJobProcessor}) has no tenant-database access at all;
  * it reads this exact bundle back by the identical hash and calls the
  * model, entirely independent of this process.
+ *
+ * <p>Every method that takes a job ID first proves, through the
+ * tenant-scoped job repository, that the job exists in this workspace and
+ * targets this exact document, before touching any blob that job's ID
+ * alone names. The pending-questions and resolved-answers objects are
+ * keyed by nothing but the job ID -- a global sequence -- so without that
+ * check a caller could read another workspace's staged candidate values,
+ * or overwrite its answers, simply by guessing a number.
  */
 @Service
 public class GenerationOrchestrationService {
@@ -75,8 +90,10 @@ public class GenerationOrchestrationService {
     public static final String EXTRACTION_RESULT_OUTPUT_KIND = GenerationJobTypes.EXTRACTION_RESULT_OUTPUT_KIND;
 
     private static final String EXTRACTING_STAGE = "extracting";
+    private static final String DOCUMENT_RESOURCE_TYPE = "document";
     private static final String BUNDLE_BLOB_PREFIX = "generation-input/";
     private static final long MAX_BUNDLE_BYTES = 2_000_000;
+    private static final int SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH = 120;
 
     /**
      * Which of a template's own scalar TEXT fields get re-synthesized by
@@ -84,7 +101,7 @@ public class GenerationOrchestrationService {
      * more literal first pass -- a real, deliberately narrow, hardcoded
      * convention rather than a general per-template composability model,
      * matching the one composable field ({@code meeting.decisions}) that
-     * actually exists in the built-in templates today. A later phase that
+     * actually exists in the built-in templates today. Whatever later
      * wants a caller-chosen or per-template set of composable fields
      * replaces this constant, not the pipeline built around it.
      */
@@ -162,7 +179,7 @@ public class GenerationOrchestrationService {
                         idempotencyKey,
                         requestHash,
                         new JobType(EXTRACTION_JOB_TYPE),
-                        new JobTarget("document", documentId, document.currentRevisionId()),
+                        new JobTarget(DOCUMENT_RESOURCE_TYPE, documentId, document.currentRevisionId()),
                         new JobStage(EXTRACTING_STAGE),
                         bundleHash,
                         OffsetDateTime.now()));
@@ -181,6 +198,7 @@ public class GenerationOrchestrationService {
      * document, this never re-reads the blob or persists again.
      */
     public List<Question> openQuestions(long workspaceId, long userId, long documentId, long jobId) {
+        requireJobForDocument(workspaceId, userId, documentId, jobId);
         List<Question> alreadyPersisted = questionService.openQuestions(workspaceId, userId, documentId);
         if (!alreadyPersisted.isEmpty()) {
             return alreadyPersisted;
@@ -204,6 +222,7 @@ public class GenerationOrchestrationService {
      */
     public CommandReceipt resumeAfterQuestions(
             long workspaceId, long userId, long documentId, long jobId, IdempotencyKey idempotencyKey, CanonicalRequestHash requestHash) {
+        requireJobForDocument(workspaceId, userId, documentId, jobId);
         List<ResolvedAnswerBundle.ResolvedAnswer> answers = questionService.allQuestions(workspaceId, userId, documentId).stream()
                 .filter(question -> question.status() == QuestionStatus.ANSWERED)
                 .map(ResolvedAnswerBundle.ResolvedAnswer::from)
@@ -218,22 +237,32 @@ public class GenerationOrchestrationService {
      * frozen against whichever revision is current right now, not whatever
      * it was when generation started, the same base-revision discipline
      * {@code RevisionService#proposePatch} already requires of every
-     * proposal. Only resolved scalar fields are proposed; an unresolved
+     * proposal. A resolved scalar field is proposed as-is; an unresolved
      * one (still missing after every question this run could raise) is
-     * left for a person to fill in directly instead. Repeated fields
-     * (action items) are not proposed -- the same deliberately out-of-
-     * scope boundary {@code CompositionService}/{@code
-     * QuestionDetectionService} already both hold for repeated data.
+     * left for a person to fill in directly. The result's repeated rows
+     * (action items) are proposed too, as the template's own parallel
+     * repeated fields -- but only a row every one of whose fields resolved,
+     * since the content model has no way to store a row with an unknown
+     * owner or due date; each row left out is reported by name in the
+     * returned {@link GenerationApplyOutcome} rather than dropped silently.
      */
-    public PatchProposal applyResultAsPatchProposal(long workspaceId, long userId, long documentId, long jobId) {
+    public GenerationApplyOutcome applyResultAsPatchProposal(long workspaceId, long userId, long documentId, long jobId) {
+        requireJobForDocument(workspaceId, userId, documentId, jobId);
         Document document = revisionService
                 .findDocument(workspaceId, userId, documentId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         TemplateVersion templateVersion = templateService
                 .findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
                 .orElseThrow(() -> new TemplateVersionNotFoundException(document.templateId(), document.templateVersionId()));
-        Map<String, FieldType> typeByFieldId = new LinkedHashMap<>();
-        templateVersion.fieldDefinitions().forEach(field -> typeByFieldId.put(field.fieldId(), field.type()));
+        Map<String, FieldType> scalarTypeByFieldId = new LinkedHashMap<>();
+        List<FieldDefinition> repeatedFields = new ArrayList<>();
+        for (FieldDefinition field : templateVersion.fieldDefinitions()) {
+            if (field.cardinality() == FieldCardinality.REPEATED) {
+                repeatedFields.add(field);
+            } else {
+                scalarTypeByFieldId.put(field.fieldId(), field.type());
+            }
+        }
 
         long artifactId = jobOutputArtifactRepository
                 .findArtifactId(workspaceId, userId, jobId, GenerationJobTypes.EXTRACTION_RESULT_OUTPUT_KIND)
@@ -243,7 +272,7 @@ public class GenerationOrchestrationService {
         Map<String, FieldValue> proposedValues = new LinkedHashMap<>();
         Map<String, List<Long>> proposedEvidence = new LinkedHashMap<>();
         result.scalarCandidates().forEach((fieldId, candidate) -> {
-            FieldValue value = toFieldValue(candidate, typeByFieldId.get(fieldId));
+            FieldValue value = toScalarFieldValue(candidate, scalarTypeByFieldId.get(fieldId));
             if (value == null) {
                 return;
             }
@@ -252,11 +281,34 @@ public class GenerationOrchestrationService {
                 proposedEvidence.put(fieldId, candidate.evidenceSpanIds());
             }
         });
+
+        RepeatedProposal repeated = proposeRepeatedItems(result.repeatedItems(), repeatedFields);
+        proposedValues.putAll(repeated.values());
+        proposedEvidence.putAll(repeated.evidence());
+
         if (proposedValues.isEmpty()) {
             throw new GenerationResultEmptyException(jobId);
         }
 
-        return revisionService.proposePatch(workspaceId, userId, documentId, document.currentRevisionId(), proposedValues, proposedEvidence);
+        PatchProposal proposal = revisionService.proposePatch(
+                workspaceId, userId, documentId, document.currentRevisionId(), proposedValues, proposedEvidence);
+        return new GenerationApplyOutcome(proposal, repeated.proposedItemCount(), repeated.skipped());
+    }
+
+    /**
+     * The job must exist in this workspace (the repository lookup is
+     * tenant-scoped) and must target this exact document -- a job that
+     * belongs to some other document, even one in the same workspace, is
+     * reported as not found rather than letting its staged questions,
+     * answers, or result be read through a document they were never
+     * about.
+     */
+    private Job requireJobForDocument(long workspaceId, long userId, long documentId, long jobId) {
+        return jobCommandRepository
+                .find(workspaceId, userId, jobId)
+                .filter(job -> DOCUMENT_RESOURCE_TYPE.equals(job.target().resourceType())
+                        && job.target().resourceId() == documentId)
+                .orElseThrow(() -> new JobNotFoundException(jobId));
     }
 
     private ExtractionResult readResult(long workspaceId, long userId, long artifactId) {
@@ -267,8 +319,8 @@ public class GenerationOrchestrationService {
         }
     }
 
-    /** {@code null} for an unresolved candidate or a field this template version no longer defines. */
-    private static FieldValue toFieldValue(FieldCandidate candidate, FieldType type) {
+    /** {@code null} for an unresolved candidate, or a field this template version does not define as a scalar. */
+    private static FieldValue toScalarFieldValue(FieldCandidate candidate, FieldType type) {
         if (candidate.unresolved() || candidate.value() == null || type == null) {
             return null;
         }
@@ -277,6 +329,115 @@ public class GenerationOrchestrationService {
             // Already validated parseable by the extraction response parser before this candidate ever existed.
             case DATE -> new FieldValue.DateValue(LocalDate.parse(candidate.value()));
         };
+    }
+
+    /**
+     * Builds the template's repeated fields as parallel lists, one entry
+     * per fully resolved row, in the result's own row order. Every row
+     * contributes to every repeated field or to none of them, so the lists
+     * always agree on length -- the invariant the template filler enforces
+     * when it later clones one table row per item.
+     */
+    private static RepeatedProposal proposeRepeatedItems(List<RepeatedItemCandidate> items, List<FieldDefinition> repeatedFields) {
+        if (repeatedFields.isEmpty() || items.isEmpty()) {
+            return RepeatedProposal.none();
+        }
+        Map<String, List<String>> textsByField = new LinkedHashMap<>();
+        Map<String, LinkedHashSet<Long>> evidenceByField = new LinkedHashMap<>();
+        for (FieldDefinition field : repeatedFields) {
+            textsByField.put(field.fieldId(), new ArrayList<>());
+            evidenceByField.put(field.fieldId(), new LinkedHashSet<>());
+        }
+
+        List<GenerationApplyOutcome.SkippedRepeatedItem> skipped = new ArrayList<>();
+        int proposedItemCount = 0;
+        for (int index = 0; index < items.size(); index++) {
+            RepeatedItemCandidate item = items.get(index);
+            List<String> unresolvedFieldIds = new ArrayList<>();
+            for (FieldDefinition field : repeatedFields) {
+                if (usableRepeatedValue(item.fields().get(field.fieldId()), field.type()) == null) {
+                    unresolvedFieldIds.add(field.fieldId());
+                }
+            }
+            if (!unresolvedFieldIds.isEmpty()) {
+                skipped.add(new GenerationApplyOutcome.SkippedRepeatedItem(index, unresolvedFieldIds, describe(item, repeatedFields)));
+                continue;
+            }
+            for (FieldDefinition field : repeatedFields) {
+                FieldCandidate candidate = item.fields().get(field.fieldId());
+                textsByField.get(field.fieldId()).add(usableRepeatedValue(candidate, field.type()));
+                evidenceByField.get(field.fieldId()).addAll(candidate.evidenceSpanIds());
+            }
+            proposedItemCount++;
+        }
+        if (proposedItemCount == 0) {
+            return new RepeatedProposal(Map.of(), Map.of(), 0, skipped);
+        }
+
+        Map<String, FieldValue> values = new LinkedHashMap<>();
+        Map<String, List<Long>> evidence = new LinkedHashMap<>();
+        for (FieldDefinition field : repeatedFields) {
+            List<String> texts = textsByField.get(field.fieldId());
+            values.put(field.fieldId(), switch (field.type()) {
+                case TEXT -> new FieldValue.RepeatedTextValue(texts);
+                case DATE -> new FieldValue.RepeatedDateValue(texts.stream().map(LocalDate::parse).toList());
+            });
+            LinkedHashSet<Long> spanIds = evidenceByField.get(field.fieldId());
+            if (!spanIds.isEmpty()) {
+                evidence.put(field.fieldId(), List.copyOf(spanIds));
+            }
+        }
+        return new RepeatedProposal(values, evidence, proposedItemCount, skipped);
+    }
+
+    /**
+     * The candidate's value if it can actually be stored for this field
+     * type, otherwise {@code null}: absent from the row, marked unresolved
+     * by the model, blank, or -- for a DATE field -- not a parseable ISO
+     * date. The extraction parser already normalizes every date candidate
+     * it accepts, so the parse guard here only matters for a result that
+     * reached storage some other way; it is cheap insurance, not a second
+     * validation layer.
+     */
+    private static String usableRepeatedValue(FieldCandidate candidate, FieldType type) {
+        if (candidate == null || candidate.unresolved() || candidate.value() == null || candidate.value().isBlank()) {
+            return null;
+        }
+        if (type == FieldType.DATE) {
+            try {
+                return LocalDate.parse(candidate.value()).toString();
+            } catch (DateTimeParseException e) {
+                return null;
+            }
+        }
+        return candidate.value();
+    }
+
+    /** The row's first resolved TEXT value (for the built-ins, the task itself), bounded, so a skipped row can be recognised without the raw result. */
+    private static String describe(RepeatedItemCandidate item, List<FieldDefinition> repeatedFields) {
+        for (FieldDefinition field : repeatedFields) {
+            if (field.type() != FieldType.TEXT) {
+                continue;
+            }
+            String text = usableRepeatedValue(item.fields().get(field.fieldId()), field.type());
+            if (text != null) {
+                return text.length() > SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH
+                        ? text.substring(0, SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH) + "…"
+                        : text;
+            }
+        }
+        return null;
+    }
+
+    private record RepeatedProposal(
+            Map<String, FieldValue> values,
+            Map<String, List<Long>> evidence,
+            int proposedItemCount,
+            List<GenerationApplyOutcome.SkippedRepeatedItem> skipped) {
+
+        static RepeatedProposal none() {
+            return new RepeatedProposal(Map.of(), Map.of(), 0, List.of());
+        }
     }
 
     private DetectedQuestionsBundle readPendingQuestions(long jobId) {
