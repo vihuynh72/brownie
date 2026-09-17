@@ -30,6 +30,7 @@ export type CompilationManifestResponse = components['schemas']['CompilationMani
 export type ExportApprovalResponse = components['schemas']['ExportApprovalResponse']
 export type ExportReceiptResponse = components['schemas']['ExportReceiptResponse']
 export type ExportFormat = components['schemas']['ApproveExportRequest']['format']
+export type LogoutResponse = components['schemas']['LogoutResponse']
 export type ApiError = components['schemas']['Error']
 
 /** Thrown for any non-2xx response; carries the server's own structured problem body when it sent one. */
@@ -108,6 +109,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export function getCurrentIdentity(): Promise<MeResponse> {
   return request<MeResponse>('/api/v1/me')
+}
+
+/**
+ * Ends the server session. A CSRF-checked POST like every other mutation
+ * (the header is added by `request`); asking for JSON makes the server
+ * answer with the identity provider's end-session URL instead of a
+ * redirect a fetch could never follow across origins -- the caller then
+ * navigates the page there itself to finish signing out.
+ */
+export function logout(): Promise<LogoutResponse> {
+  return request<LogoutResponse>('/logout', { method: 'POST', headers: { Accept: 'application/json' } })
 }
 
 export function listDocuments(workspaceId: number): Promise<DocumentSummaryResponse[]> {

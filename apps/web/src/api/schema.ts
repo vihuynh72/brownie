@@ -11,10 +11,27 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Current identity and workspace memberships. Login (/oauth2/authorization/entra) and logout (/logout) are browser-redirect flows, not JSON operations, and are not modeled here. Effective capabilities are added once authorization checks exist. */
+        /** Current identity and workspace memberships. Login (/oauth2/authorization/entra) is a browser-redirect flow and is not modeled here; logout is (see POST /logout). Effective capabilities are added once authorization checks exist. */
         get: operations["getCurrentIdentity"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ends the server session. Requires the same X-XSRF-TOKEN header as every other mutation. With "Accept: application/json" the response is a 200 carrying the identity provider's end-session URL as redirectUrl, which the page then navigates to itself to finish signing out at the provider and return to this app's origin; without it, the response is the ordinary 302 to that same URL. */
+        post: operations["logout"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1145,11 +1162,23 @@ export interface components {
         AnswerQuestionRequest: {
             answerValue: string;
         };
+        /** @description Exactly one of value (SCALAR) or values (REPEATED) is set, the same shape FieldValueResponse uses for a stored field. */
         ProposedFieldResponse: {
             /** @enum {string} */
             type: "TEXT" | "DATE";
-            value: string;
+            /** @enum {string} */
+            cardinality: "SCALAR" | "REPEATED";
+            value?: string | null;
+            values?: string[] | null;
             evidenceSpanIds: number[];
+        };
+        /** @description A repeated row (an action item, in the built-in templates) the extraction result contained but the proposal could not carry: a row is only proposed whole, and the content model has no slot for an unknown owner or due date. Reported by name rather than dropped silently. */
+        SkippedRepeatedItemResponse: {
+            /** @description The row's zero-based position in the extraction result. */
+            itemIndex: number;
+            unresolvedFieldIds: string[];
+            /** @description The row's first usable text, typically the task itself, bounded in length. */
+            description?: string | null;
         };
         PatchProposalResponse: {
             /** Format: int64 */
@@ -1165,6 +1194,13 @@ export interface components {
             status: "PROPOSED" | "ACCEPTED";
             /** Format: date-time */
             createdAt: string;
+            /** @description How many complete repeated rows the proposal carries. */
+            proposedRepeatedItemCount: number;
+            skippedRepeatedItems: components["schemas"]["SkippedRepeatedItemResponse"][];
+        };
+        LogoutResponse: {
+            /** @description Where the page navigates next to finish signing out at the identity provider. */
+            redirectUrl: string;
         };
         AcceptPatchProposalRequest: {
             /** Format: int64 */
@@ -1439,6 +1475,42 @@ export interface operations {
             };
             /** @description Not logged in. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: {
+                Accept?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session ended; navigate to redirectUrl to finish. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogoutResponse"];
+                };
+            };
+            /** @description Session ended; redirected to the identity provider's end-session page. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid CSRF token. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
