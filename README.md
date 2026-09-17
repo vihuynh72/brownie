@@ -41,11 +41,23 @@ create. Until those three are set in `.env`,
 used by `mvnw test`/`verify` does not need them. Once configured:
 
 - Start login: open `http://localhost:8081/oauth2/authorization/entra`.
+  On the local profile a completed or failed sign-in lands on the web
+  app at `http://localhost:5173` (`BROWNIE_WEB_ORIGIN`), so start the
+  web app first with `npm run dev` in `apps/web`. A failed sign-in
+  arrives there as `/?signin=failed&reason=<code>` and is also logged
+  at WARN with the provider's description. Note that
+  `BROWNIE_OIDC_ISSUER` must be the tenant's `ciamlogin.com` issuer for
+  customer accounts to sign in at all -- see `.env.example`.
 - Current identity and workspace memberships: `GET /api/v1/me` (401 until
   logged in). A personal workspace is created automatically the first time
   each identity logs in.
 - Log out: `POST /logout` (needs the `XSRF-TOKEN` cookie echoed back as an
-  `X-XSRF-TOKEN` header, like any other mutation -- see CSRF below).
+  `X-XSRF-TOKEN` header, like any other mutation -- see CSRF below). A
+  plain request is redirected to the identity provider's end-session page
+  and back; with `Accept: application/json` the response is instead a
+  `200` whose `redirectUrl` names that same page, which is how the web app
+  finishes signing out after its own `fetch` cannot follow a cross-origin
+  redirect.
 
 ## Identity
 
