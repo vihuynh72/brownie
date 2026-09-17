@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import { readDocumentHandoff } from '@/router/handoff'
 import {
   ApiRequestError,
   acceptPatchProposal,
@@ -57,6 +58,13 @@ function selectTab(tab: InspectorTab): void {
   activeTab.value = tab
   if (tab === 'history') void loadRevisionHistory()
   if (tab === 'checks') void hydrateChecksState()
+}
+
+/** The empty document's one call to action: open the Sources tab and put focus on its file picker. */
+async function goToSources(): Promise<void> {
+  selectTab('sources')
+  await nextTick()
+  window.document.getElementById('attach-source')?.focus()
 }
 
 /** Template refs for each tab button, in tab order -- Vue keeps this array in sync with the v-for automatically. */
@@ -170,7 +178,13 @@ function onDrawerKeydown(event: KeyboardEvent): void {
   }
 }
 
-const attachedSources = ref<SnapshotResponse[]>([])
+// Whatever the new-document screen handed over when it navigated here (see router/handoff.ts): the
+// source it attached during creation, which this screen has no server-side way to look up, and a
+// warning if that attachment failed -- shown here, on the screen the person actually lands on,
+// rather than lost with the creation screen's own unmounted state.
+const handoff = readDocumentHandoff()
+const attachedSources = ref<SnapshotResponse[]>(handoff?.attachedSources ?? [])
+const handoffWarning = ref<string | null>(handoff?.sourceWarning ?? null)
 const sourceUploadState = ref<'idle' | 'uploading' | 'error'>('idle')
 const sourceUploadError = ref<string | null>(null)
 
@@ -512,11 +526,11 @@ async function onSourceFileChosen(event: Event): Promise<void> {
 }
 
 /**
- * Extraction only, for now: this asks the trusted worker to pull typed
- * candidate facts out of the first attached source, then shows the raw
- * result as a download. Applying an accepted candidate onto this
- * document's own fields is a later phase's job -- structured field
- * editing does not exist yet either.
+ * Asks the trusted worker to pull typed facts (and action-item rows) out of
+ * the first attached source. The job may pause to ask about anything
+ * missing or conflicting; once it finishes, "Apply to document" turns the
+ * result into a proposal and "Accept and update document" is the only
+ * step that changes this document's own fields.
  */
 async function tryGroundedExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
@@ -698,14 +712,15 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
         <h1>{{ document.title }}</h1>
       </div>
     </div>
+    <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
 
     <div class="workspace-layout">
       <div class="card preview-pane">
         <h2>Content</h2>
-        <p class="field-hint">
-          Value editing is read-only for now -- reviewing and locking a field is already real, below.
-        </p>
         <p v-if="fieldActionError" class="field-error" role="alert">{{ fieldActionError }}</p>
+        <p v-if="Object.keys(document.currentRevision.fields).length > 0" class="field-hint">
+          Review each value below. Typing changes in by hand is not available yet.
+        </p>
         <div v-if="Object.keys(document.currentRevision.fields).length > 0" class="field-list">
           <div v-for="(field, fieldId) in document.currentRevision.fields" :key="fieldId" class="field-row">
             <div class="field-row__value">
@@ -754,10 +769,17 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 </button>
               </div>
             </div>
-            <p v-else class="field-hint">Per-item review and locking for repeated fields arrives in a later phase.</p>
+            <p v-else class="field-hint">Reviewing and locking individual rows of a repeated field is not available yet.</p>
           </div>
         </div>
-        <p v-else class="field-hint">No content yet.</p>
+        <div v-else class="empty-state">
+          <p class="empty-state__title">Nothing filled in yet.</p>
+          <p class="field-hint">
+            Attach your notes or a transcript, then use Assist to fill this document from them. You review every
+            value before it lands. Typing values in by hand is not available yet.
+          </p>
+          <button type="button" class="button button--primary" @click="goToSources">Attach a source</button>
+        </div>
       </div>
 
       <div class="card inspector-pane">
@@ -823,14 +845,14 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
               <ul v-if="attachedSources.length > 0" class="source-list">
                 <li v-for="source in attachedSources" :key="source.id">Source #{{ source.id }} attached.</li>
               </ul>
-              <p v-else class="field-hint">No sources attached in this session yet.</p>
+              <p v-else class="field-hint">No sources attached yet.</p>
             </div>
 
             <div v-else-if="activeTab === 'assist'">
               <p class="field-hint">
-                Experimental: pulls typed candidate facts from your first attached source. Applying a result onto
-                this document's own fields arrives in a later phase -- for now this only shows the raw extracted
-                result.
+                Pulls the title, date, attendees, decisions, and action items out of your first attached source.
+                Brownie asks you about anything missing or conflicting, then proposes the values -- nothing
+                changes on this document until you accept them.
               </p>
               <p v-if="attachedSources.length === 0" class="field-hint">Attach a source first, on the Sources tab.</p>
               <template v-else>
@@ -913,9 +935,31 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                     <dl>
                       <template v-for="(field, fieldId) in patchProposal.proposedValues" :key="fieldId">
                         <dt>{{ fieldId }}</dt>
-                        <dd>{{ field.value }}</dd>
+                        <dd>
+                          <ol v-if="field.cardinality === 'REPEATED'" class="proposed-items">
+                            <li v-for="(item, index) in field.values ?? []" :key="index">{{ item }}</li>
+                          </ol>
+                          <template v-else>{{ field.value }}</template>
+                        </dd>
                       </template>
                     </dl>
+                    <p v-if="patchProposal.proposedRepeatedItemCount > 0" class="field-hint">
+                      {{ patchProposal.proposedRepeatedItemCount }} action item{{ patchProposal.proposedRepeatedItemCount === 1 ? '' : 's' }}
+                      proposed, listed above in matching order.
+                    </p>
+                    <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="field-error" role="status">
+                      <p>
+                        {{ patchProposal.skippedRepeatedItems.length }} action item{{ patchProposal.skippedRepeatedItems.length === 1 ? ' was' : 's were' }}
+                        found in your source but could not be proposed, because a required detail could not be determined.
+                        Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
+                      </p>
+                      <ul>
+                        <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
+                          {{ skipped.description ?? `Item ${skipped.itemIndex + 1}` }}
+                          <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.join(', ') }})</span>
+                        </li>
+                      </ul>
+                    </div>
                     <button
                       v-if="applyStage !== 'accepted'"
                       class="button button--primary"
@@ -1065,7 +1109,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
               </div>
             </div>
 
-            <p v-else class="field-hint">Coming in a later phase.</p>
+            <p v-else class="field-hint">Not available yet.</p>
           </div>
         </div>
       </div>
@@ -1116,6 +1160,23 @@ dl {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: var(--space-2) var(--space-4);
+}
+
+.proposed-items {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.empty-state__title {
+  margin: 0;
+  font-weight: 600;
 }
 
 dt {

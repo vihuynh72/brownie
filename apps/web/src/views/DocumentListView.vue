@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { listDocuments, type DocumentSummaryResponse } from '@/api/client'
 
 const session = useSessionStore()
+const route = useRoute()
 const documents = ref<DocumentSummaryResponse[]>([])
+
+// A sign-in that the identity provider refused comes back here as /?signin=failed&reason=<code>
+// (see the API's own sign-in failure handling). The code is rendered as text only.
+const signInFailed = computed(() => route.query.signin === 'failed')
+const signInFailureReason = computed(() => (typeof route.query.reason === 'string' ? route.query.reason : null))
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 
 async function loadDocuments(): Promise<void> {
@@ -38,8 +44,12 @@ function formatDate(iso: string): string {
 <template>
   <section v-if="session.status === 'anonymous'" class="card">
     <h1>Sign in to Brownie</h1>
-    <p>Sign in with your account to see your documents.</p>
-    <a class="button button--primary" href="/oauth2/authorization/entra">Sign in</a>
+    <p v-if="signInFailed" class="field-error" role="alert">
+      Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again; if it
+      keeps failing, pass that reason on to whoever runs this Brownie.
+    </p>
+    <p v-else>Sign in with your account to see your documents.</p>
+    <a class="button button--primary" href="/oauth2/authorization/entra">{{ signInFailed ? 'Try again' : 'Sign in' }}</a>
   </section>
 
   <section v-else-if="session.status === 'loading' || session.status === 'unknown'" aria-live="polite">
