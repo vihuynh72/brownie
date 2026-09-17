@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
+import { execFileSync } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 
 /**
  * The real thing: create a document, attach a real source, run the actual
@@ -29,7 +31,7 @@ Jose Nunez will confirm the van reservation for the regional
 competition by 2026-03-10.
 `
 
-test('a real document goes from empty to a real, exported DOCX/PDF through the actual AI-fill path', async ({ page }) => {
+test('a real document goes from empty to a real, exported DOCX/PDF through the actual AI-fill path', async ({ page }, testInfo) => {
   test.setTimeout(120_000)
 
   await page.goto('/documents/new')
@@ -55,6 +57,7 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   await page.getByRole('button', { name: 'Apply to document' }).click()
   await expect(page.getByText('Proposed changes')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByText(/Weekly Robotics Club Sync/i)).toBeVisible()
+  await expect(page.getByText(/action items? proposed/i)).toBeVisible()
 
   await page.getByRole('button', { name: 'Accept and update document' }).click()
   await expect(page.getByText('Applied to the document.')).toBeVisible({ timeout: 15_000 })
@@ -71,14 +74,42 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   await expect(exportButton).toBeVisible({ timeout: 15_000 })
   await exportButton.click()
 
-  const downloadLink = page.getByRole('link', { name: /download/i }).first()
-  await expect(downloadLink).toBeVisible({ timeout: 15_000 })
-  const href = await downloadLink.getAttribute('href')
-  expect(href).toMatch(/\/api\/v1\/workspaces\/\d+\/uploads\/\d+\/download/)
+  await expect(page.getByText('Both files exported.', { exact: true })).toBeVisible({ timeout: 15_000 })
+  let exportedText = ''
+  for (const format of ['DOCX', 'PDF'] as const) {
+    const link = page.getByRole('link', { name: `Download ${format}`, exact: true })
+    await expect(link).toBeVisible()
+    const downloadPromise = page.waitForEvent('download')
+    await link.click()
+    const download = await downloadPromise
+    expect(await download.failure()).toBeNull()
+    const filePath = testInfo.outputPath(`meeting-minutes.${format.toLowerCase()}`)
+    await download.saveAs(filePath)
+    const bytes = await readFile(filePath)
+    expect(bytes.byteLength).toBeGreaterThan(0)
+    if (format === 'DOCX') {
+      expect(bytes.subarray(0, 2).toString()).toBe('PK')
+      // unzip is present on the supported macOS/Linux development hosts.
+      // Inspect the actual downloaded Word XML, not only Content-Length.
+      const xml = execFileSync('unzip', ['-p', filePath, 'word/document.xml'], { encoding: 'utf8' })
+      const text = xml.replace(/<[^>]*>/g, '')
+      exportedText = text
+      expect(text).toContain('Weekly Robotics Club Sync')
+      // The qualified template renders ISO dates as human-readable dates.
+      expect(text).toMatch(/March 5, 2026|2026-03-05/)
+      expect(text).toContain('Alex Chen')
+      expect(text).toContain('Jose Nunez')
+    } else {
+      expect(bytes.subarray(0, 5).toString()).toBe('%PDF-')
+    }
+  }
 
-  const downloadResponse = await page.request.get(href!)
-  expect(downloadResponse.ok()).toBe(true)
-  expect(Number(downloadResponse.headers()['content-length'])).toBeGreaterThan(0)
+  // The two explicit commitments in this transcript must survive all the way into the exported
+  // file -- a set of minutes that reports "No action items recorded" over a transcript that plainly
+  // contains two is not a complete result, however cleanly every step before it succeeded.
+  expect(exportedText, 'The exported minutes must retain the robot-wiring task').toMatch(/wiring.*practice robot/i)
+  expect(exportedText, 'The exported minutes must retain the van-reservation task').toMatch(/van reservation/i)
+  expect(exportedText, 'Explicit action items must not become a no-items statement').not.toContain('No action items recorded.')
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 })

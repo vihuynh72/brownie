@@ -34,9 +34,37 @@ or `test` -- it is not reachable, and therefore this whole approach does
 not work, against a `pilot` or `production` deployment. That is
 deliberate, not a gap to close.
 
-## What these specs deliberately do not cover
+## What the default run covers, and the paid golden path
 
-Neither spec drives the grounded-extraction path (`Try grounded
+The default run (`npm run test:e2e`) covers template teaching, the
+empty-document export safety gate, and `session-and-recovery.spec.ts`:
+real sign-out (the server must answer 401 afterwards, and the page must
+carry on to the identity provider's end-session URL -- that one external
+hop is stubbed so the suite stays offline-safe), recovery from a failed
+identity request, and a failed optional source upload during document
+creation whose warning must survive the navigation to the new document.
+The latter two inject server failures with `page.route`; none of the
+three makes a model call.
+
+The real AI journey is opt-in. Start `brownie-worker` with the same local
+configuration as the API, but with the `brownie_worker` database role,
+then run:
+
+```sh
+BROWNIE_E2E_INCLUDE_AI=1 npx playwright test golden-path.ai
+```
+
+This spends a real OpenAI call using a synthetic transcript. It checks
+apply, accept, validation, approval, both browser downloads, the DOCX's
+title/date/attendees/action-item content, and the PDF file signature. The
+action-item assertions are hard failures: the two commitments in the
+transcript must appear in the exported DOCX, and it must not say "No
+action items recorded". The DOCX inspection requires `unzip` on PATH. It
+does not prove Word layout or PDF text/layout fidelity.
+
+## What the free success-path specs deliberately do not cover
+
+Neither free success-path spec drives the grounded-extraction path (`Try grounded
 extraction` on a document's Assist tab, or anywhere the model gateway is
 invoked) -- that needs a real `BROWNIE_OPENAI_API_KEY` call and a running
 `brownie-worker` process to actually complete the job, and would spend
