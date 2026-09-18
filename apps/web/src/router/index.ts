@@ -25,6 +25,12 @@ const router = createRouter({
       component: () => import('@/views/WorkspaceView.vue'),
       props: (route) => ({ documentId: Number(route.params.documentId) }),
     },
+    {
+      // A mistyped or stale link gets a page that says so and a way back, not a blank main region.
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+    },
   ],
 })
 
