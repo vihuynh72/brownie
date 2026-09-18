@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import { formatBytes, loadCapabilities } from '@/capabilities'
 import RulesPanel from '@/components/RulesPanel.vue'
 import {
   ApiRequestError,
@@ -28,6 +29,14 @@ const templateId = ref<number | null>(null)
 const draftVersionNumber = ref<number | null>(null)
 const ambiguousTags = ref<string[]>([])
 const savingFields = ref(false)
+const uploadLimit = ref<string | null>(null)
+onMounted(async () => {
+  try {
+    uploadLimit.value = formatBytes((await loadCapabilities()).maxUploadBytes)
+  } catch {
+    uploadLimit.value = null
+  }
+})
 
 type FieldType = 'TEXT' | 'DATE'
 type FieldCardinality = 'SCALAR' | 'REPEATED'
@@ -154,8 +163,8 @@ async function activateVersion(): Promise<void> {
 
     <template v-if="stage === 'upload' || stage === 'extracting'">
       <p class="field-hint">
-        Upload a DOCX with named content controls for the fields you want Brownie to fill in -- each control's own
-        tag becomes a suggested field.
+        Upload a DOCX<span v-if="uploadLimit"> (up to {{ uploadLimit }})</span> with named content controls for the fields you
+        want Brownie to fill in. Each control's own tag becomes a suggested field.
       </p>
       <div class="field">
         <label class="field-label" for="display-name">Template name</label>
@@ -177,7 +186,7 @@ async function activateVersion(): Promise<void> {
 
     <template v-else-if="stage === 'bind-fields'">
       <p class="field-hint">
-        Suggested from your document's own content controls -- edit, remove, or add a field, then save.
+        Suggested from your document's own content controls. Edit, remove, or add a field, then save.
       </p>
       <ul v-if="ambiguousTags.length > 0" class="field-hint ambiguous-list">
         <li v-for="tag in ambiguousTags" :key="tag">
@@ -185,6 +194,14 @@ async function activateVersion(): Promise<void> {
         </li>
       </ul>
 
+      <div class="field-row-edit field-row-edit__headers" aria-hidden="true">
+        <span>Field ID</span>
+        <span>Type</span>
+        <span>How many</span>
+        <span>Required?</span>
+        <span>Content control tag</span>
+        <span></span>
+      </div>
       <div v-for="(field, index) in fields" :key="index" class="field-row-edit">
         <input v-model="field.fieldId" type="text" placeholder="field.id" aria-label="Field ID" />
         <select v-model="field.type" aria-label="Field type">
@@ -251,7 +268,9 @@ async function activateVersion(): Promise<void> {
     <template v-else-if="stage === 'activated'">
       <p>"{{ displayName }}" is now active and ready to use.</p>
       <div class="wizard-actions">
-        <RouterLink class="button button--primary" to="/documents/new">Create a document from it</RouterLink>
+        <RouterLink class="button button--primary" :to="{ path: '/documents/new', query: { templateId: templateId ?? undefined } }">
+          Create a document from it
+        </RouterLink>
         <RouterLink class="button" to="/">Back to your documents</RouterLink>
       </div>
     </template>
@@ -279,6 +298,12 @@ async function activateVersion(): Promise<void> {
 
 .ambiguous-list {
   padding-left: var(--space-5);
+}
+
+.field-row-edit__headers {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
 }
 
 .field-row-edit {

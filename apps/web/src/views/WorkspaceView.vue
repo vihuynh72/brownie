@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, onBeforeRouteLeave } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { readDocumentHandoff } from '@/router/handoff'
+// PDF.js is the largest thing this page can load; it is fetched only once the preview pane is shown.
+const PdfPreview = defineAsyncComponent(() => import('@/components/PdfPreview.vue'))
 import {
   ApiRequestError,
   acceptPatchProposal,
@@ -11,19 +13,31 @@ import {
   applyGenerationResult,
   approveExport,
   artifactDownloadUrl,
-  attachSource,
+  artifactPreviewUrl,
+  attachDocumentSource,
+  cancelJob,
+  compileRevision,
   completeUpload,
+  executeAssist,
   exportDocument,
   extractArtifact,
   getDocument,
   getDocumentRevision,
+  getEvidenceExcerpt,
   getExtractionResult,
   getGenerationQuestions,
   getJob,
+  getLatestCompilation,
   getLatestExportApproval,
   getLatestExportReceipt,
   getLatestValidation,
+  getTemplateVersion,
+  interpretAssist,
   listDocumentRevisions,
+  listDocumentSources,
+  listGenerationRuns,
+  listTemplateVersionRules,
+  patchDocumentContent,
   recordReviewDecision,
   resumeGeneration,
   setFieldLock,
@@ -32,17 +46,25 @@ import {
   validateDocument,
   type DocumentResponse,
   type DocumentRevisionResponse,
+  type DocumentSourceResponse,
+  type EvidenceExcerptResponse,
   type ExportApprovalResponse,
   type ExportFormat,
   type ExportReceiptResponse,
+  type FieldDefinitionResponse,
+  type FieldEditRequest,
   type FieldLock,
+  type FieldStateResponse,
   type PatchAcceptResponse,
   type PatchProposalResponse,
   type QuestionResponse,
+  type AssistInterpretationResponse,
   type ReviewDecision,
-  type SnapshotResponse,
+  type RuleResponse,
   type ValidationManifestResponse,
 } from '@/api/client'
+import { describePayload, describeScope } from '@/rules/describeRule'
+import { formatBytes, loadCapabilities } from '@/capabilities'
 
 const props = defineProps<{ documentId: number }>()
 
@@ -50,9 +72,69 @@ const session = useSessionStore()
 const document = ref<DocumentResponse | null>(null)
 const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 
+// One persistent polite live region for the page: assistive technology announces changes to an
+// element that was already in the tree, which a message rendered by v-if at the moment it matters
+// is not. Everything worth hearing (saving, saved, conflict, validation, preview) goes through it.
+const liveMessage = ref('')
+function announce(text: string): void {
+  // Clearing first makes a repeated message (a second "Saved.") announce again.
+  liveMessage.value = ''
+  void nextTick(() => {
+    liveMessage.value = text
+  })
+}
+
+const uploadLimit = ref<string | null>(null)
+onMounted(async () => {
+  try {
+    uploadLimit.value = formatBytes((await loadCapabilities()).maxUploadBytes)
+  } catch {
+    uploadLimit.value = null
+  }
+})
+
 const INSPECTOR_TABS = ['assist', 'rules', 'sources', 'checks', 'history'] as const
 type InspectorTab = (typeof INSPECTOR_TABS)[number]
 const activeTab = ref<InspectorTab>('sources')
+
+// Rules tab: read-only. The rules that apply to this document are the accepted ones on its own
+// template version; proposed and rejected ones are counted, not listed, since deciding them is the
+// template's business (the teaching screen), not the document's.
+const rules = ref<RuleResponse[]>([])
+const rulesLoadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+const rulesInForce = computed(() =>
+  rules.value.filter((rule) => rule.templateVersionId === document.value?.templateVersionId && rule.status === 'ACCEPTED'),
+)
+const rulesUndecided = computed(() =>
+  rules.value.filter((rule) => rule.templateVersionId === document.value?.templateVersionId && rule.status === 'PROPOSED').length,
+)
+
+/** Field ids an accepted rule requires a value for, so the editor can say so before validation does. */
+const ruleRequiredFieldIds = computed(() => {
+  const ids = new Set<string>()
+  for (const rule of rulesInForce.value) {
+    if (rule.payload.kind === 'REQUIRED_FIELDS') for (const fieldId of rule.payload.fieldIds ?? []) ids.add(fieldId)
+  }
+  return ids
+})
+
+async function loadRules(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return
+  rulesLoadState.value = 'loading'
+  try {
+    // The version route answers for an activated version; the template's own rules route only
+    // answers for an open draft, which the version a document is created from never is.
+    rules.value = (await listTemplateVersionRules(workspaceId, document.value.templateId, document.value.templateVersionId)) ?? []
+    rulesLoadState.value = 'loaded'
+  } catch {
+    rulesLoadState.value = 'error'
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'rules' && (rulesLoadState.value === 'idle' || rulesLoadState.value === 'error')) void loadRules()
+})
 
 function selectTab(tab: InspectorTab): void {
   activeTab.value = tab
@@ -129,6 +211,25 @@ watch(drawerOpen, async (open) => {
   drawerHeadingRef.value?.focus()
 })
 
+// The drawer exists only below the breakpoint. A drawer opened on a narrow viewport that then
+// grows (a window resized, a phone rotated) would otherwise keep its Tab trap on what is now an
+// ordinary column; closing it the moment the viewport is wide releases the trap.
+const narrowViewport =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 720px)') : null
+function releaseDrawerOnWideViewport(event: { matches: boolean }): void {
+  if (!event.matches && drawerOpen.value) drawerOpen.value = false
+}
+onMounted(() => {
+  if (narrowViewport && typeof narrowViewport.addEventListener === 'function') {
+    narrowViewport.addEventListener('change', releaseDrawerOnWideViewport)
+  }
+})
+onBeforeUnmount(() => {
+  if (narrowViewport && typeof narrowViewport.removeEventListener === 'function') {
+    narrowViewport.removeEventListener('change', releaseDrawerOnWideViewport)
+  }
+})
+
 const DRAWER_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, [tabindex]'
 
 /**
@@ -179,24 +280,100 @@ function onDrawerKeydown(event: KeyboardEvent): void {
 }
 
 // Whatever the new-document screen handed over when it navigated here (see router/handoff.ts): the
-// source it attached during creation, which this screen has no server-side way to look up, and a
+// source it attached during creation, shown at once while the server's own list loads, and a
 // warning if that attachment failed -- shown here, on the screen the person actually lands on,
-// rather than lost with the creation screen's own unmounted state.
+// rather than lost with the creation screen's own unmounted state. The server's document-source
+// list is the truth; the handoff only bridges the first paint.
 const handoff = readDocumentHandoff()
-const attachedSources = ref<SnapshotResponse[]>(handoff?.attachedSources ?? [])
+const attachedSources = ref<DocumentSourceResponse[]>(
+  (handoff?.attachedSources ?? []).map((source) => ({ ...source, attachedAt: source.fetchedAt })),
+)
 const handoffWarning = ref<string | null>(handoff?.sourceWarning ?? null)
 const sourceUploadState = ref<'idle' | 'uploading' | 'error'>('idle')
 const sourceUploadError = ref<string | null>(null)
+/** Which attached source Assist extracts from; defaults to the most recently attached one. */
+const selectedSourceId = ref<number | null>(null)
 
-type ExtractionStage = 'idle' | 'starting' | 'running' | 'waiting-for-input' | 'resuming' | 'succeeded' | 'failed'
+async function loadDocumentSources(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined) return
+  try {
+    const sources = await listDocumentSources(workspaceId, props.documentId)
+    // The server's list is the truth once it answers; until then, or if it answers with nothing
+    // while the creation screen just handed a source over, the handoff copy stays on screen.
+    if (Array.isArray(sources) && sources.length > 0) attachedSources.value = sources
+  } catch {
+    // The handoff copy (if any) stays on screen; attaching still works and refreshes the list.
+  }
+  if (selectedSourceId.value === null || !attachedSources.value.some((source) => source.id === selectedSourceId.value)) {
+    selectedSourceId.value = attachedSources.value[0]?.id ?? null
+  }
+}
+
+type ExtractionStage = 'idle' | 'starting' | 'running' | 'waiting-for-input' | 'resuming' | 'succeeded' | 'failed' | 'cancelled'
 const extractionStage = ref<ExtractionStage>('idle')
 const extractionJobState = ref<string | null>(null)
 const extractionError = ref<string | null>(null)
 const extractionResultArtifactId = ref<number | null>(null)
 const extractionJobId = ref<number | null>(null)
+const cancellationRequested = ref(false)
+/** Set when polling gave up without a terminal state; "Check again" re-reads the run from the server. */
+const extractionStalled = ref(false)
+/** Set while a run has sat QUEUED with no claim attempt for longer than a worker would take to notice it. */
+const noWorkerYet = ref(false)
 const openQuestions = ref<QuestionResponse[]>([])
 const answerDrafts = ref<Record<number, string>>({})
 const answeringQuestionId = ref<number | null>(null)
+
+/**
+ * A reload, a second tab, or a network drop must never lose a paid run: the latest generation run
+ * for this document is read back from the server and the Assist tab resumes from whatever state
+ * its job is really in -- still running (poll), waiting for answers (show them), finished (offer to
+ * apply), or ended (say so). Nothing here starts a job.
+ */
+async function rehydrateLatestRun(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined) return
+  let runs: Awaited<ReturnType<typeof listGenerationRuns>>
+  try {
+    runs = (await listGenerationRuns(workspaceId, props.documentId)) ?? []
+  } catch {
+    return
+  }
+  const latest = runs[0]
+  if (!latest) return
+  extractionJobId.value = latest.jobId
+  extractionJobState.value = latest.job.state
+  cancellationRequested.value = latest.job.cancellationRequestedAt != null
+  extractionStalled.value = false
+  switch (latest.job.state) {
+    case 'QUEUED':
+    case 'LEASED':
+    case 'CANCEL_REQUESTED':
+      extractionStage.value = 'running'
+      void pollJobUntilTerminal(workspaceId, latest.jobId)
+      break
+    case 'WAITING_FOR_INPUT':
+      try {
+        openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, latest.jobId)
+      } catch {
+        openQuestions.value = []
+      }
+      extractionStage.value = 'waiting-for-input'
+      break
+    case 'SUCCEEDED':
+      extractionResultArtifactId.value = latest.resultArtifactId ?? null
+      extractionStage.value = latest.resultArtifactId != null ? 'succeeded' : 'failed'
+      if (latest.resultArtifactId == null) extractionError.value = 'The last run finished without a readable result.'
+      break
+    case 'CANCELLED':
+      extractionStage.value = 'cancelled'
+      break
+    default:
+      extractionStage.value = 'failed'
+      extractionError.value = `The last run did not succeed (${latest.job.state}).`
+  }
+}
 
 type ApplyStage = 'idle' | 'applying' | 'proposed' | 'accepting' | 'accepted' | 'failed'
 const applyStage = ref<ApplyStage>('idle')
@@ -240,14 +417,34 @@ const compareRevision = ref<DocumentRevisionResponse | null>(null)
 async function loadDocument(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined) return
-  loadState.value = 'loading'
+  // Only the first load shows the loading state. A reload after a save, a review decision or an
+  // accepted proposal keeps the editor mounted: unmounting it would drop keyboard focus and any
+  // text the person is typing at that moment.
+  if (document.value === null) loadState.value = 'loading'
   try {
-    document.value = await getDocument(workspaceId, props.documentId)
+    const loaded = await getDocument(workspaceId, props.documentId)
+    document.value = loaded
     loadState.value = 'loaded'
+    if (definitionsLoadedForVersionId.value !== loaded.templateVersionId) {
+      await loadFieldDefinitions(workspaceId, loaded)
+      void loadRules()
+    }
+    // A reload triggered by some other action (a review decision, an accepted proposal, a
+    // validation run) must never wipe values the person is still typing; only a clean editor
+    // follows the server. A save marks the editor clean itself before it reloads.
+    if (!isDirty.value) resetDrafts()
+    if (!sidePanelsHydrated) {
+      sidePanelsHydrated = true
+      await loadDocumentSources()
+      await rehydrateLatestRun()
+    }
   } catch {
     loadState.value = 'error'
   }
 }
+
+/** Sources and the latest run are read once per page load; later reloads of the document (after a save, a review) must not restart polling or replace an in-progress question list. */
+let sidePanelsHydrated = false
 
 onMounted(loadDocument)
 watch(() => session.status, (status) => {
@@ -259,6 +456,441 @@ function fieldDisplayValue(field: DocumentRevisionResponse['fields'][string] | u
   return field.value ?? ((field.values ?? []).join(', ') || '—')
 }
 
+// ---- Editing by hand -----------------------------------------------------------------------
+//
+// The editor is driven by the template version's own field definitions, so every field the
+// template defines gets a control even before it holds a value. Drafts live apart from the loaded
+// document: what the person types is theirs until they save, and a save is one typed PATCH against
+// the exact revision they were looking at -- the server refuses a stale revision (412) or a locked
+// field (409) rather than letting either side's work silently vanish.
+
+const fieldDefinitions = ref<FieldDefinitionResponse[]>([])
+const definitionsLoadedForVersionId = ref<number | null>(null)
+
+/**
+ * Best effort: the template's definitions are the ideal source, but a document whose template
+ * lookup fails must still be editable for the fields its revision already holds, so a failure
+ * here falls back to those (see editableFields) instead of disabling editing.
+ */
+async function loadFieldDefinitions(workspaceId: number, loaded: DocumentResponse): Promise<void> {
+  try {
+    const version = await getTemplateVersion(workspaceId, loaded.templateId, loaded.templateVersionId)
+    fieldDefinitions.value = version?.fields ?? []
+  } catch {
+    fieldDefinitions.value = []
+  }
+  definitionsLoadedForVersionId.value = loaded.templateVersionId
+}
+
+interface EditableField {
+  fieldId: string
+  type: 'TEXT' | 'DATE'
+  cardinality: 'SCALAR' | 'REPEATED'
+  requiredness: 'REQUIRED' | 'OPTIONAL' | null
+}
+
+const editableFields = computed<EditableField[]>(() => {
+  if (fieldDefinitions.value.length > 0) {
+    return fieldDefinitions.value.map((definition) => ({
+      fieldId: definition.fieldId,
+      type: definition.type,
+      cardinality: definition.cardinality,
+      requiredness: definition.requiredness,
+    }))
+  }
+  const fields = document.value?.currentRevision.fields ?? {}
+  return Object.entries(fields).map(([fieldId, field]) => ({
+    fieldId,
+    type: field.type,
+    cardinality: field.cardinality,
+    requiredness: null,
+  }))
+})
+
+const scalarFields = computed(() => editableFields.value.filter((field) => field.cardinality === 'SCALAR'))
+/**
+ * Every repeated field of a template is one column of the same logical row (an action item's task,
+ * owner, and due date, for the built-in minutes), and the filler requires them to hold the same
+ * number of items -- so they are edited together as rows, never one list at a time.
+ */
+const repeatedFields = computed(() => editableFields.value.filter((field) => field.cardinality === 'REPEATED'))
+const editableFieldIds = computed(() => new Set(editableFields.value.map((field) => field.fieldId)))
+
+/** Moves keyboard focus to a field's control (a repeated field's first row), so a finding can be fixed without hunting for it. */
+function focusField(fieldId: string): void {
+  const target =
+    window.document.getElementById(`edit-${fieldId}`) ?? window.document.getElementById(`edit-${fieldId}-0`)
+  if (!(target instanceof HTMLElement)) return
+  target.scrollIntoView?.({ block: 'center' })
+  target.focus()
+}
+
+type Drafts = Record<string, string | string[]>
+const drafts = ref<Drafts>({})
+const cleanDrafts = ref<Drafts>({})
+
+function draftsFromRevision(): Drafts {
+  const fields = document.value?.currentRevision.fields ?? {}
+  const next: Drafts = {}
+  for (const field of scalarFields.value) {
+    next[field.fieldId] = fields[field.fieldId]?.value ?? ''
+  }
+  const rowCount = Math.max(0, ...repeatedFields.value.map((field) => fields[field.fieldId]?.values?.length ?? 0))
+  for (const field of repeatedFields.value) {
+    const values = fields[field.fieldId]?.values ?? []
+    next[field.fieldId] = Array.from({ length: rowCount }, (_, index) => values[index] ?? '')
+  }
+  return next
+}
+
+function resetDrafts(): void {
+  const next = draftsFromRevision()
+  drafts.value = next
+  cleanDrafts.value = JSON.parse(JSON.stringify(next))
+  saveStage.value = 'idle'
+  saveError.value = null
+}
+
+const isDirty = computed(() => JSON.stringify(drafts.value) !== JSON.stringify(cleanDrafts.value))
+const hasAnyValue = computed(() => Object.keys(document.value?.currentRevision.fields ?? {}).length > 0)
+
+function scalarDraft(fieldId: string): string {
+  const value = drafts.value[fieldId]
+  return typeof value === 'string' ? value : ''
+}
+
+function rowDraft(fieldId: string): string[] {
+  const value = drafts.value[fieldId]
+  return Array.isArray(value) ? value : []
+}
+
+const rowCount = computed(() => {
+  const first = repeatedFields.value[0]
+  return first ? rowDraft(first.fieldId).length : 0
+})
+
+const rowIndexes = computed(() => Array.from({ length: rowCount.value }, (_, index) => index))
+
+/** A human label from a stable field id: "action.item.due" reads as "Action item due"; the id itself stays available to assistive tech through aria-describedby. */
+function labelFor(fieldId: string): string {
+  const words = fieldId.replace(/[._-]+/g, ' ').trim()
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+const STATE_LABELS: Record<string, Record<string, string>> = {
+  authorship: { IMPORTED: 'Imported', AI_COMPOSED: 'From Assist', USER_AUTHORED: 'Typed by you', MIXED: 'Assist and you' },
+  evidenceSupport: {
+    DIRECT: 'Source cited',
+    TRANSFORMED: 'Source cited, reworded',
+    AMBIGUOUS: 'Evidence unclear',
+    UNSUPPORTED: 'Not in the source',
+    MISSING: 'No source cited',
+  },
+  validation: { PASSED: 'Checks passed', WARNING: 'Check warning', BLOCKING: 'Blocks export', UNAVAILABLE: 'Not checked' },
+  review: { UNREVIEWED: 'Not reviewed', ACCEPTED: 'Accepted', REJECTED: 'Rejected', NEEDS_CLARIFICATION: 'Needs clarification' },
+  lock: { PRESERVE_ON_REGENERATION: 'Kept on regeneration', EXPLICITLY_LOCKED: 'Locked' },
+}
+
+/** The words a person reads for a field-state value; the raw constant only when no wording exists for it. */
+function stateLabel(dimension: keyof FieldStateResponse, value: string): string {
+  return STATE_LABELS[dimension]?.[value] ?? value
+}
+
+/** The chips worth showing for one field state: nothing that only restates the obvious (an unchecked field, an unlocked field, no source for a typed value). */
+function stateChips(state: FieldStateResponse): string[] {
+  const chips = [stateLabel('authorship', state.authorship)]
+  if (!(state.evidenceSupport === 'MISSING' && state.authorship === 'USER_AUTHORED')) {
+    chips.push(stateLabel('evidenceSupport', state.evidenceSupport))
+  }
+  if (state.validation !== 'NOT_RUN') chips.push(stateLabel('validation', state.validation))
+  chips.push(stateLabel('review', state.review))
+  if (state.lock !== 'EDITABLE') chips.push(stateLabel('lock', state.lock))
+  return chips
+}
+
+function fieldStateOf(fieldId: string): FieldStateResponse | null {
+  return document.value?.currentRevision.fields[fieldId]?.fieldState ?? null
+}
+
+function isFieldLocked(fieldId: string): boolean {
+  return fieldStateOf(fieldId)?.lock === 'EXPLICITLY_LOCKED'
+}
+
+/** The state of one row, read from its first column; every column of a row is reviewed and locked together by the row controls below. */
+function rowState(index: number): FieldStateResponse | null {
+  const first = repeatedFields.value[0]
+  if (!first) return null
+  return document.value?.currentRevision.fields[first.fieldId]?.itemFieldStates?.[index] ?? null
+}
+
+/** A lock on any row of any column blocks editing every row: the server refuses a field edit while one of its items is locked, and the columns can only be saved together. */
+const rowsLocked = computed(() =>
+  repeatedFields.value.some((field) =>
+    (document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates ?? []).some((state) => state?.lock === 'EXPLICITLY_LOCKED'),
+  ),
+)
+
+/** Rows the server would refuse: a date column cannot be blank, because a blank is not a date. */
+const rowProblems = computed<string[]>(() => {
+  const problems: string[] = []
+  for (const index of rowIndexes.value) {
+    for (const field of repeatedFields.value) {
+      if (field.type === 'DATE' && !(rowDraft(field.fieldId)[index] ?? '').trim()) {
+        problems.push(`Row ${index + 1} needs a value for ${labelFor(field.fieldId)}, or remove the row.`)
+      }
+    }
+  }
+  return problems
+})
+
+function addRow(): void {
+  for (const field of repeatedFields.value) {
+    drafts.value[field.fieldId] = [...rowDraft(field.fieldId), '']
+  }
+}
+
+function removeRow(index: number): void {
+  for (const field of repeatedFields.value) {
+    drafts.value[field.fieldId] = rowDraft(field.fieldId).filter((_, position) => position !== index)
+  }
+}
+
+function moveRow(index: number, delta: -1 | 1): void {
+  const target = index + delta
+  if (target < 0 || target >= rowCount.value) return
+  for (const field of repeatedFields.value) {
+    const values = [...rowDraft(field.fieldId)]
+    const moved = values[index]!
+    values[index] = values[target]!
+    values[target] = moved
+    drafts.value[field.fieldId] = values
+  }
+}
+
+type SaveStage = 'idle' | 'saving' | 'saved' | 'conflict' | 'failed'
+const saveStage = ref<SaveStage>('idle')
+const saveError = ref<string | null>(null)
+const editNote = ref('')
+
+function buildEdits(): FieldEditRequest[] {
+  const fields = document.value?.currentRevision.fields ?? {}
+  const edits: FieldEditRequest[] = []
+  for (const field of scalarFields.value) {
+    const draft = scalarDraft(field.fieldId).trim()
+    const clean = cleanDrafts.value[field.fieldId]
+    if (draft === (typeof clean === 'string' ? clean : '')) continue
+    if (draft === '') {
+      if (fields[field.fieldId]) edits.push({ operation: 'CLEAR', fieldId: field.fieldId })
+      continue
+    }
+    edits.push({ operation: 'SET', fieldId: field.fieldId, value: { type: field.type, cardinality: 'SCALAR', value: draft } })
+  }
+  const rowsChanged = repeatedFields.value.some(
+    (field) => JSON.stringify(rowDraft(field.fieldId)) !== JSON.stringify(cleanDrafts.value[field.fieldId] ?? []),
+  )
+  if (rowsChanged) {
+    for (const field of repeatedFields.value) {
+      const values = rowIndexes.value.map((index) => (rowDraft(field.fieldId)[index] ?? '').trim())
+      if (values.length === 0) {
+        if (fields[field.fieldId]) edits.push({ operation: 'CLEAR', fieldId: field.fieldId })
+        continue
+      }
+      edits.push({ operation: 'SET', fieldId: field.fieldId, value: { type: field.type, cardinality: 'REPEATED', values } })
+    }
+  }
+  return edits
+}
+
+async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value || rowProblems.value.length > 0) return
+  const edits = buildEdits()
+  if (edits.length === 0) return
+
+  // What this save sends. Anything typed after this point, while the request is in flight, must
+  // survive the reload: the server's copy replaces only the fields that still hold exactly what
+  // was sent, and the rest stay dirty and are saved by the next pause.
+  const sent: Drafts = JSON.parse(JSON.stringify(drafts.value))
+  saveStage.value = 'saving'
+  saveError.value = null
+  try {
+    await patchDocumentContent(
+      workspaceId,
+      props.documentId,
+      {
+        expectedRevisionId: document.value.currentRevision.id,
+        edits,
+        editReason: editNote.value.trim() || (trigger === 'auto' ? 'Autosaved.' : 'Edited in the workspace.'),
+      },
+      crypto.randomUUID(),
+    )
+    editNote.value = ''
+    await loadDocument()
+    reconcileDraftsAfterSave(sent)
+    saveStage.value = 'saved'
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 412) {
+      // Someone (or another action in this same browser) moved the document on since this editor
+      // last loaded it. The drafts stay exactly as typed; the document reloads underneath them so a
+      // second save applies onto what is really current -- the person chooses which.
+      saveStage.value = 'conflict'
+      await loadDocument()
+      return
+    }
+    saveStage.value = 'failed'
+    if (error instanceof ApiRequestError && error.status === 409 && error.problem?.code === 'FIELD_LOCKED') {
+      saveError.value = error.problem.detail ?? 'A field you changed is locked. Unlock it first, or discard that change.'
+    } else if (error instanceof ApiRequestError && (error.status === 422 || error.status === 400)) {
+      saveError.value = error.problem?.detail ?? error.message
+    } else {
+      saveError.value = 'Could not save your changes. Try again.'
+    }
+  }
+}
+
+/**
+ * A 412 from a review, lock, or accept means the document moved on since this page loaded it. The
+ * only sound recovery is to reload and let the person act on what is really current; the message
+ * says so instead of a generic failure. Returns true when it handled the error that way.
+ */
+async function reloadedAfterStaleRevision(error: unknown): Promise<boolean> {
+  if (!(error instanceof ApiRequestError && error.status === 412)) return false
+  fieldActionError.value = 'This document changed since you loaded it, so it was reloaded. Try again on the current version.'
+  announce('This document changed elsewhere and was reloaded.')
+  await loadDocument()
+  return true
+}
+
+// ---------------------------------------------------------------------------------------------
+// Autosave: a pause in typing saves what changed against the revision this editor loaded. Rows
+// with a problem (a blank date) are never sent; the problem is shown instead. A conflict stops
+// autosaving until the person chooses what to do with their edits; a failed save waits for the
+// next edit rather than retrying on its own. "Save now" remains for people who want to be sure.
+const AUTOSAVE_DELAY_MS = 2500
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelAutosave(): void {
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = null
+}
+
+function scheduleAutosave(): void {
+  cancelAutosave()
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    void autosave()
+  }, AUTOSAVE_DELAY_MS)
+}
+
+async function autosave(): Promise<void> {
+  if (!isDirty.value || rowProblems.value.length > 0) return
+  if (saveStage.value === 'saving' || saveStage.value === 'conflict') return
+  await saveEdits('auto')
+  // Edits typed while the save was in flight are picked up by the next pause.
+  if (isDirty.value && saveStage.value === 'saved') scheduleAutosave()
+}
+
+watch(
+  drafts,
+  () => {
+    if (isDirty.value && saveStage.value !== 'conflict') scheduleAutosave()
+  },
+  { deep: true },
+)
+
+watch(saveStage, (stage) => {
+  const messages: Record<SaveStage, string> = {
+    idle: '',
+    saving: 'Saving…',
+    saved: 'Saved.',
+    conflict: 'This document changed elsewhere. Your edits are kept; choose whether to save them onto the latest version.',
+    failed: 'Your changes could not be saved.',
+  }
+  if (messages[stage]) announce(messages[stage])
+})
+
+function hasUnsavedWork(): boolean {
+  return isDirty.value || saveStage.value === 'saving'
+}
+
+onBeforeRouteLeave(() => {
+  if (!hasUnsavedWork()) return true
+  return window.confirm('You have unsaved changes on this document. Leave anyway?')
+})
+
+function warnBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasUnsavedWork()) return
+  event.preventDefault()
+  // Older browsers need a value; newer ones ignore the text and show their own wording.
+  event.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload))
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', warnBeforeUnload)
+  cancelAutosave()
+})
+
+/**
+ * After a save, take the server's normalized values into every field the person has not touched
+ * since the save began, and leave the others exactly as typed. Assigning field by field, rather
+ * than replacing the drafts object, means an input whose draft did not change is not re-rendered,
+ * so a caret in it stays where it was.
+ */
+function reconcileDraftsAfterSave(sent: Drafts): void {
+  const server = draftsFromRevision()
+  for (const fieldId of new Set([...Object.keys(server), ...Object.keys(drafts.value)])) {
+    const typedSince = JSON.stringify(drafts.value[fieldId]) !== JSON.stringify(sent[fieldId])
+    if (typedSince) continue
+    const next = server[fieldId] ?? (Array.isArray(sent[fieldId]) ? [] : '')
+    if (JSON.stringify(drafts.value[fieldId]) !== JSON.stringify(next)) drafts.value[fieldId] = next
+  }
+  cleanDrafts.value = JSON.parse(JSON.stringify(server))
+}
+
+async function recordRowReview(index: number, decision: ReviewDecision): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return
+  const rowKey = `row-${index}`
+  fieldActionPending.value = rowKey
+  fieldActionError.value = null
+  try {
+    // One decision per column of the row, each against the revision the previous one produced.
+    let revisionId = document.value.currentRevision.id
+    for (const field of repeatedFields.value) {
+      const revision = await recordReviewDecision(workspaceId, props.documentId, revisionId, field.fieldId, decision, crypto.randomUUID(), index)
+      revisionId = revision.id
+    }
+    await loadDocument()
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
+    fieldActionError.value = `Could not record a review decision for row ${index + 1}. Try again.`
+  } finally {
+    fieldActionPending.value = null
+  }
+}
+
+async function toggleRowLock(index: number): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return
+  const nextLock: FieldLock = rowState(index)?.lock === 'EXPLICITLY_LOCKED' ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
+  const rowKey = `row-${index}`
+  fieldActionPending.value = rowKey
+  fieldActionError.value = null
+  try {
+    let revisionId = document.value.currentRevision.id
+    for (const field of repeatedFields.value) {
+      const revision = await setFieldLock(workspaceId, props.documentId, revisionId, field.fieldId, nextLock, crypto.randomUUID(), index)
+      revisionId = revision.id
+    }
+    await loadDocument()
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
+    fieldActionError.value = `Could not change the lock for row ${index + 1}. Try again.`
+  } finally {
+    fieldActionPending.value = null
+  }
+}
+
 function resetApprovalAndExportState(): void {
   approvalStage.value = 'idle'
   approvalError.value = null
@@ -266,6 +898,121 @@ function resetApprovalAndExportState(): void {
   exportStage.value = 'idle'
   exportError.value = null
   exportReceipt.value = null
+}
+
+// ---------------------------------------------------------------------------------------------
+// Preview pane: the latest compiled PDF of this document, drawn beside the editor. A compilation is
+// never started on its own -- it spawns the isolated renderer -- so the pane shows whatever exists
+// for the current content (a compilation from an earlier "Regenerate preview" or from validation,
+// which compiles too) and asks for a click to make a new one. Staleness is judged by the
+// revision's content hash, not its id: a review decision or a lock makes a new revision without
+// changing a single value, and a preview of identical content is not out of date.
+type PreviewStage = 'idle' | 'loading' | 'generating' | 'ready' | 'failed'
+const previewStage = ref<PreviewStage>('idle')
+const previewError = ref<string | null>(null)
+const previewArtifactId = ref<number | null>(null)
+const previewContentHash = ref<string | null>(null)
+const previewRevisionNumber = ref<number | null>(null)
+const previewOpen = ref(typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 1100px)').matches : false)
+
+const previewUrl = computed(() => {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || previewArtifactId.value == null) return null
+  return artifactPreviewUrl(workspaceId, previewArtifactId.value)
+})
+const previewIsStale = computed(
+  () => previewContentHash.value != null && document.value != null && previewContentHash.value !== document.value.currentRevision.contentHash,
+)
+
+/** Picks up a compilation that already exists for the current content, if any; a 404 just means none has been made yet. */
+async function loadExistingPreview(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const current = document.value?.currentRevision
+  if (workspaceId === undefined || !current) return
+  if (previewContentHash.value === current.contentHash && previewArtifactId.value != null) return
+  previewStage.value = 'loading'
+  previewError.value = null
+  try {
+    const compilation = await getLatestCompilation(workspaceId, props.documentId, current.id)
+    adoptPreview(compilation.pdfArtifactId, current.contentHash, current.revisionNumber)
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 404) {
+      previewStage.value = previewArtifactId.value != null ? 'ready' : 'idle'
+      return
+    }
+    previewStage.value = 'failed'
+    previewError.value = 'Could not check for an existing preview. Try again.'
+  }
+}
+
+async function regeneratePreview(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const current = document.value?.currentRevision
+  if (workspaceId === undefined || !current) return
+  previewStage.value = 'generating'
+  previewError.value = null
+  try {
+    const compilation = await compileRevision(workspaceId, props.documentId, current.id)
+    adoptPreview(compilation.pdfArtifactId, current.contentHash, current.revisionNumber)
+  } catch (error) {
+    previewStage.value = 'failed'
+    previewError.value =
+      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'The preview could not be generated. Try again.'
+  }
+}
+
+function adoptPreview(pdfArtifactId: number, contentHash: string, revisionNumber: number): void {
+  previewArtifactId.value = pdfArtifactId
+  previewContentHash.value = contentHash
+  previewRevisionNumber.value = revisionNumber
+  previewStage.value = 'ready'
+}
+
+function togglePreview(): void {
+  previewOpen.value = !previewOpen.value
+}
+
+watch(() => document.value?.currentRevision.contentHash, () => void loadExistingPreview())
+
+// ---------------------------------------------------------------------------------------------
+// Evidence: a value filled by Assist carries the ids of the source spans it was taken from. The
+// marker opens the cited excerpts, fetched through the document's own evidence route. Nothing
+// here can point at a page or a position on the preview: the renderer emits no locator, and
+// the panel says so instead of guessing.
+const evidenceOpenFor = ref<string | null>(null)
+const evidenceExcerpts = ref<EvidenceExcerptResponse[]>([])
+const evidenceStage = ref<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+const evidenceError = ref<string | null>(null)
+const MAX_EVIDENCE_EXCERPTS = 5
+
+function evidenceSpanIdsOf(fieldId: string): number[] {
+  return document.value?.currentRevision.fields[fieldId]?.evidenceSourceSpanIds ?? []
+}
+
+const repeatedFieldsWithEvidence = computed(() => repeatedFields.value.filter((field) => evidenceSpanIdsOf(field.fieldId).length > 0))
+
+async function toggleEvidence(fieldId: string): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (evidenceOpenFor.value === fieldId) {
+    evidenceOpenFor.value = null
+    return
+  }
+  evidenceOpenFor.value = fieldId
+  evidenceExcerpts.value = []
+  evidenceError.value = null
+  if (workspaceId === undefined) return
+  evidenceStage.value = 'loading'
+  try {
+    const spanIds = evidenceSpanIdsOf(fieldId).slice(0, MAX_EVIDENCE_EXCERPTS)
+    const excerpts = await Promise.all(spanIds.map((spanId) => getEvidenceExcerpt(workspaceId, props.documentId, spanId)))
+    if (evidenceOpenFor.value !== fieldId) return
+    evidenceExcerpts.value = excerpts
+    evidenceStage.value = 'ready'
+  } catch {
+    if (evidenceOpenFor.value !== fieldId) return
+    evidenceStage.value = 'failed'
+    evidenceError.value = 'The cited excerpt could not be loaded.'
+  }
 }
 
 function resetChecksState(): void {
@@ -312,13 +1059,13 @@ function checksFailureMessage(error: unknown): string {
   if (error instanceof ApiRequestError) {
     if (error.status === 412) {
       resetChecksState()
-      const message = 'This document changed since you last validated it -- validate again.'
+      const message = 'This document changed since you last validated it. Validate again.'
       validationError.value = message
       return message
     }
     if (error.status === 404) {
       resetApprovalAndExportState()
-      return error.problem?.detail ?? 'That approval is no longer available -- validate again.'
+      return error.problem?.detail ?? 'That approval is no longer available. Validate again.'
     }
     if (error.status === 422) {
       return error.problem?.detail ?? error.message
@@ -346,6 +1093,10 @@ async function validateCurrentRevision(): Promise<void> {
     // results onto it) distinct from the one just validated -- resync document.value with that new
     // revision so the rest of the page (and the currentRevision.id watcher above) sees it too.
     await loadDocument()
+    // Validation compiled this exact content, so its PDF is the preview -- no second render needed.
+    if (manifest.pdfArtifactId != null && document.value) {
+      adoptPreview(manifest.pdfArtifactId, document.value.currentRevision.contentHash, document.value.currentRevision.revisionNumber)
+    }
     validationStage.value = 'validated'
   } catch (error) {
     validationStage.value = 'failed'
@@ -516,8 +1267,9 @@ async function onSourceFileChosen(event: Event): Promise<void> {
       return
     }
     await extractArtifact(workspaceId, allocated.id)
-    const snapshot = await attachSource(workspaceId, allocated.id)
-    attachedSources.value = [...attachedSources.value, snapshot]
+    const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
+    attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
+    selectedSourceId.value = attached.id
     sourceUploadState.value = 'idle'
   } catch {
     sourceUploadError.value = 'Could not attach that file. Try again.'
@@ -527,19 +1279,23 @@ async function onSourceFileChosen(event: Event): Promise<void> {
 
 /**
  * Asks the trusted worker to pull typed facts (and action-item rows) out of
- * the first attached source. The job may pause to ask about anything
- * missing or conflicting; once it finishes, "Apply to document" turns the
- * result into a proposal and "Accept and update document" is the only
- * step that changes this document's own fields.
+ * the selected source. The job may pause to ask about anything missing or
+ * conflicting; once it finishes, "Apply to document" turns the result into
+ * a proposal and "Accept and update document" is the only step that
+ * changes this document's own fields. A failure here happens before any
+ * job exists, so trying again is safe; once a job id is known, the poll
+ * loop below never starts another.
  */
 async function tryGroundedExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  const source = attachedSources.value[0]
+  const source = attachedSources.value.find((candidate) => candidate.id === selectedSourceId.value) ?? attachedSources.value[0]
   if (workspaceId === undefined || !source) return
 
   extractionStage.value = 'starting'
   extractionError.value = null
   extractionResultArtifactId.value = null
+  extractionStalled.value = false
+  cancellationRequested.value = false
   openQuestions.value = []
   applyStage.value = 'idle'
   applyError.value = null
@@ -549,18 +1305,45 @@ async function tryGroundedExtraction(): Promise<void> {
     const receipt = await startExtraction(workspaceId, props.documentId, source.artifactId, crypto.randomUUID())
     extractionJobId.value = receipt.jobId
     extractionStage.value = 'running'
-    await pollJobUntilTerminal(workspaceId, receipt.jobId)
-  } catch {
+  } catch (error) {
     extractionStage.value = 'failed'
-    extractionError.value = 'Could not start extraction. Try again.'
+    extractionError.value =
+      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Could not start extraction. Try again.'
+    return
   }
+  await pollJobUntilTerminal(workspaceId, extractionJobId.value!)
 }
 
+/**
+ * Follows one job to a resting state. A failed status read is not a failed job: the loop keeps
+ * going with a longer gap and tells the person it lost contact, because giving up here would
+ * invite a second, paid start. After ten minutes it stops polling and offers "Check again"
+ * instead, since the job's real state is on the server whenever the person asks.
+ */
 async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise<void> {
   const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'DEAD', 'CANCELLED'])
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const job = await getJob(workspaceId, jobId)
+  const startedAt = Date.now()
+  const deadline = startedAt + 10 * 60 * 1000
+  let delayMs = 1500
+  noWorkerYet.value = false
+  while (Date.now() < deadline) {
+    let job
+    try {
+      job = await getJob(workspaceId, jobId)
+      extractionError.value = null
+      delayMs = 1500
+    } catch {
+      extractionError.value = 'Lost contact with the server; still checking on this run.'
+      delayMs = Math.min(delayMs * 2, 15_000)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      continue
+    }
+    if (extractionJobId.value !== jobId) return
     extractionJobState.value = job.state
+    cancellationRequested.value = cancellationRequested.value || job.cancellationRequestedAt != null
+    // A worker claims a queued job within a couple of seconds. Thirty seconds with no attempt means
+    // there is no worker to claim it, which the person should be told rather than left watching.
+    noWorkerYet.value = job.state === 'QUEUED' && job.attemptCount === 0 && Date.now() - startedAt > 30_000
     if (job.state === 'WAITING_FOR_INPUT') {
       openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, jobId)
       extractionStage.value = 'waiting-for-input'
@@ -571,16 +1354,45 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
         const result = await getExtractionResult(workspaceId, props.documentId, jobId)
         extractionResultArtifactId.value = result.artifactId
         extractionStage.value = 'succeeded'
+      } else if (job.state === 'CANCELLED') {
+        extractionStage.value = 'cancelled'
       } else {
         extractionStage.value = 'failed'
         extractionError.value = `Extraction did not succeed (${job.state}).`
       }
       return
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
-  extractionStage.value = 'failed'
-  extractionError.value = 'Extraction is taking longer than expected.'
+  extractionStalled.value = true
+}
+
+/** Re-reads the run from the server; used after polling stopped, and safe at any time. */
+async function checkRunAgain(): Promise<void> {
+  await rehydrateLatestRun()
+}
+
+/**
+ * Cooperative: the worker checks before each paid call and the job ends CANCELLED; a model call
+ * already in flight may still finish and cost. The button therefore says "requested" until the job
+ * really reaches a resting state, which the poll loop reports.
+ */
+async function cancelExtraction(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const jobId = extractionJobId.value
+  if (workspaceId === undefined || jobId === null) return
+  extractionError.value = null
+  try {
+    await cancelJob(workspaceId, jobId, crypto.randomUUID())
+    cancellationRequested.value = true
+    if (extractionStage.value === 'waiting-for-input') {
+      // Nothing is polling while a job waits for answers; follow it to CANCELLED ourselves.
+      extractionStage.value = 'running'
+      await pollJobUntilTerminal(workspaceId, jobId)
+    }
+  } catch {
+    extractionError.value = 'Could not request cancellation. Try again.'
+  }
 }
 
 async function submitAnswer(questionId: number): Promise<void> {
@@ -633,6 +1445,87 @@ async function applyResultToDocument(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The composer: a typed request is interpreted first (what it would do, to which field or finding)
+// and only an explicit second click executes it. A change or a rewrite comes back as a proposal
+// that goes through the same accept step as an Assist result; an explanation is text; a draft
+// request starts the existing extraction; anything else is answered with what Brownie can do.
+type AssistStage = 'idle' | 'interpreting' | 'interpreted' | 'executing' | 'done' | 'failed'
+const assistText = ref('')
+const assistStage = ref<AssistStage>('idle')
+const assistInterpretation = ref<AssistInterpretationResponse | null>(null)
+const assistExplanation = ref<string | null>(null)
+const assistError = ref<string | null>(null)
+const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
+
+async function interpretAssistRequest(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const text = assistText.value.trim()
+  if (workspaceId === undefined || text === '') return
+  assistStage.value = 'interpreting'
+  assistError.value = null
+  assistExplanation.value = null
+  assistInterpretation.value = null
+  try {
+    assistInterpretation.value = await interpretAssist(workspaceId, props.documentId, text)
+    assistStage.value = 'interpreted'
+  } catch (error) {
+    assistStage.value = 'failed'
+    assistError.value =
+      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not read that request. Try again.'
+  }
+}
+
+async function runAssistRequest(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const interpretation = assistInterpretation.value
+  const text = assistText.value.trim()
+  if (workspaceId === undefined || !interpretation?.executable || !document.value) return
+  if (interpretation.kind === 'DRAFT') {
+    assistStage.value = 'done'
+    if (attachedSources.value.length === 0) {
+      assistError.value = 'Attach a source on the Sources tab first; then Assist can draft from it.'
+      return
+    }
+    await tryGroundedExtraction()
+    return
+  }
+  assistStage.value = 'executing'
+  assistError.value = null
+  try {
+    const outcome = await executeAssist(workspaceId, props.documentId, text, document.value.currentRevision.id)
+    if (outcome.proposal) {
+      patchProposal.value = outcome.proposal
+      acceptResult.value = null
+      applyError.value = null
+      applyStage.value = 'proposed'
+      announce('Assist proposed a change. Review it, then accept it to update the document.')
+    }
+    if (outcome.explanation) {
+      assistExplanation.value = outcome.explanation
+      announce('Assist explained the finding.')
+    }
+    assistStage.value = 'done'
+  } catch (error) {
+    assistStage.value = 'failed'
+    if (error instanceof ApiRequestError && error.status === 412) {
+      assistError.value = 'This document changed since you loaded it, so it was reloaded. Ask again on the current version.'
+      await loadDocument()
+      return
+    }
+    assistError.value =
+      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not do that. Try again.'
+  }
+}
+
+function clearAssistRequest(): void {
+  assistText.value = ''
+  assistStage.value = 'idle'
+  assistInterpretation.value = null
+  assistExplanation.value = null
+  assistError.value = null
+}
+
 async function acceptProposal(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const proposal = patchProposal.value
@@ -665,7 +1558,8 @@ async function recordFieldReview(fieldId: string, decision: ReviewDecision): Pro
   try {
     await recordReviewDecision(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, decision, crypto.randomUUID())
     await loadDocument()
-  } catch {
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
     fieldActionError.value = `Could not record a review decision for ${fieldId}. Try again.`
   } finally {
     fieldActionPending.value = null
@@ -682,7 +1576,8 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   try {
     await setFieldLock(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, nextLock, crypto.randomUUID())
     await loadDocument()
-  } catch {
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
     fieldActionError.value = `Could not change the lock for ${fieldId}. Try again.`
   } finally {
     fieldActionPending.value = null
@@ -697,6 +1592,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   </section>
 
   <section v-else-if="loadState === 'loading'" aria-live="polite">
+    <h1 class="visually-hidden">Loading document</h1>
     <p>Loading document…</p>
   </section>
 
@@ -711,75 +1607,311 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
         <RouterLink to="/" class="field-hint">&larr; Your documents</RouterLink>
         <h1>{{ document.title }}</h1>
       </div>
+      <button type="button" class="button" :aria-expanded="previewOpen" aria-controls="pdf-pane" @click="togglePreview">
+        {{ previewOpen ? 'Hide preview' : 'Show preview' }}
+      </button>
     </div>
+    <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
     <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
 
-    <div class="workspace-layout">
+    <div class="workspace-layout" :class="{ 'workspace-layout--with-preview': previewOpen }">
       <div class="card preview-pane">
         <h2>Content</h2>
         <p v-if="fieldActionError" class="field-error" role="alert">{{ fieldActionError }}</p>
-        <p v-if="Object.keys(document.currentRevision.fields).length > 0" class="field-hint">
-          Review each value below. Typing changes in by hand is not available yet.
-        </p>
-        <div v-if="Object.keys(document.currentRevision.fields).length > 0" class="field-list">
-          <div v-for="(field, fieldId) in document.currentRevision.fields" :key="fieldId" class="field-row">
+
+        <div v-if="!hasAnyValue && !isDirty" class="empty-state">
+          <p class="empty-state__title">Nothing filled in yet.</p>
+          <p class="field-hint">
+            Type values straight into the fields below, or attach your notes or a transcript and use Assist to
+            fill them from there. You review every value before it is exported.
+          </p>
+          <button type="button" class="button" @click="goToSources">Attach a source</button>
+        </div>
+        <p v-else class="field-hint">Edit any value below and save. Each save keeps the previous version in History.</p>
+
+        <form v-if="editableFields.length > 0" class="field-list" @submit.prevent="saveEdits('manual')">
+          <div v-for="field in scalarFields" :id="`field-${field.fieldId}`" :key="field.fieldId" class="field-row">
             <div class="field-row__value">
-              <span class="field-row__label">{{ fieldId }}</span>
-              <span>{{ fieldDisplayValue(field) }}</span>
+              <label class="field-row__label" :for="`edit-${field.fieldId}`">
+                {{ labelFor(field.fieldId) }}
+                <span v-if="field.requiredness === 'REQUIRED'" class="field-hint">(required)</span>
+                <span v-else-if="ruleRequiredFieldIds.has(field.fieldId)" class="field-hint">(required by a rule)</span>
+              </label>
+              <input
+                :id="`edit-${field.fieldId}`"
+                :type="field.type === 'DATE' ? 'date' : 'text'"
+                class="field-input"
+                :value="scalarDraft(field.fieldId)"
+                :disabled="isFieldLocked(field.fieldId)"
+                :aria-describedby="`field-id-${field.fieldId}`"
+                @input="drafts[field.fieldId] = ($event.target as HTMLInputElement).value"
+              />
+              <span :id="`field-id-${field.fieldId}`" class="visually-hidden">Field {{ field.fieldId }}</span>
+              <span v-if="isFieldLocked(field.fieldId)" class="field-hint">Locked: unlock it to edit.</span>
             </div>
-            <div v-if="field.fieldState" class="field-row__state">
-              <span class="badge">{{ field.fieldState.review }}</span>
-              <span class="badge">{{ field.fieldState.lock }}</span>
+            <div v-if="fieldStateOf(field.fieldId)" class="field-row__state">
+              <span v-for="chip in stateChips(fieldStateOf(field.fieldId)!)" :key="chip" class="badge">{{ chip }}</span>
+              <button
+                v-if="evidenceSpanIdsOf(field.fieldId).length > 0"
+                class="button"
+                type="button"
+                :aria-expanded="evidenceOpenFor === field.fieldId"
+                :aria-controls="`evidence-${field.fieldId}`"
+                :aria-label="`Evidence for ${field.fieldId}`"
+                @click="toggleEvidence(field.fieldId)"
+              >
+                Evidence ({{ evidenceSpanIdsOf(field.fieldId).length }})
+              </button>
               <div class="field-row__actions">
                 <button
                   class="button"
                   type="button"
-                  :disabled="fieldActionPending === fieldId"
-                  :aria-label="`Accept ${fieldId}`"
-                  @click="recordFieldReview(fieldId, 'ACCEPTED')"
+                  :disabled="fieldActionPending === field.fieldId"
+                  :aria-label="`Accept ${field.fieldId}`"
+                  @click="recordFieldReview(field.fieldId, 'ACCEPTED')"
                 >
                   Accept
                 </button>
                 <button
                   class="button"
                   type="button"
-                  :disabled="fieldActionPending === fieldId"
-                  :aria-label="`Reject ${fieldId}`"
-                  @click="recordFieldReview(fieldId, 'REJECTED')"
+                  :disabled="fieldActionPending === field.fieldId"
+                  :aria-label="`Reject ${field.fieldId}`"
+                  @click="recordFieldReview(field.fieldId, 'REJECTED')"
                 >
                   Reject
                 </button>
                 <button
                   class="button"
                   type="button"
-                  :disabled="fieldActionPending === fieldId"
-                  :aria-label="`Mark ${fieldId} as needing clarification`"
-                  @click="recordFieldReview(fieldId, 'NEEDS_CLARIFICATION')"
+                  :disabled="fieldActionPending === field.fieldId"
+                  :aria-label="`Mark ${field.fieldId} as needing clarification`"
+                  @click="recordFieldReview(field.fieldId, 'NEEDS_CLARIFICATION')"
                 >
                   Needs clarification
                 </button>
                 <button
                   class="button"
                   type="button"
-                  :disabled="fieldActionPending === fieldId"
-                  :aria-label="`${field.fieldState.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock'} ${fieldId}`"
-                  @click="toggleFieldLock(fieldId, field.fieldState.lock as FieldLock)"
+                  :disabled="fieldActionPending === field.fieldId"
+                  :aria-label="`${isFieldLocked(field.fieldId) ? 'Unlock' : 'Lock'} ${field.fieldId}`"
+                  @click="toggleFieldLock(field.fieldId, fieldStateOf(field.fieldId)!.lock as FieldLock)"
                 >
-                  {{ field.fieldState.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock' }}
+                  {{ isFieldLocked(field.fieldId) ? 'Unlock' : 'Lock' }}
                 </button>
               </div>
             </div>
-            <p v-else class="field-hint">Reviewing and locking individual rows of a repeated field is not available yet.</p>
+            <div v-if="evidenceOpenFor === field.fieldId" :id="`evidence-${field.fieldId}`" class="evidence-panel">
+              <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
+              <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
+              <template v-else>
+                <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
+                  <p>{{ excerpt.excerptText }}</p>
+                  <footer class="field-hint">From {{ excerpt.displayFilename ?? `source #${excerpt.sourceSnapshotId}` }}</footer>
+                </blockquote>
+                <p v-if="evidenceSpanIdsOf(field.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
+                  Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(field.fieldId).length }} cited passages.
+                </p>
+                <p class="field-hint">Brownie can show where a value came from; it cannot point to where a value lands on the preview page.</p>
+              </template>
+            </div>
           </div>
+
+          <fieldset v-if="repeatedFields.length > 0" class="row-group">
+            <legend class="field-row__label">Rows</legend>
+            <p v-if="rowsLocked" class="field-hint">A row is locked, so the rows cannot be edited until it is unlocked.</p>
+            <div v-if="rowCount > 0" class="row-table-wrap">
+            <table class="row-table">
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th v-for="field in repeatedFields" :key="field.fieldId" scope="col">{{ labelFor(field.fieldId) }}</th>
+                  <th scope="col">Row actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="index in rowIndexes" :key="index">
+                  <th scope="row">{{ index + 1 }}</th>
+                  <td v-for="field in repeatedFields" :key="field.fieldId">
+                    <label class="visually-hidden" :for="`edit-${field.fieldId}-${index}`">
+                      {{ labelFor(field.fieldId) }}, row {{ index + 1 }}
+                    </label>
+                    <input
+                      :id="`edit-${field.fieldId}-${index}`"
+                      :type="field.type === 'DATE' ? 'date' : 'text'"
+                      class="field-input"
+                      :value="rowDraft(field.fieldId)[index] ?? ''"
+                      :disabled="rowsLocked"
+                      @input="rowDraft(field.fieldId)[index] = ($event.target as HTMLInputElement).value"
+                    />
+                  </td>
+                  <td>
+                    <div class="field-row__actions">
+                      <span v-if="rowState(index)" class="badge">{{ stateLabel('review', rowState(index)!.review) }}</span>
+                      <span v-if="rowState(index) && rowState(index)!.lock !== 'EDITABLE'" class="badge">
+                        {{ stateLabel('lock', rowState(index)!.lock) }}
+                      </span>
+                      <button
+                        class="button"
+                        type="button"
+                        :disabled="rowsLocked"
+                        :aria-label="`Remove row ${index + 1}`"
+                        @click="removeRow(index)"
+                      >
+                        Remove
+                      </button>
+                      <button
+                        class="button"
+                        type="button"
+                        :disabled="rowsLocked || index === 0"
+                        :aria-label="`Move row ${index + 1} up`"
+                        @click="moveRow(index, -1)"
+                      >
+                        Up
+                      </button>
+                      <button
+                        class="button"
+                        type="button"
+                        :disabled="rowsLocked || index === rowCount - 1"
+                        :aria-label="`Move row ${index + 1} down`"
+                        @click="moveRow(index, 1)"
+                      >
+                        Down
+                      </button>
+                      <template v-if="rowState(index)">
+                        <button
+                          class="button"
+                          type="button"
+                          :disabled="fieldActionPending === `row-${index}`"
+                          :aria-label="`Accept row ${index + 1}`"
+                          @click="recordRowReview(index, 'ACCEPTED')"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          class="button"
+                          type="button"
+                          :disabled="fieldActionPending === `row-${index}`"
+                          :aria-label="`Reject row ${index + 1}`"
+                          @click="recordRowReview(index, 'REJECTED')"
+                        >
+                          Reject
+                        </button>
+                        <button
+                          class="button"
+                          type="button"
+                          :disabled="fieldActionPending === `row-${index}`"
+                          :aria-label="`${rowState(index)!.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock'} row ${index + 1}`"
+                          @click="toggleRowLock(index)"
+                        >
+                          {{ rowState(index)!.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock' }}
+                        </button>
+                      </template>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+            <p v-else class="field-hint">No rows yet.</p>
+            <button type="button" class="button" :disabled="rowsLocked" @click="addRow">Add row</button>
+            <div v-if="repeatedFieldsWithEvidence.length > 0" class="evidence-links">
+              <button
+                v-for="field in repeatedFieldsWithEvidence"
+                :key="field.fieldId"
+                class="button"
+                type="button"
+                :aria-expanded="evidenceOpenFor === field.fieldId"
+                :aria-controls="`evidence-${field.fieldId}`"
+                @click="toggleEvidence(field.fieldId)"
+              >
+                Evidence for {{ labelFor(field.fieldId) }} ({{ evidenceSpanIdsOf(field.fieldId).length }})
+              </button>
+            </div>
+            <div
+              v-for="field in repeatedFieldsWithEvidence"
+              v-show="evidenceOpenFor === field.fieldId"
+              :id="`evidence-${field.fieldId}`"
+              :key="`panel-${field.fieldId}`"
+              class="evidence-panel"
+            >
+              <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
+              <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
+              <template v-else-if="evidenceOpenFor === field.fieldId">
+                <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
+                  <p>{{ excerpt.excerptText }}</p>
+                  <footer class="field-hint">From {{ excerpt.displayFilename ?? `source #${excerpt.sourceSnapshotId}` }}</footer>
+                </blockquote>
+                <p class="field-hint">Brownie can show where a value came from; it cannot point to where a value lands on the preview page.</p>
+              </template>
+            </div>
+          </fieldset>
+
+          <div class="save-bar">
+            <div class="field-row__value">
+              <label class="field-label" for="edit-note">Note for history (optional)</label>
+              <input id="edit-note" v-model="editNote" type="text" class="field-input" />
+            </div>
+            <div class="field-row__actions">
+              <button
+                type="submit"
+                class="button button--primary"
+                :disabled="!isDirty || saveStage === 'saving' || rowProblems.length > 0"
+              >
+                {{ saveStage === 'saving' ? 'Saving…' : 'Save now' }}
+              </button>
+              <button type="button" class="button" :disabled="!isDirty || saveStage === 'saving'" @click="resetDrafts">
+                Discard changes
+              </button>
+            </div>
+            <p v-if="saveStage === 'saved' && !isDirty">Saved.</p>
+            <p v-if="isDirty && saveStage !== 'saving' && saveStage !== 'conflict'" class="field-hint">
+              Unsaved changes. Brownie saves a moment after you stop typing.
+            </p>
+            <div v-if="rowProblems.length > 0" class="field-error" role="alert">
+              <ul>
+                <li v-for="problem in rowProblems" :key="problem">{{ problem }}</li>
+              </ul>
+            </div>
+            <p v-if="saveError" class="field-error" role="alert">{{ saveError }}</p>
+            <div v-if="saveStage === 'conflict'" class="field-error conflict-notice" role="alert">
+              <p>
+                This document changed since you started editing (revision
+                {{ document.currentRevision.revisionNumber }} is now current). Your edits are still in the fields
+                above. Save them onto the latest version, or discard them to see what changed.
+              </p>
+              <div class="field-row__actions">
+                <button type="button" class="button button--primary" @click="saveEdits('manual')">Save my edits onto the latest</button>
+                <button type="button" class="button" @click="resetDrafts">Discard my edits</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div v-if="previewOpen" id="pdf-pane" class="card pdf-pane">
+        <h2>Preview</h2>
+        <p v-if="previewStage === 'ready' && previewRevisionNumber != null" class="field-hint">
+          Preview of version {{ previewRevisionNumber }}.
+          <span v-if="previewIsStale">The document has changed since it was made.</span>
+          <span v-else-if="isDirty">You have unsaved edits; save, then regenerate to see them.</span>
+        </p>
+        <p v-if="previewStage === 'idle'" class="field-hint">No preview yet. Generate one to see this document as it will export.</p>
+        <p v-if="previewStage === 'loading'" aria-live="polite">Checking for a preview…</p>
+        <p v-if="previewStage === 'generating'" aria-live="polite">Generating the preview…</p>
+        <p v-if="previewError" class="field-error" role="alert">{{ previewError }}</p>
+        <div class="pdf-pane__actions">
+          <button
+            class="button button--primary"
+            type="button"
+            :disabled="previewStage === 'generating' || previewStage === 'loading'"
+            @click="regeneratePreview"
+          >
+            {{ previewStage === 'generating' ? 'Generating…' : previewArtifactId == null ? 'Generate preview' : 'Regenerate preview' }}
+          </button>
+          <a v-if="previewUrl" class="button" :href="previewUrl" target="_blank" rel="noopener">Open the PDF in a new tab</a>
         </div>
-        <div v-else class="empty-state">
-          <p class="empty-state__title">Nothing filled in yet.</p>
-          <p class="field-hint">
-            Attach your notes or a transcript, then use Assist to fill this document from them. You review every
-            value before it lands. Typing values in by hand is not available yet.
-          </p>
-          <button type="button" class="button button--primary" @click="goToSources">Attach a source</button>
-        </div>
+        <PdfPreview :src="previewUrl" :label="`Preview of version ${previewRevisionNumber ?? ''}`" />
       </div>
 
       <div class="card inspector-pane">
@@ -838,24 +1970,102 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
           <div role="tabpanel">
             <div v-if="activeTab === 'sources'">
               <label class="field-label" for="attach-source">Attach a source</label>
-              <input id="attach-source" type="file" :disabled="sourceUploadState === 'uploading'" @change="onSourceFileChosen" />
+              <input
+                id="attach-source"
+                type="file"
+                accept=".txt,text/plain"
+                :disabled="sourceUploadState === 'uploading'"
+                @change="onSourceFileChosen"
+              />
+              <p class="field-hint">
+                Plain-text notes or a transcript (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Assist reads
+                plain-text sources.
+              </p>
               <p v-if="sourceUploadState === 'uploading'" aria-live="polite">Uploading…</p>
               <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
 
               <ul v-if="attachedSources.length > 0" class="source-list">
-                <li v-for="source in attachedSources" :key="source.id">Source #{{ source.id }} attached.</li>
+                <li v-for="source in attachedSources" :key="source.id">
+                  {{ source.displayFilename ?? `Source #${source.id}` }}
+                  <span class="field-hint">(attached {{ new Date(source.attachedAt).toLocaleString() }})</span>
+                </li>
               </ul>
-              <p v-else class="field-hint">No sources attached yet.</p>
+              <p v-else class="field-hint">No sources attached to this document yet.</p>
             </div>
 
             <div v-else-if="activeTab === 'assist'">
+              <form class="assist-composer" @submit.prevent="interpretAssistRequest">
+                <label class="field-label" for="assist-composer">Ask Assist</label>
+                <textarea
+                  id="assist-composer"
+                  v-model="assistText"
+                  class="field-input assist-composer__input"
+                  rows="2"
+                  placeholder="e.g. change meeting title to Spring Planning"
+                  :disabled="assistBusy"
+                ></textarea>
+                <p class="field-hint">
+                  Brownie does a few bounded things: draft from your sources, change a field, shorten or rewrite a
+                  text field, explain a finding. It shows what it would touch before it does anything.
+                </p>
+                <div class="field-row__actions">
+                  <button type="submit" class="button" :disabled="assistText.trim() === '' || assistBusy">
+                    {{ assistStage === 'interpreting' ? 'Reading…' : 'Interpret' }}
+                  </button>
+                  <button v-if="assistStage !== 'idle'" type="button" class="button" :disabled="assistBusy" @click="clearAssistRequest">
+                    Clear
+                  </button>
+                </div>
+                <p v-if="assistError" class="field-error" role="alert">{{ assistError }}</p>
+                <div v-if="assistInterpretation" class="assist-plan" role="group" aria-labelledby="assist-plan-heading">
+                  <p id="assist-plan-heading" class="field-label">What Assist would do</p>
+                  <p>{{ assistInterpretation.summary }}</p>
+                  <dl v-if="assistInterpretation.scope">
+                    <template v-if="assistInterpretation.scope.fieldId">
+                      <dt>Field</dt>
+                      <dd>{{ assistInterpretation.scope.label }} ({{ assistInterpretation.scope.fieldId }})</dd>
+                    </template>
+                    <template v-if="assistInterpretation.scope.findingMessage">
+                      <dt>Finding</dt>
+                      <dd>{{ assistInterpretation.scope.findingMessage }}</dd>
+                    </template>
+                    <template v-else-if="assistInterpretation.scope.fieldId">
+                      <dt>Now</dt>
+                      <dd>{{ assistInterpretation.scope.currentValue ?? '(empty)' }}</dd>
+                    </template>
+                  </dl>
+                  <ul v-if="assistInterpretation.help.length > 0" class="assist-help">
+                    <li v-for="item in assistInterpretation.help" :key="item">{{ item }}</li>
+                  </ul>
+                  <p v-if="assistInterpretation.executable && assistInterpretation.usesModel" class="field-hint">
+                    This makes one model call. Nothing changes on the document until you accept the result.
+                  </p>
+                  <div v-if="assistInterpretation.executable" class="field-row__actions">
+                    <button type="button" class="button button--primary" :disabled="assistBusy" @click="runAssistRequest">
+                      {{ assistStage === 'executing' ? 'Working…' : 'Do it' }}
+                    </button>
+                  </div>
+                </div>
+                <blockquote v-if="assistExplanation" class="assist-explanation">
+                  <p>{{ assistExplanation }}</p>
+                </blockquote>
+              </form>
+
               <p class="field-hint">
-                Pulls the title, date, attendees, decisions, and action items out of your first attached source.
-                Brownie asks you about anything missing or conflicting, then proposes the values -- nothing
-                changes on this document until you accept them.
+                Pulls this template's fields (and any repeated rows) out of an attached source. Brownie asks you
+                about anything missing or conflicting, then proposes the values. Nothing changes on this
+                document until you accept them.
               </p>
               <p v-if="attachedSources.length === 0" class="field-hint">Attach a source first, on the Sources tab.</p>
               <template v-else>
+                <template v-if="attachedSources.length > 1">
+                  <label class="field-label" for="extract-source">Source to read</label>
+                  <select id="extract-source" v-model.number="selectedSourceId" :disabled="extractionStage === 'starting' || extractionStage === 'running'">
+                    <option v-for="source in attachedSources" :key="source.id" :value="source.id">
+                      {{ source.displayFilename ?? `Source #${source.id}` }}
+                    </option>
+                  </select>
+                </template>
                 <button
                   class="button button--primary"
                   type="button"
@@ -864,14 +2074,32 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 >
                   {{ extractionStage === 'starting' || extractionStage === 'running' ? 'Extracting…' : 'Try grounded extraction' }}
                 </button>
+                <button
+                  v-if="extractionStage === 'running' || extractionStage === 'waiting-for-input'"
+                  class="button"
+                  type="button"
+                  :disabled="cancellationRequested"
+                  @click="cancelExtraction"
+                >
+                  {{ cancellationRequested ? 'Cancellation requested…' : 'Cancel' }}
+                </button>
                 <p v-if="extractionStage === 'running'" aria-live="polite">Job status: {{ extractionJobState }}</p>
+                <p v-if="extractionStage === 'running' && noWorkerYet" class="field-error" role="status">
+                  No worker has picked this run up yet. If the Brownie worker is not running, the run waits until it is;
+                  you can cancel it and try again later.
+                </p>
+                <p v-if="extractionStage === 'cancelled'" aria-live="polite">This run was cancelled. Nothing was applied.</p>
+                <div v-if="extractionStalled" class="field-hint" role="status">
+                  <p>Still running after ten minutes of checking. The run continues on the server.</p>
+                  <button class="button" type="button" @click="checkRunAgain">Check again</button>
+                </div>
                 <p v-if="extractionError" class="field-error" role="alert">{{ extractionError }}</p>
 
                 <div v-if="extractionStage === 'waiting-for-input' || extractionStage === 'resuming'" class="question-list" aria-live="polite">
                   <p class="field-hint">A few things need your input before this can finish.</p>
                   <div v-for="question in openQuestions" :key="question.id" class="question-item">
                     <p class="field-label">
-                      {{ question.fieldId }}
+                      {{ labelFor(question.fieldId) }}
                       <span class="field-hint">({{ question.reason === 'CONFLICT' ? 'conflicts with the current value' : 'missing' }})</span>
                     </p>
                     <template v-if="question.status === 'ANSWERED'">
@@ -930,56 +2158,57 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                   <p v-if="applyStage === 'applying'" aria-live="polite">Preparing proposal…</p>
                   <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
 
-                  <div v-if="patchProposal && applyStage !== 'idle' && applyStage !== 'failed'" class="question-item">
-                    <p class="field-label">Proposed changes</p>
-                    <dl>
-                      <template v-for="(field, fieldId) in patchProposal.proposedValues" :key="fieldId">
-                        <dt>{{ fieldId }}</dt>
-                        <dd>
-                          <ol v-if="field.cardinality === 'REPEATED'" class="proposed-items">
-                            <li v-for="(item, index) in field.values ?? []" :key="index">{{ item }}</li>
-                          </ol>
-                          <template v-else>{{ field.value }}</template>
-                        </dd>
-                      </template>
-                    </dl>
-                    <p v-if="patchProposal.proposedRepeatedItemCount > 0" class="field-hint">
-                      {{ patchProposal.proposedRepeatedItemCount }} action item{{ patchProposal.proposedRepeatedItemCount === 1 ? '' : 's' }}
-                      proposed, listed above in matching order.
-                    </p>
-                    <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="field-error" role="status">
-                      <p>
-                        {{ patchProposal.skippedRepeatedItems.length }} action item{{ patchProposal.skippedRepeatedItems.length === 1 ? ' was' : 's were' }}
-                        found in your source but could not be proposed, because a required detail could not be determined.
-                        Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
-                      </p>
-                      <ul>
-                        <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
-                          {{ skipped.description ?? `Item ${skipped.itemIndex + 1}` }}
-                          <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.join(', ') }})</span>
-                        </li>
-                      </ul>
-                    </div>
-                    <button
-                      v-if="applyStage !== 'accepted'"
-                      class="button button--primary"
-                      type="button"
-                      :disabled="applyStage === 'accepting'"
-                      @click="acceptProposal"
-                    >
-                      {{ applyStage === 'accepting' ? 'Applying…' : 'Accept and update document' }}
-                    </button>
-                    <p v-if="applyStage === 'accepted'" aria-live="polite">Applied to the document.</p>
-                    <p
-                      v-if="acceptResult && Object.values(acceptResult.fieldStatuses).some((s) => s !== 'CLEAN')"
-                      class="field-hint"
-                      aria-live="polite"
-                    >
-                      Some fields could not be applied automatically (conflicting or locked).
-                    </p>
-                  </div>
                 </div>
               </template>
+
+              <div v-if="patchProposal && applyStage !== 'idle' && applyStage !== 'failed'" class="question-item">
+                <p class="field-label">Proposed changes</p>
+                <dl>
+                  <template v-for="(field, fieldId) in patchProposal.proposedValues" :key="fieldId">
+                    <dt>{{ labelFor(fieldId) }}</dt>
+                    <dd>
+                      <ol v-if="field.cardinality === 'REPEATED'" class="proposed-items">
+                        <li v-for="(item, index) in field.values ?? []" :key="index">{{ item }}</li>
+                      </ol>
+                      <template v-else>{{ field.value }}</template>
+                    </dd>
+                  </template>
+                </dl>
+                <p v-if="patchProposal.proposedRepeatedItemCount > 0" class="field-hint">
+                  {{ patchProposal.proposedRepeatedItemCount }} action item{{ patchProposal.proposedRepeatedItemCount === 1 ? '' : 's' }}
+                  proposed, listed above in matching order.
+                </p>
+                <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="field-error" role="status">
+                  <p>
+                    {{ patchProposal.skippedRepeatedItems.length }} action item{{ patchProposal.skippedRepeatedItems.length === 1 ? ' was' : 's were' }}
+                    found in your source but could not be proposed, because a required detail could not be determined.
+                    Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
+                  </p>
+                  <ul>
+                    <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
+                      {{ skipped.description ?? `Item ${skipped.itemIndex + 1}` }}
+                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.join(', ') }})</span>
+                    </li>
+                  </ul>
+                </div>
+                <button
+                  v-if="applyStage !== 'accepted'"
+                  class="button button--primary"
+                  type="button"
+                  :disabled="applyStage === 'accepting'"
+                  @click="acceptProposal"
+                >
+                  {{ applyStage === 'accepting' ? 'Applying…' : 'Accept and update document' }}
+                </button>
+                <p v-if="applyStage === 'accepted'" aria-live="polite">Applied to the document.</p>
+                <p
+                  v-if="acceptResult && Object.values(acceptResult.fieldStatuses).some((s) => s !== 'CLEAN')"
+                  class="field-hint"
+                  aria-live="polite"
+                >
+                  Some fields could not be applied automatically (conflicting or locked).
+                </p>
+              </div>
             </div>
 
             <div v-else-if="activeTab === 'checks'">
@@ -996,15 +2225,24 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
 
               <template v-if="validationManifest">
                 <p v-if="validationManifest.hasUnresolvedBlocking" class="field-error" role="alert">
-                  Cannot export -- unresolved blocking findings
+                  Cannot export: unresolved blocking findings
                 </p>
                 <p v-else aria-live="polite">Ready to export</p>
 
                 <ul v-if="validationManifest.findings.length > 0" class="finding-list">
                   <li v-for="(finding, index) in validationManifest.findings" :key="index" class="finding-row">
                     <span class="badge">{{ finding.severity }}</span>
-                    <span v-if="finding.fieldId" class="field-row__label">{{ finding.fieldId }}</span>
+                    <span v-if="finding.fieldId" class="field-row__label">{{ labelFor(finding.fieldId) }}</span>
                     <span>{{ finding.message }}</span>
+                    <button
+                      v-if="finding.fieldId && editableFieldIds.has(finding.fieldId)"
+                      type="button"
+                      class="button"
+                      :aria-label="`Go to ${finding.fieldId}`"
+                      @click="focusField(finding.fieldId)"
+                    >
+                      Go to field
+                    </button>
                   </li>
                 </ul>
                 <p v-else class="field-hint">No findings.</p>
@@ -1099,7 +2337,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                     class="compare-row"
                     :class="{ 'compare-row--changed': fieldChanged(fieldId) }"
                   >
-                    <span class="field-row__label">{{ fieldId }}</span>
+                    <span class="field-row__label">{{ labelFor(fieldId) }}</span>
                     <div class="compare-row__values">
                       <span>{{ fieldDisplayValue(compareRevision.fields[fieldId]) }}</span>
                       <span>{{ fieldDisplayValue(document.currentRevision.fields[fieldId]) }}</span>
@@ -1109,7 +2347,30 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
               </div>
             </div>
 
-            <p v-else class="field-hint">Not available yet.</p>
+            <div v-else-if="activeTab === 'rules'">
+              <p class="field-hint">
+                The rules this document's template version enforces when it is validated and exported. Rules are
+                taught on the template, so they are read-only here.
+              </p>
+              <p v-if="rulesLoadState === 'loading'" aria-live="polite">Loading rules…</p>
+              <p v-else-if="rulesLoadState === 'error'" class="field-error" role="alert">Could not load the rules. Try again.</p>
+              <template v-else-if="rulesLoadState === 'loaded'">
+                <p v-if="rulesInForce.length === 0" class="field-hint">
+                  No accepted rules on this template version beyond its required fields.
+                </p>
+                <ul v-else class="rule-list">
+                  <li v-for="rule in rulesInForce" :key="rule.id" class="rule-row">
+                    <span class="badge">{{ rule.category }}</span>
+                    <span class="rule-row__scope">{{ describeScope(rule.scope) }}</span>
+                    <span>{{ describePayload(rule.payload) }}</span>
+                    <p v-if="rule.humanExplanation" class="field-hint">{{ rule.humanExplanation }}</p>
+                  </li>
+                </ul>
+                <p v-if="rulesUndecided > 0" class="field-hint">
+                  {{ rulesUndecided }} proposed {{ rulesUndecided === 1 ? 'rule is' : 'rules are' }} waiting for a decision on the template.
+                </p>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -1122,10 +2383,103 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   margin-bottom: var(--space-5);
 }
 
+.workspace-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
 .workspace-layout {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--space-5);
+}
+
+/* A grid item is never wider than its column: its own content scrolls or wraps instead of painting over the next pane. */
+.workspace-layout > * {
+  min-width: 0;
+}
+
+/* Three columns only where all three keep a usable width; below that the preview takes a full row under the editor. */
+@media (min-width: 1400px) {
+  .workspace-layout--with-preview {
+    grid-template-columns: minmax(22rem, 3fr) minmax(20rem, 3fr) minmax(22rem, 2fr);
+  }
+}
+
+@media (max-width: 1399px) {
+  .workspace-layout--with-preview .pdf-pane {
+    grid-column: 1 / -1;
+  }
+}
+
+.pdf-pane__actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.evidence-panel {
+  grid-column: 1 / -1;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-honey);
+  background: var(--color-honey-soft);
+  border-radius: var(--radius);
+}
+
+.evidence-excerpt {
+  margin: 0 0 var(--space-2);
+}
+
+.evidence-excerpt p {
+  margin: 0 0 var(--space-1);
+}
+
+.evidence-links {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.assist-composer {
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.assist-composer__input {
+  width: 100%;
+  min-height: 3.5rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  resize: vertical;
+}
+
+.assist-plan {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-honey);
+  background: var(--color-honey-soft);
+  border-radius: var(--radius);
+}
+
+.assist-help {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-4);
+}
+
+.assist-explanation {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-border);
+  background: var(--color-surface);
 }
 
 /* Hidden above the 720px breakpoint -- the inspector pane is a normal, always-visible column there. */
@@ -1186,6 +2540,7 @@ dt {
 
 .tab-strip {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   border-bottom: 1px solid var(--color-border);
   margin-bottom: var(--space-4);
@@ -1248,6 +2603,61 @@ dt {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
+}
+
+.field-input {
+  width: 100%;
+  max-width: 32rem;
+  box-sizing: border-box;
+}
+
+.row-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* The rows table scrolls sideways inside its own box when the columns need more room than the pane has.
+   The box is also the positioning context for the visually hidden row labels inside it, which are
+   absolutely positioned and would otherwise escape the box and widen the whole page. */
+.row-table-wrap {
+  position: relative;
+  width: 100%;
+  overflow-x: auto;
+}
+
+.row-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.row-table th,
+.row-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.row-table .field-input {
+  min-width: 10rem;
+}
+
+.save-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+}
+
+.conflict-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .badge {
