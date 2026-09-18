@@ -3,7 +3,7 @@ package io.github.vihuynh72.brownie.core.evidence;
 /**
  * Where a cited excerpt lives within a source's own extraction graph, in
  * the shape each format's extraction actually addresses content by --
- * matching the plan's own per-format evidence-locator contract exactly:
+ * one locator shape per format:
  * a DOCX locator names a package part and a structural node's own stable
  * path (see {@code StructuralNode.nodeId}); a PDF locator names a
  * one-based page and the line index this extractor grouped text into (see
