@@ -75,8 +75,8 @@ public class ExtractionService {
     /**
      * The pure heart of this service: build the request, spend from the
      * budget, call the model, parse its reply (retrying once, on a
-     * structurally invalid reply only, per this plan's own single-repair
-     * rule), and reject fabricated evidence -- everything this class does
+     * structurally invalid reply only: one repair, never a
+     * loop), and reject fabricated evidence -- everything this class does
      * that does not itself require a real artifact/extraction chain to
      * exercise. Public for two real callers with no access to a tenant
      * database at all: a unit test using a {@code FakeModelGateway} and a
@@ -202,8 +202,7 @@ public class ExtractionService {
      * Rejects, rather than trusts, any candidate that cites an evidence
      * span outside the exact set this run actually offered -- a
      * fabricated or out-of-scope reference (see {@code ExtractionService}'s
-     * own class documentation and this plan's evidence-validation
-     * contract). A rejected candidate becomes explicitly unresolved, never
+     * own class documentation). A rejected candidate becomes explicitly unresolved, never
      * silently stripped of just the bad citation while keeping its value.
      */
     private ExtractionResult rejectFabricatedEvidence(ExtractionResult raw, Set<Long> allowedSpanIds) {
