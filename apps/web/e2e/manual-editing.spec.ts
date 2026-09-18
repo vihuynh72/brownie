@@ -15,8 +15,8 @@ test('a person fills a document by hand and the typed values survive into the ex
   // Two real renders through the isolated renderer (the preview, then validation) do not fit the default budget.
   test.setTimeout(120_000)
   await page.goto('/documents/new')
-  await page.getByLabel('Template').selectOption({ label: 'Flowing meeting minutes' })
-  await page.getByLabel('Title').fill(`E2E manual editing ${Date.now()}`)
+  await page.getByLabel('Template', { exact: true }).selectOption({ label: 'Flowing meeting minutes' })
+  await page.getByLabel('Title', { exact: true }).fill(`E2E manual editing ${Date.now()}`)
   await page.getByRole('button', { name: 'Create document' }).click()
   await page.waitForURL(/\/documents\/\d+$/)
 

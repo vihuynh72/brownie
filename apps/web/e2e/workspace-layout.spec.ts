@@ -9,8 +9,8 @@ import { test, expect, type Page } from '@playwright/test'
  */
 async function openADocumentWithARow(page: Page): Promise<void> {
   await page.goto('/documents/new')
-  await page.getByLabel('Template').selectOption({ label: 'Flowing meeting minutes' })
-  await page.getByLabel('Title').fill(`E2E layout ${Date.now()}`)
+  await page.getByLabel('Template', { exact: true }).selectOption({ label: 'Flowing meeting minutes' })
+  await page.getByLabel('Title', { exact: true }).fill(`E2E layout ${Date.now()}`)
   await page.getByRole('button', { name: 'Create document' }).click()
   await page.waitForURL(/\/documents\/\d+$/)
   await expect(page.getByLabel(/^Meeting title/)).toBeVisible({ timeout: 15_000 })

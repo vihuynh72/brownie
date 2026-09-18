@@ -12,9 +12,9 @@ import { AxeBuilder } from '@axe-core/playwright'
 test('an empty document blocks export at validation and never offers to approve it', async ({ page }) => {
   await page.goto('/documents/new')
 
-  await expect(page.getByLabel('Template')).toBeEnabled({ timeout: 15_000 })
+  await expect(page.getByLabel('Template', { exact: true })).toBeEnabled({ timeout: 15_000 })
   const title = `E2E empty document ${Date.now()}`
-  await page.getByLabel('Title').fill(title)
+  await page.getByLabel('Title', { exact: true }).fill(title)
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 

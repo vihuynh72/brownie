@@ -35,9 +35,9 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   test.setTimeout(120_000)
 
   await page.goto('/documents/new')
-  await page.getByLabel('Template').selectOption({ label: 'Flowing meeting minutes' })
+  await page.getByLabel('Template', { exact: true }).selectOption({ label: 'Flowing meeting minutes' })
   const title = `E2E golden path ${Date.now()}`
-  await page.getByLabel('Title').fill(title)
+  await page.getByLabel('Title', { exact: true }).fill(title)
   await page.getByRole('button', { name: 'Create document' }).click()
   await page.waitForURL(/\/documents\/\d+$/)
 
