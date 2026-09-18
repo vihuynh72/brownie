@@ -2120,8 +2120,6 @@ components:
         same shape FieldValueResponse uses for a stored field.
       required: [type, cardinality, evidenceSpanIds]
       properties:
-        fieldId:
-          type: string
         type:
           type: string
           enum: [TEXT, DATE]
@@ -2335,20 +2333,7 @@ components:
       type: object
       required: [id, templateId, templateVersionId, category, scope, payload, status, authorUserId, createdAt]
       properties:
-        candidates:
-          type: array
-          items:
-            $ref: "#/components/schemas/CandidateFieldBindingResponse"
-        ambiguousContentControlTags:
-          type: array
-          items:
-            type: string
-
-    AttachSourceRequest:
-      type: object
-      required: [artifactId]
-      properties:
-        artifactId:
+        id:
           type: integer
           format: int64
         templateId:
@@ -2461,7 +2446,7 @@ components:
         [id, documentId, revisionId, templateId, templateVersionId, docxArtifactId, docxSha256, pdfArtifactId, pdfSha256,
          rendererVersion, integrityFindings, allIntegrityChecksPassed, compiledAt]
       properties:
-        artifactId:
+        id:
           type: integer
           format: int64
         documentId:
@@ -2496,7 +2481,7 @@ components:
           type: boolean
         compiledAt:
           type: string
-          minLength: 1
+          format: date-time
 
     ApproveExportRequest:
       type: object
@@ -2533,31 +2518,7 @@ components:
           enum: [DOCX, PDF, BOTH]
         approvedAt:
           type: string
-          nullable: true
-          description: DATE_DISPLAY_FORMAT only.
-          enum: [LONG, SHORT, ISO]
-        allowedSourceKinds:
-          type: array
-          nullable: true
-          description: ALLOWED_SOURCE_KINDS only -- ARTIFACT is the only source kind this codebase produces today.
-          items:
-            type: string
-            enum: [ARTIFACT]
-        emptyValueResolution:
-          type: string
-          nullable: true
-          description: MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
-          enum: [OMIT, BLANK, PLACEHOLDER_TEXT]
-        overflowResolution:
-          type: string
-          nullable: true
-          description: ALLOWED_OVERFLOW_BEHAVIOR only.
-          enum: [BLOCK_EXPORT, ALLOW_REFLOW]
-        protectedRegionTarget:
-          allOf:
-            - $ref: "#/components/schemas/BindingRequest"
-          nullable: true
-          description: PROTECTED_REGION only.
+          format: date-time
 
     ExportReceiptResponse:
       type: object
