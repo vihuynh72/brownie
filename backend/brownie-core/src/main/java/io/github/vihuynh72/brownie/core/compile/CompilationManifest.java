@@ -8,8 +8,8 @@ import java.util.Objects;
  * One exact record of compiling a document revision: which template
  * version's bindings were used, the resulting DOCX/PDF artifacts and their
  * hashes, the renderer that produced the PDF, and the independent
- * content-integrity findings. This is this phase's own bounded receipt --
- * not the later, fuller export receipt this plan describes (bound to a
+ * content-integrity findings. This is the compilation's own bounded receipt --
+ * not the fuller export receipt (bound to a
  * human review decision and a validation manifest, neither of which exist
  * yet), so it is named for what it actually is rather than borrowing that
  * later name.
