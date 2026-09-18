@@ -3,84 +3,88 @@ package io.github.vihuynh72.brownie.api.web;
 import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.core.job.JobState;
-import tools.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.ObjectMapper;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
- * Proves the actual, deployed error-response contract end to end: a real
- * HTTP call, through the real filter chain and the real {@link
- * ApiExceptionHandler}, for every case this module can currently produce.
- * {@link ProbeController} exists only in this test's own Spring context --
- * it is not shipped -- purely to give an unmapped route, an unexpected
- * exception, and a failed validation something real to happen against;
- * nothing about the exception-handling contract itself is test-only.
- * Runs against the disposable in-memory H2 database from the {@code test}
- * profile block in {@code application.yml} -- needed for {@code
- * PlatformProbeController}'s repository to wire up, though this test
- * never touches its actual schema -- with Flyway excluded, since its one
- * migration is Postgres-specific SQL.
+ * Proves the actual, deployed error-response contract end to end, through
+ * the real filter chain and the real {@link ApiExceptionHandler}, for every
+ * case this module can currently produce. {@link ProbeController} exists
+ * only in this test's own Spring context -- it is not shipped -- purely to
+ * give an unmapped route, an unexpected exception, and a failed validation
+ * something real to happen against; nothing about the exception-handling
+ * contract itself is test-only. Every probe is made as a signed-in caller,
+ * because every route that is not explicitly public requires a session and
+ * an anonymous request would be answered with a plain 401 before any
+ * handler ran. Runs against the disposable in-memory H2 database from the
+ * {@code test} profile block in {@code application.yml} -- needed for the
+ * JDBC repositories to wire up, though this test never touches a real
+ * schema -- with Flyway excluded, since the migrations are
+ * Postgres-specific SQL.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest
+@AutoConfigureMockMvc
 @EnableAutoConfiguration(exclude = FlywayAutoConfiguration.class)
 @ActiveProfiles("test")
 class ApiExceptionHandlerIntegrationTest {
 
-    @LocalServerPort
-    private int port;
+    @Autowired
+    private MockMvc mockMvc;
 
-    private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper json = new ObjectMapper();
 
     @Test
     void unmappedRouteReturnsEnrichedNotFound() throws Exception {
-        HttpResponse<String> response = get("/does-not-exist", null);
-        Map<String, Object> body = json.readValue(response.body(), Map.class);
+        MvcResult response = probe("/does-not-exist", null);
+        Map<String, Object> body = body(response);
 
-        assertThat(response.statusCode()).isEqualTo(404);
+        assertThat(response.getResponse().getStatus()).isEqualTo(404);
         assertThat(body).containsEntry("code", "NOT_FOUND");
         assertThat(body.get("correlationId")).isNotNull();
-        assertThat(response.headers().firstValue(CorrelationIdFilter.HEADER_NAME)).isPresent();
+        assertThat(response.getResponse().getHeader(CorrelationIdFilter.HEADER_NAME)).isNotNull();
     }
 
     @Test
     void callerSuppliedCorrelationIdIsEchoedIntoTheErrorBody() throws Exception {
-        HttpResponse<String> response = get("/does-not-exist", "test-supplied-id-42");
-        Map<String, Object> body = json.readValue(response.body(), Map.class);
+        MvcResult response = probe("/does-not-exist", "test-supplied-id-42");
+        Map<String, Object> body = body(response);
 
-        assertThat(response.headers().firstValue(CorrelationIdFilter.HEADER_NAME))
-                .contains("test-supplied-id-42");
+        assertThat(response.getResponse().getHeader(CorrelationIdFilter.HEADER_NAME)).isEqualTo("test-supplied-id-42");
         assertThat(body).containsEntry("correlationId", "test-supplied-id-42");
     }
 
     @Test
     void unexpectedExceptionReturnsSafeGenericMessageNotTheRealOne() throws Exception {
-        HttpResponse<String> response = get("/probe/boom", null);
-        Map<String, Object> body = json.readValue(response.body(), Map.class);
+        MvcResult response = probe("/probe/boom", null);
+        Map<String, Object> body = body(response);
 
-        assertThat(response.statusCode()).isEqualTo(500);
+        assertThat(response.getResponse().getStatus()).isEqualTo(500);
         assertThat(body).containsEntry("code", "INTERNAL_ERROR");
         assertThat(body.get("correlationId")).isNotNull();
         assertThat(String.valueOf(body.get("detail"))).doesNotContain("the real secret failure reason");
@@ -88,17 +92,15 @@ class ApiExceptionHandlerIntegrationTest {
 
     @Test
     void failedValidationReportsTheAffectedField() throws Exception {
-        String csrfToken = fetchCsrfToken();
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url("/probe/validated")))
-                .header("Content-Type", "application/json")
-                .header("Cookie", "XSRF-TOKEN=" + csrfToken)
-                .header("X-XSRF-TOKEN", csrfToken)
-                .POST(HttpRequest.BodyPublishers.ofString("{}"))
-                .build();
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        Map<String, Object> body = json.readValue(response.body(), Map.class);
+        MvcResult response = mockMvc.perform(post("/probe/validated")
+                        .with(user("someone"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{}"))
+                .andReturn();
+        Map<String, Object> body = body(response);
 
-        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.getResponse().getStatus()).isEqualTo(400);
         assertThat(body).containsEntry("code", "VALIDATION_FAILED");
         @SuppressWarnings("unchecked")
         List<Map<String, String>> fields = (List<Map<String, String>>) body.get("fields");
@@ -107,51 +109,38 @@ class ApiExceptionHandlerIntegrationTest {
 
     @Test
     void dataIntegrityViolationIsMappedToUnprocessableEntityNotAGeneric500() throws Exception {
-        HttpResponse<String> response = get("/probe/data-integrity-violation", null);
-        Map<String, Object> body = json.readValue(response.body(), Map.class);
+        MvcResult response = probe("/probe/data-integrity-violation", null);
+        Map<String, Object> body = body(response);
 
-        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.getResponse().getStatus()).isEqualTo(422);
         assertThat(body).containsEntry("code", "REFERENCED_DATA_UNAVAILABLE");
         assertThat(body.get("correlationId")).isNotNull();
     }
 
     @Test
     void jobNotFoundAndInvalidStateAreMappedToNotFoundAndConflict() throws Exception {
-        HttpResponse<String> missing = get("/probe/job-not-found", null);
-        HttpResponse<String> conflict = get("/probe/job-conflict", null);
-        Map<String, Object> missingBody = json.readValue(missing.body(), Map.class);
-        Map<String, Object> conflictBody = json.readValue(conflict.body(), Map.class);
+        MvcResult missing = probe("/probe/job-not-found", null);
+        MvcResult conflict = probe("/probe/job-conflict", null);
+        Map<String, Object> missingBody = body(missing);
+        Map<String, Object> conflictBody = body(conflict);
 
-        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(missing.getResponse().getStatus()).isEqualTo(404);
         assertThat(missingBody).containsEntry("code", "NOT_FOUND");
-        assertThat(conflict.statusCode()).isEqualTo(409);
+        assertThat(conflict.getResponse().getStatus()).isEqualTo(409);
         assertThat(conflictBody).containsEntry("code", "CONFLICT");
     }
 
-    private HttpResponse<String> get(String path, String correlationId) throws IOException, InterruptedException {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url(path))).GET();
+    private MvcResult probe(String path, String correlationId) throws Exception {
+        MockHttpServletRequestBuilder builder = get(path).with(user("someone"));
         if (correlationId != null) {
             builder.header(CorrelationIdFilter.HEADER_NAME, correlationId);
         }
-        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        return mockMvc.perform(builder).andReturn();
     }
 
-    private String url(String path) {
-        return "http://localhost:" + port + path;
-    }
-
-    /**
-     * Spring Security's {@code csrf.spa()} sets the XSRF-TOKEN cookie on
-     * every response, even this unrelated GET, precisely so a JSON client
-     * never needs a dedicated endpoint just to obtain one before its first
-     * mutation.
-     */
-    private String fetchCsrfToken() throws IOException, InterruptedException {
-        HttpResponse<Void> response = client.send(
-                HttpRequest.newBuilder(URI.create(url("/does-not-exist"))).GET().build(),
-                HttpResponse.BodyHandlers.discarding());
-        String setCookie = response.headers().firstValue("set-cookie").orElseThrow();
-        return setCookie.split(";", 2)[0].split("=", 2)[1];
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> body(MvcResult result) throws Exception {
+        return json.readValue(result.getResponse().getContentAsString(), Map.class);
     }
 
     @TestConfiguration
