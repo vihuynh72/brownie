@@ -27,8 +27,26 @@ cp .env.example .env
 set -o allexport
 source .env
 set +o allexport
-cd backend && ./mvnw -pl brownie-api spring-boot:run
+cd backend
+export JAVA_HOME="$PWD/../.toolchains/jdk-21.0.12.1+1/Contents/Home"
+./mvnw -q -DskipTests install
+./mvnw -pl brownie-api spring-boot:run
 ```
+
+`install` builds every module and puts the result in your local Maven
+cache; the run command on its own only rebuilds `brownie-api` and takes
+`brownie-core`, `brownie-storage` and `brownie-ai` from that cache, so
+run `install` again whenever any of those change (a "class path resource
+... cannot be opened" error at startup is the sign that you skipped it).
+The pinned JDK lives in `.toolchains/`; a newer system Java starts the
+app too, but everything here is built and tested on 21.
+
+Keep the clone outside any cloud-synced folder (iCloud Drive's Desktop
+and Documents, OneDrive, Dropbox). A build writes thousands of files under
+`target/`, and a sync client answers with conflict copies named
+`something 2`; a duplicated `BrownieApiApplication 2.class` makes the run
+fail with "Unable to find a single main class". If that happens, delete
+every `* 2` copy, run `./mvnw clean`, then `install` again.
 
 The API listens on 8081, matching `BROWNIE_PUBLIC_ORIGIN` and the callback
 registered with the identity provider; health checks answer separately on
@@ -40,7 +58,13 @@ create. Until those three are set in `.env`,
 `brownie-api` will fail to start on the `local` profile; the `test` profile
 used by `mvnw test`/`verify` does not need them. Once configured:
 
-- Start login: open `http://localhost:8081/oauth2/authorization/entra`.
+- Start login: open `http://localhost:8081/oauth2/authorization/entra`,
+  or use the web app's own `/signin` page, which is where every address
+  that needs a workspace sends a signed-out visitor. That page remembers
+  which address interrupted them, in this browser tab only, and goes on
+  to it once the session exists -- the callback itself always lands on
+  the home address, so the destination cannot travel through the
+  provider round trip in the URL.
   On the local profile a completed or failed sign-in lands on the web
   app at `http://localhost:5173` (`BROWNIE_WEB_ORIGIN`), so start the
   web app first with `npm run dev` in `apps/web`. A failed sign-in
@@ -114,12 +138,16 @@ Before running `npm run test:e2e`, from the repository root:
 
 ```sh
 docker compose -f infra/local/compose.yaml up -d --wait
-cd backend && ./mvnw -pl brownie-api spring-boot:run
+cd backend && ./mvnw -q -DskipTests install && ./mvnw -pl brownie-api spring-boot:run
 ```
 
 The `.env` setup above is required. `playwright.config.ts` starts the Vite
 dev server itself; it does not start Postgres, Azurite, ClamAV, or
-`brownie-api`.
+`brownie-api`. To run the suite beside an API and dev server you already
+have open, start a second API on other ports (`SERVER_PORT=18081
+MANAGEMENT_SERVER_PORT=18090`) and set `BROWNIE_API_ORIGIN` (the dev
+server's proxy target), `BROWNIE_E2E_BACKEND_ORIGIN` (session seeding) and
+`BROWNIE_E2E_WEB_PORT` (a free dev-server port) for the run.
 
 ### Sign-in in E2E tests
 
@@ -128,20 +156,41 @@ Entra External ID tenant, which these tests do not have credentials to drive
 through, and no test double stands in for it. `global-setup.ts` instead calls
 `TestSupportAuthController`'s `/test-support/sessions` route, which creates
 the same kind of session as a real login (including provisioning and cookies)
-without an identity-provider round trip. That controller exists only when
-`BROWNIE_ENVIRONMENT=local` or `test`; it is not reachable against a `pilot`
-or `production` deployment.
+without an identity-provider round trip. That route exists only when
+`BROWNIE_ENVIRONMENT=local` or `test` *and* `BROWNIE_TEST_SUPPORT_TOKEN` is
+set; it then requires that same value in an `X-Test-Support-Token` header and
+answers only loopback clients. Put any random string in your ignored `.env`
+(see `.env.example`), start `brownie-api` with it, and export it in the shell
+that runs Playwright; `global-setup.ts` refuses to run without it. On the
+`local` profile the API also listens on `127.0.0.1` only. None of this is
+reachable against a `pilot` or `production` deployment.
+
+The seeded subject defaults to `e2e-playwright`, which reuses the same
+workspace every time. Set `BROWNIE_E2E_SUBJECT` to something new to get a
+fresh workspace instead. That is worth doing after the Azurite container has
+been recreated: the old workspace's stored template bytes lived in the
+container that went away, so validation and export fail on it with a stored
+content error until a sign-in repairs the built-in templates.
 
 ### Coverage and the paid golden path
 
 The default run (`npm run test:e2e`) covers template teaching, the empty-
-document export safety gate, and `session-and-recovery.spec.ts`: real sign-
-out (the server must answer 401 afterwards, and the page continues to the
-identity provider's end-session URL, with that external hop stubbed), recovery
-from a failed identity request, and a failed optional source upload during
-document creation whose warning must survive navigation to the new document.
-The latter two inject server failures with `page.route`; none makes a model
-call.
+document export safety gate, a document filled in entirely by hand and
+exported (`manual-editing.spec.ts` reads the typed values back out of the
+downloaded DOCX), and `session-and-recovery.spec.ts`: real sign-out (the
+server must answer 401 afterwards, and the page continues to the identity
+provider's end-session URL, with that external hop stubbed), recovery from a
+failed identity request, and a failed optional source upload during document
+creation whose warning must survive navigation to the new document. The
+latter two inject server failures with `page.route`; none makes a model call.
+
+`shell-and-auth.spec.ts` covers the navigation around every page: a
+signed-out visitor following the upload action or the trash bin is sent to
+`/signin` carrying where they were going, and is returned there once a
+session exists (the provider hop is stubbed, the session is a real one);
+the sidebar collapses, stays collapsed across a reload, and reopens; at
+phone width it becomes a drawer that opens, closes on Escape, returns focus
+to its own button, and never makes the page scroll sideways.
 
 The real AI journey is opt-in. Start `brownie-worker` with the same local
 configuration as the API, but with the `brownie_worker` database role, then
@@ -165,17 +214,60 @@ Content-control-tag detection during template teaching is deterministic DOCX
 structure parsing, so `template-teaching.spec.ts` can exercise that flow
 without a model call.
 
-There is no manual field-value editing UI yet. A document's Content pane can
-review and lock an existing value, but cannot type one. An empty document
-therefore cannot reach a real populated and successfully exported state
-through the UI alone without a real model call or a manual API request outside
-the browser. `document-validation-guard.spec.ts` covers the other safe half:
-required fields block export and the UI does not offer approval.
+A document's Content pane edits every field the template defines, including
+repeated rows, and saves a moment after typing stops (or on "Save now") as a
+new revision against the exact revision the page last loaded, with saving,
+saved, and conflict states and a warning before leaving with unsaved work;
+`manual-editing.spec.ts` drives that from an empty document to a downloaded
+export, and `document-validation-guard.spec.ts` covers the other half: an
+empty document's required fields block export and the UI does not offer
+approval. The Rules tab lists, read-only, the accepted rules of the
+document's template version; `GET /api/v1/capabilities` reports the upload
+limit and supported formats, which every upload control shows before a file
+is chosen.
+
+The Assist tab has a composer for a few bounded requests: draft from the
+attached sources, change a field to a value, shorten or rewrite a text
+field, explain a validation finding. `POST .../assist/interpret` reads the
+text into one command and reports its scope (the field and what it holds,
+or the finding) without doing anything; `POST .../assist/execute` then
+runs exactly that against the revision on screen. A change or a rewrite
+comes back as a patch proposal for the ordinary accept step, an
+explanation is text, and free text is answered with what Brownie can do.
+Only rewrite and explain call the model, one bounded call each.
+
+Beside the editor, a Preview pane draws the latest compiled PDF of the
+document with PDF.js (`pdfjs-dist`), page by page; it picks up whatever
+compilation already exists for the current content (validation compiles
+too), and "Generate preview" renders one on demand through the isolated
+renderer. A value Assist filled carries an Evidence marker that opens the
+cited passage from the attached source through the document's own
+evidence route; Brownie can show where a value came from, not yet where it
+lands on the page.
 
 ### Automated accessibility scans
 
-Both layers run in CI-style automation but cover different things. The
-`jest-axe` component tests under `src/**/__tests__` scan a component's markup
-in isolation with `jsdom`; the `@axe-core/playwright` scans in `e2e/` scan a
-real page in a browser with real layout during a user journey. Neither
-substitutes for screen-reader testing by a person.
+The two layers cover different things. The `jest-axe` component tests under
+`src/**/__tests__` scan a component's markup in isolation with `jsdom` and
+run in CI with the rest of the unit suite (`npm test`); the
+`@axe-core/playwright` scans in `e2e/` scan a real page in a browser with real
+layout during a user journey and run only locally, because CI does not yet
+start the backend stack the browser suite needs. Neither substitutes for
+screen-reader testing by a person.
+
+## Backend tests
+
+`./mvnw -B clean verify` in `backend/` runs every module's tests. Most of
+`brownie-api`'s and `brownie-worker`'s tests start real Postgres, Azurite, and
+ClamAV containers through Testcontainers, so Docker must be running, and the
+compile, validation, and export tests render through the pinned isolated
+LibreOffice image, which a fresh clone has to build once first:
+
+```sh
+docker build -t brownie-spike-renderer:pinned spike/docx-binding/render
+```
+
+CI builds that same image on every run before it runs the backend suite.
+Use `clean` rather than a bare `test`: the multi-module build does not
+reliably notice a dependency module's stale compiled classes, and an
+incremental run can fail on code that is actually correct.

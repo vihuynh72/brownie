@@ -40,8 +40,11 @@ services:
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.37.0
     # Blob service only -- queue and table storage have no consumer in
-    # this codebase, so their ports are left unpublished.
-    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000"
+    # this codebase, so their ports are left unpublished. --location points
+    # the store at the mounted volume; without it Azurite writes inside the
+    # container's own filesystem and every blob vanishes when the container
+    # is recreated while Postgres keeps the rows that name them.
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data"
     ports:
       # Loopback-only, matching the Postgres service above.
       - "127.0.0.1:10000:10000"

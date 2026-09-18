@@ -17,8 +17,8 @@ if [ ! -f "$input_file" ]; then
   exit 2
 fi
 
-# Resolve to a real, absolute, symlink-free path before trusting it as a mount source, per
-# the plan's "validate output paths without following symlinks" requirement.
+# Resolve to a real, absolute, symlink-free path before trusting it as a mount source, so
+# output paths are validated without following symlinks.
 input_dir_real="$(cd -- "$(dirname -- "$input_file")" && pwd -P)"
 base_name="$(basename -- "$input_file")"
 input_real="$input_dir_real/$base_name"
