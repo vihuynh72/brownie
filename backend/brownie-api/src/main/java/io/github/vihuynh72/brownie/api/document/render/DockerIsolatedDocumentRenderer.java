@@ -22,8 +22,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Renders a DOCX to PDF using one disposable, network-disabled container
  * per call -- the same isolation contract the DOCX-binding spike's own
- * {@code render/launch-job.sh} proved by hand (see the plan's own
- * file-processing isolation section), reimplemented here as a real,
+ * {@code render/launch-job.sh} proved by hand, reimplemented here as a real,
  * directly invocable Java component rather than a shell script a
  * production caller would have to shell out to. The image, executable,
  * every mount path, and every isolation flag are fixed; the only thing a

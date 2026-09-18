@@ -21,17 +21,19 @@ import java.util.regex.Pattern;
  * login/logout wired to the {@code entra} registration whose callback is
  * registered exactly as {@code /login/oauth2/code/entra}.
  *
- * <p>{@code /api/v1/me} and every {@code /api/v1/workspaces/**} route
- * require authentication; everything else stays open because no other
- * per-resource endpoint exists yet. Capability checks
+ * <p>Every route requires a session except the few that exist to obtain
+ * or end one (login initiation and its callback, logout) and the two that
+ * must answer anonymously (the error page, and the e2e session-seeding
+ * route, which exists only on the local and test profiles and does its
+ * own token and loopback checks). A new controller is therefore protected
+ * by default rather than open by omission. Capability checks
  * ({@code WorkspaceAuthorizationService}) and row-level security are in
- * place for the workspace-scoped data that does exist; a controller calls
- * into that service rather than repeating access logic of its own. A
- * denied capability check is a plain exception thrown from application
- * code, so {@code ApiExceptionHandler} -- not anything configured here --
- * is what turns it into a 403; Spring MVC's own dispatch resolves it
- * before it could ever reach a filter-level handler configured on this
- * class.
+ * place for the workspace-scoped data; a controller calls into that
+ * service rather than repeating access logic of its own. A denied
+ * capability check is a plain exception thrown from application code, so
+ * {@code ApiExceptionHandler} -- not anything configured here -- is what
+ * turns it into a 403; Spring MVC's own dispatch resolves it before it
+ * could ever reach a filter-level handler configured on this class.
  */
 @Configuration
 @EnableWebSecurity
@@ -65,10 +67,16 @@ class SecurityConfig {
             ObjectMapper objectMapper)
             throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/api/v1/me", "/api/v1/workspaces/**")
-                        .authenticated()
+                        .requestMatchers("/oauth2/**", "/login/**", "/logout", "/error", "/test-support/**")
+                        .permitAll()
+                        // Liveness and readiness are answered without a session so a
+                        // load balancer or orchestrator can ask; health shows no
+                        // details (management.endpoint.health.show-details: never)
+                        // and is the only management endpoint exposed.
+                        .requestMatchers("/actuator/health", "/actuator/health/**")
+                        .permitAll()
                         .anyRequest()
-                        .permitAll())
+                        .authenticated())
                 .csrf(csrf -> csrf.spa())
                 // Success and failure both land on the web app's own origin: the
                 // provider's callback arrives at this API, which in local
