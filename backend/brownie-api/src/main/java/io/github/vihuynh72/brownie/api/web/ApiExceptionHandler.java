@@ -3,6 +3,8 @@ package io.github.vihuynh72.brownie.api.web;
 import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
 import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
 import io.github.vihuynh72.brownie.api.export.ExportRequestValidationException;
+import io.github.vihuynh72.brownie.api.generation.AssistModelException;
+import io.github.vihuynh72.brownie.api.generation.AssistRequestValidationException;
 import io.github.vihuynh72.brownie.api.generation.GenerationRequestValidationException;
 import io.github.vihuynh72.brownie.api.generation.GenerationResultEmptyException;
 import io.github.vihuynh72.brownie.api.generation.GenerationResultNotFoundException;
@@ -10,6 +12,7 @@ import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationExcepti
 import io.github.vihuynh72.brownie.core.generation.SourceNotExtractableException;
 import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactStorageException;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
@@ -33,6 +36,7 @@ import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
 import io.github.vihuynh72.brownie.core.job.JobDeadlineExceededException;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.api.question.QuestionRequestValidationException;
+import io.github.vihuynh72.brownie.api.source.DocumentSourceRequestValidationException;
 import io.github.vihuynh72.brownie.core.question.QuestionNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentContentValidationException;
 import io.github.vihuynh72.brownie.core.revision.DocumentIdempotencyConflictException;
@@ -120,6 +124,23 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail("You do not have the required access for this resource.");
         enrich(problem, "FORBIDDEN");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.FORBIDDEN, request);
+    }
+
+    /**
+     * The row exists but its bytes could not be read from storage. Named
+     * rather than "unexpected" so a person (and the log) can tell a lost
+     * or unreachable object from a programming error; nothing on the
+     * document changed.
+     */
+    @ExceptionHandler(ArtifactStorageException.class)
+    public ResponseEntity<Object> handleArtifactStorage(ArtifactStorageException ex, WebRequest request) {
+        log.error("Stored artifact content could not be read", ex);
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
+        problem.setTitle("Stored file could not be read");
+        problem.setDetail("The stored bytes behind this file could not be read from storage. If it is a built-in template, signing in again"
+                + " restores it; otherwise upload the file again. Report the correlation ID if this persists.");
+        enrich(problem, "ARTIFACT_STORAGE_FAILURE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
     }
 
     @ExceptionHandler(ArtifactNotFoundException.class)
@@ -400,10 +421,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
+    /** The composer's one bounded model call failed; the person can try again, and nothing on the document changed. */
+    @ExceptionHandler(AssistModelException.class)
+    public ResponseEntity<Object> handleAssistModelFailure(AssistModelException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+        problem.setTitle("Assist could not complete this request");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "ASSIST_MODEL_FAILED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_GATEWAY, request);
+    }
+
     @ExceptionHandler({
             JobRequestValidationException.class, DocumentRequestValidationException.class,
             ValidationRequestValidationException.class, ExportRequestValidationException.class,
-            GenerationRequestValidationException.class, QuestionRequestValidationException.class})
+            GenerationRequestValidationException.class, QuestionRequestValidationException.class,
+            DocumentSourceRequestValidationException.class, AssistRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
