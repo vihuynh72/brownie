@@ -4,8 +4,8 @@ import java.util.List;
 
 /**
  * At least one required field's accepted fact is still unresolved (its
- * question, if any, has not been answered yet). Per this plan's own
- * bounded generation pipeline, no paid composition call runs while the
+ * question, if any, has not been answered yet). No paid composition
+ * call runs while the
  * workflow is still waiting on required input -- this is refused before
  * the model gateway is ever touched, the same "check before spending"
  * discipline {@link io.github.vihuynh72.brownie.core.generation.usage.UsageBudget}

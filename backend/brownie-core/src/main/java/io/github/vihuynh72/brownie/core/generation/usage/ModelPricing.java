@@ -5,7 +5,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.util.Objects;
 
-/** The per-million-token uncached text rate a reservation is estimated against. This plan's own researched figures for the fixed baseline model: $0.75 input, $4.50 output. */
+/** The per-million-token uncached text rate a reservation is estimated against. The published list rates for the fixed baseline model when it was chosen: $0.75 input, $4.50 output. */
 public record ModelPricing(BigDecimal inputCostPerMillionTokens, BigDecimal outputCostPerMillionTokens) {
 
     private static final BigDecimal ONE_MILLION = new BigDecimal(1_000_000);

@@ -9,8 +9,8 @@ import java.util.Objects;
  * Enforces one extraction run's own aggregate bounds by reserving a
  * worst-case estimate before every physical model call and settling it
  * against the gateway's own real, reported {@link ModelUsage} afterward --
- * this plan's own "reserve before each physical request... settle actual
- * usage after the response" discipline. Not persisted across process
+ * reserve before each physical request, settle actual
+ * usage after the response. Not persisted across process
  * restarts or shared across runs: a real, named boundary, since nothing
  * in this codebase yet has a durable generation run to anchor a
  * cross-request ledger to (see {@code ExtractionService}'s own class

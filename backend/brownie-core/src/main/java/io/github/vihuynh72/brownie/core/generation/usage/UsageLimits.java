@@ -5,8 +5,8 @@ import java.util.Objects;
 
 /**
  * The aggregate bounds one extraction run must never exceed, whichever is
- * reached first. Values match this plan's own researched starting figures
- * for a single run: three physical model requests, 40,000 input tokens,
+ * reached first. Starting figures
+ * for a single run, chosen before any usage was measured: three physical model requests, 40,000 input tokens,
  * 8,000 billed output tokens, and $0.10 of reserved spend.
  */
 public record UsageLimits(int maxPhysicalRequests, int maxInputTokens, int maxOutputTokens, BigDecimal maxReservedCostUsd) {
