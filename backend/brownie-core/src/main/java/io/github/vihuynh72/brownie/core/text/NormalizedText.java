@@ -15,7 +15,7 @@ package io.github.vihuynh72.brownie.core.text;
  * boundary. Code-point safety only guarantees a span never lands inside a
  * single code point's own UTF-16 surrogate pair; it says nothing about
  * grapheme composition, which this project's persisted contracts do not
- * ask for (see the plan's own explicit choice of code points).
+ * ask for (persisted offsets count code points, by explicit choice).
  */
 public final class NormalizedText {
 

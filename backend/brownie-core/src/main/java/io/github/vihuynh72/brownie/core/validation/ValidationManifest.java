@@ -7,8 +7,8 @@ import java.util.Objects;
 /**
  * One complete, independent run of every validation layer against one
  * exact document revision: the freshly filled DOCX this run produced and
- * verified, the PDF rendered from it once a later task starts rendering
- * one (null until then -- a render is not required to report the
+ * verified, the PDF rendered from it when a render ran
+ * (null otherwise -- a render is not required to report the
  * non-layout findings below), and every finding every layer produced.
  * Export approval binds to this manifest's own {@code id}, not to the
  * revision alone, so a later, different validation run of the same

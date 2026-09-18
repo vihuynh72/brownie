@@ -24,8 +24,8 @@ import java.util.Map;
  * spike). A template using bare paragraph labels with no content controls
  * at all yields no candidates -- proposing a binding from label text alone
  * would be guessing the field's business meaning from its surrounding
- * words, exactly the kind of inference this plan's own product definition
- * warns against doing silently. That case is not a failure; a person still
+ * words, exactly the kind of inference the product must never do
+ * silently. That case is not a failure; a person still
  * recovers through an explicit {@link FieldBindingTarget.StructuralNode}
  * mapping, the same primary recovery path every other unsupported-inference
  * case in this codebase falls back to.
