@@ -41,6 +41,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,12 +115,16 @@ class GenerationExtractionJobProcessorIntegrationTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /** How many times the fake model has been called across this class -- the cancellation test asserts it never moves. */
+    static final AtomicInteger MODEL_CALLS = new AtomicInteger();
+
     @TestConfiguration
     static class FakeModelGatewayConfig {
         @Bean
         @Primary
         ModelGateway fakeModelGateway() {
             return request -> {
+                MODEL_CALLS.incrementAndGet();
                 String json = """
                         {"scalarFields":{"meeting.title":{"value":"Weekly Robotics Club Sync","evidenceSpanIds":[1],"unresolved":false,"ambiguityReason":null}},"repeatedItems":[]}""";
                 return new ModelCompletion.Success(json, new ModelUsage(50, 20));
@@ -171,7 +176,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
                     "excerpts":[{"spanId":1,"text":"The meeting was called to order."}]}""";
             bundleHash = sha256Hex(bundleJson);
             blobStore.writeNewAndDigest(
-                    "generation-input/" + bundleHash + ".json",
+                    GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash),
                     new ByteArrayInputStream(bundleJson.getBytes(StandardCharsets.UTF_8)),
                     1_000_000);
 
@@ -240,7 +245,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
                     "excerpts":[{"spanId":1,"text":"The meeting was called to order."}]}""";
             bundleHash = sha256Hex(bundleJson);
             blobStore.writeNewAndDigest(
-                    "generation-input/" + bundleHash + ".json",
+                    GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash),
                     new ByteArrayInputStream(bundleJson.getBytes(StandardCharsets.UTF_8)),
                     1_000_000);
 
@@ -260,9 +265,13 @@ class GenerationExtractionJobProcessorIntegrationTest {
         assertThat(jobLeaseRepository.claimNext(workerId, Duration.ofMinutes(2))).isEmpty();
 
         JsonNode pending;
-        try (InputStream content = blobStore.openStream(GenerationJobTypes.pendingQuestionsObjectKey(jobId))) {
+        try (InputStream content = blobStore.openStream(GenerationJobTypes.pendingQuestionsObjectKey(workspaceId, jobId))) {
             pending = OBJECT_MAPPER.readTree(content);
         }
+        // The attempt that staged these -- the first claim's fencing token --
+        // travels with them, so the API can tell a current bundle from one a
+        // superseded attempt overwrote later.
+        assertThat(pending.get("fencingToken").asLong()).isEqualTo(firstLease.leaseToken().fencingToken());
         assertThat(pending.get("questions")).hasSize(1);
         JsonNode question = pending.get("questions").get(0);
         assertThat(question.get("fieldId").asText()).isEqualTo("meeting.title");
@@ -277,7 +286,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         String resolvedAnswersJson = """
                 {"answers":[{"fieldId":"meeting.title","answerValue":"Executive Committee Sync","evidenceSpanIds":[]}]}""";
         blobStore.writeAndDigest(
-                GenerationJobTypes.resolvedAnswersObjectKey(jobId),
+                GenerationJobTypes.resolvedAnswersObjectKey(workspaceId, jobId),
                 new ByteArrayInputStream(resolvedAnswersJson.getBytes(StandardCharsets.UTF_8)),
                 1_000_000);
         try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
@@ -310,6 +319,84 @@ class GenerationExtractionJobProcessorIntegrationTest {
         }
 
         assertThat(jobLeaseRepository.claimNext(workerId, Duration.ofMinutes(2))).isEmpty();
+    }
+
+    /**
+     * A job cancelled through the API while a worker holds its lease: the
+     * attempt's very first heartbeat is refused, so no model call is ever
+     * placed for it, nothing is published, and the job ends CANCELLED --
+     * which is what the workspace's own Cancel button relies on.
+     */
+    @Test
+    void aJobCancelledWhileLeasedStopsBeforeItsModelCallAndEndsCancelled() throws Exception {
+        long userId;
+        long workspaceId;
+        long documentId;
+        long revisionId;
+        long jobId;
+
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            userId = insertUser(connection);
+            workspaceId = insertWorkspace(connection, userId);
+            insertMembership(connection, workspaceId, userId);
+            long artifactId = insertReadyArtifact(connection, workspaceId);
+            long extractionVersionId = insertExtractionVersion(connection, workspaceId, artifactId);
+            long templateId = insertTemplate(connection, workspaceId);
+            long templateVersionId = insertActivatedTemplateVersion(connection, workspaceId, templateId, artifactId, extractionVersionId);
+            documentId = insertDocument(connection, workspaceId, templateId, templateVersionId);
+            revisionId = insertDocumentRevision(connection, workspaceId, documentId, 1, null, userId, "a".repeat(64));
+            setDocumentCurrentRevision(connection, workspaceId, documentId, revisionId);
+
+            String bundleJson = """
+                    {"fields":[{"fieldId":"meeting.title","type":"TEXT","cardinality":"SCALAR","requiredness":"REQUIRED"}],\
+                    "excerpts":[{"spanId":1,"text":"The meeting was called to order."}]}""";
+            String bundleHash = sha256Hex(bundleJson);
+            blobStore.writeNewAndDigest(
+                    GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash),
+                    new ByteArrayInputStream(bundleJson.getBytes(StandardCharsets.UTF_8)),
+                    1_000_000);
+            jobId = insertQueuedJob(connection, workspaceId, userId, documentId, revisionId, bundleHash);
+        }
+
+        WorkerId workerId = new WorkerId("test-worker-" + UUID.randomUUID());
+        LeasedJob leasedJob = jobLeaseRepository.claimNext(workerId, Duration.ofMinutes(2)).orElseThrow(
+                () -> new AssertionError("Expected a real eligible job to be claimable."));
+
+        // Exactly the row change the API's own cancel route makes for a
+        // LEASED job (JdbcJobRepository#requestCancellation), applied as
+        // the schema owner since this module never depends on brownie-api.
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            requestCancellation(connection, jobId);
+        }
+
+        int modelCallsBefore = MODEL_CALLS.get();
+        processor.process(leasedJob);
+
+        assertThat(MODEL_CALLS.get()).isEqualTo(modelCallsBefore);
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            assertThat(jobState(connection, jobId)).isEqualTo("CANCELLED");
+            assertThat(publishedOutputCount(connection, jobId)).isZero();
+        }
+        assertThat(jobLeaseRepository.claimNext(workerId, Duration.ofMinutes(2))).isEmpty();
+    }
+
+    private void requestCancellation(Connection connection, long jobId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE job SET state = 'CANCEL_REQUESTED', cancellation_requested_at = now(), updated_at = now()"
+                        + " WHERE id = ? AND state = 'LEASED'")) {
+            statement.setLong(1, jobId);
+            assertThat(statement.executeUpdate()).isEqualTo(1);
+        }
+    }
+
+    private int publishedOutputCount(Connection connection, long jobId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM job_output_artifact WHERE job_id = ?")) {
+            statement.setLong(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                result.next();
+                return result.getInt(1);
+            }
+        }
     }
 
     private void requeueWaitingJob(Connection connection, long jobId) throws Exception {

@@ -854,7 +854,7 @@ class RevisionServiceTest {
                 .revision();
         FieldState dateStateBefore = initial.fieldStates().get(FieldItemRef.scalar("meeting.date"));
 
-        // A targeted rewrite: only meeting.title is proposed and accepted, exactly this plan's own "show the
+        // A targeted rewrite: only meeting.title is proposed and accepted, exactly "show the
         // proposed replacement and its affected scope" -- the scope here is the single field the proposal names.
         PatchProposal proposal = service.proposePatch(
                 WORKSPACE_ID, USER_ID, initial.documentId(), initial.id(),

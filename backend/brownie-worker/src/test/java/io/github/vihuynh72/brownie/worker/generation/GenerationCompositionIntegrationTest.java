@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.worker.generation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
+import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.job.JobLeaseRepository;
 import io.github.vihuynh72.brownie.core.job.LeasedJob;
 import io.github.vihuynh72.brownie.core.job.WorkerId;
@@ -165,7 +166,7 @@ class GenerationCompositionIntegrationTest {
                     "composableFieldIds":["meeting.decisions"]}""";
             bundleHash = sha256Hex(bundleJson);
             blobStore.writeNewAndDigest(
-                    "generation-input/" + bundleHash + ".json",
+                    GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash),
                     new ByteArrayInputStream(bundleJson.getBytes(StandardCharsets.UTF_8)),
                     1_000_000);
 
