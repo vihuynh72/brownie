@@ -12,18 +12,81 @@
  * either. Finding severity (BLOCKING/WARNING/INFORMATIONAL) is conveyed
  * as visible text on the shared badge style rather than by color alone,
  * so it isn't a color-contrast pairing of its own.
+ *
+ * The cocoa family is the action color of the workspace design: the
+ * upload button, the sidebar's sign-in button, and the document tiles.
+ * --color-cocoa is a darkened form of the design's #ac7f5e, because
+ * white body text on #ac7f5e measures 3.53:1 and misses the 4.5:1 that
+ * normal text needs; #96684a measures 4.80:1 against white and keeps the
+ * same hue. The lighter --color-cocoa-tile is used only behind the
+ * decorative document glyph, where 3.53:1 clears the 3:1 that
+ * non-text graphics need.
  */
+
+/*
+ * Rubik, the interface typeface, self-hosted so no page load depends on a
+ * third-party font host and no visitor's request for this app reaches one.
+ * One variable file per subset covers every weight the interface uses
+ * (400 body, 500 navigation, 600-700 headings), which is smaller than the
+ * three static files it replaces. Licensed under the SIL Open Font
+ * License 1.1; the licence text sits beside the files it covers.
+ */
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url('../assets/fonts/rubik-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Accented names and European currency marks: a separate file so the common case never downloads it. */
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url('../assets/fonts/rubik-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   --color-paper: #fbfaf6;
   --color-surface: #ffffff;
   --color-text: #2a2924;
   --color-text-secondary: #6e6b61;
+  /*
+   * Secondary text is measured against paper (5.10:1) and has almost no
+   * margin left: on the sidebar it falls to 4.43:1 and on the cocoa wash a
+   * row takes on hover, to 4.38:1 -- both under WCAG AA's 4.5:1, and both
+   * found by scanning the running page rather than by reading the palette.
+   * This darker grey is the same hue and clears it everywhere it is used:
+   * 6.40:1 on paper, 5.56:1 on the sidebar, 5.49:1 on the hover wash.
+   */
+  --color-text-muted: #5f5c53;
   --color-honey: #d9a82e;
   --color-honey-soft: #fff2be;
   --color-success: #3e6b50;
   --color-error: #b33a2b;
   --color-focus: #2a6f9b;
   --color-border: #e4e1d6;
+
+  /* 4.80:1 against white: the action color, safe for a white button label. */
+  --color-cocoa: #96684a;
+  /* Hover and active depth for the same button, 6.28:1 against white. */
+  --color-cocoa-strong: #7e5639;
+  /* The design's own lighter cocoa, used only behind decorative glyphs. */
+  --color-cocoa-tile: #ac7f5e;
+  /* A cocoa wash for the selected navigation row; main text on it is 11.4:1. */
+  --color-cocoa-wash: #f1e7df;
+
+  /* The sidebar sits a shade deeper than paper so the two regions read apart
+     without a hard divider. Its quieter text uses --color-text-muted, not
+     --color-text-secondary, for the reason recorded on that token. */
+  --color-sidebar: #f1ece2;
+  --color-sidebar-border: #e2dcd0;
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -37,13 +100,39 @@
   --font-size-base: 1rem;
   --font-size-lg: 1.25rem;
   --font-size-xl: 1.5rem;
+  /* The home greeting, which is the one piece of type that scales with the window. */
+  --font-size-display: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
 
   --control-height: 2.5rem;
   --radius: 0.5rem;
+  --radius-pill: 999px;
+
+  /* How wide the docked sidebar is, and how far the main region sits from it. */
+  --sidebar-width: 15rem;
+
+  /* Motion: short enough to feel like a response rather than an effect.
+     Both are set to an imperceptible duration under prefers-reduced-motion
+     below, so a transition written once behaves correctly in both settings. */
+  --motion-fast: 120ms;
+  --motion-base: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* A solid ring the eye can find: the focus color itself at full strength (about 5.6:1 on white,
      well past the 3:1 a focus indicator needs), offset so it never merges with a control's border. */
   --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-focus);
+}
+
+/*
+ * Honour a reduced-motion preference by shortening the shared durations
+ * rather than by disabling animation everywhere: every transition in this
+ * app is written against these two tokens, so the state change still
+ * happens, it just stops travelling across the screen.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 1ms;
+    --motion-base: 1ms;
+  }
 }
 
 * {
@@ -55,11 +144,14 @@ body {
   background: var(--color-paper);
   color: var(--color-text);
   font-family:
+    'Rubik',
     system-ui,
     -apple-system,
     'Segoe UI',
     sans-serif;
   font-size: var(--font-size-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -80,6 +172,18 @@ textarea {
   border-radius: var(--radius);
 }
 
+/*
+ * A box-shadow ring is invisible in Windows High Contrast mode, which
+ * discards shadows; the outline below is drawn only in that mode, where
+ * the system's own highlight color replaces our palette.
+ */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 3px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -91,11 +195,19 @@ textarea {
   border-radius: var(--radius);
   font-weight: 600;
   cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
 }
 
 .button--primary {
-  background: var(--color-honey);
-  color: var(--color-text);
+  background: var(--color-cocoa);
+  color: var(--color-surface);
+}
+
+.button--primary:hover:not(:disabled) {
+  background: var(--color-cocoa-strong);
 }
 
 .button--secondary {
@@ -104,9 +216,48 @@ textarea {
   border-color: var(--color-border);
 }
 
+.button--secondary:hover:not(:disabled) {
+  border-color: var(--color-cocoa);
+}
+
 .button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/*
+ * A square control carrying only an icon. The minimum size is the 24x24
+ * CSS pixels WCAG 2.5.8 asks of a target, set as a minimum rather than a
+ * fixed size so a larger glyph or a translated label can still grow it.
+ */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 2rem;
+  min-block-size: 2rem;
+  padding: var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.icon-button:hover {
+  background: var(--color-cocoa-wash);
+  color: var(--color-text);
+}
+
+/* A finger needs more room than a mouse pointer does. */
+@media (pointer: coarse) {
+  .icon-button {
+    min-inline-size: 2.75rem;
+    min-block-size: 2.75rem;
+  }
 }
 
 .field-label {
