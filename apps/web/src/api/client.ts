@@ -9,6 +9,12 @@ export type TemplateVersionResponse = components['schemas']['TemplateVersionResp
 export type ArtifactResponse = components['schemas']['ArtifactResponse']
 export type ExtractionResponse = components['schemas']['ExtractionResponse']
 export type SnapshotResponse = components['schemas']['SnapshotResponse']
+export type DocumentSourceResponse = components['schemas']['DocumentSourceResponse']
+export type GenerationRunResponse = components['schemas']['GenerationRunResponse']
+export type EvidenceExcerptResponse = components['schemas']['EvidenceExcerptResponse']
+export type CapabilitiesResponse = components['schemas']['CapabilitiesResponse']
+export type AssistInterpretationResponse = components['schemas']['AssistInterpretationResponse']
+export type AssistExecutionResponse = components['schemas']['AssistExecutionResponse']
 export type JobResponse = components['schemas']['JobResponse']
 export type CommandReceiptResponse = components['schemas']['CommandReceiptResponse']
 export type ExtractionResultResponse = components['schemas']['ExtractionResultResponse']
@@ -16,6 +22,11 @@ export type QuestionResponse = components['schemas']['QuestionResponse']
 export type PatchProposalResponse = components['schemas']['PatchProposalResponse']
 export type PatchAcceptResponse = components['schemas']['PatchAcceptResponse']
 export type DocumentRevisionResponse = components['schemas']['DocumentRevisionResponse']
+export type FieldValueResponse = components['schemas']['FieldValueResponse']
+export type FieldStateResponse = components['schemas']['FieldStateResponse']
+export type FieldDefinitionResponse = components['schemas']['FieldDefinitionResponse']
+export type PatchDocumentContentRequest = components['schemas']['PatchDocumentContentRequest']
+export type FieldEditRequest = components['schemas']['FieldEditRequest']
 export type ReviewDecision = components['schemas']['RecordReviewDecisionRequest']['decision']
 export type FieldLock = components['schemas']['SetFieldLockRequest']['lock']
 export type TemplateDraftResponse = components['schemas']['TemplateDraftResponse']
@@ -188,6 +199,31 @@ export function attachSource(workspaceId: number, artifactId: number): Promise<S
   })
 }
 
+/** The document's own list of attached sources -- server truth, so it survives a reload and a second device. */
+export function listDocumentSources(workspaceId: number, documentId: number): Promise<DocumentSourceResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/sources`)
+}
+
+export function attachDocumentSource(workspaceId: number, documentId: number, artifactId: number): Promise<DocumentSourceResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/sources`, {
+    method: 'POST',
+    body: { artifactId },
+  })
+}
+
+/** Every generation run for the document, most recent first, each carrying its job's current state. */
+export function listGenerationRuns(workspaceId: number, documentId: number): Promise<GenerationRunResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/generations`)
+}
+
+/** Cooperative: the worker stops before its next paid call and the job ends CANCELLED; a call already in flight may still finish or cost. */
+export function cancelJob(workspaceId: number, jobId: number, idempotencyKey: string): Promise<CommandReceiptResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
 export function startExtraction(
   workspaceId: number,
   documentId: number,
@@ -250,6 +286,25 @@ export function acceptPatchProposal(
   })
 }
 
+/**
+ * Typed edits against the revision the caller last saw. The server refuses
+ * a stale expectedRevisionId with 412 and a locked field with 409, so a
+ * caller keeps its draft and decides, rather than silently losing either
+ * its own or someone else's change.
+ */
+export function patchDocumentContent(
+  workspaceId: number,
+  documentId: number,
+  body: PatchDocumentContentRequest,
+  idempotencyKey: string,
+): Promise<DocumentRevisionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/content`, {
+    method: 'PATCH',
+    body,
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
 export function recordReviewDecision(
   workspaceId: number,
   documentId: number,
@@ -257,10 +312,11 @@ export function recordReviewDecision(
   fieldId: string,
   decision: ReviewDecision,
   idempotencyKey: string,
+  itemIndex?: number,
 ): Promise<DocumentRevisionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/fields/review-decision`, {
     method: 'POST',
-    body: { expectedRevisionId, fieldId, decision },
+    body: itemIndex === undefined ? { expectedRevisionId, fieldId, decision } : { expectedRevisionId, fieldId, itemIndex, decision },
     headers: { 'Idempotency-Key': idempotencyKey },
   })
 }
@@ -272,10 +328,11 @@ export function setFieldLock(
   fieldId: string,
   lock: FieldLock,
   idempotencyKey: string,
+  itemIndex?: number,
 ): Promise<DocumentRevisionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/fields/lock`, {
     method: 'POST',
-    body: { expectedRevisionId, fieldId, lock },
+    body: itemIndex === undefined ? { expectedRevisionId, fieldId, lock } : { expectedRevisionId, fieldId, itemIndex, lock },
     headers: { 'Idempotency-Key': idempotencyKey },
   })
 }
@@ -327,6 +384,11 @@ export function proposeRule(
   })
 }
 
+/** Every rule on one template version, draft or activated -- what a document reads for the version it was created from. */
+export function listTemplateVersionRules(workspaceId: number, templateId: number, versionId: number): Promise<RuleResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}/rules`)
+}
+
 export function listRules(workspaceId: number, templateId: number): Promise<RuleResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/rules`)
 }
@@ -376,7 +438,7 @@ export function getLatestValidation(
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/validation`)
 }
 
-/** Not called from the Checks tab yet -- there is no Compile step in the UI, only Validate/Approve/Export. */
+/** Compiles one revision to DOCX and PDF on demand -- what "Regenerate preview" calls. */
 export function compileRevision(
   workspaceId: number,
   documentId: number,
@@ -422,4 +484,37 @@ export function getLatestExportReceipt(workspaceId: number, documentId: number):
 /** Not a fetch wrapper -- the same-origin session cookie authenticates this URL directly when used as a link's href. */
 export function artifactDownloadUrl(workspaceId: number, artifactId: number): string {
   return `/api/v1/workspaces/${workspaceId}/uploads/${artifactId}/download`
+}
+
+/** What a typed Assist request would do, and to what -- no side effects. */
+export function interpretAssist(workspaceId: number, documentId: number, text: string): Promise<AssistInterpretationResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/assist/interpret`, { method: 'POST', body: { text } })
+}
+
+/** Executes the interpreted request against the revision on screen; a change or rewrite comes back as a proposal to accept. */
+export function executeAssist(
+  workspaceId: number,
+  documentId: number,
+  text: string,
+  expectedRevisionId: number,
+): Promise<AssistExecutionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/assist/execute`, {
+    method: 'POST',
+    body: { text, expectedRevisionId },
+  })
+}
+
+/** The deployment's upload limit and supported formats, to show before a person chooses a file. */
+export function getCapabilities(): Promise<CapabilitiesResponse> {
+  return request('/api/v1/capabilities')
+}
+
+/** The same bytes as the download route with an inline disposition -- what the PDF preview fetches. */
+export function artifactPreviewUrl(workspaceId: number, artifactId: number): string {
+  return `/api/v1/workspaces/${workspaceId}/uploads/${artifactId}/preview`
+}
+
+/** The excerpt one of this document's values cites; 404 unless the span cites one of the document's own sources. */
+export function getEvidenceExcerpt(workspaceId: number, documentId: number, spanId: number): Promise<EvidenceExcerptResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/evidence/${spanId}`)
 }

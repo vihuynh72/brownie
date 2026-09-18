@@ -37,7 +37,7 @@ async function signOut(): Promise<void> {
 </script>
 
 <template>
-  <a class="visually-hidden" href="#main-content">Skip to main content</a>
+  <a class="visually-hidden skip-link" href="#main-content">Skip to main content</a>
   <header class="app-header">
     <RouterLink to="/" class="app-brand">Brownie</RouterLink>
     <div v-if="session.status === 'authenticated'" class="app-account">
