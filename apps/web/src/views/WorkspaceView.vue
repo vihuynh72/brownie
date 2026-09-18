@@ -1586,9 +1586,12 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
 </script>
 
 <template>
+  <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
   <section v-if="session.status === 'anonymous'" class="card">
     <p>Sign in to view this document.</p>
-    <a class="button button--primary" href="/oauth2/authorization/entra">Sign in</a>
+    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: `/documents/${props.documentId}` } }">
+      Sign in
+    </RouterLink>
   </section>
 
   <section v-else-if="loadState === 'loading'" aria-live="polite">
@@ -2402,14 +2405,24 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   min-width: 0;
 }
 
-/* Three columns only where all three keep a usable width; below that the preview takes a full row under the editor. */
-@media (min-width: 1400px) {
+/*
+ * Three columns only where all three keep a usable width; below that the
+ * preview takes a full row under the editor.
+ *
+ * The question asked is how wide this page's own region is, not how wide
+ * the window is: the sidebar beside it can be showing or collapsed, and
+ * those two answers differ by its whole width. 68rem is the three
+ * columns' own minimums (22 + 20 + 22) plus the two gaps between them,
+ * so the threshold is the layout's real requirement rather than a guess
+ * at a screen size.
+ */
+@container main (min-width: 68rem) {
   .workspace-layout--with-preview {
     grid-template-columns: minmax(22rem, 3fr) minmax(20rem, 3fr) minmax(22rem, 2fr);
   }
 }
 
-@media (max-width: 1399px) {
+@container main (max-width: 67.999rem) {
   .workspace-layout--with-preview .pdf-pane {
     grid-column: 1 / -1;
   }

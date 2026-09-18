@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { documentHandoffState } from '@/router/handoff'
@@ -64,7 +64,7 @@ onMounted(async () => {
 // beforeEach guard's own identity check wins that race (see main.ts: app.mount() is not gated on
 // router.isReady()). Without this, a document/workspace ID that resolves a moment later than this
 // mount never gets a retry and the page is stuck on "Loading templates…" forever, matching the same
-// defensive watch DocumentListView.vue and WorkspaceView.vue already carry for the same reason.
+// defensive watch HomeView.vue and WorkspaceView.vue already carry for the same reason.
 watch(() => session.status, (status) => {
   if (status === 'authenticated') void loadTemplates()
 })
@@ -128,9 +128,10 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
+  <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
   <section v-if="session.status === 'anonymous'" class="card">
     <p>Sign in to create a document.</p>
-    <a class="button button--primary" href="/oauth2/authorization/entra">Sign in</a>
+    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/documents/new' } }">Sign in</RouterLink>
   </section>
 
   <section v-else class="card new-document">

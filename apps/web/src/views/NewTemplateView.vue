@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import { useTemplatesStore } from '@/stores/templates'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import RulesPanel from '@/components/RulesPanel.vue'
 import {
@@ -18,6 +19,7 @@ import {
 } from '@/api/client'
 
 const session = useSessionStore()
+const templates = useTemplatesStore()
 
 type Stage = 'upload' | 'extracting' | 'bind-fields' | 'rules' | 'activating' | 'activated'
 const stage = ref<Stage>('upload')
@@ -145,6 +147,9 @@ async function activateVersion(): Promise<void> {
   try {
     await activateTemplateVersion(workspaceId, templateId.value, draftVersionNumber.value)
     stage.value = 'activated'
+    // The sidebar lists this workspace's usable templates and stays mounted across
+    // this navigation, so it would keep showing the list from before this activation.
+    void templates.refresh(workspaceId)
   } catch (error) {
     stage.value = 'rules'
     errorMessage.value = error instanceof ApiRequestError ? error.message : 'Something went wrong activating this template.'
@@ -153,9 +158,10 @@ async function activateVersion(): Promise<void> {
 </script>
 
 <template>
+  <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
   <section v-if="session.status === 'anonymous'" class="card">
     <p>Sign in to teach a new template.</p>
-    <a class="button button--primary" href="/oauth2/authorization/entra">Sign in</a>
+    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/templates/new' } }">Sign in</RouterLink>
   </section>
 
   <section v-else class="card new-template">
