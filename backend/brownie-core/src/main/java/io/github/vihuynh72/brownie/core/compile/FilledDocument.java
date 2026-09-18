@@ -11,7 +11,7 @@ import java.util.Objects;
  * entry for a scalar. {@code reopenedBodyText} is not read from the fill
  * pass's own in-memory state; it is the complete visible text of {@code
  * docxBytes} as read back by re-parsing the produced bytes a second time,
- * the independent verification this plan's own export contract requires
+ * the independent verification the export contract requires
  * (re-open the generated document, not trust what a writer meant to do).
  */
 public record FilledDocument(byte[] docxBytes, Map<String, List<String>> intendedText, String reopenedBodyText) {

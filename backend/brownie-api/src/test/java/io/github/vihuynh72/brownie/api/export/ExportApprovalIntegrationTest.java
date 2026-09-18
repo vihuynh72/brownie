@@ -58,8 +58,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * approved; a revision with an unresolved blocking finding cannot; and an
  * approval bound to a manifest that is no longer for the document's own
  * current revision is refused as stale. The export transaction itself
- * (the actual DOCX/PDF produced from an approval) is this phase's own
- * next task, not proven here.
+ * (the actual DOCX/PDF produced from an approval) is proven by the
+ * export tests, not here.
  */
 @SpringBootTest
 @AutoConfigureMockMvc

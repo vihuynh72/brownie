@@ -16,7 +16,9 @@ test('Sign out invalidates the authenticated session and finishes at the identit
   // session every other spec's context reuses from global-setup -- it seeds a throwaway session
   // of its own, exactly the way global-setup seeds the shared one.
   const context = await browser.newContext({ storageState: undefined })
-  const seeded = await context.request.get(`${BACKEND_ORIGIN}/test-support/sessions?subject=brownie-e2e-signout-${Date.now()}`)
+  const seeded = await context.request.get(`${BACKEND_ORIGIN}/test-support/sessions?subject=brownie-e2e-signout-${Date.now()}`, {
+    headers: { 'X-Test-Support-Token': process.env.BROWNIE_TEST_SUPPORT_TOKEN ?? '' },
+  })
   expect(seeded.ok()).toBe(true)
   const page = await context.newPage()
 
@@ -77,4 +79,11 @@ test('creating a document preserves the warning when its optional source upload 
   // A real RouterView unmounts the creation page. A component-only mount
   // can leave its local warning visible and miss this regression.
   await expect(page.getByRole('alert')).toContainText(/source file could not be attached/i)
+})
+
+test('a mistyped address gets a page that says so and a way back, not a blank main region', async ({ page }) => {
+  await page.goto('/documents/12/whatever')
+  await expect(page.getByRole('heading', { name: 'There is nothing at this address' })).toBeVisible()
+  await page.getByRole('link', { name: 'Go to your documents' }).click()
+  await expect(page).toHaveURL(/\/$/)
 })

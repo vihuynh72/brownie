@@ -30,6 +30,24 @@ export const useSessionStore = defineStore('session', {
     personalWorkspaceId(state): number | undefined {
       return state.identity?.memberships[0]?.workspaceId
     },
+
+    /** What to call this person in the account row: their name, or the address they signed in with. */
+    accountLabel(state): string | null {
+      return state.identity?.displayName ?? state.identity?.email ?? null
+    },
+
+    /**
+     * The one word the home greeting uses. A display name's first word
+     * where there is one, otherwise the part of the email address before
+     * the @, otherwise nothing -- the greeting drops the name rather than
+     * addressing someone as their whole email address or as "unknown".
+     */
+    firstName(state): string | null {
+      const fromName = state.identity?.displayName?.trim().split(/\s+/)[0]
+      if (fromName) return fromName
+      const fromEmail = state.identity?.email?.split('@')[0]?.trim()
+      return fromEmail || null
+    },
   },
   actions: {
     async loadIdentity(): Promise<void> {

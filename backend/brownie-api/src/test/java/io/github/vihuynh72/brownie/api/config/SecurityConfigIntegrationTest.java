@@ -1,14 +1,19 @@
 package io.github.vihuynh72.brownie.api.config;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.web.server.LocalManagementPort;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.ObjectMapper;
@@ -24,6 +29,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Proves the browser/session boundary contract end to end, over real HTTP
@@ -41,12 +50,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * only the security filter chain.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureMockMvc
 @EnableAutoConfiguration(exclude = FlywayAutoConfiguration.class)
 @ActiveProfiles("test")
 class SecurityConfigIntegrationTest {
 
     @LocalServerPort
     private int port;
+
+    @LocalManagementPort
+    private int managementPort;
+
+    @Autowired
+    private MockMvc mockMvc;
 
     private final HttpClient client =
             HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
@@ -74,16 +90,58 @@ class SecurityConfigIntegrationTest {
                         .startsWith("http://localhost:65535/oauth2/authorize"));
     }
 
+    /** The CSRF check runs before authorization, so even an anonymous mutation is refused for the missing token, not for the missing session. */
     @Test
     void mutationWithoutACsrfTokenIsRejected() throws Exception {
         HttpResponse<Void> response = client.send(
-                HttpRequest.newBuilder(URI.create(url("/api/v1/platform/probes")))
+                HttpRequest.newBuilder(URI.create(url("/api/v1/workspaces/1/documents")))
                         .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString("{\"message\":\"no csrf token\"}"))
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"title\":\"no csrf token\"}"))
                         .build(),
                 HttpResponse.BodyHandlers.discarding());
 
         assertThat(response.statusCode()).isEqualTo(403);
+    }
+
+    /** A load balancer has no session: health answers anonymously on the management port, and nothing else there does. */
+    @Test
+    void healthIsAnsweredWithoutASessionAndTheRestOfTheManagementPortIsNot() throws Exception {
+        HttpResponse<String> health = client.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + "/actuator/health")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(health.statusCode()).isEqualTo(200);
+        assertThat(health.body()).contains("\"status\"");
+
+        HttpResponse<String> discovery = client.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + "/actuator")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(discovery.statusCode()).isEqualTo(401);
+    }
+
+    /** The limits a person sees before choosing a file are the ones the upload route enforces, and they need a session like everything else. */
+    @Test
+    void capabilitiesAreReadableWithASessionAndNotWithout() throws Exception {
+        mockMvc.perform(get("/api/v1/capabilities").with(user("someone")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.maxUploadBytes").value(10485760))
+                .andExpect(jsonPath("$.uploadMediaTypes[*].extension").value(org.hamcrest.Matchers.hasItems("docx", "pdf", "txt")))
+                .andExpect(jsonPath("$.assistSourceMediaTypes[0]").value("text/plain"))
+                .andExpect(jsonPath("$.templateMediaTypes[0]").value("application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+
+        HttpResponse<String> anonymous = client.send(
+                HttpRequest.newBuilder(URI.create(url("/api/v1/capabilities"))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(anonymous.statusCode()).isEqualTo(401);
+    }
+
+    /** A route nobody registered as public is closed by default: the same plain 401 as the protected API, never the controller's own answer. */
+    @Test
+    void anUnlistedRouteRequiresASessionByDefault() throws Exception {
+        HttpResponse<String> response = client.send(
+                HttpRequest.newBuilder(URI.create(url("/probe/denied"))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(401);
     }
 
     @Test
@@ -99,12 +157,14 @@ class SecurityConfigIntegrationTest {
 
     @Test
     void aDeniedCapabilityCheckGetsTheSameStructuredJsonEveryOtherErrorUses() throws Exception {
-        HttpResponse<String> response = client.send(
-                HttpRequest.newBuilder(URI.create(url("/probe/denied"))).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-        Map<String, Object> body = new ObjectMapper().readValue(response.body(), Map.class);
+        // Signed in (so the default authentication requirement is satisfied) and
+        // then refused by application code: the shape of that refusal is what
+        // this proves, through the real filter chain and the real handler.
+        MvcResult result = mockMvc.perform(get("/probe/denied").with(user("someone")))
+                .andExpect(status().isForbidden())
+                .andReturn();
+        Map<String, Object> body = new ObjectMapper().readValue(result.getResponse().getContentAsString(), Map.class);
 
-        assertThat(response.statusCode()).isEqualTo(403);
         assertThat(body).containsEntry("code", "FORBIDDEN");
         assertThat(body.get("correlationId")).isNotNull();
         assertThat(body.get("fields")).isEqualTo(List.of());

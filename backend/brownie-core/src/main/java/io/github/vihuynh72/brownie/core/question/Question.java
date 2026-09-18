@@ -10,11 +10,18 @@ import java.util.Objects;
  * answerValue}/{@code answeredByUserId}/{@code answeredAt} together, and
  * only once -- see {@code QuestionRepository#answer} and this table's own
  * database-level consistency check.
+ *
+ * <p>{@code generationRunId} names the run that raised the question and
+ * {@code attemptFencingToken} the attempt of that run (the job's fencing
+ * token when the worker staged it); both are {@code null} only on rows
+ * that predate runs.
  */
 public record Question(
         long id,
         long workspaceId,
         long documentId,
+        Long generationRunId,
+        Long attemptFencingToken,
         String fieldId,
         QuestionReason reason,
         List<QuestionCandidateOption> candidates,
@@ -28,6 +35,9 @@ public record Question(
         Objects.requireNonNull(fieldId, "fieldId");
         if (fieldId.isBlank()) {
             throw new IllegalArgumentException("fieldId must not be blank");
+        }
+        if (attemptFencingToken != null && generationRunId == null) {
+            throw new IllegalArgumentException("A question's attempt token requires the run that raised it.");
         }
         candidates = List.copyOf(candidates);
         boolean answered = status == QuestionStatus.ANSWERED;

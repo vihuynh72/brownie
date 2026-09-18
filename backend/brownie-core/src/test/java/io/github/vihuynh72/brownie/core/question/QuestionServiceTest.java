@@ -58,7 +58,7 @@ class QuestionServiceTest {
     void answerDelegatesToTheRepositoryForAGenuineAnswer() {
         FakeQuestionRepository repository = new FakeQuestionRepository();
         QuestionService service = new QuestionService(repository);
-        Question open = repository.create(WORKSPACE_ID, USER_ID, DOCUMENT_ID, REQUIRED_TITLE.fieldId(), QuestionReason.MISSING_REQUIRED, List.of());
+        Question open = repository.create(WORKSPACE_ID, USER_ID, DOCUMENT_ID, null, null, REQUIRED_TITLE.fieldId(), QuestionReason.MISSING_REQUIRED, List.of());
 
         Question answered = service.answer(WORKSPACE_ID, USER_ID, open.id(), "Weekly Sync");
 
@@ -73,10 +73,18 @@ class QuestionServiceTest {
         private final AtomicLong nextId = new AtomicLong(1);
 
         @Override
-        public Question create(long workspaceId, long userId, long documentId, String fieldId, QuestionReason reason, List<QuestionCandidateOption> candidates) {
+        public Question create(
+                long workspaceId,
+                long userId,
+                long documentId,
+                Long generationRunId,
+                Long attemptFencingToken,
+                String fieldId,
+                QuestionReason reason,
+                List<QuestionCandidateOption> candidates) {
             Question question = new Question(
-                    nextId.getAndIncrement(), workspaceId, documentId, fieldId, reason, candidates, QuestionStatus.OPEN, null, null, null,
-                    OffsetDateTime.now());
+                    nextId.getAndIncrement(), workspaceId, documentId, generationRunId, attemptFencingToken, fieldId, reason, candidates,
+                    QuestionStatus.OPEN, null, null, null, OffsetDateTime.now());
             rows.add(question);
             return question;
         }
@@ -101,13 +109,21 @@ class QuestionServiceTest {
         }
 
         @Override
+        public List<Question> findAllForRun(long workspaceId, long userId, long generationRunId) {
+            return rows.stream()
+                    .filter(q -> q.workspaceId() == workspaceId && Long.valueOf(generationRunId).equals(q.generationRunId()))
+                    .toList();
+        }
+
+        @Override
         public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
             Question existing = find(workspaceId, userId, questionId)
                     .filter(q -> q.status() == QuestionStatus.OPEN)
                     .orElseThrow(() -> new QuestionNotFoundException(questionId));
             Question answered = new Question(
-                    existing.id(), existing.workspaceId(), existing.documentId(), existing.fieldId(), existing.reason(),
-                    existing.candidates(), QuestionStatus.ANSWERED, answerValue, userId, OffsetDateTime.now(), existing.createdAt());
+                    existing.id(), existing.workspaceId(), existing.documentId(), existing.generationRunId(), existing.attemptFencingToken(),
+                    existing.fieldId(), existing.reason(), existing.candidates(), QuestionStatus.ANSWERED, answerValue, userId,
+                    OffsetDateTime.now(), existing.createdAt());
             rows.remove(existing);
             rows.add(answered);
             return answered;

@@ -62,8 +62,8 @@ class AcceptedFactsReconcilerTest {
     void aStillOpenQuestionLeavesTheFieldUnchanged() {
         FieldCandidate original = new FieldCandidate(DATE, null, List.of(), true, "not mentioned");
         ExtractionResult extraction = new ExtractionResult(Map.of(DATE, original), List.of());
-        Question open = new Question(1, 1, 1, DATE, QuestionReason.MISSING_REQUIRED, List.of(), QuestionStatus.OPEN, null, null, null,
-                OffsetDateTime.now());
+        Question open = new Question(1, 1, 1, null, null, DATE, QuestionReason.MISSING_REQUIRED, List.of(), QuestionStatus.OPEN, null, null,
+                null, OffsetDateTime.now());
 
         ExtractionResult reconciled = AcceptedFactsReconciler.reconcile(extraction, List.of(open));
 
@@ -73,7 +73,7 @@ class AcceptedFactsReconcilerTest {
 
     private static Question answeredQuestion(String fieldId, List<QuestionCandidateOption> candidates, String answerValue) {
         return new Question(
-                1, 1, 1, fieldId, QuestionReason.CONFLICT, candidates, QuestionStatus.ANSWERED, answerValue, 1L,
+                1, 1, 1, null, null, fieldId, QuestionReason.CONFLICT, candidates, QuestionStatus.ANSWERED, answerValue, 1L,
                 OffsetDateTime.now(), OffsetDateTime.now());
     }
 }

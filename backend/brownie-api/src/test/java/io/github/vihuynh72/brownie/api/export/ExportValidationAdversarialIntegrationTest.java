@@ -53,9 +53,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * This phase's own closing sweep: the whole validate/approve/export
+ * The closing sweep of the export path: the whole validate/approve/export
  * pipeline run together against a held-out template and real adversarial
- * scenarios, re-confirming this phase's own gate directly rather than
+ * scenarios, re-confirming the export gate directly rather than
  * only each task's own narrower slice of it -- "no blocking finding
  * produces a final-approved export; stale approval fails; wrong or
  * partial artifacts never appear as fully complete."
@@ -69,7 +69,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * already proven directly by {@code LayoutComparatorTest}'s own unit
  * cases against hand-built graphs mirroring the real filler's tag-rewrite
  * convention; manufacturing a fake HTTP-reachable tamper here would prove
- * nothing this phase does not already know. What this sweep proves
+ * nothing those unit cases do not already show. What this sweep proves
  * instead, and what is actually reachable through real use, is that
  * legitimate content variation -- many action items, zero action items,
  * a different built-in template altogether -- never produces a false
@@ -138,12 +138,12 @@ class ExportValidationAdversarialIntegrationTest {
 
     /**
      * The held-out template: table-led-meeting-minutes, never exercised
-     * end to end by any of this phase's own earlier per-task tests (they
+     * end to end by any of the earlier export tests (they
      * all used flowing-meeting-minutes). Five action items against the
      * table-led template's own two-sample-item baseline -- more than
      * either earlier real-fixture run ever exercised -- proves the
-     * repeated-row exclusion (the second real bug that earlier work's own
-     * journal entry names) holds for a genuinely different row count, not
+     * repeated-row exclusion (the second real bug the first real-fixture
+     * run found) holds for a genuinely different row count, not
      * just the one count that happened to be tested before.
      */
     @Test
@@ -196,7 +196,7 @@ class ExportValidationAdversarialIntegrationTest {
         assertThat(receipt.get("isCompletePair").asBoolean()).isTrue();
     }
 
-    /** Zero action items -- the empty-repeated-group explanatory line this phase's own second task found and fixed -- must remain informational only and never block approval or export. */
+    /** Zero action items -- the empty-repeated-group explanatory line an earlier compilation fix introduced -- must remain informational only and never block approval or export. */
     @Test
     void zeroActionItemsProducesOnlyInformationalFindingsAndStillExports() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-adversarial-zero-items");
@@ -236,7 +236,7 @@ class ExportValidationAdversarialIntegrationTest {
         assertThat(receipt.get("isCompletePair").asBoolean()).isTrue();
     }
 
-    /** This phase's own gate, stated literally: a blocking finding must be refused at approval, and export must be unreachable without one. */
+    /** The export gate, stated literally: a blocking finding must be refused at approval, and export must be unreachable without one. */
     @Test
     void aBlockingFindingIsRefusedAtApprovalAndExportIsNeverReachedWithoutOne() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-adversarial-blocking-gate");

@@ -12,26 +12,29 @@ vi.mock('@/api/client', async () => {
     ...actual,
     listTemplates: vi.fn(),
     createDocument: vi.fn(),
+    getCapabilities: vi.fn(),
     allocateUpload: vi.fn(),
     uploadArtifactContent: vi.fn(),
     completeUpload: vi.fn(),
     extractArtifact: vi.fn(),
-    attachSource: vi.fn(),
+    attachDocumentSource: vi.fn(),
   }
 })
 
 import {
+  getCapabilities,
   allocateUpload,
-  attachSource,
+  attachDocumentSource,
   completeUpload,
   createDocument,
   extractArtifact,
   listTemplates,
   uploadArtifactContent,
 } from '@/api/client'
+import { resetCapabilitiesCache } from '@/capabilities'
 import { readDocumentHandoff } from '@/router/handoff'
 
-async function mountWithRouter() {
+async function mountWithRouter(path = '/documents/new') {
   const router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -40,7 +43,7 @@ async function mountWithRouter() {
       { path: '/documents/:id', component: { template: '<div />' } },
     ],
   })
-  router.push('/documents/new')
+  router.push(path)
   await router.isReady()
   return mount(NewDocumentView, { global: { plugins: [router] } })
 }
@@ -52,13 +55,15 @@ function flushPromises(): Promise<void> {
 describe('NewDocumentView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockReset().mockRejectedValue(new Error('no capabilities in this test'))
     vi.mocked(listTemplates).mockReset()
     vi.mocked(createDocument).mockReset()
     vi.mocked(allocateUpload).mockReset()
     vi.mocked(uploadArtifactContent).mockReset()
     vi.mocked(completeUpload).mockReset()
     vi.mocked(extractArtifact).mockReset()
-    vi.mocked(attachSource).mockReset()
+    vi.mocked(attachDocumentSource).mockReset()
   })
 
   it('prompts sign-in when the session is anonymous', async () => {
@@ -69,6 +74,42 @@ describe('NewDocumentView', () => {
 
     expect(wrapper.text()).toContain('Sign in')
     expect(listTemplates).not.toHaveBeenCalled()
+  })
+
+  it('tells the person the upload limit before they choose a source file', async () => {
+    vi.mocked(listTemplates).mockResolvedValue([
+      { id: 1, displayName: 'Flowing meeting minutes', status: 'ACTIVE', currentActiveVersionId: 1, createdAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10485760,
+      uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+    })
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(getCapabilities).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('Attach a plain-text (.txt) file up to 10 MB')
+  })
+
+  it('preselects the template the address names, as the teaching screen links here with the one just activated', async () => {
+    vi.mocked(listTemplates).mockResolvedValue([
+      { id: 1, displayName: 'Flowing meeting minutes', status: 'ACTIVE', currentActiveVersionId: 1, createdAt: '2026-03-01T00:00:00Z' },
+      { id: 9, displayName: 'Club Minutes Test Template', status: 'ACTIVE', currentActiveVersionId: 4, createdAt: '2026-03-02T00:00:00Z' },
+    ])
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+
+    const wrapper = await mountWithRouter('/documents/new?templateId=9')
+    await flushPromises()
+
+    expect((wrapper.find('#template').element as HTMLSelectElement).value).toBe('9')
   })
 
   it('loads templates once already authenticated at mount', async () => {
@@ -201,8 +242,8 @@ describe('NewDocumentView', () => {
     vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'notes.txt' })
     vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'notes.txt' })
     vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
-    const snapshot = { id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z' }
-    vi.mocked(attachSource).mockResolvedValue(snapshot)
+    const snapshot = { id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' }
+    vi.mocked(attachDocumentSource).mockResolvedValue(snapshot)
     const session = useSessionStore()
     session.status = 'authenticated'
     session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
@@ -214,7 +255,7 @@ describe('NewDocumentView', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(attachSource).toHaveBeenCalledWith(7, 5)
+    expect(attachDocumentSource).toHaveBeenCalledWith(7, 42, 5)
     expect(wrapper.vm.$router.currentRoute.value.path).toBe('/documents/42')
     const handoff = readDocumentHandoff()
     expect(handoff?.attachedSources).toEqual([snapshot])

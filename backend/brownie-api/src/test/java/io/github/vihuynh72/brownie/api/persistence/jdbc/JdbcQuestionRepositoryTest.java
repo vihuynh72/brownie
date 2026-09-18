@@ -115,7 +115,7 @@ class JdbcQuestionRepositoryTest {
         Document document = createDocument(workspace.id(), owner.id(), templateVersion);
 
         Question created = questionRepository.create(
-                workspace.id(), owner.id(), document.id(), "meeting.title", QuestionReason.CONFLICT,
+                workspace.id(), owner.id(), document.id(), null, null, "meeting.title", QuestionReason.CONFLICT,
                 List.of(new QuestionCandidateOption("Weekly Sync", List.of()), new QuestionCandidateOption("Weekly Sync v2", List.of(9L))));
 
         Question found = questionRepository.find(workspace.id(), owner.id(), created.id()).orElseThrow();
@@ -132,8 +132,8 @@ class JdbcQuestionRepositoryTest {
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
         TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
         Document document = createDocument(workspace.id(), owner.id(), templateVersion);
-        Question stillOpen = questionRepository.create(workspace.id(), owner.id(), document.id(), "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
-        Question toAnswer = questionRepository.create(workspace.id(), owner.id(), document.id(), "meeting.date", QuestionReason.MISSING_REQUIRED, List.of());
+        Question stillOpen = questionRepository.create(workspace.id(), owner.id(), document.id(), null, null, "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
+        Question toAnswer = questionRepository.create(workspace.id(), owner.id(), document.id(), null, null, "meeting.date", QuestionReason.MISSING_REQUIRED, List.of());
         questionRepository.answer(workspace.id(), owner.id(), toAnswer.id(), "2026-03-05");
 
         List<Question> open = questionRepository.findOpenForDocument(workspace.id(), owner.id(), document.id());
@@ -147,7 +147,7 @@ class JdbcQuestionRepositoryTest {
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
         TemplateVersion templateVersion = newActiveTemplate(workspace.id(), owner.id());
         Document document = createDocument(workspace.id(), owner.id(), templateVersion);
-        Question question = questionRepository.create(workspace.id(), owner.id(), document.id(), "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
+        Question question = questionRepository.create(workspace.id(), owner.id(), document.id(), null, null, "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
 
         Question answered = questionRepository.answer(workspace.id(), owner.id(), question.id(), "Weekly Sync");
 
@@ -176,7 +176,7 @@ class JdbcQuestionRepositoryTest {
         TemplateVersion templateVersion = newActiveTemplate(ownerWorkspace.id(), owner.id());
         Document document = createDocument(ownerWorkspace.id(), owner.id(), templateVersion);
         Question question = questionRepository.create(
-                ownerWorkspace.id(), owner.id(), document.id(), "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
+                ownerWorkspace.id(), owner.id(), document.id(), null, null, "meeting.title", QuestionReason.MISSING_REQUIRED, List.of());
 
         assertThat(questionRepository.find(ownerWorkspace.id(), intruder.id(), question.id())).isEmpty();
         assertThat(questionRepository.find(ownerWorkspace.id(), owner.id(), question.id())).isPresent();

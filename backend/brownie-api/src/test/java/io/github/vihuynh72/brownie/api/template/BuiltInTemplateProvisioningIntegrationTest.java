@@ -40,6 +40,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -118,6 +119,12 @@ class BuiltInTemplateProvisioningIntegrationTest {
     @Autowired
     private BuiltInTemplateProvisioningService builtInTemplateProvisioningService;
 
+    @Autowired
+    private io.github.vihuynh72.brownie.core.artifact.ArtifactRepository artifactRepository;
+
+    @Autowired
+    private io.github.vihuynh72.brownie.core.artifact.BlobStore blobStore;
+
     @Test
     void bothBuiltInTemplatesAreActivatedAndListableAfterProvisioning() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-fresh-workspace");
@@ -152,6 +159,46 @@ class BuiltInTemplateProvisioningIntegrationTest {
         List<String> fieldIds = new java.util.ArrayList<>();
         version.get("fields").forEach(field -> fieldIds.add(field.get("fieldId").asText()));
         assertThat(fieldIds).contains("meeting.title", "meeting.date");
+    }
+
+    /**
+     * The rows survive a blob-store reset; the bytes do not. Before the
+     * repair, downloading the built-in's DOCX is a named storage failure
+     * and the workspace is stuck with it; running provisioning again
+     * writes the packaged bytes back under the same key, and the download
+     * works.
+     */
+    @Test
+    void aBuiltInWhoseStoredBytesWentMissingIsRepairedOnTheNextProvisioningRun() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-lost-bytes");
+        long workspaceId = ensureWorkspace("subject-lost-bytes").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-lost-bytes").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode templates = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode flowing = templates.get(0).get("displayName").asText().equals("Flowing meeting minutes") ? templates.get(0) : templates.get(1);
+        JsonNode version = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + flowing.get("id").asLong() + "/versions/"
+                        + flowing.get("currentActiveVersionId").asLong()).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        long artifactId = version.get("sourceArtifactId").asLong();
+        String blobKey = artifactRepository.find(workspaceId, userId, artifactId).orElseThrow().blobKey();
+        String downloadPath = "/api/v1/workspaces/" + workspaceId + "/uploads/" + artifactId + "/download";
+        mockMvc.perform(get(downloadPath).cookie(session)).andExpect(status().isOk());
+
+        blobStore.delete(blobKey);
+        assertThat(blobStore.sizeOf(blobKey)).isEmpty();
+        mockMvc.perform(get(downloadPath).cookie(session))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("ARTIFACT_STORAGE_FAILURE"));
+
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+
+        assertThat(blobStore.sizeOf(blobKey)).isPresent();
+        mockMvc.perform(get(downloadPath).cookie(session)).andExpect(status().isOk());
+        assertThat(readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session)).andExpect(status().isOk()).andReturn()))
+                .hasSize(2);
     }
 
     @Test

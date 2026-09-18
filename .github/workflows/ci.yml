@@ -48,6 +48,7 @@ jobs:
           if [ -f apps/web/package.json ]; then
             cd apps/web
             npm ci
+            npm test
             npm run build
           else
             echo "INFO: Frontend scaffold is not present."

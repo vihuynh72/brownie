@@ -11,6 +11,24 @@ servers:
     description: Local development
 
 paths:
+  /api/v1/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: >
+        What this deployment accepts, for a client to show before a person
+        chooses a file: the upload size limit and media types the upload
+        route enforces, which of them Assist reads as a source, and which
+        a template may be taught from.
+      responses:
+        "200":
+          description: The deployment's limits and supported formats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesResponse"
+        "401":
+          description: Not signed in.
+
   /api/v1/me:
     get:
       operationId: getCurrentIdentity
@@ -57,60 +75,6 @@ paths:
           description: Session ended; redirected to the identity provider's end-session page.
         "403":
           description: Missing or invalid CSRF token.
-
-  /api/v1/platform/probes:
-    post:
-      operationId: createPlatformProbe
-      summary: Record a platform self-check message.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateProbeRequest"
-      responses:
-        "201":
-          description: Created.
-          headers:
-            Location:
-              schema:
-                type: string
-              description: URL of the created probe.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProbeResponse"
-        "400":
-          description: Validation failed.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /api/v1/platform/probes/{id}:
-    get:
-      operationId: getPlatformProbe
-      summary: Read back a previously recorded platform self-check message.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-            format: int64
-      responses:
-        "200":
-          description: Found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProbeResponse"
-        "404":
-          description: No probe with that id.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/documents:
     get:
@@ -314,15 +278,208 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/sources:
+    get:
+      operationId: listDocumentSources
+      summary: >
+        Every source attached to this document, most recently attached
+        first. A source is a workspace-level snapshot; this list is the
+        document's own link to it, which is what the workspace shows and
+        what Assist extracts from.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: The document's sources.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentSourceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: attachDocumentSource
+      summary: >
+        Attach a READY artifact to this document as a source: creates the
+        workspace-level snapshot if the artifact has none yet, then links it
+        to the document. Attaching the same artifact again returns the same
+        link.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachSourceRequest"
+      responses:
+        "201":
+          description: Attached to the document (or already was).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSourceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/rules:
+    get:
+      operationId: listTemplateVersionRules
+      summary: >
+        Every rule revision on one template version, any status, whether the
+        version is a draft or activated: what a document's Rules tab reads
+        for the version it was created from. The unversioned rules route
+        answers only for the current draft.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: The version's rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RuleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/assist/interpret:
+    post:
+      operationId: interpretAssistRequest
+      summary: >
+        Reads a typed request into one bounded Assist command and reports
+        its scope (which field and what it holds now, or which finding)
+        without doing anything. Free text that matches no command comes back
+        as NONE with the list of what Brownie can do.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistTextRequest"
+      responses:
+        "200":
+          description: The interpretation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistInterpretationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/assist/execute:
+    post:
+      operationId: executeAssistRequest
+      summary: >
+        Executes the interpreted command against the revision the person
+        was looking at. A change or a rewrite returns a patch proposal for
+        the ordinary accept route (nothing is applied here); an explanation
+        returns text; a draft request returns DRAFT for the client to start
+        extraction; a request that cannot be carried out is a 400 with the
+        reason. Rewrite and explain make exactly one bounded model call.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistExecuteRequest"
+      responses:
+        "200":
+          description: The outcome.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistExecutionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "502":
+          description: The one model call did not produce a usable answer; nothing on the document changed.
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/evidence/{spanId}:
+    get:
+      operationId: getEvidenceExcerpt
+      summary: >
+        The excerpt one of this document's values cites. Resolved from the
+        exact extraction version the span was created against; 404 unless
+        the span exists in this workspace and cites one of this document's
+        own sources, so a span id alone opens nothing.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - name: spanId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: The cited excerpt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvidenceExcerptResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations:
+    get:
+      operationId: listGenerationRuns
+      summary: >
+        Every generation run started for this document, most recent first,
+        each with the current state of the durable job that carries it and
+        the published result artifact once there is one. This is how a
+        reloaded page finds a run that is still waiting for answers.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: The document's generation runs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GenerationRunResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       operationId: startExtraction
       summary: >
         Start grounded fact extraction for a document from an attached
-        source. Returns immediately with a durable job to poll via
+        source. Records a generation run for the document, links the source
+        to it, and returns immediately with a durable job to poll via
         GET .../jobs/{jobId}; the trusted worker performs the actual model
-        call asynchronously. Today's first real slice covers extraction
-        only, not composition or question resolution.
+        call asynchronously.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/DocumentId"
@@ -1182,6 +1339,28 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/preview:
+    get:
+      operationId: previewArtifact
+      summary: >
+        Stream a READY artifact's exact stored bytes with an inline
+        disposition, for a client that displays them directly -- the
+        workspace's PDF preview fetches a compiled PDF this way. Cache-Control
+        is private, no-store.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: The artifact's stored bytes, with its detected media type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download:
     get:
       operationId: downloadArtifact
@@ -1347,28 +1526,6 @@ components:
         role:
           type: string
           description: "Only OWNER exists until team workspaces are supported."
-
-    CreateProbeRequest:
-      type: object
-      required: [message]
-      properties:
-        message:
-          type: string
-          minLength: 1
-          maxLength: 500
-
-    ProbeResponse:
-      type: object
-      required: [id, message, createdAt]
-      properties:
-        id:
-          type: integer
-          format: int64
-        message:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
 
     CreateDocumentRequest:
       type: object
@@ -2049,6 +2206,200 @@ components:
           type: string
           format: date-time
 
+    DocumentSourceResponse:
+      type: object
+      required: [id, artifactId, kind, fetchedAt, attachedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The workspace-level source snapshot's id.
+        artifactId:
+          type: integer
+          format: int64
+        displayFilename:
+          type: string
+          nullable: true
+        kind:
+          type: string
+        fetchedAt:
+          type: string
+          format: date-time
+        attachedAt:
+          type: string
+          format: date-time
+          description: When this document was linked to the source.
+
+    CapabilitiesResponse:
+      type: object
+      required: [maxUploadBytes, uploadMediaTypes, assistSourceMediaTypes, templateMediaTypes]
+      properties:
+        maxUploadBytes:
+          type: integer
+          format: int64
+        uploadMediaTypes:
+          type: array
+          items:
+            type: object
+            required: [mediaType, extension]
+            properties:
+              mediaType:
+                type: string
+              extension:
+                type: string
+        assistSourceMediaTypes:
+          type: array
+          items:
+            type: string
+          description: Media types Assist can read as a source today.
+        templateMediaTypes:
+          type: array
+          items:
+            type: string
+          description: Media types a template can be taught from.
+
+    AssistTextRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 1000
+
+    AssistExecuteRequest:
+      type: object
+      required: [text, expectedRevisionId]
+      properties:
+        text:
+          type: string
+          maxLength: 1000
+        expectedRevisionId:
+          type: integer
+          format: int64
+
+    AssistScopeResponse:
+      type: object
+      properties:
+        fieldId:
+          type: string
+          nullable: true
+        label:
+          type: string
+          nullable: true
+        currentValue:
+          type: string
+          nullable: true
+        findingMessage:
+          type: string
+          nullable: true
+
+    AssistInterpretationResponse:
+      type: object
+      required: [kind, summary, executable, usesModel, help]
+      properties:
+        kind:
+          type: string
+          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, NONE]
+        summary:
+          type: string
+        scope:
+          allOf:
+            - $ref: "#/components/schemas/AssistScopeResponse"
+          nullable: true
+        executable:
+          type: boolean
+        usesModel:
+          type: boolean
+        help:
+          type: array
+          items:
+            type: string
+
+    AssistExecutionResponse:
+      type: object
+      required: [kind, summary, help]
+      properties:
+        kind:
+          type: string
+          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, NONE]
+        summary:
+          type: string
+        proposal:
+          allOf:
+            - $ref: "#/components/schemas/PatchProposalResponse"
+          nullable: true
+        explanation:
+          type: string
+          nullable: true
+        help:
+          type: array
+          items:
+            type: string
+
+    EvidenceExcerptResponse:
+      type: object
+      required: [spanId, sourceSnapshotId, sourceArtifactId, locatorType, excerptText]
+      properties:
+        spanId:
+          type: integer
+          format: int64
+        sourceSnapshotId:
+          type: integer
+          format: int64
+        sourceArtifactId:
+          type: integer
+          format: int64
+        displayFilename:
+          type: string
+          nullable: true
+        locatorType:
+          type: string
+          enum: [DOCX, PDF, PLAIN_TEXT]
+          description: >
+            The source format the span was cited in. No page or position on
+            the compiled preview is known for any of them; the renderer emits
+            no locator, and the workspace says so.
+        excerptText:
+          type: string
+
+    GenerationRunResponse:
+      type: object
+      required: [id, jobId, documentId, baseRevisionId, sourceSnapshotId, sourceArtifactId, modelName, promptVersion, createdAt, job]
+      properties:
+        id:
+          type: integer
+          format: int64
+        jobId:
+          type: integer
+          format: int64
+        documentId:
+          type: integer
+          format: int64
+        baseRevisionId:
+          type: integer
+          format: int64
+          description: The document revision that was current when the run started.
+        sourceSnapshotId:
+          type: integer
+          format: int64
+        sourceArtifactId:
+          type: integer
+          format: int64
+        modelName:
+          type: string
+        promptVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        job:
+          $ref: "#/components/schemas/JobResponse"
+        resultArtifactId:
+          type: integer
+          format: int64
+          nullable: true
+          description: The published extraction result, once the job succeeded.
+
     StartExtractionRequest:
       type: object
       required: [sourceArtifactId]
@@ -2120,8 +2471,6 @@ components:
         same shape FieldValueResponse uses for a stored field.
       required: [type, cardinality, evidenceSpanIds]
       properties:
-        fieldId:
-          type: string
         type:
           type: string
           enum: [TEXT, DATE]
@@ -2335,20 +2684,7 @@ components:
       type: object
       required: [id, templateId, templateVersionId, category, scope, payload, status, authorUserId, createdAt]
       properties:
-        candidates:
-          type: array
-          items:
-            $ref: "#/components/schemas/CandidateFieldBindingResponse"
-        ambiguousContentControlTags:
-          type: array
-          items:
-            type: string
-
-    AttachSourceRequest:
-      type: object
-      required: [artifactId]
-      properties:
-        artifactId:
+        id:
           type: integer
           format: int64
         templateId:
@@ -2461,7 +2797,7 @@ components:
         [id, documentId, revisionId, templateId, templateVersionId, docxArtifactId, docxSha256, pdfArtifactId, pdfSha256,
          rendererVersion, integrityFindings, allIntegrityChecksPassed, compiledAt]
       properties:
-        artifactId:
+        id:
           type: integer
           format: int64
         documentId:
@@ -2496,7 +2832,7 @@ components:
           type: boolean
         compiledAt:
           type: string
-          minLength: 1
+          format: date-time
 
     ApproveExportRequest:
       type: object
@@ -2533,31 +2869,7 @@ components:
           enum: [DOCX, PDF, BOTH]
         approvedAt:
           type: string
-          nullable: true
-          description: DATE_DISPLAY_FORMAT only.
-          enum: [LONG, SHORT, ISO]
-        allowedSourceKinds:
-          type: array
-          nullable: true
-          description: ALLOWED_SOURCE_KINDS only -- ARTIFACT is the only source kind this codebase produces today.
-          items:
-            type: string
-            enum: [ARTIFACT]
-        emptyValueResolution:
-          type: string
-          nullable: true
-          description: MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
-          enum: [OMIT, BLANK, PLACEHOLDER_TEXT]
-        overflowResolution:
-          type: string
-          nullable: true
-          description: ALLOWED_OVERFLOW_BEHAVIOR only.
-          enum: [BLOCK_EXPORT, ALLOW_REFLOW]
-        protectedRegionTarget:
-          allOf:
-            - $ref: "#/components/schemas/BindingRequest"
-          nullable: true
-          description: PROTECTED_REGION only.
+          format: date-time
 
     ExportReceiptResponse:
       type: object

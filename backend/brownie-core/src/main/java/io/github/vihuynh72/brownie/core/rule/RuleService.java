@@ -5,6 +5,7 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
+import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 
 import java.util.List;
 import java.util.Optional;
@@ -68,6 +69,19 @@ public class RuleService {
     public List<RuleRevision> findForDraft(long workspaceId, long userId, long templateId) {
         TemplateVersion draft = requireDraftVersion(workspaceId, userId, templateId);
         return ruleRepository.findByTemplateVersion(workspaceId, userId, draft.id());
+    }
+
+    /**
+     * Every rule revision on one version of the template, draft or
+     * activated: what a document reads for the version it was created
+     * from, where {@link #findForDraft} would refuse because an activated
+     * template has no open draft.
+     */
+    public List<RuleRevision> findForVersion(long workspaceId, long userId, long templateId, long versionId) {
+        TemplateVersion version = templateRepository
+                .findVersion(workspaceId, userId, templateId, versionId)
+                .orElseThrow(() -> new TemplateVersionNotFoundException(templateId, versionId));
+        return ruleRepository.findByTemplateVersion(workspaceId, userId, version.id());
     }
 
     /**

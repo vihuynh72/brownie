@@ -47,8 +47,8 @@ import java.util.Set;
  * graphs alone. Only a {@code ContentControlTag} binding is
  * handled specially this way -- a {@code REPEATED} field bound by {@code
  * StructuralNode} is not something {@code PoiTemplateFiller} can actually
- * fill today (a real, already-named limitation from the previous phase's
- * own adversarial sweep), so it cannot occur in practice yet. A cloned
+ * fill today (a real, already-named limitation recorded by the template
+ * filler's own adversarial tests), so it cannot occur in practice yet. A cloned
  * row/paragraph's own content control tag is matched as either the bare
  * original tag or {@code "<tag>#<index>"} -- the exact rewrite {@code
  * PoiTemplateFiller.bindGroupControls} performs -- not just the bare tag;

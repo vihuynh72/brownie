@@ -27,7 +27,7 @@ import java.util.List;
  * retried request produces another compilation and another pair of
  * artifacts rather than replaying the first one. This is a deliberate,
  * named gap for this bounded capability, not an oversight -- the fuller
- * export flow this plan describes (bound to a review decision, with its
+ * export flow (bound to a review decision, with its
  * own idempotent request lifecycle) belongs to later work.
  */
 @RestController

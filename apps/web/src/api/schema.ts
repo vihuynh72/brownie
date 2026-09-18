@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this deployment accepts, for a client to show before a person chooses a file: the upload size limit and media types the upload route enforces, which of them Assist reads as a source, and which a template may be taught from. */
+        get: operations["getCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -32,40 +49,6 @@ export interface paths {
         put?: never;
         /** Ends the server session. Requires the same X-XSRF-TOKEN header as every other mutation. With "Accept: application/json" the response is a 200 carrying the identity provider's end-session URL as redirectUrl, which the page then navigates to itself to finish signing out at the provider and return to this app's origin; without it, the response is the ordinary 302 to that same URL. */
         post: operations["logout"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/platform/probes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Record a platform self-check message. */
-        post: operations["createPlatformProbe"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/platform/probes/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read back a previously recorded platform self-check message. */
-        get: operations["getPlatformProbe"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -192,7 +175,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/generations": {
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every source attached to this document, most recently attached first. A source is a workspace-level snapshot; this list is the document's own link to it, which is what the workspace shows and what Assist extracts from. */
+        get: operations["listDocumentSources"];
+        put?: never;
+        /** Attach a READY artifact to this document as a source: creates the workspace-level snapshot if the artifact has none yet, then links it to the document. Attaching the same artifact again returns the same link. */
+        post: operations["attachDocumentSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every rule revision on one template version, any status, whether the version is a draft or activated: what a document's Rules tab reads for the version it was created from. The unversioned rules route answers only for the current draft. */
+        get: operations["listTemplateVersionRules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/assist/interpret": {
         parameters: {
             query?: never;
             header?: never;
@@ -201,7 +219,59 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start grounded fact extraction for a document from an attached source. Returns immediately with a durable job to poll via GET .../jobs/{jobId}; the trusted worker performs the actual model call asynchronously. Today's first real slice covers extraction only, not composition or question resolution. */
+        /** Reads a typed request into one bounded Assist command and reports its scope (which field and what it holds now, or which finding) without doing anything. Free text that matches no command comes back as NONE with the list of what Brownie can do. */
+        post: operations["interpretAssistRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/assist/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Executes the interpreted command against the revision the person was looking at. A change or a rewrite returns a patch proposal for the ordinary accept route (nothing is applied here); an explanation returns text; a draft request returns DRAFT for the client to start extraction; a request that cannot be carried out is a 400 with the reason. Rewrite and explain make exactly one bounded model call. */
+        post: operations["executeAssistRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/evidence/{spanId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The excerpt one of this document's values cites. Resolved from the exact extraction version the span was created against; 404 unless the span exists in this workspace and cites one of this document's own sources, so a span id alone opens nothing. */
+        get: operations["getEvidenceExcerpt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every generation run started for this document, most recent first, each with the current state of the durable job that carries it and the published result artifact once there is one. This is how a reloaded page finds a run that is still waiting for answers. */
+        get: operations["listGenerationRuns"];
+        put?: never;
+        /** Start grounded fact extraction for a document from an attached source. Records a generation run for the document, links the source to it, and returns immediately with a durable job to poll via GET .../jobs/{jobId}; the trusted worker performs the actual model call asynchronously. */
         post: operations["startExtraction"];
         delete?: never;
         options?: never;
@@ -756,6 +826,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream a READY artifact's exact stored bytes with an inline disposition, for a client that displays them directly -- the workspace's PDF preview fetches a compiled PDF this way. Cache-Control is private, no-store. */
+        get: operations["previewArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download": {
         parameters: {
             query?: never;
@@ -791,16 +878,6 @@ export interface components {
             workspaceId: number;
             /** @description Only OWNER exists until team workspaces are supported. */
             role: string;
-        };
-        CreateProbeRequest: {
-            message: string;
-        };
-        ProbeResponse: {
-            /** Format: int64 */
-            id: number;
-            message: string;
-            /** Format: date-time */
-            createdAt: string;
         };
         CreateDocumentRequest: {
             title: string;
@@ -1131,6 +1208,109 @@ export interface components {
             /** Format: date-time */
             fetchedAt: string;
         };
+        DocumentSourceResponse: {
+            /**
+             * Format: int64
+             * @description The workspace-level source snapshot's id.
+             */
+            id: number;
+            /** Format: int64 */
+            artifactId: number;
+            displayFilename?: string | null;
+            kind: string;
+            /** Format: date-time */
+            fetchedAt: string;
+            /**
+             * Format: date-time
+             * @description When this document was linked to the source.
+             */
+            attachedAt: string;
+        };
+        CapabilitiesResponse: {
+            /** Format: int64 */
+            maxUploadBytes: number;
+            uploadMediaTypes: {
+                mediaType: string;
+                extension: string;
+            }[];
+            /** @description Media types Assist can read as a source today. */
+            assistSourceMediaTypes: string[];
+            /** @description Media types a template can be taught from. */
+            templateMediaTypes: string[];
+        };
+        AssistTextRequest: {
+            text: string;
+        };
+        AssistExecuteRequest: {
+            text: string;
+            /** Format: int64 */
+            expectedRevisionId: number;
+        };
+        AssistScopeResponse: {
+            fieldId?: string | null;
+            label?: string | null;
+            currentValue?: string | null;
+            findingMessage?: string | null;
+        };
+        AssistInterpretationResponse: {
+            /** @enum {string} */
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "NONE";
+            summary: string;
+            scope?: components["schemas"]["AssistScopeResponse"] | null;
+            executable: boolean;
+            usesModel: boolean;
+            help: string[];
+        };
+        AssistExecutionResponse: {
+            /** @enum {string} */
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "NONE";
+            summary: string;
+            proposal?: components["schemas"]["PatchProposalResponse"] | null;
+            explanation?: string | null;
+            help: string[];
+        };
+        EvidenceExcerptResponse: {
+            /** Format: int64 */
+            spanId: number;
+            /** Format: int64 */
+            sourceSnapshotId: number;
+            /** Format: int64 */
+            sourceArtifactId: number;
+            displayFilename?: string | null;
+            /**
+             * @description The source format the span was cited in. No page or position on the compiled preview is known for any of them; the renderer emits no locator, and the workspace says so.
+             * @enum {string}
+             */
+            locatorType: "DOCX" | "PDF" | "PLAIN_TEXT";
+            excerptText: string;
+        };
+        GenerationRunResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            jobId: number;
+            /** Format: int64 */
+            documentId: number;
+            /**
+             * Format: int64
+             * @description The document revision that was current when the run started.
+             */
+            baseRevisionId: number;
+            /** Format: int64 */
+            sourceSnapshotId: number;
+            /** Format: int64 */
+            sourceArtifactId: number;
+            modelName: string;
+            promptVersion: string;
+            /** Format: date-time */
+            createdAt: string;
+            job: components["schemas"]["JobResponse"];
+            /**
+             * Format: int64
+             * @description The published extraction result, once the job succeeded.
+             */
+            resultArtifactId?: number | null;
+        };
         StartExtractionRequest: {
             /** Format: int64 */
             sourceArtifactId: number;
@@ -1455,6 +1635,33 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The deployment's limits and supported formats. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilitiesResponse"];
+                };
+            };
+            /** @description Not signed in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getCurrentIdentity: {
         parameters: {
             query?: never;
@@ -1515,72 +1722,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    createPlatformProbe: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateProbeRequest"];
-            };
-        };
-        responses: {
-            /** @description Created. */
-            201: {
-                headers: {
-                    /** @description URL of the created probe. */
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProbeResponse"];
-                };
-            };
-            /** @description Validation failed. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getPlatformProbe: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Found. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProbeResponse"];
-                };
-            };
-            /** @description No probe with that id. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Error"];
-                };
             };
         };
     };
@@ -1827,6 +1968,199 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentRevisionResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listDocumentSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document's sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentSourceResponse"][];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    attachDocumentSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Attached to the document (or already was). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentSourceResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listTemplateVersionRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+                versionId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version's rules. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleResponse"][];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    interpretAssistRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistTextRequest"];
+            };
+        };
+        responses: {
+            /** @description The interpretation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistInterpretationResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    executeAssistRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description The outcome. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistExecutionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            /** @description The one model call did not produce a usable answer; nothing on the document changed. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getEvidenceExcerpt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                spanId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cited excerpt. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceExcerptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listGenerationRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document's generation runs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationRunResponse"][];
                 };
             };
             404: components["responses"]["NotFound"];
@@ -2842,6 +3176,30 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportReceiptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    previewArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                artifactId: components["parameters"]["ArtifactId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The artifact's stored bytes, with its detected media type. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
                 };
             };
             404: components["responses"]["NotFound"];

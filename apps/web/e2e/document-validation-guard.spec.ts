@@ -5,20 +5,16 @@ import { AxeBuilder } from '@axe-core/playwright'
  * Creates a document from one of the workspace's own built-in templates
  * (auto-provisioned on first login by BuiltInTemplateProvisioningService,
  * the same as a real new user) and drives the real validate step against
- * it. The document is deliberately left empty: this app has no manual
- * field-value editing UI yet (WorkspaceView's Content pane is read-only;
- * the only way to populate a field today is the grounded-extraction path,
- * which needs a live model call this suite does not make -- see
- * e2e/README.md), so an empty document's required fields staying blocked
- * is the one real, complete, safe-to-automate proof that the export gate
- * actually refuses incomplete content when driven through a real browser.
+ * it while it is still empty: the export gate must refuse a document whose
+ * required fields are blank, and must never offer approval for it. The
+ * filled-in half of the same journey is manual-editing.spec.ts.
  */
 test('an empty document blocks export at validation and never offers to approve it', async ({ page }) => {
   await page.goto('/documents/new')
 
-  await expect(page.getByLabel('Template')).toBeEnabled({ timeout: 15_000 })
+  await expect(page.getByLabel('Template', { exact: true })).toBeEnabled({ timeout: 15_000 })
   const title = `E2E empty document ${Date.now()}`
-  await page.getByLabel('Title').fill(title)
+  await page.getByLabel('Title', { exact: true }).fill(title)
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 

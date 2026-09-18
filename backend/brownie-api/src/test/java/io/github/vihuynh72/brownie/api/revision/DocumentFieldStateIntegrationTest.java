@@ -199,6 +199,94 @@ class DocumentFieldStateIntegrationTest {
         throw new AssertionError("Flowing meeting minutes template was not provisioned: " + templates);
     }
 
+    /**
+     * A row of a repeated field is its own unit of review and lock: deciding
+     * or locking one item leaves its neighbours untouched, and a lock on any
+     * item of a field refuses an edit of that whole field (the value is one
+     * list) while the other columns of the same rows stay editable.
+     */
+    @Test
+    void reviewsAndLocksOneRowOfARepeatedFieldWithoutTouchingTheOtherRowsOrColumns() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-doc-row-state");
+        long workspaceId = ensureWorkspace("subject-doc-row-state").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-doc-row-state").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        long[] templateAndVersion = findFlowingTemplateAndActiveVersion(session, workspaceId);
+        long documentId = createMinimalDocument(session, workspaceId, templateAndVersion[0], templateAndVersion[1]);
+        long revisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode withRows = readJson(mockMvc.perform(patch("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/content")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + revisionId + ",\"editReason\":\"Two action items typed in by hand.\","
+                                + "\"edits\":["
+                                + "{\"operation\":\"SET\",\"fieldId\":\"action.item.task\",\"value\":{\"type\":\"TEXT\",\"cardinality\":\"REPEATED\",\"values\":[\"Order seedlings\",\"Book the hall\"]}},"
+                                + "{\"operation\":\"SET\",\"fieldId\":\"action.item.owner\",\"value\":{\"type\":\"TEXT\",\"cardinality\":\"REPEATED\",\"values\":[\"Maria Lopez\",\"Sam Okafor\"]}},"
+                                + "{\"operation\":\"SET\",\"fieldId\":\"action.item.due\",\"value\":{\"type\":\"DATE\",\"cardinality\":\"REPEATED\",\"values\":[\"2026-04-20\",\"2026-04-27\"]}}"
+                                + "]}"))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(withRows.get("fields").get("action.item.task").get("itemFieldStates")).hasSize(2);
+        long revisionWithRows = withRows.get("id").asLong();
+
+        JsonNode afterRowReview = readJson(mockMvc.perform(post(fieldsPath(workspaceId, documentId) + "/review-decision")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + revisionWithRows + ",\"fieldId\":\"action.item.task\",\"itemIndex\":1,\"decision\":\"ACCEPTED\"}"))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode taskStates = afterRowReview.get("fields").get("action.item.task").get("itemFieldStates");
+        assertThat(taskStates.get(1).get("review").asText()).isEqualTo("ACCEPTED");
+        assertThat(taskStates.get(0).get("review").asText()).isEqualTo("UNREVIEWED");
+        assertThat(afterRowReview.get("fields").get("action.item.owner").get("itemFieldStates").get(1).get("review").asText())
+                .isEqualTo("UNREVIEWED");
+        long revisionAfterRowReview = afterRowReview.get("id").asLong();
+
+        JsonNode afterRowLock = readJson(mockMvc.perform(post(fieldsPath(workspaceId, documentId) + "/lock")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + revisionAfterRowReview + ",\"fieldId\":\"action.item.due\",\"itemIndex\":0,\"lock\":\"EXPLICITLY_LOCKED\"}"))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode dueStates = afterRowLock.get("fields").get("action.item.due").get("itemFieldStates");
+        assertThat(dueStates.get(0).get("lock").asText()).isEqualTo("EXPLICITLY_LOCKED");
+        assertThat(dueStates.get(1).get("lock").asText()).isEqualTo("EDITABLE");
+        long revisionAfterRowLock = afterRowLock.get("id").asLong();
+
+        mockMvc.perform(patch("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/content")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + revisionAfterRowLock + ",\"editReason\":\"Trying to change a column with a locked row.\","
+                                + "\"edits\":[{\"operation\":\"SET\",\"fieldId\":\"action.item.due\","
+                                + "\"value\":{\"type\":\"DATE\",\"cardinality\":\"REPEATED\",\"values\":[\"2026-05-01\",\"2026-04-27\"]}}]}"))
+                .andExpect(status().isConflict())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value("FIELD_LOCKED"));
+
+        JsonNode afterOtherColumnEdit = readJson(mockMvc.perform(patch("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/content")
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + revisionAfterRowLock + ",\"editReason\":\"Correcting an owner.\","
+                                + "\"edits\":[{\"operation\":\"SET\",\"fieldId\":\"action.item.owner\","
+                                + "\"value\":{\"type\":\"TEXT\",\"cardinality\":\"REPEATED\",\"values\":[\"Maria Lopez\",\"Samuel Okafor\"]}}]}"))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(afterOtherColumnEdit.get("fields").get("action.item.owner").get("values").get(1).asText()).isEqualTo("Samuel Okafor");
+        assertThat(afterOtherColumnEdit.get("fields").get("action.item.due").get("itemFieldStates").get(0).get("lock").asText())
+                .isEqualTo("EXPLICITLY_LOCKED");
+        assertThat(afterOtherColumnEdit.get("fields").get("action.item.task").get("itemFieldStates").get(1).get("review").asText())
+                .isEqualTo("ACCEPTED");
+    }
+
     private long createMinimalDocument(Cookie session, long workspaceId, long templateId, long templateVersionId) throws Exception {
         String body = "{"
                 + "\"title\":\"Weekly Sync\","

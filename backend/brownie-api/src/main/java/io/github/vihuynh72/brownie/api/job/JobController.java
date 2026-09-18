@@ -141,37 +141,4 @@ class JobController {
                     receipt.acceptedAt());
         }
     }
-
-    record JobResponse(
-            long id,
-            String type,
-            String resourceType,
-            long resourceId,
-            long resourceVersion,
-            String stage,
-            String state,
-            int attemptCount,
-            OffsetDateTime availableAt,
-            OffsetDateTime deadlineAt,
-            OffsetDateTime cancellationRequestedAt,
-            OffsetDateTime createdAt,
-            OffsetDateTime updatedAt) {
-
-        static JobResponse from(Job job) {
-            return new JobResponse(
-                    job.id(),
-                    job.type().value(),
-                    job.target().resourceType(),
-                    job.target().resourceId(),
-                    job.target().resourceVersion(),
-                    job.stage().value(),
-                    job.state().name(),
-                    job.attemptCount(),
-                    job.availableAt(),
-                    job.deadlineAt(),
-                    job.cancellationRequestedAt(),
-                    job.createdAt(),
-                    job.updatedAt());
-        }
-    }
 }

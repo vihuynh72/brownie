@@ -11,7 +11,7 @@ const FIXTURE_DOCX = fileURLToPath(new URL('../../../fixtures/public/templates/f
  * model call is on this path -- content-control-tag detection during
  * template teaching is deterministic DOCX-structure parsing, unlike the
  * document-side grounded-extraction path this suite deliberately never
- * drives (see e2e/README.md).
+ * drives (see the End-to-end tests section of the repository README).
  */
 test('teaches a new template from a real DOCX, proposes and accepts a rule, and activates it', async ({ page }) => {
   await page.goto('/templates/new')

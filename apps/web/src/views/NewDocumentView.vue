@@ -1,23 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
+import { formatBytes, loadCapabilities } from '@/capabilities'
 import { documentHandoffState } from '@/router/handoff'
 import {
   ApiRequestError,
   allocateUpload,
-  attachSource,
+  attachDocumentSource,
   completeUpload,
   createDocument,
   extractArtifact,
   listTemplates,
   uploadArtifactContent,
-  type SnapshotResponse,
+  type DocumentSourceResponse,
   type TemplateResponse,
 } from '@/api/client'
 
 const session = useSessionStore()
 const router = useRouter()
+const route = useRoute()
 
 const templates = ref<TemplateResponse[]>([])
 const templatesState = ref<'loading' | 'loaded' | 'error'>('loading')
@@ -27,6 +29,7 @@ const sourceFile = ref<File | null>(null)
 const submitState = ref<'idle' | 'submitting' | 'error'>('idle')
 const submitError = ref<string | null>(null)
 const sourceWarning = ref<string | null>(null)
+const uploadLimit = ref<string | null>(null)
 
 const selectableTemplates = computed(() => templates.value.filter((t) => t.currentActiveVersionId != null))
 
@@ -38,7 +41,10 @@ async function loadTemplates(): Promise<void> {
     templates.value = await listTemplates(workspaceId)
     templatesState.value = 'loaded'
     if (selectableTemplates.value.length > 0 && selectedTemplateId.value === null) {
-      selectedTemplateId.value = selectableTemplates.value[0]!.id
+      // The template screen links here with the template it just activated; otherwise the first one.
+      const requested = Number(route.query.templateId)
+      const preselected = selectableTemplates.value.find((t) => t.id === requested) ?? selectableTemplates.value[0]!
+      selectedTemplateId.value = preselected.id
     }
   } catch {
     templatesState.value = 'error'
@@ -46,12 +52,19 @@ async function loadTemplates(): Promise<void> {
 }
 
 onMounted(loadTemplates)
+onMounted(async () => {
+  try {
+    uploadLimit.value = formatBytes((await loadCapabilities()).maxUploadBytes)
+  } catch {
+    uploadLimit.value = null
+  }
+})
 // session.personalWorkspaceId can still be undefined the instant this component mounts -- App.vue's
 // own onMounted also calls loadIdentity(), and on a hard page load there is no guarantee the router's
 // beforeEach guard's own identity check wins that race (see main.ts: app.mount() is not gated on
 // router.isReady()). Without this, a document/workspace ID that resolves a moment later than this
 // mount never gets a retry and the page is stuck on "Loading templates…" forever, matching the same
-// defensive watch DocumentListView.vue and WorkspaceView.vue already carry for the same reason.
+// defensive watch HomeView.vue and WorkspaceView.vue already carry for the same reason.
 watch(() => session.status, (status) => {
   if (status === 'authenticated') void loadTemplates()
 })
@@ -61,8 +74,8 @@ function onFileChange(event: Event): void {
   sourceFile.value = input.files?.[0] ?? null
 }
 
-/** The attached snapshot on success, or null -- with `sourceWarning` set -- when the file was refused or the upload failed. */
-async function attachSelectedSource(workspaceId: number): Promise<SnapshotResponse | null> {
+/** The document's new source on success, or null -- with `sourceWarning` set -- when the file was refused or the upload failed. */
+async function attachSelectedSource(workspaceId: number, documentId: number): Promise<DocumentSourceResponse | null> {
   const file = sourceFile.value
   if (!file) return null
   try {
@@ -74,7 +87,7 @@ async function attachSelectedSource(workspaceId: number): Promise<SnapshotRespon
       return null
     }
     await extractArtifact(workspaceId, allocated.id)
-    return await attachSource(workspaceId, allocated.id)
+    return await attachDocumentSource(workspaceId, documentId, allocated.id)
   } catch {
     sourceWarning.value =
       'Your source file could not be attached. The document was still created; attach it again from the Sources tab.'
@@ -99,11 +112,10 @@ async function submit(): Promise<void> {
       fields: {},
       initialRevisionReason: 'Created from the new-document workspace flow.',
     })
-    const attached = await attachSelectedSource(workspaceId)
-    // The workspace screen cannot discover this source on its own (nothing links a source to one
-    // document server-side yet), and this component is unmounted the moment the route changes --
-    // so both the just-attached source and any warning about it ride along in the pushed route's
-    // own history state rather than dying with this component's local refs.
+    const attached = await attachSelectedSource(workspaceId, document.id)
+    // The source is linked to the document server-side, so the workspace will find it on its own;
+    // the just-attached copy and any warning about it still ride along in the pushed route's own
+    // history state so the first paint and the warning survive this component being unmounted.
     await router.push({
       path: `/documents/${document.id}`,
       state: documentHandoffState({ attachedSources: attached ? [attached] : [], sourceWarning: sourceWarning.value }),
@@ -116,9 +128,10 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
+  <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
   <section v-if="session.status === 'anonymous'" class="card">
     <p>Sign in to create a document.</p>
-    <a class="button button--primary" href="/oauth2/authorization/entra">Sign in</a>
+    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/documents/new' } }">Sign in</RouterLink>
   </section>
 
   <section v-else class="card new-document">
@@ -150,10 +163,11 @@ async function submit(): Promise<void> {
 
       <div class="field">
         <label class="field-label" for="source">Notes or transcript (optional)</label>
-        <input id="source" type="file" @change="onFileChange" />
+        <input id="source" type="file" accept=".txt,text/plain" @change="onFileChange" />
         <p class="field-hint">
-          Optional. Attach a text, DOCX, or PDF file and Assist can fill the title, date, attendees, decisions,
-          and action items from it; you accept each value before it lands. You can also attach one later.
+          Optional. Attach a plain-text (.txt) file<span v-if="uploadLimit"> up to {{ uploadLimit }}</span> and Assist can fill this
+          template's fields from it; you accept each value before it lands. You can also attach one from the
+          workspace, or type every value in yourself.
         </p>
       </div>
 

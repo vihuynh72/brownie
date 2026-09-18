@@ -66,8 +66,8 @@ public class CompositionService {
      * before the model gateway is ever touched, if a required field
      * (this template version's own {@link FieldRequiredness#REQUIRED}, or
      * one named by an attached {@link RulePayload.RequiredFields} rule)
-     * has no resolved accepted fact yet -- this plan's own "no paid call
-     * runs while the workflow is waiting for input" rule.
+     * has no resolved accepted fact yet -- no paid call runs while the
+     * workflow is waiting for input.
      */
     public ExtractionResult compose(
             List<FieldDefinition> templateFields,

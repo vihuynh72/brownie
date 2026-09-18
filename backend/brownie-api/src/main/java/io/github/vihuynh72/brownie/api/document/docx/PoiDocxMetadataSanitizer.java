@@ -10,7 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 
 /**
- * Clears the OOXML metadata this plan names as a real leak risk (author
+ * Clears the OOXML metadata that is a real leak risk (author
  * identity, machine/application details, arbitrary custom properties) --
  * comments, tracked changes, and hidden text are not stripped here because
  * template preflight already refuses a source containing them before a

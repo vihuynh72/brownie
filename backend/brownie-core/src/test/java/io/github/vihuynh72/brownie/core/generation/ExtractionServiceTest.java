@@ -74,7 +74,7 @@ class ExtractionServiceTest {
     }
 
     /**
-     * The evidence-isolation half of this phase's own "example-leakage"
+     * The evidence-isolation half of the "example-leakage"
      * eval category: a span ID that is a real, legitimately-existing
      * citation elsewhere (a different run, a different document, another
      * workspace entirely) is still rejected here, because it is not a

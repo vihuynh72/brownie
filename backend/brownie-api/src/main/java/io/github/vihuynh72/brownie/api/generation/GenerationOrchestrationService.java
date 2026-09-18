@@ -7,10 +7,13 @@ import io.github.vihuynh72.brownie.core.artifact.BlobAlreadyExistsException;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import io.github.vihuynh72.brownie.core.artifact.ReadableArtifact;
 import io.github.vihuynh72.brownie.core.generation.ExtractionInputBundle;
+import io.github.vihuynh72.brownie.core.generation.ExtractionPromptBuilder;
 import io.github.vihuynh72.brownie.core.generation.ExtractionResult;
 import io.github.vihuynh72.brownie.core.generation.ExtractionService;
 import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
 import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
+import io.github.vihuynh72.brownie.core.generation.GenerationRun;
+import io.github.vihuynh72.brownie.core.generation.GenerationRunRepository;
 import io.github.vihuynh72.brownie.core.generation.LabeledExcerpt;
 import io.github.vihuynh72.brownie.core.generation.RepeatedItemCandidate;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
@@ -37,6 +40,7 @@ import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.PatchProposal;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
+import io.github.vihuynh72.brownie.core.source.DocumentSourceRepository;
 import io.github.vihuynh72.brownie.core.source.SourceService;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshot;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
@@ -45,7 +49,11 @@ import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayInputStream;
@@ -59,6 +67,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -74,13 +83,15 @@ import java.util.Set;
  * it reads this exact bundle back by the identical hash and calls the
  * model, entirely independent of this process.
  *
- * <p>Every method that takes a job ID first proves, through the
- * tenant-scoped job repository, that the job exists in this workspace and
- * targets this exact document, before touching any blob that job's ID
- * alone names. The pending-questions and resolved-answers objects are
- * keyed by nothing but the job ID -- a global sequence -- so without that
- * check a caller could read another workspace's staged candidate values,
- * or overwrite its answers, simply by guessing a number.
+ * <p>Starting an extraction also records a {@link GenerationRun} for the
+ * document in the same transaction as the job it enqueues, and links the
+ * source to the document. Every method that takes a job ID first proves,
+ * through that tenant-scoped run record, that the job is a run of this
+ * exact document in this workspace, before touching any blob the job
+ * names: the pending-questions and resolved-answers objects are keyed by
+ * workspace and job, so without that check a caller could read another
+ * workspace's staged candidate values, or overwrite its answers, simply
+ * by guessing numbers.
  */
 @Service
 public class GenerationOrchestrationService {
@@ -89,9 +100,9 @@ public class GenerationOrchestrationService {
     public static final String EXTRACTION_JOB_TYPE = GenerationJobTypes.EXTRACTION_JOB_TYPE;
     public static final String EXTRACTION_RESULT_OUTPUT_KIND = GenerationJobTypes.EXTRACTION_RESULT_OUTPUT_KIND;
 
+    private static final Logger log = LoggerFactory.getLogger(GenerationOrchestrationService.class);
     private static final String EXTRACTING_STAGE = "extracting";
     private static final String DOCUMENT_RESOURCE_TYPE = "document";
-    private static final String BUNDLE_BLOB_PREFIX = "generation-input/";
     private static final long MAX_BUNDLE_BYTES = 2_000_000;
     private static final int SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH = 120;
 
@@ -115,9 +126,13 @@ public class GenerationOrchestrationService {
     private final ArtifactService artifactService;
     private final JobCommandRepository jobCommandRepository;
     private final JobOutputArtifactRepository jobOutputArtifactRepository;
+    private final GenerationRunRepository generationRunRepository;
+    private final DocumentSourceRepository documentSourceRepository;
     private final BlobStore blobStore;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
+    private final String modelName;
 
     public GenerationOrchestrationService(
             RevisionService revisionService,
@@ -128,9 +143,13 @@ public class GenerationOrchestrationService {
             ArtifactService artifactService,
             JobCommandRepository jobCommandRepository,
             JobOutputArtifactRepository jobOutputArtifactRepository,
+            GenerationRunRepository generationRunRepository,
+            DocumentSourceRepository documentSourceRepository,
             BlobStore blobStore,
             CanonicalRequestHasher canonicalRequestHasher,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TransactionTemplate transactionTemplate,
+            @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
         this.sourceService = sourceService;
@@ -139,9 +158,13 @@ public class GenerationOrchestrationService {
         this.artifactService = artifactService;
         this.jobCommandRepository = jobCommandRepository;
         this.jobOutputArtifactRepository = jobOutputArtifactRepository;
+        this.generationRunRepository = generationRunRepository;
+        this.documentSourceRepository = documentSourceRepository;
         this.blobStore = blobStore;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.objectMapper = objectMapper;
+        this.transactionTemplate = transactionTemplate;
+        this.modelName = modelName;
     }
 
     public CommandReceipt startExtraction(
@@ -162,6 +185,7 @@ public class GenerationOrchestrationService {
                 .map(DocumentRevision::content)
                 .orElseGet(DocumentContent::empty);
         SourceSnapshot snapshot = sourceService.attachSnapshot(workspaceId, userId, sourceArtifactId);
+        documentSourceRepository.link(workspaceId, userId, documentId, snapshot.id());
         List<LabeledExcerpt> excerpts = extractionService.segmentAndCiteSource(workspaceId, userId, snapshot);
         List<String> composableFieldIds = templateVersion.fieldDefinitions().stream()
                 .map(FieldDefinition::fieldId)
@@ -170,19 +194,63 @@ public class GenerationOrchestrationService {
         ExtractionInputBundle bundle = ExtractionInputBundle.from(templateVersion.fieldDefinitions(), excerpts, existingContent, composableFieldIds);
 
         CanonicalRequestHash bundleHash = canonicalRequestHasher.hash(bundle);
-        writeBundleIfAbsent(bundleHash, bundle);
+        writeBundleIfAbsent(workspaceId, bundleHash, bundle);
 
-        return jobCommandRepository.enqueue(
-                workspaceId,
-                userId,
-                new EnqueueJobCommand(
-                        idempotencyKey,
-                        requestHash,
-                        new JobType(EXTRACTION_JOB_TYPE),
-                        new JobTarget(DOCUMENT_RESOURCE_TYPE, documentId, document.currentRevisionId()),
-                        new JobStage(EXTRACTING_STAGE),
-                        bundleHash,
-                        OffsetDateTime.now()));
+        // The job and the run that owns it are one fact: a job with no run
+        // could never be read back through a document, and a run naming a
+        // job that was never enqueued would wait forever, so neither is
+        // committed without the other. A replay under the same idempotency
+        // key returns the same job and therefore the same run.
+        return transactionTemplate.execute(status -> {
+            CommandReceipt receipt = jobCommandRepository.enqueue(
+                    workspaceId,
+                    userId,
+                    new EnqueueJobCommand(
+                            idempotencyKey,
+                            requestHash,
+                            new JobType(EXTRACTION_JOB_TYPE),
+                            new JobTarget(DOCUMENT_RESOURCE_TYPE, documentId, document.currentRevisionId()),
+                            new JobStage(EXTRACTING_STAGE),
+                            bundleHash,
+                            OffsetDateTime.now()));
+            generationRunRepository.record(
+                    workspaceId,
+                    userId,
+                    new GenerationRunRepository.NewGenerationRun(
+                            documentId,
+                            document.currentRevisionId(),
+                            document.templateVersionId(),
+                            snapshot.id(),
+                            receipt.jobId(),
+                            bundleHash.value(),
+                            modelName,
+                            ExtractionPromptBuilder.PROMPT_VERSION));
+            return receipt;
+        });
+    }
+
+    /**
+     * Every run started for this document, most recent first, each paired
+     * with the current state of the job that carries it and the published
+     * result artifact once there is one. The document itself must exist in
+     * this workspace.
+     */
+    public List<GenerationRunView> listRuns(long workspaceId, long userId, long documentId) {
+        revisionService.findDocument(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
+        List<GenerationRunView> views = new ArrayList<>();
+        for (GenerationRun run : generationRunRepository.findForDocument(workspaceId, userId, documentId)) {
+            Job job = jobCommandRepository
+                    .find(workspaceId, userId, run.jobId())
+                    .orElseThrow(() -> new IllegalStateException("Generation run " + run.id() + " names job " + run.jobId() + ", which does not exist."));
+            Optional<Long> resultArtifactId =
+                    jobOutputArtifactRepository.findArtifactId(workspaceId, userId, run.jobId(), GenerationJobTypes.EXTRACTION_RESULT_OUTPUT_KIND);
+            views.add(new GenerationRunView(run, job, resultArtifactId.orElse(null)));
+        }
+        return views;
+    }
+
+    /** One run as a caller sees it: the record itself, the job carrying it right now, and its published result artifact, if any yet. */
+    public record GenerationRunView(GenerationRun run, Job job, Long resultArtifactId) {
     }
 
     /**
@@ -194,20 +262,32 @@ public class GenerationOrchestrationService {
      * instead ({@code GenerationExtractionJobProcessor}'s own counterpart
      * to this method); persisting from it here, exactly once, is what
      * turns that staged data into something a person can actually answer.
-     * Idempotent by construction: once any question exists for this
-     * document, this never re-reads the blob or persists again.
+     * Scoped to this run and to the job's current attempt: once the
+     * attempt's questions exist as rows, this never re-reads the blob or
+     * persists again (a reload after every question was answered returns
+     * an empty list, not a second copy of the same questions), and a
+     * bundle staged by a superseded attempt is ignored rather than put
+     * in front of a person.
      */
     public List<Question> openQuestions(long workspaceId, long userId, long documentId, long jobId) {
-        requireJobForDocument(workspaceId, userId, documentId, jobId);
-        List<Question> alreadyPersisted = questionService.openQuestions(workspaceId, userId, documentId);
-        if (!alreadyPersisted.isEmpty()) {
-            return alreadyPersisted;
+        GenerationRun run = requireRun(workspaceId, userId, documentId, jobId);
+        Job job = requireJob(workspaceId, userId, jobId);
+        List<Question> forRun = questionService.allQuestionsForRun(workspaceId, userId, run.id());
+        boolean materializedForThisAttempt = forRun.stream()
+                .anyMatch(question -> question.attemptFencingToken() != null && question.attemptFencingToken() == job.fencingToken());
+        if (materializedForThisAttempt) {
+            return forRun.stream().filter(question -> question.status() == QuestionStatus.OPEN).toList();
         }
-        DetectedQuestionsBundle pending = readPendingQuestions(jobId);
+        DetectedQuestionsBundle pending = readPendingQuestions(workspaceId, jobId);
         if (pending == null || pending.questions().isEmpty()) {
             return List.of();
         }
-        return questionService.persistDetected(workspaceId, userId, documentId, pending.questions());
+        if (pending.fencingToken() != job.fencingToken()) {
+            log.info("Ignoring pending questions staged by attempt {} of job {}; the current attempt is {}.",
+                    pending.fencingToken(), jobId, job.fencingToken());
+            return List.of();
+        }
+        return questionService.persistDetected(workspaceId, userId, documentId, run.id(), job.fencingToken(), pending.questions());
     }
 
     /**
@@ -222,12 +302,12 @@ public class GenerationOrchestrationService {
      */
     public CommandReceipt resumeAfterQuestions(
             long workspaceId, long userId, long documentId, long jobId, IdempotencyKey idempotencyKey, CanonicalRequestHash requestHash) {
-        requireJobForDocument(workspaceId, userId, documentId, jobId);
-        List<ResolvedAnswerBundle.ResolvedAnswer> answers = questionService.allQuestions(workspaceId, userId, documentId).stream()
+        GenerationRun run = requireRun(workspaceId, userId, documentId, jobId);
+        List<ResolvedAnswerBundle.ResolvedAnswer> answers = questionService.allQuestionsForRun(workspaceId, userId, run.id()).stream()
                 .filter(question -> question.status() == QuestionStatus.ANSWERED)
                 .map(ResolvedAnswerBundle.ResolvedAnswer::from)
                 .toList();
-        writeResolvedAnswers(jobId, new ResolvedAnswerBundle(answers));
+        writeResolvedAnswers(workspaceId, jobId, new ResolvedAnswerBundle(answers));
         return jobCommandRepository.requestResume(workspaceId, userId, new ResumeJobCommand(idempotencyKey, requestHash, jobId));
     }
 
@@ -247,7 +327,7 @@ public class GenerationOrchestrationService {
      * returned {@link GenerationApplyOutcome} rather than dropped silently.
      */
     public GenerationApplyOutcome applyResultAsPatchProposal(long workspaceId, long userId, long documentId, long jobId) {
-        requireJobForDocument(workspaceId, userId, documentId, jobId);
+        requireRun(workspaceId, userId, documentId, jobId);
         Document document = revisionService
                 .findDocument(workspaceId, userId, documentId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
@@ -296,19 +376,21 @@ public class GenerationOrchestrationService {
     }
 
     /**
-     * The job must exist in this workspace (the repository lookup is
-     * tenant-scoped) and must target this exact document -- a job that
+     * The job must be a recorded run in this workspace (the repository
+     * lookup is tenant-scoped) of this exact document -- a run that
      * belongs to some other document, even one in the same workspace, is
      * reported as not found rather than letting its staged questions,
-     * answers, or result be read through a document they were never
-     * about.
+     * answers, or result be read through a document it was never about.
      */
-    private Job requireJobForDocument(long workspaceId, long userId, long documentId, long jobId) {
-        return jobCommandRepository
-                .find(workspaceId, userId, jobId)
-                .filter(job -> DOCUMENT_RESOURCE_TYPE.equals(job.target().resourceType())
-                        && job.target().resourceId() == documentId)
+    private GenerationRun requireRun(long workspaceId, long userId, long documentId, long jobId) {
+        return generationRunRepository
+                .findByJob(workspaceId, userId, jobId)
+                .filter(run -> run.documentId() == documentId)
                 .orElseThrow(() -> new JobNotFoundException(jobId));
+    }
+
+    private Job requireJob(long workspaceId, long userId, long jobId) {
+        return jobCommandRepository.find(workspaceId, userId, jobId).orElseThrow(() -> new JobNotFoundException(jobId));
     }
 
     private ExtractionResult readResult(long workspaceId, long userId, long artifactId) {
@@ -440,8 +522,8 @@ public class GenerationOrchestrationService {
         }
     }
 
-    private DetectedQuestionsBundle readPendingQuestions(long jobId) {
-        String objectKey = GenerationJobTypes.pendingQuestionsObjectKey(jobId);
+    private DetectedQuestionsBundle readPendingQuestions(long workspaceId, long jobId) {
+        String objectKey = GenerationJobTypes.pendingQuestionsObjectKey(workspaceId, jobId);
         try {
             if (blobStore.sizeOf(objectKey).isEmpty()) {
                 return null;
@@ -454,8 +536,8 @@ public class GenerationOrchestrationService {
         }
     }
 
-    private void writeResolvedAnswers(long jobId, ResolvedAnswerBundle answers) {
-        String objectKey = GenerationJobTypes.resolvedAnswersObjectKey(jobId);
+    private void writeResolvedAnswers(long workspaceId, long jobId, ResolvedAnswerBundle answers) {
+        String objectKey = GenerationJobTypes.resolvedAnswersObjectKey(workspaceId, jobId);
         try {
             byte[] json = objectMapper.writeValueAsBytes(answers);
             blobStore.writeAndDigest(objectKey, new ByteArrayInputStream(json), MAX_BUNDLE_BYTES);
@@ -472,8 +554,8 @@ public class GenerationOrchestrationService {
      * BlobStore#writeNewAndDigest} already gives {@code
      * JobOutputPublisher}'s own staged worker outputs.
      */
-    private void writeBundleIfAbsent(CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
-        String objectKey = bundleObjectKey(bundleHash);
+    private void writeBundleIfAbsent(long workspaceId, CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
+        String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash.value());
         try {
             byte[] json = objectMapper.writeValueAsBytes(bundle);
             blobStore.writeNewAndDigest(objectKey, new ByteArrayInputStream(json), MAX_BUNDLE_BYTES);
@@ -482,10 +564,5 @@ public class GenerationOrchestrationService {
         } catch (IOException e) {
             throw new ArtifactStorageException("Could not write generation input bundle " + objectKey + ".", e);
         }
-    }
-
-    /** The same deterministic key derivation the worker's own processor must reproduce -- see {@code GenerationExtractionJobProcessor}. */
-    public static String bundleObjectKey(CanonicalRequestHash bundleHash) {
-        return BUNDLE_BLOB_PREFIX + bundleHash.value() + ".json";
     }
 }

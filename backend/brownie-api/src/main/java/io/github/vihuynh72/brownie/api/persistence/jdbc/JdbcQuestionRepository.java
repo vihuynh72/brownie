@@ -28,7 +28,8 @@ import java.util.Set;
 class JdbcQuestionRepository implements QuestionRepository {
 
     private static final String COLUMNS =
-            "id, workspace_id, document_id, field_id, reason, candidates, status, answer_value, answered_by_user_id, answered_at, created_at";
+            "id, workspace_id, document_id, generation_run_id, attempt_fencing_token, field_id, reason, candidates, status,"
+                    + " answer_value, answered_by_user_id, answered_at, created_at";
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -40,17 +41,27 @@ class JdbcQuestionRepository implements QuestionRepository {
 
     @Override
     @Transactional
-    public Question create(long workspaceId, long userId, long documentId, String fieldId, QuestionReason reason, List<QuestionCandidateOption> candidates) {
+    public Question create(
+            long workspaceId,
+            long userId,
+            long documentId,
+            Long generationRunId,
+            Long attemptFencingToken,
+            String fieldId,
+            QuestionReason reason,
+            List<QuestionCandidateOption> candidates) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.queryForObject(
                 """
-                INSERT INTO question (workspace_id, document_id, field_id, reason, candidates)
-                VALUES (?, ?, ?, ?, ?::jsonb)
+                INSERT INTO question (workspace_id, document_id, generation_run_id, attempt_fencing_token, field_id, reason, candidates)
+                VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
                 RETURNING\
                 """ + " " + COLUMNS,
                 this::mapQuestion,
                 workspaceId,
                 documentId,
+                generationRunId,
+                attemptFencingToken,
                 fieldId,
                 reason.name(),
                 toJson(candidates));
@@ -88,6 +99,17 @@ class JdbcQuestionRepository implements QuestionRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<Question> findAllForRun(long workspaceId, long userId, long generationRunId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM question WHERE workspace_id = ? AND generation_run_id = ? ORDER BY created_at, id",
+                this::mapQuestion,
+                workspaceId,
+                generationRunId);
+    }
+
+    @Override
     @Transactional
     public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
@@ -115,6 +137,8 @@ class JdbcQuestionRepository implements QuestionRepository {
                 rs.getLong("id"),
                 rs.getLong("workspace_id"),
                 rs.getLong("document_id"),
+                (Long) rs.getObject("generation_run_id"),
+                (Long) rs.getObject("attempt_fencing_token"),
                 rs.getString("field_id"),
                 QuestionReason.valueOf(rs.getString("reason")),
                 fromJson(rs.getString("candidates")),

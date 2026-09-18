@@ -44,11 +44,13 @@ import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,13 +81,18 @@ import java.util.stream.Collectors;
  * again, so an already-settled field is never re-asked. Resuming always
  * re-runs the model call rather than caching the first attempt's own
  * result -- a real, deliberate simplification, since a correct cache would
- * need its own invalidation story this task's scope does not cover.
+ * need its own invalidation story this processor does not carry.
+ *
+ * <p>For the whole of an attempt a {@link LeaseHeartbeat} keeps the lease
+ * alive and doubles as the attempt's cancellation signal: a job cancelled
+ * through the API is noticed at the next heartbeat and no further model
+ * call is placed for it; the attempt then releases through the same
+ * routine every other failure does, which finalizes the job CANCELLED.
  */
 @Component
 class GenerationExtractionJobProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(GenerationExtractionJobProcessor.class);
-    private static final String BUNDLE_BLOB_PREFIX = "generation-input/";
     private static final long MAX_QUESTION_BLOB_BYTES = 200_000;
 
     private final BlobStore blobStore;
@@ -94,6 +101,7 @@ class GenerationExtractionJobProcessor {
     private final CompositionResponseParser compositionResponseParser;
     private final JobLeaseRepository jobLeaseRepository;
     private final JobOutputPublisher jobOutputPublisher;
+    private final Duration leaseDuration;
     private final ObjectMapper objectMapper;
 
     GenerationExtractionJobProcessor(
@@ -102,17 +110,25 @@ class GenerationExtractionJobProcessor {
             ExtractionResponseParser extractionResponseParser,
             CompositionResponseParser compositionResponseParser,
             JobLeaseRepository jobLeaseRepository,
-            JobOutputPublisher jobOutputPublisher) {
+            JobOutputPublisher jobOutputPublisher,
+            @Value("${brownie.worker.generation.lease-duration:PT2M}") Duration leaseDuration) {
         this.blobStore = blobStore;
         this.modelGateway = modelGateway;
         this.extractionResponseParser = extractionResponseParser;
         this.compositionResponseParser = compositionResponseParser;
         this.jobLeaseRepository = jobLeaseRepository;
         this.jobOutputPublisher = jobOutputPublisher;
+        this.leaseDuration = leaseDuration;
         this.objectMapper = new ObjectMapper();
     }
 
     void process(LeasedJob leasedJob) {
+        try (LeaseHeartbeat heartbeat = LeaseHeartbeat.start(jobLeaseRepository, leasedJob.leaseToken(), leaseDuration)) {
+            process(leasedJob, heartbeat);
+        }
+    }
+
+    private void process(LeasedJob leasedJob, CancellationSignal cancellationSignal) {
         ExtractionInputBundle bundle;
         try {
             bundle = readBundle(leasedJob);
@@ -129,7 +145,7 @@ class GenerationExtractionJobProcessor {
 
         ResolvedAnswerBundle resolvedAnswers;
         try {
-            resolvedAnswers = readResolvedAnswers(leasedJob.job().id());
+            resolvedAnswers = readResolvedAnswers(leasedJob.job().workspaceId(), leasedJob.job().id());
         } catch (IOException e) {
             log.warn("Could not read resolved answers for job {}.", leasedJob.job().id(), e);
             releaseAfterFailure(leasedJob, new JobFailure(
@@ -150,7 +166,7 @@ class GenerationExtractionJobProcessor {
 
         ExtractionResult result;
         try {
-            result = extractionService.extractFromExcerpts(fields, excerpts, freshBudget(), CancellationSignal.never());
+            result = extractionService.extractFromExcerpts(fields, excerpts, freshBudget(), cancellationSignal);
         } catch (ModelTransportException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     e.retryable() ? JobFailureKind.TRANSIENT_PROVIDER : JobFailureKind.DETERMINISTIC,
@@ -162,10 +178,7 @@ class GenerationExtractionJobProcessor {
                     JobFailureKind.DETERMINISTIC, "GENERATION_EXTRACTION_UNUSABLE", safeMessage(e.getMessage()), null));
             return;
         } catch (ExtractionCancelledException e) {
-            // Unreachable while this processor passes CancellationSignal.never()
-            // (see this class's own javadoc on that deliberate simplification),
-            // but extractFromExcerpts declares it, so it must be handled.
-            log.warn("Extraction reported cancellation for job {} despite no cancellation signal being wired yet.", leasedJob.job().id());
+            releaseAfterCancellation(leasedJob);
             return;
         }
 
@@ -180,7 +193,7 @@ class GenerationExtractionJobProcessor {
                 QuestionDetectionService.detect(reconciled, fieldsStillNeedingAnAnswer, existingContentOf(bundle));
 
         if (detected.isEmpty()) {
-            ExtractionResult finalResult = composeIfNeeded(leasedJob, bundle, fields, reconciled);
+            ExtractionResult finalResult = composeIfNeeded(leasedJob, bundle, fields, reconciled, cancellationSignal);
             if (finalResult != null) {
                 publishResult(leasedJob, finalResult);
             }
@@ -200,14 +213,15 @@ class GenerationExtractionJobProcessor {
     }
 
     private ExtractionInputBundle readBundle(LeasedJob leasedJob) throws IOException {
-        String objectKey = bundleObjectKey(leasedJob);
+        String objectKey = GenerationJobTypes.inputBundleObjectKey(
+                leasedJob.job().workspaceId(), leasedJob.job().processingConfigurationHash().value());
         try (InputStream content = blobStore.openStream(objectKey)) {
             return objectMapper.readValue(content, ExtractionInputBundle.class);
         }
     }
 
-    private ResolvedAnswerBundle readResolvedAnswers(long jobId) throws IOException {
-        String objectKey = GenerationJobTypes.resolvedAnswersObjectKey(jobId);
+    private ResolvedAnswerBundle readResolvedAnswers(long workspaceId, long jobId) throws IOException {
+        String objectKey = GenerationJobTypes.resolvedAnswersObjectKey(workspaceId, jobId);
         if (blobStore.sizeOf(objectKey).isEmpty()) {
             return new ResolvedAnswerBundle(List.of());
         }
@@ -251,14 +265,18 @@ class GenerationExtractionJobProcessor {
      * simplification, not an oversight.
      */
     private ExtractionResult composeIfNeeded(
-            LeasedJob leasedJob, ExtractionInputBundle bundle, List<FieldDefinition> fields, ExtractionResult accepted) {
+            LeasedJob leasedJob,
+            ExtractionInputBundle bundle,
+            List<FieldDefinition> fields,
+            ExtractionResult accepted,
+            CancellationSignal cancellationSignal) {
         if (bundle.composableFieldIds().isEmpty()) {
             return accepted;
         }
         CompositionService compositionService = new CompositionService(modelGateway, compositionResponseParser);
         try {
             return compositionService.compose(
-                    fields, bundle.composableFieldIds(), List.of(), accepted, freshBudget(), CancellationSignal.never());
+                    fields, bundle.composableFieldIds(), List.of(), accepted, freshBudget(), cancellationSignal);
         } catch (ModelTransportException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     e.retryable() ? JobFailureKind.TRANSIENT_PROVIDER : JobFailureKind.DETERMINISTIC,
@@ -271,9 +289,7 @@ class GenerationExtractionJobProcessor {
                     JobFailureKind.DETERMINISTIC, "GENERATION_COMPOSITION_UNUSABLE", safeMessage(e.getMessage()), null));
             return null;
         } catch (CompositionCancelledException e) {
-            // Unreachable while this processor passes CancellationSignal.never(),
-            // the identical reasoning this class's own extraction call above states.
-            log.warn("Composition reported cancellation for job {} despite no cancellation signal being wired yet.", leasedJob.job().id());
+            releaseAfterCancellation(leasedJob);
             return null;
         }
     }
@@ -282,13 +298,15 @@ class GenerationExtractionJobProcessor {
     private boolean writePendingQuestions(LeasedJob leasedJob, List<DetectedQuestion> detected) {
         byte[] json;
         try {
-            json = objectMapper.writeValueAsBytes(new DetectedQuestionsBundle(detected));
+            json = objectMapper.writeValueAsBytes(new DetectedQuestionsBundle(leasedJob.leaseToken().fencingToken(), detected));
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize this run's own detected questions.", e);
         }
         try {
             blobStore.writeAndDigest(
-                    GenerationJobTypes.pendingQuestionsObjectKey(leasedJob.job().id()), new ByteArrayInputStream(json), MAX_QUESTION_BLOB_BYTES);
+                    GenerationJobTypes.pendingQuestionsObjectKey(leasedJob.job().workspaceId(), leasedJob.job().id()),
+                    new ByteArrayInputStream(json),
+                    MAX_QUESTION_BLOB_BYTES);
             return true;
         } catch (IOException e) {
             log.warn("Could not stage detected questions for job {}.", leasedJob.job().id(), e);
@@ -327,13 +345,29 @@ class GenerationExtractionJobProcessor {
         jobLeaseRepository.releaseAfterFailure(leasedJob.leaseToken(), failure);
     }
 
-    private static UsageBudget freshBudget() {
-        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+    /**
+     * The attempt stopped before a model call because its lease could no
+     * longer be extended. Released as a transient failure so the release
+     * routine, which locks the authoritative job row, decides what that
+     * refusal really was: a cancellation request finalizes the job
+     * CANCELLED, a lease already held elsewhere changes nothing, and the
+     * rare case where the lease is in fact still live simply requeues.
+     */
+    private void releaseAfterCancellation(LeasedJob leasedJob) {
+        log.info("Job {} attempt {} stopped before its next model call; its lease could no longer be extended.",
+                leasedJob.job().id(), leasedJob.leaseToken().fencingToken());
+        JobReleaseResult released = jobLeaseRepository.releaseAfterFailure(
+                leasedJob.leaseToken(),
+                new JobFailure(
+                        JobFailureKind.TRANSIENT_SERVER,
+                        "GENERATION_LEASE_NOT_LIVE",
+                        "Stopped before its next model call: the job was cancelled or its lease was no longer this worker's.",
+                        null));
+        log.info("Job {} released after cancellation: {}.", leasedJob.job().id(), released);
     }
 
-    /** The identical derivation {@code GenerationOrchestrationService.bundleObjectKey} uses, reproduced from the job's own frozen hash rather than imported (this module must never depend on brownie-api). */
-    private static String bundleObjectKey(LeasedJob leasedJob) {
-        return BUNDLE_BLOB_PREFIX + leasedJob.job().processingConfigurationHash().value() + ".json";
+    private static UsageBudget freshBudget() {
+        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
     }
 
     private static String safeMessage(String message) {
