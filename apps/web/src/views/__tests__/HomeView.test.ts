@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
-import DocumentListView from '@/views/DocumentListView.vue'
+import HomeView from '@/views/HomeView.vue'
 import { useSessionStore } from '@/stores/session'
 import { axe } from '@/test/axe'
 
@@ -17,29 +17,48 @@ async function mountWithRouter(path = '/') {
   const router = createRouter({
     history: createWebHistory(),
     routes: [
-      { path: '/', component: DocumentListView },
+      { path: '/', component: HomeView },
+      { path: '/signin', name: 'signin', component: { template: '<div />' } },
       { path: '/documents/new', component: { template: '<div />' } },
       { path: '/documents/:id', component: { template: '<div />' } },
     ],
   })
   router.push(path)
   await router.isReady()
-  return mount(DocumentListView, { global: { plugins: [router] } })
+  return mount(HomeView, { global: { plugins: [router] } })
 }
 
-describe('DocumentListView', () => {
+function signedIn(): void {
+  const session = useSessionStore()
+  session.status = 'authenticated'
+  session.identity = {
+    userId: 1,
+    issuer: 'x',
+    subject: 'y',
+    displayName: 'Vi Huynh',
+    memberships: [{ workspaceId: 7, role: 'OWNER' }],
+  }
+}
+
+function summary(id: number, title: string, createdAt: string) {
+  return { id, title, templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt }
+}
+
+describe('HomeView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(listDocuments).mockReset()
   })
 
-  it('prompts sign-in when the session is anonymous', async () => {
+  /** A visitor who is not signed in gets the same front door, not a wall: the upload action is still there to follow. */
+  it('welcomes a signed-out visitor and still offers the upload action', async () => {
     const session = useSessionStore()
     session.status = 'anonymous'
 
     const wrapper = await mountWithRouter()
 
-    expect(wrapper.text()).toContain('Sign in')
+    expect(wrapper.text()).toContain('Welcome to Brownie!')
+    expect(wrapper.find('a[href="/documents/new"]').text()).toContain('Upload your documents')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
   })
@@ -55,30 +74,47 @@ describe('DocumentListView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('Sign-in did not complete')
     expect(alert.text()).toContain('access_denied')
-    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
+    expect(alert.find('a[href="/signin"]').text()).toBe('Try again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-  it('lists documents returned for the personal workspace once authenticated', async () => {
+  it('greets a signed-in person by their first name only', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.get('h1').text()).toBe("What's on your mind today, Vi?")
+  })
+
+  it('groups recent documents by the day they were made, newest first, with the time beside each', async () => {
+    const today = new Date()
+    const earlier = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
     vi.mocked(listDocuments).mockResolvedValue([
-      { id: 1, title: 'March Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-03-01T00:00:00Z' },
+      summary(1, 'Older Minutes', earlier.toISOString()),
+      summary(2, 'March Minutes', today.toISOString()),
     ])
-    const session = useSessionStore()
-    session.status = 'authenticated'
-    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    signedIn()
 
     const wrapper = await mountWithRouter()
     await flushPromises()
 
     expect(listDocuments).toHaveBeenCalledWith(7)
-    expect(wrapper.text()).toContain('March Minutes')
+    const headings = wrapper.findAll('h3').map((h) => h.text())
+    expect(headings[0]).toBe('Today')
+    expect(headings).toHaveLength(2)
+
+    const rows = wrapper.findAll('.home__row')
+    expect(rows[0]!.text()).toContain('March Minutes')
+    expect(rows[0]!.attributes('href')).toBe('/documents/2')
+    expect(rows[1]!.text()).toContain('Older Minutes')
+    expect(rows[0]!.text()).toContain(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(today))
   })
 
   it('shows an empty-state prompt when there are no documents', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
-    const session = useSessionStore()
-    session.status = 'authenticated'
-    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    signedIn()
 
     const wrapper = await mountWithRouter()
     await flushPromises()
@@ -88,12 +124,10 @@ describe('DocumentListView', () => {
 
   it('has no automatically-detectable accessibility violations with documents listed', async () => {
     vi.mocked(listDocuments).mockResolvedValue([
-      { id: 1, title: 'March Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-03-01T00:00:00Z' },
-      { id: 2, title: 'April Minutes', templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt: '2026-04-01T00:00:00Z' },
+      summary(1, 'March Minutes', '2026-03-01T10:00:00Z'),
+      summary(2, 'April Minutes', '2026-04-01T10:00:00Z'),
     ])
-    const session = useSessionStore()
-    session.status = 'authenticated'
-    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    signedIn()
 
     const wrapper = await mountWithRouter()
     await flushPromises()
