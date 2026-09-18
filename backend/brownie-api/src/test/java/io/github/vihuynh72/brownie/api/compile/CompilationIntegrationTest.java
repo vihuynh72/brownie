@@ -61,7 +61,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * fixture, extract it, bind and activate a template from it, create a
  * document instance with typed content, then compile that exact revision
  * into a downloaded-ready DOCX and PDF. No model call is made anywhere in
- * this path, matching this phase's own "without AI" requirement.
+ * this path: compiling a typed document must work without AI.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -374,7 +374,7 @@ class CompilationIntegrationTest {
     }
 
     /**
-     * The "conflicting" fixture case for this deterministic phase: a
+     * The "conflicting" fixture case for deterministic compilation: a
      * document whose parallel repeated fields (task/owner/due, one action
      * item per index across all three) disagree on item count. Nothing in
      * the generic, template-agnostic content validator catches this --

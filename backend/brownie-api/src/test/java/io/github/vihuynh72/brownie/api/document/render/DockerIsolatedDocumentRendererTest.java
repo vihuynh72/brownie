@@ -22,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Exercises the real, pinned isolated-renderer image built during the
  * rendering feasibility spike -- not a mock -- so this proves the actual
- * network-disabled, resource-capped container conversion this plan
- * requires actually runs and produces a real PDF. Requires the local
+ * network-disabled, resource-capped container conversion the isolation
+ * contract requires actually runs and produces a real PDF. Requires the local
  * {@code brownie-spike-renderer:pinned} image to already exist; skipped
  * environments (no Docker) will fail loudly rather than silently pass.
  */
@@ -63,8 +63,8 @@ class DockerIsolatedDocumentRendererTest {
      * plain text -- it falls back to importing it as text and still
      * produces a valid one-page PDF (confirmed independently with a bare
      * {@code docker run} before writing this assertion). This means
-     * rejecting an unsupported or malformed input is this plan's own
-     * preflight responsibility, not something the renderer can be trusted
+     * rejecting an unsupported or malformed input is
+     * preflight's responsibility, not something the renderer can be trusted
      * to refuse on the isolated conversion's behalf.
      */
     @Test
