@@ -1,8 +1,10 @@
 package io.github.vihuynh72.brownie.api.generation;
 
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
+import io.github.vihuynh72.brownie.api.job.JobResponse;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.generation.GenerationRun;
 import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.job.JobOutputArtifactRepository;
@@ -28,14 +30,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Starts a document's own grounded fact extraction and reads back its
- * published result once the trusted worker finishes it. Deliberately
- * thin: ordinary job status/stage polling stays on the already-generic
- * {@code GET .../jobs/{jobId}} route ({@code JobController}); this
- * controller's own second route exists only for the one thing that route
- * cannot answer -- which artifact, if any, a finished job actually
- * produced -- so a caller can then download it through the existing
- * generic {@code /uploads/{artifactId}/download} route.
+ * Starts a document's own grounded fact extraction, lists the runs it
+ * has started, and reads back a run's published result once the trusted
+ * worker finishes it. Deliberately thin: ordinary job status/stage
+ * polling stays on the already-generic {@code GET .../jobs/{jobId}} route
+ * ({@code JobController}); the result route exists only for the one
+ * thing that route cannot answer -- which artifact, if any, a finished
+ * job actually produced -- so a caller can then download it through the
+ * existing generic {@code /uploads/{artifactId}/download} route, and the
+ * list route is how a reloaded page finds a run still in flight.
  */
 @RestController
 @RequestMapping("/api/v1/workspaces/{workspaceId}/documents/{documentId}/generations")
@@ -82,6 +85,19 @@ class GenerationController {
                 canonicalRequestHasher.hash(new StartExtractionHashInput(
                         "generation.start-extraction", workspaceId, documentId, request)));
         return CommandReceiptResponse.from(receipt);
+    }
+
+    /** Every run started for this document, most recent first -- see {@code GenerationOrchestrationService#listRuns}. */
+    @GetMapping
+    List<GenerationRunResponse> listRuns(
+            @PathVariable long workspaceId,
+            @PathVariable long documentId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
+        return generationOrchestrationService.listRuns(workspaceId, userId, documentId).stream()
+                .map(GenerationRunResponse::from)
+                .toList();
     }
 
     /** 404 until the worker publishes this job's own extraction result. */
@@ -187,6 +203,35 @@ class GenerationController {
     record ExtractionResultResponse(long artifactId) {
     }
 
+    record GenerationRunResponse(
+            long id,
+            long jobId,
+            long documentId,
+            long baseRevisionId,
+            long sourceSnapshotId,
+            long sourceArtifactId,
+            String modelName,
+            String promptVersion,
+            OffsetDateTime createdAt,
+            JobResponse job,
+            Long resultArtifactId) {
+        static GenerationRunResponse from(GenerationOrchestrationService.GenerationRunView view) {
+            GenerationRun run = view.run();
+            return new GenerationRunResponse(
+                    run.id(),
+                    run.jobId(),
+                    run.documentId(),
+                    run.baseRevisionId(),
+                    run.sourceSnapshotId(),
+                    run.sourceArtifactId(),
+                    run.modelName(),
+                    run.promptVersion(),
+                    run.createdAt(),
+                    JobResponse.from(view.job()),
+                    view.resultArtifactId());
+        }
+    }
+
     record QuestionCandidateOptionResponse(String value, List<Long> evidenceSpanIds) {
         static QuestionCandidateOptionResponse from(QuestionCandidateOption candidate) {
             return new QuestionCandidateOptionResponse(candidate.value(), candidate.evidenceSpanIds());
@@ -244,6 +289,11 @@ class GenerationController {
             OffsetDateTime createdAt,
             int proposedRepeatedItemCount,
             List<SkippedRepeatedItemResponse> skippedRepeatedItems) {
+        /** A proposal that carries no repeated rows of its own (the composer's), in the same shape the generation route returns. */
+        static PatchProposalResponse fromProposal(PatchProposal proposal) {
+            return from(new GenerationApplyOutcome(proposal, 0, List.of()));
+        }
+
         static PatchProposalResponse from(GenerationApplyOutcome outcome) {
             PatchProposal proposal = outcome.proposal();
             Map<String, ProposedFieldResponse> fields = new java.util.LinkedHashMap<>();
