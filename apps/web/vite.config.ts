@@ -8,6 +8,10 @@ import vue from '@vitejs/plugin-vue'
 // boundary" notes). This dev-server proxy recreates that same-origin
 // arrangement locally, so a session cookie set by the API is usable by
 // fetch calls the dev server itself serves on a different port.
+// Where the dev server proxies API calls to. Overridable so a second API instance (for example one
+// started on other ports while yours keeps running) can be driven through the same dev server.
+const apiOrigin = process.env.BROWNIE_API_ORIGIN ?? 'http://localhost:8081'
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -18,10 +22,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8081',
-      '/oauth2': 'http://localhost:8081',
-      '/login': 'http://localhost:8081',
-      '/logout': 'http://localhost:8081',
+      '/api': apiOrigin,
+      '/oauth2': apiOrigin,
+      '/login': apiOrigin,
+      '/logout': apiOrigin,
     },
   },
   test: {
