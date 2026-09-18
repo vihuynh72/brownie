@@ -431,9 +431,9 @@ public class RevisionService {
     /**
      * A field whose value did not change in this edit keeps whatever
      * evidence its previous revision recorded. A field this edit touches
-     * -- set to a new value, or cleared -- starts from nothing: per the
-     * plan's own rule that changed wording must be rechecked, not silently
-     * inherit an old citation, the caller must explicitly re-assert
+     * -- set to a new value, or cleared -- starts from nothing: changed
+     * wording must be rechecked rather than silently inheriting an old
+     * citation, so the caller must explicitly re-assert
      * evidence for a field it is setting.
      */
     private static Map<String, List<Long>> mergeEvidenceAfterEdits(

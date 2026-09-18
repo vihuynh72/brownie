@@ -14,7 +14,20 @@ import java.util.Optional;
  */
 public interface QuestionRepository {
 
-    Question create(long workspaceId, long userId, long documentId, String fieldId, QuestionReason reason, List<QuestionCandidateOption> candidates);
+    /**
+     * Raises one question. {@code generationRunId} and {@code
+     * attemptFencingToken} name the run and attempt that raised it; a
+     * caller with no run (a direct, synchronous detection) passes nulls.
+     */
+    Question create(
+            long workspaceId,
+            long userId,
+            long documentId,
+            Long generationRunId,
+            Long attemptFencingToken,
+            String fieldId,
+            QuestionReason reason,
+            List<QuestionCandidateOption> candidates);
 
     Optional<Question> find(long workspaceId, long userId, long questionId);
 
@@ -22,6 +35,9 @@ public interface QuestionRepository {
 
     /** Every question ever raised against this document, open or answered, oldest first. */
     List<Question> findAllForDocument(long workspaceId, long userId, long documentId);
+
+    /** Every question one generation run raised, open or answered, oldest first. */
+    List<Question> findAllForRun(long workspaceId, long userId, long generationRunId);
 
     /** Answers exactly one OPEN question. Throws if it does not exist, belongs to another workspace, or is already answered. */
     Question answer(long workspaceId, long userId, long questionId, String answerValue);

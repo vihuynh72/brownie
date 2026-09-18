@@ -18,7 +18,7 @@ public interface RuleRepository {
 
     Optional<RuleRevision> find(long workspaceId, long userId, long templateId, long ruleId);
 
-    /** Every rule revision proposed against one template version, in the order proposed -- includes every status, not only PROPOSED, once a later task starts producing others. */
+    /** Every rule revision proposed against one template version, in the order proposed -- includes every status, not only PROPOSED. */
     List<RuleRevision> findByTemplateVersion(long workspaceId, long userId, long templateVersionId);
 
     /** Records which attached examples supported or contradicted one already-proposed rule -- written once, immediately after proposing it, never updated afterward. */

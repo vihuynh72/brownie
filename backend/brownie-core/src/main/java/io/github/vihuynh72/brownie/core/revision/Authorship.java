@@ -8,7 +8,7 @@ package io.github.vihuynh72.brownie.core.revision;
  * existing mutation paths today ({@code RevisionService#createDocument}
  * and {@code #applyUserEdits}, both explicitly human-driven); the other
  * three are real, modeled values with no producing call path yet, the
- * same honest gap this plan's own evidence-support and review dimensions
+ * same honest gap the evidence-support and review dimensions
  * below also have until a composing or validating caller exists.
  */
 public enum Authorship {
