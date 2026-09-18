@@ -60,10 +60,24 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
         OidcUser oidcUser = delegate.loadUser(userRequest);
         OidcIdToken idToken = oidcUser.getIdToken();
         UserIdentity identity = userIdentityRepository.recordLogin(
-                idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), oidcUser.getFullName());
+                idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser));
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(identity.id());
         ensureBuiltInTemplatesWithoutBreakingLogin(workspace.id(), identity.id());
         return oidcUser;
+    }
+
+    /**
+     * The token's {@code name} claim, or null when the provider has none:
+     * Entra External ID sends the literal word "unknown" for an account
+     * with no display name, which is not a name anyone should be greeted
+     * by. A null here lets the client fall back to the email address.
+     */
+    static String displayNameOf(OidcUser oidcUser) {
+        String name = oidcUser.getFullName();
+        if (name == null || name.isBlank() || name.strip().equalsIgnoreCase("unknown")) {
+            return null;
+        }
+        return name.strip();
     }
 
     /**
