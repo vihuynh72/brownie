@@ -11,11 +11,23 @@ vi.mock('@/api/client', async () => {
   return {
     ...actual,
     getDocument: vi.fn(),
+    getTemplateVersion: vi.fn(),
+    patchDocumentContent: vi.fn(),
     allocateUpload: vi.fn(),
     uploadArtifactContent: vi.fn(),
     completeUpload: vi.fn(),
     extractArtifact: vi.fn(),
-    attachSource: vi.fn(),
+    attachDocumentSource: vi.fn(),
+    listDocumentSources: vi.fn(),
+    listGenerationRuns: vi.fn(),
+    cancelJob: vi.fn(),
+    compileRevision: vi.fn(),
+    getLatestCompilation: vi.fn(),
+    getEvidenceExcerpt: vi.fn(),
+    getCapabilities: vi.fn(),
+    listTemplateVersionRules: vi.fn(),
+    interpretAssist: vi.fn(),
+    executeAssist: vi.fn(),
     startExtraction: vi.fn(),
     getJob: vi.fn(),
     getGenerationQuestions: vi.fn(),
@@ -37,6 +49,13 @@ vi.mock('@/api/client', async () => {
   }
 })
 
+// PDF.js needs a canvas and a worker jsdom does not have; the preview component has its own tests.
+vi.mock('@/components/PdfPreview.vue', () => ({
+  // The workspace loads this component on demand, so the mock must look like a real ES module to Vue's async loader.
+  __esModule: true,
+  default: { name: 'PdfPreview', props: ['src', 'label'], template: '<div data-testid="pdf-preview">{{ src ?? "" }}</div>' },
+}))
+
 import {
   ApiRequestError,
   acceptPatchProposal,
@@ -45,19 +64,31 @@ import {
   applyGenerationResult,
   approveExport,
   artifactDownloadUrl,
-  attachSource,
+  attachDocumentSource,
+  cancelJob,
+  compileRevision,
   completeUpload,
+  executeAssist,
   exportDocument,
   extractArtifact,
   getDocument,
   getDocumentRevision,
+  getEvidenceExcerpt,
   getExtractionResult,
   getGenerationQuestions,
   getJob,
+  getLatestCompilation,
   getLatestExportApproval,
   getLatestExportReceipt,
   getLatestValidation,
+  getCapabilities,
+  listTemplateVersionRules,
+  getTemplateVersion,
+  interpretAssist,
   listDocumentRevisions,
+  listDocumentSources,
+  listGenerationRuns,
+  patchDocumentContent,
   recordReviewDecision,
   resumeGeneration,
   setFieldLock,
@@ -65,9 +96,16 @@ import {
   uploadArtifactContent,
   validateDocument,
 } from '@/api/client'
-import type { ExportApprovalResponse, ExportReceiptResponse, ValidationManifestResponse } from '@/api/client'
+import type {
+  CompilationManifestResponse,
+  ExportApprovalResponse,
+  ExportReceiptResponse,
+  TemplateVersionResponse,
+  ValidationManifestResponse,
+} from '@/api/client'
 import { axe } from '@/test/axe'
 import { documentHandoffState, type DocumentHandoff } from '@/router/handoff'
+import { resetCapabilitiesCache } from '@/capabilities'
 
 const DOCUMENT: DocumentResponse = {
   id: 1,
@@ -177,7 +215,7 @@ async function attachAFakeSource(wrapper: Awaited<ReturnType<typeof mountWorkspa
   vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'minutes.txt' })
   vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'minutes.txt' })
   vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
-  vi.mocked(attachSource).mockResolvedValue({ id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z' })
+  vi.mocked(attachDocumentSource).mockResolvedValue({ id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' })
 
   const input = wrapper.find('#attach-source')
   const file = new File(['minutes'], 'minutes.txt', { type: 'text/plain' })
@@ -224,7 +262,7 @@ describe('WorkspaceView grounded extraction with questions', () => {
     await flushPromises()
 
     expect(getGenerationQuestions).toHaveBeenCalledWith(7, 1, 42)
-    expect(wrapper.text()).toContain('meeting.title')
+    expect(wrapper.text()).toContain('Meeting title')
     expect(wrapper.text()).toContain('Old Title')
 
     const continueButton = wrapper.findAll('button').find((b) => b.text() === 'Continue')
@@ -348,7 +386,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
       sourceWarning: null,
     })
 
-    expect(wrapper.text()).toContain('Source #3 attached.')
+    expect(wrapper.text()).toContain('Source #3')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
 
     const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
@@ -366,7 +404,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     const alert = wrapper.find('[role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toMatch(/source file could not be attached/i)
-    expect(wrapper.text()).toContain('No sources attached yet.')
+    expect(wrapper.text()).toContain('No sources attached to this document yet.')
   })
 
   it('behaves exactly as before when nothing was handed over', async () => {
@@ -383,7 +421,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('No sources attached yet.')
+    expect(wrapper.text()).toContain('No sources attached to this document yet.')
   })
 })
 
@@ -470,8 +508,8 @@ describe('WorkspaceView field review and lock', () => {
     vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT_WITH_A_SCALAR_FIELD)
     const wrapper = await mountWorkspaceView()
 
-    expect(wrapper.text()).toContain('UNREVIEWED')
-    expect(wrapper.text()).toContain('EDITABLE')
+    expect(wrapper.text()).toContain('Not reviewed')
+    expect(wrapper.text()).not.toContain('EDITABLE')
 
     vi.mocked(recordReviewDecision).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision)
     vi.mocked(getDocument).mockResolvedValueOnce({
@@ -495,7 +533,7 @@ describe('WorkspaceView field review and lock', () => {
     await flushPromises()
 
     expect(recordReviewDecision).toHaveBeenCalledWith(7, 1, 1, 'meeting.title', 'ACCEPTED', expect.any(String))
-    expect(wrapper.text()).toContain('ACCEPTED')
+    expect(wrapper.text()).toContain('Accepted')
 
     vi.mocked(setFieldLock).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision)
     vi.mocked(getDocument).mockResolvedValueOnce({
@@ -516,7 +554,7 @@ describe('WorkspaceView field review and lock', () => {
     await flushPromises()
 
     expect(setFieldLock).toHaveBeenCalledWith(7, 1, 1, 'meeting.title', 'EXPLICITLY_LOCKED', expect.any(String))
-    expect(wrapper.text()).toContain('EXPLICITLY_LOCKED')
+    expect(wrapper.text()).toContain('Locked')
     expect(wrapper.findAll('button').find((b) => b.text() === 'Unlock')).toBeTruthy()
   })
 })
@@ -613,7 +651,7 @@ describe('WorkspaceView checks tab', () => {
 
     expect(validateDocument).toHaveBeenCalledWith(7, 1, 1, expect.any(String))
     expect(wrapper.text()).toContain('WARNING')
-    expect(wrapper.text()).toContain('meeting.title')
+    expect(wrapper.text()).toContain('Meeting title')
     expect(wrapper.text()).toContain('Low confidence value.')
     expect(wrapper.text()).toContain('Ready to export')
 
@@ -682,7 +720,7 @@ describe('WorkspaceView checks tab', () => {
 
     expect(wrapper.text()).toContain('BLOCKING')
     expect(wrapper.text()).toContain('This field is required.')
-    expect(wrapper.text()).toContain('Cannot export -- unresolved blocking findings')
+    expect(wrapper.text()).toContain('Cannot export: unresolved blocking findings')
     expect(wrapper.findAll('button').find((b) => b.text() === 'Approve for export')).toBeUndefined()
   })
 
@@ -721,7 +759,7 @@ describe('WorkspaceView checks tab', () => {
     await exportButton?.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('This document changed since you last validated it -- validate again.')
+    expect(wrapper.text()).toContain('This document changed since you last validated it. Validate again.')
     // The stale manifest/approval/receipt are gone, not just the button that was clicked --
     // re-validating is genuinely required, matching what the message says.
     expect(wrapper.text()).not.toContain('Ready to export')
@@ -803,8 +841,8 @@ describe('WorkspaceView revision history', () => {
 
     expect(getDocumentRevision).toHaveBeenCalledWith(7, 1, 1)
 
-    const unchangedRow = wrapper.findAll('.compare-row').find((row) => row.text().includes('meeting.title'))
-    const changedRow = wrapper.findAll('.compare-row').find((row) => row.text().includes('meeting.location'))
+    const unchangedRow = wrapper.findAll('.compare-row').find((row) => row.text().includes('Meeting title'))
+    const changedRow = wrapper.findAll('.compare-row').find((row) => row.text().includes('Meeting location'))
     expect(unchangedRow?.classes()).not.toContain('compare-row--changed')
     expect(changedRow?.classes()).toContain('compare-row--changed')
     expect(changedRow?.text()).toContain('Room A')
@@ -1088,7 +1126,7 @@ describe('WorkspaceView accessibility', () => {
     vi.mocked(uploadArtifactContent).mockReset().mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'minutes.txt' })
     vi.mocked(completeUpload).mockReset().mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'minutes.txt' })
     vi.mocked(extractArtifact).mockReset().mockResolvedValue({ status: 'COMPLETE' })
-    vi.mocked(attachSource).mockReset().mockResolvedValue({ id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z' })
+    vi.mocked(attachDocumentSource).mockReset().mockResolvedValue({ id: 3, artifactId: 5, kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' })
     vi.mocked(startExtraction)
       .mockReset()
       .mockResolvedValue({ commandId: 'c1', jobId: 42, operation: 'generation.start-extraction', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
@@ -1158,5 +1196,911 @@ describe('WorkspaceView accessibility', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
 
     wrapper.unmount()
+  })
+})
+
+const MINUTES_TEMPLATE_VERSION: TemplateVersionResponse = {
+  id: 1,
+  templateId: 1,
+  versionNumber: 1,
+  sourceArtifactId: 10,
+  extractionVersionId: 11,
+  status: 'ACTIVATED',
+  fields: [
+    { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'REQUIRED', bindingKind: 'CONTENT_CONTROL_TAG', tag: 'meeting.title' },
+    { fieldId: 'meeting.date', type: 'DATE', cardinality: 'SCALAR', requiredness: 'REQUIRED', bindingKind: 'CONTENT_CONTROL_TAG', tag: 'meeting.date' },
+    { fieldId: 'action.item.task', type: 'TEXT', cardinality: 'REPEATED', requiredness: 'OPTIONAL', bindingKind: 'CONTENT_CONTROL_TAG', tag: 'action.item.task' },
+    { fieldId: 'action.item.owner', type: 'TEXT', cardinality: 'REPEATED', requiredness: 'OPTIONAL', bindingKind: 'CONTENT_CONTROL_TAG', tag: 'action.item.owner' },
+    { fieldId: 'action.item.due', type: 'DATE', cardinality: 'REPEATED', requiredness: 'OPTIONAL', bindingKind: 'CONTENT_CONTROL_TAG', tag: 'action.item.due' },
+  ],
+  createdAt: '2026-03-01T00:00:00Z',
+  activatedAt: '2026-03-01T00:00:00Z',
+}
+
+const ITEM_STATE = { authorship: 'USER_AUTHORED', evidenceSupport: 'MISSING', validation: 'NOT_RUN', review: 'UNREVIEWED', lock: 'EDITABLE' } as const
+
+const DOCUMENT_WITH_A_ROW: DocumentResponse = {
+  ...DOCUMENT,
+  currentRevisionId: 3,
+  currentRevision: {
+    ...DOCUMENT.currentRevision,
+    id: 3,
+    revisionNumber: 3,
+    fields: {
+      'meeting.title': {
+        type: 'TEXT',
+        cardinality: 'SCALAR',
+        value: 'Garden Club Planning',
+        evidenceSourceSpanIds: [],
+        fieldState: { ...ITEM_STATE },
+      },
+      'action.item.task': { type: 'TEXT', cardinality: 'REPEATED', values: ['Order seedlings'], evidenceSourceSpanIds: [], itemFieldStates: [{ ...ITEM_STATE }] },
+      'action.item.owner': { type: 'TEXT', cardinality: 'REPEATED', values: ['Maria Lopez'], evidenceSourceSpanIds: [], itemFieldStates: [{ ...ITEM_STATE }] },
+      'action.item.due': { type: 'DATE', cardinality: 'REPEATED', values: ['2026-04-20'], evidenceSourceSpanIds: [], itemFieldStates: [{ ...ITEM_STATE }] },
+    },
+  },
+}
+
+function input(wrapper: Awaited<ReturnType<typeof mountWorkspaceView>>, id: string) {
+  return wrapper.find(`[id="${id}"]`)
+}
+
+describe('WorkspaceView editing by hand', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.mocked(getDocument).mockReset()
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(patchDocumentContent).mockReset()
+    vi.mocked(recordReviewDecision).mockReset()
+    vi.mocked(setFieldLock).mockReset()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+  })
+
+  it('renders a control for every template field, saves typed values as one typed edit against the current revision, then reloads', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT)
+    const wrapper = await mountWorkspaceView()
+
+    expect(getTemplateVersion).toHaveBeenCalledWith(7, 1, 1)
+    expect(input(wrapper, 'edit-meeting.title').exists()).toBe(true)
+    expect(input(wrapper, 'edit-meeting.date').attributes('type')).toBe('date')
+    expect(wrapper.text()).toContain('Nothing filled in yet.')
+    const saveButton = wrapper.findAll('button').find((b) => b.text() === 'Save now')
+    expect(saveButton?.attributes('disabled')).toBeDefined()
+
+    await input(wrapper, 'edit-meeting.title').setValue('Garden Club Planning')
+    await input(wrapper, 'edit-meeting.date').setValue('2026-04-09')
+    expect(wrapper.text()).toContain('Unsaved changes.')
+    expect(saveButton?.attributes('disabled')).toBeUndefined()
+
+    vi.mocked(patchDocumentContent).mockResolvedValue({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 2, revisionNumber: 2 })
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      ...DOCUMENT,
+      currentRevisionId: 2,
+      currentRevision: {
+        ...DOCUMENT.currentRevision,
+        id: 2,
+        revisionNumber: 2,
+        fields: {
+          'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Garden Club Planning', evidenceSourceSpanIds: [], fieldState: { ...ITEM_STATE } },
+          'meeting.date': { type: 'DATE', cardinality: 'SCALAR', value: '2026-04-09', evidenceSourceSpanIds: [], fieldState: { ...ITEM_STATE } },
+        },
+      },
+    })
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(patchDocumentContent).toHaveBeenCalledWith(
+      7,
+      1,
+      {
+        expectedRevisionId: 1,
+        edits: [
+          { operation: 'SET', fieldId: 'meeting.title', value: { type: 'TEXT', cardinality: 'SCALAR', value: 'Garden Club Planning' } },
+          { operation: 'SET', fieldId: 'meeting.date', value: { type: 'DATE', cardinality: 'SCALAR', value: '2026-04-09' } },
+        ],
+        editReason: 'Edited in the workspace.',
+      },
+      expect.any(String),
+    )
+    expect(wrapper.text()).toContain('Saved.')
+    expect(wrapper.text()).not.toContain('Unsaved changes.')
+    expect((input(wrapper, 'edit-meeting.title').element as HTMLInputElement).value).toBe('Garden Club Planning')
+    expect(wrapper.text()).toContain('Typed by you')
+  })
+
+  it('adds a row, refuses to save it until its date column is filled, then saves every column of the rows together', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT)
+    const wrapper = await mountWorkspaceView()
+
+    expect(wrapper.text()).toContain('No rows yet.')
+    await wrapper.findAll('button').find((b) => b.text() === 'Add row')!.trigger('click')
+    await input(wrapper, 'edit-action.item.task-0').setValue('Order seedlings')
+    await input(wrapper, 'edit-action.item.owner-0').setValue('Maria Lopez')
+
+    expect(wrapper.text()).toContain('Row 1 needs a value for Action item due')
+    const saveButton = wrapper.findAll('button').find((b) => b.text() === 'Save now')
+    expect(saveButton?.attributes('disabled')).toBeDefined()
+
+    await input(wrapper, 'edit-action.item.due-0').setValue('2026-04-20')
+    expect(wrapper.text()).not.toContain('Row 1 needs a value')
+    expect(saveButton?.attributes('disabled')).toBeUndefined()
+
+    vi.mocked(patchDocumentContent).mockResolvedValue(DOCUMENT_WITH_A_ROW.currentRevision)
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT_WITH_A_ROW)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(patchDocumentContent).toHaveBeenCalledWith(
+      7,
+      1,
+      expect.objectContaining({
+        expectedRevisionId: 1,
+        edits: [
+          { operation: 'SET', fieldId: 'action.item.task', value: { type: 'TEXT', cardinality: 'REPEATED', values: ['Order seedlings'] } },
+          { operation: 'SET', fieldId: 'action.item.owner', value: { type: 'TEXT', cardinality: 'REPEATED', values: ['Maria Lopez'] } },
+          { operation: 'SET', fieldId: 'action.item.due', value: { type: 'DATE', cardinality: 'REPEATED', values: ['2026-04-20'] } },
+        ],
+      }),
+      expect.any(String),
+    )
+    expect(wrapper.text()).toContain('Saved.')
+    expect(wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'Accept row 1')).toBeTruthy()
+  })
+
+  it('clears a scalar the person emptied and leaves untouched fields out of the edit', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT_WITH_A_ROW)
+    const wrapper = await mountWorkspaceView()
+
+    await input(wrapper, 'edit-meeting.title').setValue('')
+    vi.mocked(patchDocumentContent).mockResolvedValue(DOCUMENT_WITH_A_ROW.currentRevision)
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT_WITH_A_ROW)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(patchDocumentContent).toHaveBeenCalledWith(
+      7,
+      1,
+      expect.objectContaining({ expectedRevisionId: 3, edits: [{ operation: 'CLEAR', fieldId: 'meeting.title' }] }),
+      expect.any(String),
+    )
+  })
+
+  it('keeps the typed draft after a 412 and offers to save it onto the revision that is now current', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT)
+    const wrapper = await mountWorkspaceView()
+    await input(wrapper, 'edit-meeting.title').setValue('My title')
+
+    vi.mocked(patchDocumentContent).mockRejectedValueOnce(
+      new ApiRequestError(412, { status: 412, title: 'Stale revision', code: 'STALE_REVISION', correlationId: 'c2', fields: [], recoveryActions: [] }),
+    )
+    const movedOn: DocumentResponse = {
+      ...DOCUMENT,
+      currentRevisionId: 9,
+      currentRevision: { ...DOCUMENT.currentRevision, id: 9, revisionNumber: 9, fields: {} },
+    }
+    vi.mocked(getDocument).mockResolvedValueOnce(movedOn)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('This document changed since you started editing (revision 9 is now current)')
+    expect((input(wrapper, 'edit-meeting.title').element as HTMLInputElement).value).toBe('My title')
+
+    vi.mocked(patchDocumentContent).mockResolvedValueOnce({ ...movedOn.currentRevision, id: 10, revisionNumber: 10 })
+    vi.mocked(getDocument).mockResolvedValueOnce({ ...movedOn, currentRevisionId: 10, currentRevision: { ...movedOn.currentRevision, id: 10, revisionNumber: 10 } })
+    await wrapper.findAll('button').find((b) => b.text() === 'Save my edits onto the latest')!.trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(patchDocumentContent).mock.calls[1]![2]).toMatchObject({ expectedRevisionId: 9 })
+    expect(wrapper.text()).not.toContain('is now current')
+  })
+
+  it('disables a locked field and reports the server\'s own locked-field refusal', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      ...DOCUMENT_WITH_A_ROW,
+      currentRevision: {
+        ...DOCUMENT_WITH_A_ROW.currentRevision,
+        fields: {
+          ...DOCUMENT_WITH_A_ROW.currentRevision.fields,
+          'meeting.title': { ...DOCUMENT_WITH_A_ROW.currentRevision.fields['meeting.title']!, fieldState: { ...ITEM_STATE, lock: 'EXPLICITLY_LOCKED' } },
+        },
+      },
+    })
+    const wrapper = await mountWorkspaceView()
+
+    expect(input(wrapper, 'edit-meeting.title').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Locked: unlock it to edit.')
+
+    await input(wrapper, 'edit-action.item.owner-0').setValue('Someone Else')
+    vi.mocked(patchDocumentContent).mockRejectedValueOnce(
+      new ApiRequestError(409, {
+        status: 409,
+        title: 'Field locked',
+        code: 'FIELD_LOCKED',
+        detail: 'Field action.item.owner is explicitly locked.',
+        correlationId: 'c3',
+        fields: [],
+        recoveryActions: [],
+      }),
+    )
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Field action.item.owner is explicitly locked.')
+    expect((input(wrapper, 'edit-action.item.owner-0').element as HTMLInputElement).value).toBe('Someone Else')
+  })
+
+  it('reviews and locks a whole row by addressing every column with the row index, each against the revision the last one produced', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_ROW)
+    const wrapper = await mountWorkspaceView()
+
+    vi.mocked(recordReviewDecision)
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 4 })
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 5 })
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 6 })
+    await wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'Accept row 1')!.trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(recordReviewDecision).mock.calls).toEqual([
+      [7, 1, 3, 'action.item.task', 'ACCEPTED', expect.any(String), 0],
+      [7, 1, 4, 'action.item.owner', 'ACCEPTED', expect.any(String), 0],
+      [7, 1, 5, 'action.item.due', 'ACCEPTED', expect.any(String), 0],
+    ])
+
+    vi.mocked(setFieldLock)
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 7 })
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 8 })
+      .mockResolvedValueOnce({ ...DOCUMENT_WITH_A_ROW.currentRevision, id: 9 })
+    await wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'Lock row 1')!.trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(setFieldLock).mock.calls.map((call) => [call[2], call[3], call[4], call[6]])).toEqual([
+      [3, 'action.item.task', 'EXPLICITLY_LOCKED', 0],
+      [7, 'action.item.owner', 'EXPLICITLY_LOCKED', 0],
+      [8, 'action.item.due', 'EXPLICITLY_LOCKED', 0],
+    ])
+  })
+
+  it('has no automatically-detectable accessibility violations with the editor showing rows', async () => {
+    vi.mocked(getDocument).mockResolvedValueOnce(DOCUMENT_WITH_A_ROW)
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button').find((b) => b.text() === 'Add row')!.trigger('click')
+    expect(await axe(wrapper.element as HTMLElement)).toHaveNoViolations()
+  })
+})
+
+function generationRun(jobState: string, overrides: Partial<import('@/api/client').GenerationRunResponse> = {}): import('@/api/client').GenerationRunResponse {
+  return {
+    id: 77,
+    jobId: 42,
+    documentId: 1,
+    baseRevisionId: 1,
+    sourceSnapshotId: 3,
+    sourceArtifactId: 5,
+    modelName: 'gpt-5.4-mini-2026-03-17',
+    promptVersion: 'extraction-v1',
+    createdAt: '2026-03-01T00:00:00Z',
+    job: jobResponse(jobState),
+    resultArtifactId: null,
+    ...overrides,
+  }
+}
+
+describe('WorkspaceView generation runs survive a reload', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset()
+    vi.mocked(listGenerationRuns).mockReset()
+    vi.mocked(getGenerationQuestions).mockReset()
+    vi.mocked(getJob).mockReset()
+    vi.mocked(cancelJob).mockReset()
+    vi.mocked(startExtraction).mockReset()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+  })
+
+  it('lists the sources the server links to this document, not only what a previous screen handed over', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'march-notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+      { id: 2, artifactId: 4, displayFilename: 'february-notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-02-01T00:00:00Z', attachedAt: '2026-02-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([])
+    const wrapper = await mountWorkspaceView()
+
+    expect(listDocumentSources).toHaveBeenCalledWith(7, 1)
+    expect(wrapper.text()).toContain('march-notes.txt')
+    expect(wrapper.text()).toContain('february-notes.txt')
+
+    const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
+    await assistTab?.trigger('click')
+    const picker = wrapper.find('#extract-source')
+    expect(picker.exists()).toBe(true)
+    await picker.setValue('2')
+    vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c1', jobId: 42, operation: 'generation.start-extraction', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+    vi.mocked(getJob).mockResolvedValue(jobResponse('SUCCEEDED'))
+    vi.mocked(getExtractionResult).mockReset().mockResolvedValue({ artifactId: 900 })
+    await wrapper.findAll('button').find((b) => b.text() === 'Try grounded extraction')!.trigger('click')
+    await flushPromises()
+
+    expect(startExtraction).toHaveBeenCalledWith(7, 1, 4, expect.any(String))
+  })
+
+  it('resumes a run that is waiting for answers straight from the server, without anyone clicking Extract', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    const wrapper = await mountWorkspaceView()
+
+    expect(getGenerationQuestions).toHaveBeenCalledWith(7, 1, 42)
+    const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
+    await assistTab?.trigger('click')
+    expect(wrapper.text()).toContain('A few things need your input')
+    expect(wrapper.text()).toContain('Weekly Robotics Club Sync')
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('offers to apply the result of a run that already finished, and reports a cancelled one', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    const wrapper = await mountWorkspaceView()
+    const assistTab = wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')
+    await assistTab?.trigger('click')
+    // No source attached any more, but the finished run is still the document's to apply.
+    expect(wrapper.text()).toContain('Attach a source first')
+
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('CANCELLED')])
+    const second = await mountWorkspaceView()
+    await second.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+    expect(second.text()).toContain('This run was cancelled.')
+  })
+
+  it('requests cancellation of a running job and shows it as requested until the job really ends', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    vi.mocked(getJob).mockResolvedValueOnce(jobResponse('LEASED')).mockResolvedValueOnce({ ...jobResponse('CANCEL_REQUESTED'), cancellationRequestedAt: '2026-03-01T00:00:10Z' }).mockResolvedValue(jobResponse('CANCELLED'))
+    vi.mocked(cancelJob).mockResolvedValue({ commandId: 'c9', jobId: 42, operation: 'job.request-cancellation', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+
+    const cancelButton = wrapper.findAll('button').find((b) => b.text() === 'Cancel')
+    expect(cancelButton).toBeTruthy()
+    await cancelButton!.trigger('click')
+    await flushPromises()
+    expect(cancelJob).toHaveBeenCalledWith(7, 42, expect.any(String))
+    expect(wrapper.text()).toContain('Cancellation requested')
+
+    await new Promise((resolve) => setTimeout(resolve, 1700))
+    await new Promise((resolve) => setTimeout(resolve, 1700))
+    await flushPromises()
+    expect(wrapper.text()).toContain('This run was cancelled.')
+  }, 10_000)
+})
+
+const COMPILATION: CompilationManifestResponse = {
+  id: 11,
+  documentId: 1,
+  revisionId: 1,
+  templateId: 1,
+  templateVersionId: 1,
+  docxArtifactId: 20,
+  docxSha256: 'b'.repeat(64),
+  pdfArtifactId: 21,
+  pdfSha256: 'c'.repeat(64),
+  rendererVersion: 'test-renderer',
+  integrityFindings: [],
+  allIntegrityChecksPassed: true,
+  compiledAt: '2026-03-01T00:00:00Z',
+}
+
+describe('WorkspaceView preview pane and evidence', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset()
+    vi.mocked(compileRevision).mockReset()
+    vi.mocked(getEvidenceExcerpt).mockReset()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+  })
+
+  it('shows an existing compilation as the preview of the current content', async () => {
+    vi.mocked(getLatestCompilation).mockResolvedValue(COMPILATION)
+    const wrapper = await mountWorkspaceView()
+    // The preview component is loaded on demand; one more tick lets its (stubbed) chunk resolve.
+    await flushPromises()
+
+    expect(getLatestCompilation).toHaveBeenCalledWith(7, 1, 1)
+    expect(wrapper.text()).toContain('Preview of version 1.')
+    expect(wrapper.text()).not.toContain('has changed since')
+    expect(wrapper.find('[data-testid="pdf-preview"]').text()).toBe('/api/v1/workspaces/7/uploads/21/preview')
+    expect(wrapper.find('a[target="_blank"]').attributes('href')).toBe('/api/v1/workspaces/7/uploads/21/preview')
+    expect(wrapper.text()).toContain('Regenerate preview')
+    expect((await axe(wrapper.element)).violations).toEqual([])
+  })
+
+  it('offers to generate a preview when none exists yet, and draws the one it made', async () => {
+    vi.mocked(getLatestCompilation).mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(compileRevision).mockResolvedValue({ ...COMPILATION, pdfArtifactId: 31 })
+    const wrapper = await mountWorkspaceView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No preview yet.')
+    expect(wrapper.find('[data-testid="pdf-preview"]').text()).toBe('')
+    const generate = wrapper.findAll('button').find((button) => button.text() === 'Generate preview')!
+    await generate.trigger('click')
+    await flushPromises()
+
+    expect(compileRevision).toHaveBeenCalledWith(7, 1, 1)
+    expect(wrapper.find('[data-testid="pdf-preview"]').text()).toBe('/api/v1/workspaces/7/uploads/31/preview')
+    expect(wrapper.text()).toContain('Preview of version 1.')
+  })
+
+  it('hides the pane on request and does not fetch a preview while hidden', async () => {
+    vi.mocked(getLatestCompilation).mockResolvedValue(COMPILATION)
+    const wrapper = await mountWorkspaceView()
+    const toggle = wrapper.findAll('button').find((button) => button.text() === 'Hide preview')!
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+
+    await toggle.trigger('click')
+    expect(wrapper.find('[data-testid="pdf-preview"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').find((button) => button.text() === 'Show preview')!.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('opens the cited excerpt behind a value that carries evidence, and says what it cannot show', async () => {
+    vi.mocked(getLatestCompilation).mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getDocument).mockResolvedValue({
+      ...DOCUMENT_WITH_A_SCALAR_FIELD,
+      currentRevision: {
+        ...DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision,
+        fields: {
+          'meeting.title': { ...DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision.fields['meeting.title']!, evidenceSourceSpanIds: [12] },
+        },
+      },
+    })
+    vi.mocked(getEvidenceExcerpt).mockResolvedValue({
+      spanId: 12,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: 'minutes.txt',
+      locatorType: 'PLAIN_TEXT',
+      excerptText: 'The meeting title is "Weekly Sync".',
+    })
+    const wrapper = await mountWorkspaceView()
+
+    const marker = wrapper.find('button[aria-label="Evidence for meeting.title"]')
+    expect(marker.text()).toBe('Evidence (1)')
+    expect(marker.attributes('aria-expanded')).toBe('false')
+    await marker.trigger('click')
+    await flushPromises()
+
+    expect(getEvidenceExcerpt).toHaveBeenCalledWith(7, 1, 12)
+    const panel = wrapper.find('#evidence-meeting\\.title')
+    expect(panel.text()).toContain('The meeting title is "Weekly Sync".')
+    expect(panel.text()).toContain('From minutes.txt')
+    expect(panel.text()).toContain('cannot point to where a value lands on the preview page')
+    expect(marker.attributes('aria-expanded')).toBe('true')
+    expect((await axe(wrapper.element)).violations).toEqual([])
+
+    await marker.trigger('click')
+    expect(wrapper.find('#evidence-meeting\\.title').exists()).toBe(false)
+  })
+
+  it('shows no evidence marker for a value typed by hand', async () => {
+    vi.mocked(getLatestCompilation).mockRejectedValue(new ApiRequestError(404, undefined))
+    const wrapper = await mountWorkspaceView()
+    expect(wrapper.find('button[aria-label="Evidence for meeting.title"]').exists()).toBe(false)
+  })
+})
+
+describe('WorkspaceView saved, conflict, limits and rules', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(patchDocumentContent).mockReset()
+    vi.mocked(recordReviewDecision).mockReset()
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue({
+      maxUploadBytes: 10485760,
+      uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+    })
+    vi.mocked(listTemplateVersionRules).mockReset().mockResolvedValue([])
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('saves on its own a moment after typing stops, and announces it', async () => {
+    const wrapper = await mountWorkspaceView()
+    vi.mocked(patchDocumentContent).mockResolvedValue({ ...DOCUMENT.currentRevision, id: 2, revisionNumber: 2 })
+    vi.mocked(getDocument).mockResolvedValue({
+      ...DOCUMENT,
+      currentRevisionId: 2,
+      currentRevision: {
+        ...DOCUMENT.currentRevision,
+        id: 2,
+        revisionNumber: 2,
+        fields: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Autosaved title', evidenceSourceSpanIds: [], fieldState: { ...ITEM_STATE } } },
+      },
+    })
+
+    vi.useFakeTimers()
+    await wrapper.find('[id="edit-meeting.title"]').setValue('Autosaved title')
+    expect(wrapper.text()).toContain('Unsaved changes. Brownie saves a moment after you stop typing.')
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(patchDocumentContent).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(600)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(patchDocumentContent).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(patchDocumentContent).mock.calls[0]![2].edits).toEqual([
+      { operation: 'SET', fieldId: 'meeting.title', value: { type: 'TEXT', cardinality: 'SCALAR', value: 'Autosaved title' } },
+    ])
+    expect(wrapper.text()).toContain('Saved.')
+    expect(wrapper.find('[aria-live="polite"][aria-atomic="true"]').text()).toBe('Saved.')
+  })
+
+  it('does not autosave a row that still has a problem, and says why', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_ROW)
+    const wrapper = await mountWorkspaceView()
+
+    vi.useFakeTimers()
+    await wrapper.find('[id="edit-action.item.due-0"]').setValue('')
+    await vi.advanceTimersByTimeAsync(3_000)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(patchDocumentContent).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Row 1 needs a value for')
+  })
+
+  it('shows the upload limit on the Sources tab before a file is chosen', async () => {
+    const wrapper = await mountWorkspaceView()
+    expect(getCapabilities).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('up to 10 MB')
+  })
+
+  it('lists the accepted rules of the document\'s own template version on the Rules tab, read-only', async () => {
+    vi.mocked(listTemplateVersionRules).mockResolvedValue([
+      {
+        id: 1, templateId: 1, templateVersionId: 1, category: 'VALIDATION',
+        scope: { kind: 'WHOLE_TEMPLATE' }, payload: { kind: 'REQUIRED_FIELDS', fieldIds: ['meeting.title', 'meeting.date'] },
+        status: 'ACCEPTED', humanExplanation: 'Every set of minutes names its meeting.', authorUserId: 1, createdAt: '2026-03-01T00:00:00Z',
+      },
+      {
+        id: 2, templateId: 1, templateVersionId: 1, category: 'CONTENT',
+        scope: { kind: 'FIELD', fieldId: 'meeting.title' }, payload: { kind: 'MAX_TEXT_LENGTH', fieldId: 'meeting.title', maxCharacters: 80 },
+        status: 'PROPOSED', humanExplanation: null, authorUserId: 1, createdAt: '2026-03-01T00:00:00Z',
+      },
+      {
+        id: 3, templateId: 1, templateVersionId: 9, category: 'VALIDATION',
+        scope: { kind: 'WHOLE_TEMPLATE' }, payload: { kind: 'REQUIRED_FIELDS', fieldIds: ['meeting.location'] },
+        status: 'ACCEPTED', humanExplanation: null, authorUserId: 1, createdAt: '2026-03-01T00:00:00Z',
+      },
+    ] as never)
+    const wrapper = await mountWorkspaceView()
+
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Rules')!.trigger('click')
+    await flushPromises()
+
+    expect(listTemplateVersionRules).toHaveBeenCalledWith(7, 1, 1)
+    const text = wrapper.text()
+    expect(text).toContain('Require: meeting.title, meeting.date')
+    expect(text).toContain('Every set of minutes names its meeting.')
+    expect(text).not.toContain('meeting.location')
+    expect(text).not.toContain('at most 80 characters')
+    expect(text).toContain('1 proposed rule is waiting for a decision on the template.')
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Accept' || button.text() === 'Reject')).toBe(false)
+    expect((await axe(wrapper.element)).violations).toEqual([])
+  })
+
+  it('reloads and explains when a review decision hits a revision that moved on', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(recordReviewDecision).mockRejectedValue(new ApiRequestError(412, { status: 412, title: 'Stale', detail: 'Revision moved on.', code: 'STALE_REVISION', correlationId: 'c-1', fields: [], recoveryActions: [] }))
+    const wrapper = await mountWorkspaceView()
+    const loadsBefore = vi.mocked(getDocument).mock.calls.length
+
+    await wrapper.find('button[aria-label="Accept meeting.title"]').trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(getDocument).mock.calls.length).toBe(loadsBefore + 1)
+    expect(wrapper.find('[role="alert"]').text()).toContain('This document changed since you loaded it, so it was reloaded.')
+  })
+
+  it('takes keyboard focus to the field a validation finding names', async () => {
+    vi.mocked(validateDocument).mockResolvedValue({
+      id: 5, documentId: 1, revisionId: 1, templateId: 1, templateVersionId: 1,
+      docxArtifactId: 20, docxSha256: 'b'.repeat(64), pdfArtifactId: 21, pdfSha256: 'c'.repeat(64),
+      findings: [{ code: 'REQUIRED_FIELD_MISSING', severity: 'BLOCKING', fieldId: 'meeting.title', message: 'Meeting title is required.' }],
+      hasUnresolvedBlocking: true, createdAt: '2026-03-01T00:00:00Z',
+    } as never)
+    const wrapper = await mountWorkspaceViewAttached()
+    try {
+      const checksTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Checks')!
+      await checksTab.trigger('click')
+      const validate = wrapper.findAll('button').find((button) => button.text() === 'Validate this revision')!
+      await validate.trigger('click')
+      await flushPromises()
+
+      const goTo = wrapper.find('button[aria-label="Go to meeting.title"]')
+      expect(goTo.exists()).toBe(true)
+      await goTo.trigger('click')
+      expect(document.activeElement?.id).toBe('edit-meeting.title')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+})
+
+describe('WorkspaceView Assist composer', () => {
+  const HELP = ['Draft from these sources.', 'Change <field> to <value>.', 'Shorten <field>.', 'Explain this finding.']
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getCapabilities).mockReset().mockRejectedValue(new Error('none'))
+    vi.mocked(interpretAssist).mockReset()
+    vi.mocked(executeAssist).mockReset()
+    vi.mocked(acceptPatchProposal).mockReset()
+    vi.mocked(startExtraction).mockReset()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+  })
+
+  async function openAssist() {
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Assist')!.trigger('click')
+    return wrapper
+  }
+
+  async function ask(wrapper: Awaited<ReturnType<typeof mountWorkspaceView>>, text: string) {
+    await wrapper.find('#assist-composer').setValue(text)
+    await wrapper.find('form.assist-composer').trigger('submit')
+    await flushPromises()
+  }
+
+  it('answers free text with what Brownie can do, and offers nothing to run', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({
+      kind: 'NONE', summary: 'Brownie did not recognise that. Here is what it can do:', scope: null, executable: false, usesModel: false, help: HELP,
+    })
+    const wrapper = await openAssist()
+    await ask(wrapper, 'write me a poem')
+
+    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'write me a poem')
+    expect(wrapper.text()).toContain('Here is what it can do:')
+    expect(wrapper.findAll('.assist-help li')).toHaveLength(4)
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Do it')).toBe(false)
+    expect((await axe(wrapper.element)).violations).toEqual([])
+  })
+
+  it('shows the scope of a change, runs it only on request, and hands the proposal to the accept step', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({
+      kind: 'CHANGE_FIELD', summary: 'Change Meeting title to "Spring Planning".',
+      scope: { fieldId: 'meeting.title', label: 'Meeting title', currentValue: 'Weekly Sync', findingMessage: null },
+      executable: true, usesModel: false, help: [],
+    })
+    vi.mocked(executeAssist).mockResolvedValue({
+      kind: 'CHANGE_FIELD', summary: 'Change Meeting title to "Spring Planning".', explanation: null, help: [],
+      proposal: {
+        id: 33, documentId: 1, baseRevisionId: 1, status: 'PROPOSED', createdAt: '2026-03-01T00:00:00Z',
+        proposedValues: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Spring Planning', values: null, evidenceSpanIds: [] } },
+        proposedRepeatedItemCount: 0, skippedRepeatedItems: [],
+      },
+    })
+    vi.mocked(acceptPatchProposal).mockResolvedValue({ applied: true, fieldStatuses: { 'meeting.title': 'CLEAN' }, revision: { ...DOCUMENT.currentRevision, id: 2, revisionNumber: 2 } })
+    const wrapper = await openAssist()
+    await ask(wrapper, 'change meeting title to Spring Planning')
+
+    expect(wrapper.text()).toContain('What Assist would do')
+    expect(wrapper.text()).toContain('Meeting title (meeting.title)')
+    expect(wrapper.text()).toContain('Weekly Sync')
+    expect(executeAssist).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Do it')!.trigger('click')
+    await flushPromises()
+
+    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'change meeting title to Spring Planning', 1)
+    expect(wrapper.text()).toContain('Proposed changes')
+    expect(wrapper.text()).toContain('Spring Planning')
+    await wrapper.findAll('button').find((button) => button.text() === 'Accept and update document')!.trigger('click')
+    await flushPromises()
+    expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 33, 1, expect.any(String))
+    expect(wrapper.text()).toContain('Applied to the document.')
+  })
+
+  it('shows an explanation as text and says a model call is involved beforehand', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({
+      kind: 'EXPLAIN_FINDING', summary: 'Explain the finding on Meeting date: Meeting date is required.',
+      scope: { fieldId: 'meeting.date', label: 'Meeting date', currentValue: null, findingMessage: 'Meeting date is required.' },
+      executable: true, usesModel: true, help: [],
+    })
+    vi.mocked(executeAssist).mockResolvedValue({
+      kind: 'EXPLAIN_FINDING', summary: 'Explain the finding on Meeting date.', proposal: null, help: [],
+      explanation: 'The meeting date is empty; type it in the Meeting date field.',
+    })
+    const wrapper = await openAssist()
+    await ask(wrapper, 'explain this finding')
+    expect(wrapper.text()).toContain('This makes one model call.')
+    expect(wrapper.text()).toContain('Meeting date is required.')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Do it')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.assist-explanation').text()).toContain('type it in the Meeting date field')
+    expect(wrapper.text()).not.toContain('Proposed changes')
+  })
+
+  it('cannot draft without a source, and starts extraction from one when there is', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({
+      kind: 'DRAFT', summary: 'Fill this document from an attached source.', scope: null, executable: true, usesModel: true, help: [],
+    })
+    const wrapper = await openAssist()
+    await ask(wrapper, 'draft from these sources')
+    await wrapper.findAll('button').find((button) => button.text() === 'Do it')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').text()).toContain('Attach a source on the Sources tab first')
+    expect(startExtraction).not.toHaveBeenCalled()
+
+    vi.mocked(listDocumentSources).mockResolvedValue([{ id: 3, artifactId: 5, displayFilename: 'minutes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' }])
+    vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+    vi.mocked(getJob).mockResolvedValue(jobResponse('QUEUED'))
+    const withSource = await openAssist()
+    await ask(withSource, 'draft from these sources')
+    await withSource.findAll('button').find((button) => button.text() === 'Do it')!.trigger('click')
+    await flushPromises()
+    expect(startExtraction).toHaveBeenCalledWith(7, 1, 5, expect.any(String))
+  })
+
+  it('reloads and explains when the revision moved on before the request ran', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({
+      kind: 'CHANGE_FIELD', summary: 'Change Meeting title to "X".',
+      scope: { fieldId: 'meeting.title', label: 'Meeting title', currentValue: 'Weekly Sync', findingMessage: null },
+      executable: true, usesModel: false, help: [],
+    })
+    vi.mocked(executeAssist).mockRejectedValue(new ApiRequestError(412, { status: 412, title: 'Stale', detail: 'moved', code: 'STALE', correlationId: 'c', fields: [], recoveryActions: [] }))
+    const wrapper = await openAssist()
+    await ask(wrapper, 'change meeting title to X')
+    const loadsBefore = vi.mocked(getDocument).mock.calls.length
+    await wrapper.findAll('button').find((button) => button.text() === 'Do it')!.trigger('click')
+    await flushPromises()
+    expect(vi.mocked(getDocument).mock.calls.length).toBe(loadsBefore + 1)
+    expect(wrapper.find('.assist-composer [role="alert"]').text()).toContain('was reloaded')
+  })
+})
+
+describe('WorkspaceView keeps typed text across a save', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(listTemplateVersionRules).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getCapabilities).mockReset().mockRejectedValue(new Error('none'))
+    vi.mocked(patchDocumentContent).mockReset()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('does not lose or replace text typed while a save is in flight, and keeps the input mounted', async () => {
+    const wrapper = await mountWorkspaceViewAttached()
+    try {
+      const titleInput = () => wrapper.find('[id="edit-meeting.title"]')
+      const inputElementBefore = titleInput().element
+
+      let finishSave: (value: DocumentRevisionResponse) => void = () => {}
+      vi.mocked(patchDocumentContent).mockImplementation(() => new Promise((resolve) => { finishSave = resolve }))
+      vi.mocked(getDocument).mockResolvedValue({
+        ...DOCUMENT,
+        currentRevisionId: 2,
+        currentRevision: {
+          ...DOCUMENT.currentRevision,
+          id: 2,
+          revisionNumber: 2,
+          fields: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Priya Rao, Alex', evidenceSourceSpanIds: [], fieldState: { ...ITEM_STATE } } },
+        },
+      })
+
+      ;(titleInput().element as HTMLInputElement).focus()
+      vi.useFakeTimers()
+      await titleInput().setValue('Priya Rao, Alex')
+      await vi.advanceTimersByTimeAsync(2_600)
+      vi.useRealTimers()
+      expect(patchDocumentContent).toHaveBeenCalledTimes(1)
+
+      // The save is still in flight; the person keeps typing.
+      await titleInput().setValue('Priya Rao, Alex Chen, Jose Nunez')
+      finishSave({ ...DOCUMENT.currentRevision, id: 2, revisionNumber: 2 })
+      await flushPromises()
+
+      expect((titleInput().element as HTMLInputElement).value).toBe('Priya Rao, Alex Chen, Jose Nunez')
+      expect(titleInput().element).toBe(inputElementBefore)
+      expect(document.activeElement).toBe(inputElementBefore)
+      expect(wrapper.text()).toContain('Unsaved changes')
+      expect(wrapper.text()).not.toContain('Loading document')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('takes the server\'s copy into a field that was not touched during the save', async () => {
+    const wrapper = await mountWorkspaceView()
+    vi.mocked(patchDocumentContent).mockResolvedValue({ ...DOCUMENT.currentRevision, id: 2, revisionNumber: 2 })
+    vi.mocked(getDocument).mockResolvedValue({
+      ...DOCUMENT,
+      currentRevisionId: 2,
+      currentRevision: {
+        ...DOCUMENT.currentRevision,
+        id: 2,
+        revisionNumber: 2,
+        fields: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Trimmed by the server', evidenceSourceSpanIds: [], fieldState: { ...ITEM_STATE } } },
+      },
+    })
+    await wrapper.find('[id="edit-meeting.title"]').setValue('  Trimmed by the server  ')
+    await wrapper.find('form.field-list').trigger('submit')
+    await flushPromises()
+
+    expect((wrapper.find('[id="edit-meeting.title"]').element as HTMLInputElement).value).toBe('Trimmed by the server')
+    expect(wrapper.text()).toContain('Saved.')
+    expect(wrapper.text()).not.toContain('Unsaved changes')
+    expect(vi.mocked(patchDocumentContent).mock.calls[0]![2].editReason).toBe('Edited in the workspace.')
+  })
+
+  it('says when a queued run has had no worker claim it for half a minute', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([{ id: 3, artifactId: 5, displayFilename: 'minutes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' }])
+    vi.mocked(startExtraction).mockReset().mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+    vi.mocked(getJob).mockReset().mockResolvedValue({ ...jobResponse('QUEUED'), attemptCount: 0 })
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === 'Assist')!.trigger('click')
+
+    vi.useFakeTimers()
+    await wrapper.findAll('button').find((button) => button.text() === 'Try grounded extraction')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(wrapper.text()).not.toContain('No worker has picked this run up yet')
+    await vi.advanceTimersByTimeAsync(30_000)
+    vi.useRealTimers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('No worker has picked this run up yet')
   })
 })
