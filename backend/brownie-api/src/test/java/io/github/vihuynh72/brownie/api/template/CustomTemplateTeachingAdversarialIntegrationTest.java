@@ -60,16 +60,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * This phase's own closing adversarial sweep, proven end to end against real
+ * The template-teaching path's closing adversarial sweep, proven end to end against real
  * Postgres/Azurite/ClamAV and the real Docker-isolated LibreOffice renderer,
- * on a held-out custom template none of this phase's earlier per-task tests
+ * on a held-out custom template none of the earlier teaching tests
  * ever used: the whole teaching pipeline (preflight, candidate proposal,
  * manual mapping recovery for an ambiguous tag, example alignment, rule
  * proposal with a genuine contradiction, accept/reject decisions, and a
  * real baseline-gated activation) composed exactly the way a real caller
  * would, using only already-built API surface. {@code proposeRulesFromExamples}
- * and rule accept/reject decisions have no REST endpoint by this phase's
- * own deliberate choice, so this test calls those two steps directly
+ * and rule accept/reject decisions have no REST endpoint by deliberate
+ * choice, so this test calls those two steps directly
  * through their already real-HTTP-independently-tested services, the same
  * precedent {@code TemplateIntegrationTest}'s own rule-conflict tests
  * already set by calling {@code RuleRepository.propose} directly.
@@ -222,9 +222,8 @@ class CustomTemplateTeachingAdversarialIntegrationTest {
      * pre-existing gap this task's own baseline gate surfaces at
      * activation time instead of letting the template activate and fail
      * later on a real user's first document. This is the honest, current
-     * behavior, not the desired end state; see this task's own journal
-     * entry for why extending the filler itself was judged out of this
-     * task's own scope.
+     * behavior, not the desired end state: extending the filler to write
+     * into an arbitrary structural node is separate feature work.
      */
     @Test
     void aTagRepeatedAtTwoLocationsRecoversThroughManualMappingButActivationHonestlyRefusesAStructuralNodeBoundField() throws Exception {

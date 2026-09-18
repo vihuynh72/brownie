@@ -519,6 +519,27 @@ class TemplateIntegrationTest {
         mockMvc.perform(post(rulesPath(workspaceId, templateId) + "/" + ruleId + "/accept").cookie(session).with(csrf()))
                 .andExpect(status().isConflict());
 
+        // Once the version is activated the draft-only listing has nothing to answer for (409), while the
+        // version's own listing (what a document created from it reads) still returns the accepted rule.
+        // Binding above replaced draft 1 with draft 2, so that is the version activated here.
+        JsonNode activated = readJson(mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        mockMvc.perform(get(rulesPath(workspaceId, templateId)).cookie(session)).andExpect(status().isConflict());
+        JsonNode versionRules = readJson(mockMvc.perform(
+                        get(templatesPath(workspaceId) + "/" + templateId + "/versions/" + activated.get("id").asLong() + "/rules").cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(versionRules).hasSize(1);
+        assertThat(versionRules.get(0).get("id").asLong()).isEqualTo(ruleId);
+        assertThat(versionRules.get(0).get("status").asText()).isEqualTo("ACCEPTED");
+        mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/versions/999999/rules").cookie(session))
+                .andExpect(status().isNotFound());
+
         mockMvc.perform(get(rulesPath(workspaceId, templateId) + "/999999").cookie(session))
                 .andExpect(status().isNotFound());
     }
