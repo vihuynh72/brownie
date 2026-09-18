@@ -351,12 +351,14 @@ class GenerationApplyIntegrationTest {
         long ownerSourceId = uploadAndFinalize(ownerSession, ownerWorkspaceId, "A private transcript.");
         long jobId = startExtraction(ownerSession, ownerWorkspaceId, ownerDocumentId, ownerSourceId);
 
-        // Exactly what the worker stages when it leaves a job waiting for input.
+        // Exactly what the worker stages when it leaves a job waiting for
+        // input, stamped with the job's current attempt so the API treats
+        // it as live.
         String secret = "Confidential candidate only workspace A should ever see";
-        String pendingJson = "{\"questions\":[{\"fieldId\":\"meeting.title\",\"reason\":\"MISSING_REQUIRED\","
-                + "\"candidates\":[{\"value\":\"" + secret + "\",\"evidenceSpanIds\":[]}]}]}";
+        String pendingJson = "{\"fencingToken\":" + jdbcFencingToken(jobId) + ",\"questions\":[{\"fieldId\":\"meeting.title\","
+                + "\"reason\":\"MISSING_REQUIRED\",\"candidates\":[{\"value\":\"" + secret + "\",\"evidenceSpanIds\":[]}]}]}";
         blobStore.writeAndDigest(
-                GenerationJobTypes.pendingQuestionsObjectKey(jobId),
+                GenerationJobTypes.pendingQuestionsObjectKey(ownerWorkspaceId, jobId),
                 new ByteArrayInputStream(pendingJson.getBytes(StandardCharsets.UTF_8)),
                 100_000);
 
@@ -375,6 +377,11 @@ class GenerationApplyIntegrationTest {
         // Another workspace, guessing the job ID: refused before any blob is read or written.
         mockMvc.perform(get(generationsPath(intruderWorkspaceId, intruderDocumentId) + "/" + jobId + "/questions").cookie(intruderSession))
                 .andExpect(status().isNotFound());
+        // ...and it cannot list the owner's runs or sources through its own workspace either.
+        mockMvc.perform(get(generationsPath(intruderWorkspaceId, ownerDocumentId)).cookie(intruderSession))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/v1/workspaces/" + intruderWorkspaceId + "/documents/" + ownerDocumentId + "/sources").cookie(intruderSession))
+                .andExpect(status().isNotFound());
         mockMvc.perform(post(generationsPath(intruderWorkspaceId, intruderDocumentId) + "/" + jobId + "/resume")
                         .cookie(intruderSession)
                         .with(csrf())
@@ -385,7 +392,8 @@ class GenerationApplyIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isNotFound());
         assertThat(questionService.allQuestions(intruderWorkspaceId, intruderUserId, intruderDocumentId)).isEmpty();
-        assertThat(blobStore.sizeOf(GenerationJobTypes.resolvedAnswersObjectKey(jobId))).isEmpty();
+        assertThat(blobStore.sizeOf(GenerationJobTypes.resolvedAnswersObjectKey(ownerWorkspaceId, jobId))).isEmpty();
+        assertThat(blobStore.sizeOf(GenerationJobTypes.resolvedAnswersObjectKey(intruderWorkspaceId, jobId))).isEmpty();
 
         // The same workspace, but a document the job was never about: also refused, nothing persisted.
         mockMvc.perform(get(generationsPath(ownerWorkspaceId, ownerOtherDocumentId) + "/" + jobId + "/questions").cookie(ownerSession))
@@ -499,6 +507,20 @@ class GenerationApplyIntegrationTest {
             try (PreparedStatement statement = connection.prepareStatement("UPDATE job SET state = 'SUCCEEDED' WHERE id = ?")) {
                 statement.setLong(1, jobId);
                 statement.executeUpdate();
+            }
+        }
+    }
+
+    /** The job's current fencing token (0 until a worker's first claim), read as the schema owner so no tenant context is needed. */
+    private long jdbcFencingToken(long jobId) throws Exception {
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                PreparedStatement statement = connection.prepareStatement("SELECT fencing_token FROM job WHERE id = ?")) {
+            statement.setLong(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    throw new AssertionError("No job " + jobId + ".");
+                }
+                return result.getLong(1);
             }
         }
     }

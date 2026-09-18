@@ -47,7 +47,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The adversarial evaluation sweep this phase's own gate asks for:
+ * The adversarial evaluation sweep grounded extraction must pass:
  * prompt-injection resistance and genuine-omission handling, run for real
  * against the real OpenAI API rather than simulated with a fake gateway --
  * these two categories are specifically about how the real model behaves

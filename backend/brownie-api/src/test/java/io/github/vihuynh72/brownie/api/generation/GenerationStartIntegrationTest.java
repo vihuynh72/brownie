@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
+import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.question.QuestionService;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
@@ -35,6 +37,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -127,6 +130,9 @@ class GenerationStartIntegrationTest {
     @Autowired
     private BlobStore blobStore;
 
+    @Autowired
+    private QuestionService questionService;
+
     @Test
     void startingExtractionQueuesARealJobAndStagesARealReadableBundle() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-generation-start");
@@ -174,8 +180,8 @@ class GenerationStartIntegrationTest {
         // own dedup hash -- read directly from the same BlobStore bean the
         // orchestration service used, with no HTTP route of its own, since a
         // customer never reads this object directly.
-        String bundleHash = jdbcProcessingConfigurationHash(workspaceId, userId, jobId);
-        String objectKey = "generation-input/" + bundleHash + ".json";
+        String bundleHash = jdbcJobColumn(workspaceId, userId, jobId, "processing_configuration_hash");
+        String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash);
         JsonNode bundle;
         try (InputStream content = blobStore.openStream(objectKey)) {
             bundle = OBJECT_MAPPER.readTree(content);
@@ -219,6 +225,153 @@ class GenerationStartIntegrationTest {
         assertThat(second.get("commandId").asText()).isEqualTo(first.get("commandId").asText());
     }
 
+    /**
+     * Starting an extraction leaves two things behind that a reloaded page
+     * needs: the document's own link to the source it was started from,
+     * and a run record naming the job, the revision it was based on and
+     * the model and prompt version it used -- both readable back through
+     * the document. A replay under the same idempotency key adds neither
+     * a second run nor a second link, and attaching the same file again
+     * through the sources route returns the same link.
+     */
+    @Test
+    void startingExtractionRecordsARunAndLinksItsSourceToTheDocument() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-generation-run");
+        long workspaceId = ensureWorkspace("subject-generation-run").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-run").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode flowing = findByDisplayName(templates, "Flowing meeting minutes");
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), flowing.get("currentActiveVersionId").asLong());
+        long sourceArtifactId = uploadAndFinalize(session, workspaceId, "The meeting was called to order.");
+        JsonNode documentBefore = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        long currentRevisionId = documentBefore.get("currentRevision").get("id").asLong();
+
+        assertThat(readJson(mockMvc.perform(get(generationsPath(workspaceId, documentId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn())).isEmpty();
+        assertThat(readJson(mockMvc.perform(get(sourcesPath(workspaceId, documentId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn())).isEmpty();
+
+        String idempotencyKey = UUID.randomUUID().toString();
+        String body = "{\"sourceArtifactId\":" + sourceArtifactId + "}";
+        long jobId = readJson(mockMvc.perform(post(generationsPath(workspaceId, documentId))
+                        .cookie(session).with(csrf()).header("Idempotency-Key", idempotencyKey)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isAccepted())
+                .andReturn()).get("jobId").asLong();
+        mockMvc.perform(post(generationsPath(workspaceId, documentId))
+                        .cookie(session).with(csrf()).header("Idempotency-Key", idempotencyKey)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isAccepted());
+
+        JsonNode runs = readJson(mockMvc.perform(get(generationsPath(workspaceId, documentId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(runs).hasSize(1);
+        JsonNode run = runs.get(0);
+        assertThat(run.get("jobId").asLong()).isEqualTo(jobId);
+        assertThat(run.get("documentId").asLong()).isEqualTo(documentId);
+        assertThat(run.get("baseRevisionId").asLong()).isEqualTo(currentRevisionId);
+        assertThat(run.get("sourceArtifactId").asLong()).isEqualTo(sourceArtifactId);
+        assertThat(run.get("sourceSnapshotId").asLong()).isPositive();
+        assertThat(run.get("modelName").asText()).isNotBlank();
+        assertThat(run.get("promptVersion").asText()).isEqualTo("extraction-v1");
+        assertThat(run.get("job").get("id").asLong()).isEqualTo(jobId);
+        assertThat(run.get("job").get("state").asText()).isEqualTo("QUEUED");
+        assertThat(run.get("resultArtifactId").isNull()).isTrue();
+
+        JsonNode sources = readJson(mockMvc.perform(get(sourcesPath(workspaceId, documentId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(sources).hasSize(1);
+        assertThat(sources.get(0).get("id").asLong()).isEqualTo(run.get("sourceSnapshotId").asLong());
+        assertThat(sources.get(0).get("artifactId").asLong()).isEqualTo(sourceArtifactId);
+        assertThat(sources.get(0).get("displayFilename").asText()).isEqualTo("transcript.txt");
+        assertThat(sources.get(0).get("kind").asText()).isEqualTo("ARTIFACT");
+
+        JsonNode attachedAgain = readJson(mockMvc.perform(post(sourcesPath(workspaceId, documentId))
+                        .cookie(session).with(csrf())
+                        .contentType("application/json").content("{\"artifactId\":" + sourceArtifactId + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(attachedAgain.get("id").asLong()).isEqualTo(sources.get(0).get("id").asLong());
+        assertThat(readJson(mockMvc.perform(get(sourcesPath(workspaceId, documentId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn())).hasSize(1);
+    }
+
+    /**
+     * The staged-questions blob is keyed by job alone and overwritten by
+     * every attempt, so the API only trusts one stamped with the job's
+     * current attempt: a bundle from any other attempt is ignored. And
+     * once an attempt's questions exist as rows, answering them all and
+     * reloading returns nothing rather than a second copy of the same
+     * questions -- the row count for the document stays exactly one.
+     */
+    @Test
+    void pendingQuestionsAreMaterializedOncePerAttemptAndAStaleAttemptIsIgnored() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-generation-attempts");
+        long workspaceId = ensureWorkspace("subject-generation-attempts").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-attempts").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode flowing = findByDisplayName(templates, "Flowing meeting minutes");
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), flowing.get("currentActiveVersionId").asLong());
+        long sourceArtifactId = uploadAndFinalize(session, workspaceId, "The meeting was called to order.");
+        long jobId = readJson(mockMvc.perform(post(generationsPath(workspaceId, documentId))
+                        .cookie(session).with(csrf()).header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json").content("{\"sourceArtifactId\":" + sourceArtifactId + "}"))
+                .andExpect(status().isAccepted())
+                .andReturn()).get("jobId").asLong();
+        long currentAttempt = Long.parseLong(jdbcJobColumn(workspaceId, userId, jobId, "fencing_token"));
+        String questionsPath = generationsPath(workspaceId, documentId) + "/" + jobId + "/questions";
+
+        stagePendingQuestions(workspaceId, jobId, currentAttempt + 7, "From a superseded attempt");
+        assertThat(readJson(mockMvc.perform(get(questionsPath).cookie(session)).andExpect(status().isOk()).andReturn())).isEmpty();
+        assertThat(questionService.allQuestions(workspaceId, userId, documentId)).isEmpty();
+
+        stagePendingQuestions(workspaceId, jobId, currentAttempt, "Weekly Sync");
+        JsonNode materialized = readJson(mockMvc.perform(get(questionsPath).cookie(session)).andExpect(status().isOk()).andReturn());
+        assertThat(materialized).hasSize(1);
+        assertThat(materialized.get(0).get("candidates").get(0).get("value").asText()).isEqualTo("Weekly Sync");
+        long questionId = materialized.get(0).get("id").asLong();
+
+        // Asking again before answering: the same open question, not another copy.
+        JsonNode askedAgain = readJson(mockMvc.perform(get(questionsPath).cookie(session)).andExpect(status().isOk()).andReturn());
+        assertThat(askedAgain).hasSize(1);
+        assertThat(askedAgain.get(0).get("id").asLong()).isEqualTo(questionId);
+
+        mockMvc.perform(post("/api/v1/workspaces/" + workspaceId + "/questions/" + questionId + "/answer")
+                        .cookie(session).with(csrf())
+                        .contentType("application/json").content("{\"answerValue\":\"Weekly Sync\"}"))
+                .andExpect(status().isOk());
+
+        // A reload after everything was answered: nothing left to ask, and still exactly one row.
+        assertThat(readJson(mockMvc.perform(get(questionsPath).cookie(session)).andExpect(status().isOk()).andReturn())).isEmpty();
+        assertThat(questionService.allQuestions(workspaceId, userId, documentId)).hasSize(1);
+    }
+
+    private void stagePendingQuestions(long workspaceId, long jobId, long fencingToken, String candidate) throws Exception {
+        String pendingJson = "{\"fencingToken\":" + fencingToken + ",\"questions\":[{\"fieldId\":\"meeting.title\","
+                + "\"reason\":\"MISSING_REQUIRED\",\"candidates\":[{\"value\":\"" + candidate + "\",\"evidenceSpanIds\":[]}]}]}";
+        blobStore.writeAndDigest(
+                GenerationJobTypes.pendingQuestionsObjectKey(workspaceId, jobId),
+                new ByteArrayInputStream(pendingJson.getBytes(StandardCharsets.UTF_8)),
+                100_000);
+    }
+
+    private static String sourcesPath(long workspaceId, long documentId) {
+        return "/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/sources";
+    }
+
     private static List<String> excerptTexts(JsonNode bundle) {
         List<String> texts = new java.util.ArrayList<>();
         bundle.get("excerpts").forEach(excerpt -> texts.add(excerpt.get("text").asText()));
@@ -237,7 +390,7 @@ class GenerationStartIntegrationTest {
      * within one transaction, so autocommit must be off for both
      * statements to share it.
      */
-    private String jdbcProcessingConfigurationHash(long workspaceId, long userId, long jobId) throws Exception {
+    private String jdbcJobColumn(long workspaceId, long userId, long jobId, String column) throws Exception {
         try (var connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try (var setUser = connection.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
@@ -245,7 +398,7 @@ class GenerationStartIntegrationTest {
                 setUser.execute();
             }
             try (var statement = connection.prepareStatement(
-                    "SELECT processing_configuration_hash FROM job WHERE workspace_id = ? AND id = ?")) {
+                    "SELECT " + column + " FROM job WHERE workspace_id = ? AND id = ?")) {
                 statement.setLong(1, workspaceId);
                 statement.setLong(2, jobId);
                 try (var resultSet = statement.executeQuery()) {
