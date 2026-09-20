@@ -29,9 +29,7 @@ class MeController {
         String subject = oidcUser.getSubject();
         UserIdentity identity = userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/"
-                                + subject));
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException());
         List<MembershipResponse> memberships = workspaceRepository.findMembershipsForUser(identity.id()).stream()
                 .map(member -> new MembershipResponse(member.workspaceId(), member.role().name()))
                 .toList();
