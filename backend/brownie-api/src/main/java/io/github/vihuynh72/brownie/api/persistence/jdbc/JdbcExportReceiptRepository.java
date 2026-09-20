@@ -42,7 +42,25 @@ class JdbcExportReceiptRepository implements ExportRepository {
             String pdfSha256,
             ExportFormat format) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
-        return jdbcTemplate.queryForObject(
+        // One approval is exported once by the person it was exported by: a second click, or a retry after a lost
+        // response, gets the receipt that already exists, and no second entry in the audit record. The files are
+        // fetched through the download routes as often as anyone likes; that is not what a receipt counts.
+        jdbcTemplate.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended('export_receipt:' || ?::text, 0))", rs -> null, exportApprovalId);
+        Optional<ExportReceipt> existing = jdbcTemplate.query(
+                        "SELECT " + COLUMNS + " FROM export_receipt WHERE workspace_id = ? AND document_id = ? "
+                                + "AND export_approval_id = ? AND actor_user_id = ? ORDER BY id DESC LIMIT 1",
+                        this::mapReceipt,
+                        workspaceId,
+                        documentId,
+                        exportApprovalId,
+                        userId)
+                .stream()
+                .findFirst();
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        ExportReceipt receipt = jdbcTemplate.queryForObject(
                 """
                 INSERT INTO export_receipt
                     (workspace_id, document_id, revision_id, template_version_id, export_approval_id, validation_manifest_id,
@@ -63,6 +81,13 @@ class JdbcExportReceiptRepository implements ExportRepository {
                 pdfSha256,
                 format.name(),
                 userId);
+        // An export is the moment a document leaves the system, so it is
+        // recorded in the same transaction as its receipt: which revision,
+        // which format, which receipt, and nothing of what it said.
+        AuditWriter.append(
+                jdbcTemplate, workspaceId, userId, "DOCUMENT_EXPORTED", "document", documentId,
+                "{\"revisionId\":" + revisionId + ",\"exportReceiptId\":" + receipt.id() + ",\"format\":\"" + format.name() + "\"}");
+        return receipt;
     }
 
     @Override
@@ -71,7 +96,7 @@ class JdbcExportReceiptRepository implements ExportRepository {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.query(
                         "SELECT " + COLUMNS + " FROM export_receipt WHERE workspace_id = ? AND document_id = ? "
-                                + "ORDER BY exported_at DESC LIMIT 1",
+                                + "ORDER BY id DESC LIMIT 1",
                         this::mapReceipt,
                         workspaceId,
                         documentId)

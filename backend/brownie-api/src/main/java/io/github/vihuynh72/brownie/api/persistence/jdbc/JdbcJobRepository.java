@@ -229,6 +229,14 @@ class JdbcJobRepository implements JobCommandRepository, JobEventRepository, Job
 
     @Override
     @Transactional(readOnly = true)
+    public boolean enqueueWasAccepted(long workspaceId, long actorUserId, IdempotencyKey idempotencyKey) {
+        requireTenantIds(workspaceId, actorUserId);
+        TenantContext.setCurrentUser(jdbcTemplate, actorUserId);
+        return findIdempotencyRecord(workspaceId, actorUserId, JobCommandType.ENQUEUE, idempotencyKey).isPresent();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<CommandReceipt> findReceipt(long workspaceId, long actorUserId, UUID commandId) {
         requireTenantIds(workspaceId, actorUserId);
         if (commandId == null) {

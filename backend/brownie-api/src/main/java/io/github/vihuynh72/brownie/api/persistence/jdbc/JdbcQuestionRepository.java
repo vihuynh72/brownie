@@ -112,6 +112,9 @@ class JdbcQuestionRepository implements QuestionRepository {
     @Override
     @Transactional
     public Question answer(long workspaceId, long userId, long questionId, String answerValue) {
+        // A question is reached by its own id, not through its document, so
+        // the document's trash state is checked here: a document in the
+        // trash accepts no change, and an answer is a change.
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         try {
             return jdbcTemplate.queryForObject(
@@ -119,6 +122,11 @@ class JdbcQuestionRepository implements QuestionRepository {
                     UPDATE question
                     SET status = 'ANSWERED', answer_value = ?, answered_by_user_id = ?, answered_at = now()
                     WHERE workspace_id = ? AND id = ? AND status = 'OPEN'
+                      AND EXISTS (
+                          SELECT 1 FROM document d
+                          WHERE d.workspace_id = question.workspace_id
+                            AND d.id = question.document_id
+                            AND d.trashed_at IS NULL)
                     RETURNING\
                     """ + " " + COLUMNS,
                     this::mapQuestion,
