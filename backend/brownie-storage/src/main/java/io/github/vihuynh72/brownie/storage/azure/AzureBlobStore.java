@@ -8,6 +8,7 @@ import com.azure.storage.blob.specialized.BlockBlobClient;
 import io.github.vihuynh72.brownie.core.artifact.BlobAlreadyExistsException;
 import io.github.vihuynh72.brownie.core.artifact.BlobSizeLimitExceededException;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
+import io.github.vihuynh72.brownie.core.artifact.BlobStoreUnavailableException;
 import io.github.vihuynh72.brownie.core.artifact.UploadResult;
 
 import java.io.IOException;
@@ -50,6 +51,8 @@ public class AzureBlobStore implements BlobStore {
             container.createIfNotExists();
         } catch (BlobStorageException e) {
             throw new IOException("Failed to prepare the artifact storage container.", e);
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
 
         BlockBlobClient blockBlobClient = container.getBlobClient(objectKey).getBlockBlobClient();
@@ -71,6 +74,8 @@ public class AzureBlobStore implements BlobStore {
                 throw new BlobAlreadyExistsException(objectKey, e);
             }
             throw e;
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
         try {
             int read;
@@ -85,6 +90,8 @@ public class AzureBlobStore implements BlobStore {
             out.close();
         } catch (BlobStorageException e) {
             throw writeFailure(objectKey, overwrite, e);
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
         // Closing only after the complete read commits all staged blocks. A
         // failed read leaves no durable partial object in Azure or Azurite.
@@ -108,6 +115,8 @@ public class AzureBlobStore implements BlobStore {
             return Optional.of(blob.getProperties().getBlobSize());
         } catch (BlobStorageException e) {
             throw new IOException("Failed to read blob metadata for " + objectKey, e);
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
     }
 
@@ -117,6 +126,8 @@ public class AzureBlobStore implements BlobStore {
             return containerClient().getBlobClient(objectKey).openInputStream();
         } catch (BlobStorageException e) {
             throw new IOException("Failed to open a read stream for " + objectKey, e);
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
     }
 
@@ -126,7 +137,20 @@ public class AzureBlobStore implements BlobStore {
             containerClient().getBlobClient(objectKey).deleteIfExists();
         } catch (BlobStorageException e) {
             throw new IOException("Failed to delete blob " + objectKey, e);
+        } catch (RuntimeException e) {
+            throw unreachable(e);
         }
+    }
+
+    /**
+     * The store answered nothing at all: a refused or timed-out connection
+     * reaches here as whatever unchecked exception the client's transport
+     * threw, not as the storage exception an answer would have produced.
+     * Callers are promised an IOException for every storage failure, and
+     * this one is named so they can tell "try again shortly" from the rest.
+     */
+    private static BlobStoreUnavailableException unreachable(RuntimeException failure) {
+        return new BlobStoreUnavailableException("Blob storage could not be reached.", failure);
     }
 
     private BlobContainerClient containerClient() {
