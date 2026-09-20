@@ -110,6 +110,23 @@ watch(
   { immediate: true },
 )
 
+/**
+ * A session can end while a page is open: it expired, or it was ended
+ * elsewhere. Whichever request finds out, the page it was on swaps to its
+ * signed-out state at once, taking with it whatever the person was
+ * pressing and any message about it. So what happened is said here, once,
+ * for every page, and focus comes here rather than being lost.
+ */
+const sessionEndedRef = ref<HTMLElement | null>(null)
+watch(
+  () => session.sessionEnded,
+  async (ended) => {
+    if (!ended) return
+    await nextTick()
+    sessionEndedRef.value?.focus()
+  },
+)
+
 /** A drawer over the page: the page behind it must not scroll under the person's finger. */
 watch([sidebarOpen, docked], ([open, isDocked]) => {
   if (typeof document === 'undefined') return
@@ -149,10 +166,25 @@ onBeforeUnmount(() => {
       <main id="main-content" class="shell__main">
         <section v-if="session.status === 'error'" class="card" role="alert">
           <h1>Could not confirm your sign-in</h1>
-          <p>{{ session.lastError }} Try again in a moment, or reload the page.</p>
+          <p>{{ session.lastError }}</p>
           <button type="button" class="button button--primary" @click="session.loadIdentity()">Try again</button>
         </section>
-        <RouterView v-else />
+        <!-- Every page reads the workspace from the identity; with none, each would sit on its loading message. -->
+        <section
+          v-else-if="session.status === 'authenticated' && session.personalWorkspaceId === undefined"
+          class="card"
+          role="alert"
+        >
+          <h1>No workspace for this account</h1>
+          <p>You are signed in, but Brownie found no workspace for you. Signing out and in again creates one.</p>
+        </section>
+        <template v-else>
+          <section v-if="session.sessionEnded" ref="sessionEndedRef" class="card" role="alert" tabindex="-1">
+            <p>Your session has ended, so nothing more can be saved or changed until you sign in again.</p>
+            <RouterLink :to="{ name: 'signin', query: { next: router.currentRoute.value.fullPath } }">Sign in again</RouterLink>
+          </section>
+          <RouterView />
+        </template>
       </main>
     </div>
   </div>

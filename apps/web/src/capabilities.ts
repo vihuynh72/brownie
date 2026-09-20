@@ -18,13 +18,28 @@ export function resetCapabilitiesCache(): void {
   cached = null
 }
 
-/** "10 MB", "512 KB", "900 bytes": the size a person reads, not the byte count the server enforces. */
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${trimZero(bytes / (1024 * 1024))} MB`
-  if (bytes >= 1024) return `${trimZero(bytes / 1024)} KB`
-  return `${bytes} bytes`
+const LARGER_UNITS = ['KB', 'MB', 'GB', 'TB'] as const
+
+/**
+ * "10 MB", "1.5 KB", "1 byte": the size a person reads, not the byte count the server enforces. The figure is
+ * rounded to one decimal place before its unit is chosen, so a count just short of a megabyte reads "1 MB" and
+ * never "1024.0 KB". Answers null for anything that is not a whole number of bytes, because an older server may
+ * not send the size at all and a sentence must then leave the clause out.
+ */
+export function formatBytes(bytes: unknown): string | null {
+  if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes < 0) return null
+  if (bytes < 1024) return bytes === 1 ? '1 byte' : `${bytes} bytes`
+  let value = bytes / 1024
+  let unit = 0
+  let rounded = toTenths(value)
+  while (rounded >= 1024 && unit < LARGER_UNITS.length - 1) {
+    value /= 1024
+    unit += 1
+    rounded = toTenths(value)
+  }
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} ${LARGER_UNITS[unit]}`
 }
 
-function trimZero(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+function toTenths(value: number): number {
+  return Math.round(value * 10) / 10
 }
