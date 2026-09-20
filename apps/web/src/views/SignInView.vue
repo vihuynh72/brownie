@@ -18,8 +18,12 @@ const PURPOSE: Record<string, string> = {
   '/documents/new': 'to upload your documents and start a new one',
   '/templates/new': 'to teach Brownie one of your templates',
   '/trash': 'to open your trash bin',
+  '/your-data': 'to see what Brownie keeps and for how long',
   '/chat': 'to work on a document with Brownie',
 }
+
+/** Set by the page that deleted the workspace, so the first thing the person reads is that it worked. */
+const workspaceDeleted = computed(() => route.query.deleted === '1')
 
 const purpose = computed(() => {
   if (!next.value) return null
@@ -43,7 +47,10 @@ function keepDestination(): void {
   <section class="card signin">
     <h1 class="signin__title">Sign in to Brownie</h1>
 
-    <p v-if="purpose">You need to be signed in {{ purpose }}.</p>
+    <p v-if="workspaceDeleted" class="signin__notice" role="status">
+      Your workspace and everything in it was deleted. Signing in again starts a new, empty one.
+    </p>
+    <p v-else-if="purpose">You need to be signed in {{ purpose }}.</p>
     <p v-else>Sign in with your account to see your documents.</p>
 
     <p class="field-hint">
@@ -71,6 +78,13 @@ function keepDestination(): void {
 .signin__title {
   margin: 0;
   font-size: var(--font-size-xl);
+}
+
+.signin__notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-cocoa-wash);
 }
 
 .signin__action {
