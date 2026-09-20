@@ -350,7 +350,7 @@ async function decide(rule: RuleResponse, action: 'accept' | 'reject'): Promise<
       <div v-if="payloadKind === 'ALLOWED_SOURCE_KINDS'" class="field">
         <label class="rule-checkbox-row">
           <input v-model="sourceKindArtifact" type="checkbox" />
-          Allow values from uploaded artifacts
+          Allow values from uploaded files
         </label>
       </div>
 
