@@ -8,6 +8,7 @@ import io.github.vihuynh72.brownie.core.document.PdfStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.PdfTextLine;
 import io.github.vihuynh72.brownie.core.document.UnsupportedPdfReason;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -70,6 +71,34 @@ public final class PdfBoxStructuralExtractor implements PdfStructuralExtractor {
 
     private static final double AMBIGUOUS_GAP_FONT_SIZE_MULTIPLE = 3.0;
 
+    /**
+     * What one uploaded PDF may cost to read. An upload is at most ten
+     * mebibytes, but a PDF's contents are compressed and its page tree is
+     * only a list of references, so its size on disk bounds nothing: a few
+     * kilobytes can declare a million pages or expand to gigabytes. Minutes
+     * and forms run to tens of pages and tens of thousands of characters.
+     */
+    static final int MAX_PAGES = 200;
+    static final long MAX_CHARACTERS = PdfReadingBudget.MAX_CHARACTERS;
+    static final long MAX_EXPANDED_BYTES = PdfReadingBudget.MAX_EXPANDED_BYTES;
+    /** The library's own words when the bound on expanded content is reached; it has no exception type for it. */
+    private static final String EXPANSION_LIMIT_MESSAGE = "Maximum allowed scratch file memory exceeded";
+
+    private final int maxPages;
+    private final long maxCharacters;
+    private final long maxExpandedBytes;
+
+    public PdfBoxStructuralExtractor() {
+        this(MAX_PAGES, MAX_CHARACTERS, MAX_EXPANDED_BYTES);
+    }
+
+    /** For tests, which prove each limit with a small file and a small limit instead of a huge file and the real one. */
+    PdfBoxStructuralExtractor(int maxPages, long maxCharacters, long maxExpandedBytes) {
+        this.maxPages = maxPages;
+        this.maxCharacters = maxCharacters;
+        this.maxExpandedBytes = maxExpandedBytes;
+    }
+
     @Override
     public String parserVersion() {
         return PARSER_VERSION;
@@ -80,23 +109,50 @@ public final class PdfBoxStructuralExtractor implements PdfStructuralExtractor {
         byte[] bytes = content.readAllBytes();
         PDDocument document;
         try {
-            document = Loader.loadPDF(bytes);
+            // Everything the library expands is held in a store with a ceiling, so expanding too much is an error
+            // it reports rather than memory this process runs out of.
+            document = Loader.loadPDF(bytes, "", null, null, MemoryUsageSetting.setupMainMemoryOnly(maxExpandedBytes).streamCache);
         } catch (InvalidPasswordException e) {
             return new PdfExtractionOutcome.Unsupported(
                     UnsupportedPdfReason.ENCRYPTED, "The PDF is password-protected; no password was supplied.");
         } catch (IOException e) {
+            if (isExpansionLimit(e)) {
+                return expandsTooFar();
+            }
             throw new PdfParseException("Could not parse the package as a PDF document.", e);
         }
 
         try (document) {
+            // The pages that are really there, counted by walking them: the number a file declares is only a claim,
+            // and everything below reads the pages the walk finds.
+            List<PDPage> found = new ArrayList<>();
+            for (PDPage page : document.getPages()) {
+                if (found.size() == maxPages) {
+                    int declared = document.getNumberOfPages();
+                    String howMany = declared > maxPages ? declared + " pages" : "more than " + maxPages + " pages";
+                    return new PdfExtractionOutcome.Unsupported(
+                            UnsupportedPdfReason.TOO_MANY_PAGES,
+                            "This document has " + howMany + "; at most " + maxPages + " are read.");
+                }
+                found.add(page);
+            }
+            PdfReadingBudget budget = new PdfReadingBudget(
+                    maxExpandedBytes, maxCharacters, PdfReadingBudget.MAX_CHARACTERS_ON_ONE_PAGE);
             List<PdfPage> pages = new ArrayList<>();
             boolean anyPageHasText = false;
-            for (int index = 0; index < document.getNumberOfPages(); index++) {
-                PdfPage page = extractPage(document, index);
+            for (int index = 0; index < found.size(); index++) {
+                PdfPage page;
+                try {
+                    page = extractPage(document, found.get(index), index, budget);
+                } catch (IOException e) {
+                    if (isExpansionLimit(e)) {
+                        return expandsTooFar();
+                    }
+                    throw e;
+                }
                 pages.add(page);
                 anyPageHasText = anyPageHasText || page.hasExtractableText();
             }
-
             if (!anyPageHasText) {
                 return new PdfExtractionOutcome.Unsupported(
                         UnsupportedPdfReason.NO_EXTRACTABLE_TEXT,
@@ -104,16 +160,35 @@ public final class PdfBoxStructuralExtractor implements PdfStructuralExtractor {
             }
             return new PdfExtractionOutcome.Supported(new PdfStructuralGraph(PARSER_VERSION, List.copyOf(pages)));
         } catch (RuntimeException e) {
+            if (isExpansionLimit(e)) {
+                return expandsTooFar();
+            }
             throw new PdfParseException("Could not read this PDF's content.", e);
         }
     }
 
-    private PdfPage extractPage(PDDocument document, int zeroBasedIndex) throws IOException {
-        PDPage page = document.getPage(zeroBasedIndex);
+    private static boolean isExpansionLimit(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof PdfReadingBudget.Exceeded
+                    || (cause.getMessage() != null && cause.getMessage().contains(EXPANSION_LIMIT_MESSAGE))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static PdfExtractionOutcome expandsTooFar() {
+        return new PdfExtractionOutcome.Unsupported(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                "This document's contents expand far beyond what a document of its size holds, so it was not read.");
+    }
+
+    private PdfPage extractPage(PDDocument document, PDPage page, int zeroBasedIndex, PdfReadingBudget budget)
+            throws IOException {
         PDRectangle cropBox = page.getCropBox();
         int rotation = page.getRotation();
 
-        List<TextPosition> characters = collectCharacters(document, zeroBasedIndex);
+        List<TextPosition> characters = collectCharacters(document, zeroBasedIndex, budget);
         List<PdfTextLine> lines = groupIntoLines(characters);
 
         return new PdfPage(zeroBasedIndex + 1, cropBox.getWidth(), cropBox.getHeight(), rotation, !lines.isEmpty(), lines);
@@ -125,9 +200,10 @@ public final class PdfBoxStructuralExtractor implements PdfStructuralExtractor {
      * only the raw positions are trusted; this extractor does its own
      * grouping in {@link #groupIntoLines}.
      */
-    private List<TextPosition> collectCharacters(PDDocument document, int zeroBasedIndex) throws IOException {
+    private List<TextPosition> collectCharacters(PDDocument document, int zeroBasedIndex, PdfReadingBudget budget)
+            throws IOException {
         List<TextPosition> characters = new ArrayList<>();
-        PDFTextStripper stripper = new PDFTextStripper() {
+        PDFTextStripper stripper = new BoundedPdfTextStripper(budget) {
             @Override
             protected void writeString(String text, List<TextPosition> textPositions) {
                 characters.addAll(textPositions);
@@ -194,8 +270,8 @@ public final class PdfBoxStructuralExtractor implements PdfStructuralExtractor {
      * itself, not extended for a descender (the tail on a 'g', 'y', or
      * 'p'). A real, deliberate simplification: full per-glyph font metrics
      * are not something PDFBox's public {@code TextPosition} exposes
-     * simply, and this task asks for page geometry and reading order, not
-     * pixel-exact glyph boxes.
+     * simply, and what this graph is used for is page geometry and reading
+     * order, not pixel-exact glyph boxes.
      */
     private PdfTextLine buildLine(int lineIndex, List<TextPosition> lineCharacters) {
         lineCharacters.sort(java.util.Comparator.comparingDouble(TextPosition::getXDirAdj));

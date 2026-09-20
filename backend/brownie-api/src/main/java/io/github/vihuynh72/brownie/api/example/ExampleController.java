@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.example;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.example.TemplateExample;
 import io.github.vihuynh72.brownie.core.example.TemplateExampleService;
@@ -76,8 +77,7 @@ class ExampleController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 

@@ -3,7 +3,10 @@ package io.github.vihuynh72.brownie.api.document.render;
 import io.github.vihuynh72.brownie.core.validation.PageRasterComparison;
 import io.github.vihuynh72.brownie.core.validation.PageRasterDiffer;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.rendering.PDFRenderer;
 
 import java.awt.image.BufferedImage;
@@ -25,11 +28,14 @@ public final class PdfBoxPageRasterDiffer implements PageRasterDiffer {
 
     private static final float DPI = 96f;
     private static final int PER_CHANNEL_TOLERANCE = 24;
+    private static final long MAX_EXPANDED_BYTES = 256L * 1024 * 1024;
+    /** A0, the largest sheet anyone prints on, is about fourteen million pixels at this resolution. */
+    private static final double MAX_PIXELS_PER_PAGE = 20_000_000;
 
     @Override
     public PageRasterComparison compare(byte[] baselinePdfBytes, byte[] filledPdfBytes) {
-        try (PDDocument baseline = Loader.loadPDF(baselinePdfBytes);
-                PDDocument filled = Loader.loadPDF(filledPdfBytes)) {
+        try (PDDocument baseline = load(baselinePdfBytes);
+                PDDocument filled = load(filledPdfBytes)) {
             int baselinePageCount = baseline.getNumberOfPages();
             int filledPageCount = filled.getNumberOfPages();
             int comparablePages = Math.min(baselinePageCount, filledPageCount);
@@ -38,6 +44,11 @@ public final class PdfBoxPageRasterDiffer implements PageRasterDiffer {
             PDFRenderer filledRenderer = new PDFRenderer(filled);
             List<Double> perPageDifference = new ArrayList<>(comparablePages);
             for (int pageIndex = 0; pageIndex < comparablePages; pageIndex++) {
+                if (isTooLargeToDraw(baseline.getPage(pageIndex)) || isTooLargeToDraw(filled.getPage(pageIndex))) {
+                    // Not drawn, so not comparable, so counted as wholly different: the answer that stops an export.
+                    perPageDifference.add(1.0);
+                    continue;
+                }
                 BufferedImage baselineImage = baselineRenderer.renderImageWithDPI(pageIndex, DPI);
                 BufferedImage filledImage = filledRenderer.renderImageWithDPI(pageIndex, DPI);
                 perPageDifference.add(pixelDifferenceFraction(baselineImage, filledImage));
@@ -46,6 +57,18 @@ public final class PdfBoxPageRasterDiffer implements PageRasterDiffer {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to rasterize a PDF for layout comparison.", e);
         }
+    }
+
+    /** Both files came out of the renderer and are read as what they are: something this process did not write. */
+    private static PDDocument load(byte[] pdfBytes) throws IOException {
+        return Loader.loadPDF(pdfBytes, "", null, null, MemoryUsageSetting.setupMainMemoryOnly(MAX_EXPANDED_BYTES).streamCache);
+    }
+
+    /** A page may declare itself two hundred inches square, which at this resolution is over a gigabyte of pixels. */
+    private static boolean isTooLargeToDraw(PDPage page) {
+        PDRectangle box = page.getCropBox();
+        double pixels = (box.getWidth() / 72.0 * DPI) * (box.getHeight() / 72.0 * DPI);
+        return pixels > MAX_PIXELS_PER_PAGE;
     }
 
     private static double pixelDifferenceFraction(BufferedImage baseline, BufferedImage filled) {
