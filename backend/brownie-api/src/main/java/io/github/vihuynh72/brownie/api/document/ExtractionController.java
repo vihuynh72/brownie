@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.document;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
 import io.github.vihuynh72.brownie.core.document.DocxFeatureFinding;
@@ -77,8 +78,7 @@ class ExtractionController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 

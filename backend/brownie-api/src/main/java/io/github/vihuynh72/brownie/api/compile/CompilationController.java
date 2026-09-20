@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.compile;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.compile.CompilationManifest;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
@@ -25,10 +26,11 @@ import java.util.List;
  * DOCX and rendered PDF, deterministically and without any model call. Not
  * yet idempotency-key guarded, unlike the document-mutation routes: a
  * retried request produces another compilation and another pair of
- * artifacts rather than replaying the first one. This is a deliberate,
- * named gap for this bounded capability, not an oversight -- the fuller
- * export flow (bound to a review decision, with its
- * own idempotent request lifecycle) belongs to later work.
+ * artifacts rather than replaying the first one. This is deliberate, not
+ * an oversight: compiling decides nothing and hands nothing over, so a
+ * second compilation costs a render and changes nothing a person relies
+ * on. Approving and exporting, which do, answer a repeat with the record
+ * that already exists.
  */
 @RestController
 @RequestMapping("/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}")
@@ -78,8 +80,7 @@ class CompilationController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 
