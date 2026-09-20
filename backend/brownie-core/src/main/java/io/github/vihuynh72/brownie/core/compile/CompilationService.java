@@ -91,7 +91,9 @@ public class CompilationService {
                 findings);
     }
 
+    /** Answers only for a document that is still there: one in the trash has no compilation to show, the same as one that never existed. */
     public java.util.Optional<CompilationManifest> findLatest(long workspaceId, long userId, long documentId, long revisionId) {
+        revisionService.findDocument(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
         return compilationRepository.findLatest(workspaceId, userId, documentId, revisionId);
     }
 
