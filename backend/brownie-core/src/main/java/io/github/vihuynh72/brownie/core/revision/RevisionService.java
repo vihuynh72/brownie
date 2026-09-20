@@ -111,9 +111,7 @@ public class RevisionService {
     public PatchComparison compare(long workspaceId, long userId, long documentId, PatchProposal proposal) {
         DocumentRevision base = documentRepository.findRevision(workspaceId, userId, documentId, proposal.baseRevisionId())
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
-        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Document " + documentId + " has no revision selected by its current pointer."));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         return PatchComparator.compare(base, current, proposal.proposedValues());
     }
 
@@ -163,6 +161,11 @@ public class RevisionService {
             long proposalId,
             long expectedRevisionId,
             String editReason) {
+        // A proposal is found by its own id, so the document is checked
+        // first: one that is in the trash has no proposals to accept, and
+        // must say so as "not found" rather than fail halfway through the
+        // comparison below.
+        documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
         PatchProposal proposal = patchProposalRepository.find(workspaceId, userId, documentId, proposalId)
                 .orElseThrow(() -> new PatchProposalNotFoundException(proposalId));
         if (proposal.status() != PatchProposalStatus.PROPOSED) {
@@ -249,9 +252,7 @@ public class RevisionService {
             return existing.get();
         }
         documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
-        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Document " + documentId + " has no revision selected by its current pointer."));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         if (current.id() != expectedRevisionId) {
             throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
         }
@@ -315,9 +316,7 @@ public class RevisionService {
             return existing.get();
         }
         documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
-        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Document " + documentId + " has no revision selected by its current pointer."));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         if (current.id() != expectedRevisionId) {
             throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
         }
@@ -344,9 +343,7 @@ public class RevisionService {
             return existing.get();
         }
         documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
-        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Document " + documentId + " has no revision selected by its current pointer."));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         if (current.id() != expectedRevisionId) {
             throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
         }
@@ -399,9 +396,7 @@ public class RevisionService {
         }
         Document document = documentRepository.find(workspaceId, userId, documentId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
-        DocumentRevision current = documentRepository.findCurrentRevision(workspaceId, userId, documentId)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Document " + documentId + " has no revision selected by its current pointer."));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         if (current.id() != expectedRevisionId) {
             throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
         }
@@ -514,5 +509,17 @@ public class RevisionService {
             throw new DocumentTemplateVersionUnavailableException(templateId, templateVersionId);
         }
         return templateVersion;
+    }
+
+    /**
+     * A document always has a current revision, so the only way to find a
+     * document and then not find its current revision is for the document
+     * to have gone to the trash, or been deleted for good, between the two
+     * reads. That is a document that is not there, and is answered as one;
+     * it is not damaged data, which is what it used to be reported as.
+     */
+    private DocumentRevision requireCurrentRevision(long workspaceId, long userId, long documentId) {
+        return documentRepository.findCurrentRevision(workspaceId, userId, documentId)
+                .orElseThrow(() -> new DocumentNotFoundException(documentId));
     }
 }
