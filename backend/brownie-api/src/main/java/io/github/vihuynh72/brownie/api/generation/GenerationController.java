@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.generation;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.api.job.JobResponse;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
@@ -7,7 +8,6 @@ import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.generation.GenerationRun;
 import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
-import io.github.vihuynh72.brownie.core.job.JobOutputArtifactRepository;
 import io.github.vihuynh72.brownie.core.question.Question;
 import io.github.vihuynh72.brownie.core.question.QuestionCandidateOption;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
@@ -45,19 +45,16 @@ import java.util.Map;
 class GenerationController {
 
     private final GenerationOrchestrationService generationOrchestrationService;
-    private final JobOutputArtifactRepository jobOutputArtifactRepository;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     GenerationController(
             GenerationOrchestrationService generationOrchestrationService,
-            JobOutputArtifactRepository jobOutputArtifactRepository,
             CanonicalRequestHasher canonicalRequestHasher,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.generationOrchestrationService = generationOrchestrationService;
-        this.jobOutputArtifactRepository = jobOutputArtifactRepository;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -109,10 +106,8 @@ class GenerationController {
             @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
-        Long artifactId = jobOutputArtifactRepository
-                .findArtifactId(workspaceId, userId, jobId, GenerationOrchestrationService.EXTRACTION_RESULT_OUTPUT_KIND)
-                .orElseThrow(() -> new GenerationResultNotFoundException(jobId));
-        return new ExtractionResultResponse(artifactId);
+        return new ExtractionResultResponse(
+                generationOrchestrationService.requireResultArtifactId(workspaceId, userId, documentId, jobId));
     }
 
     /** Empty until the worker leaves this job {@code WAITING_FOR_INPUT} with at least one detected question -- poll {@code GET .../jobs/{jobId}} for that state first. */
@@ -179,8 +174,7 @@ class GenerationController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 
