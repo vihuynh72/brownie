@@ -168,6 +168,148 @@ final class PdfFixtures {
         }
     }
 
+    /**
+     * One page whose content is a few kilobytes on disk and {@code expandedBytes} once inflated: comment lines,
+     * which a content stream may hold any number of and which mean nothing. The shape of a decompression bomb,
+     * at a size a test can afford.
+     */
+    static byte[] documentWhoseContentExpandsTo(int expandedBytes) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            org.apache.pdfbox.pdmodel.common.PDStream stream = new org.apache.pdfbox.pdmodel.common.PDStream(doc);
+            byte[] block = "% nothing to see here, many times over\n".repeat(1024).getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            try (java.io.OutputStream out = stream.createOutputStream(org.apache.pdfbox.cos.COSName.FLATE_DECODE)) {
+                for (int written = 0; written < expandedBytes; written += block.length) {
+                    out.write(block);
+                }
+            }
+            page.setContents(stream);
+            return write(doc);
+        }
+    }
+
+    /**
+     * One page that draws one form {@code times} times. The form is small on disk and {@code formExpandedBytes}
+     * once expanded. With {@code inherited}, the page has no resources of its own and finds the form through its
+     * parent in the page tree, which is where a reader that looks only at the page itself never looks.
+     */
+    static byte[] documentDrawingOneForm(int formExpandedBytes, int times, boolean inherited) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject form =
+                    new org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject(doc);
+            form.setBBox(new PDRectangle(10, 10));
+            form.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+            writeExpandingTo(form.getCOSObject(), "", formExpandedBytes);
+
+            org.apache.pdfbox.pdmodel.PDResources resources = new org.apache.pdfbox.pdmodel.PDResources();
+            String name = resources.add(form).getName();
+            if (inherited) {
+                doc.getPages().getCOSObject().setItem(org.apache.pdfbox.cos.COSName.RESOURCES, resources);
+                page.getCOSObject().removeItem(org.apache.pdfbox.cos.COSName.RESOURCES);
+            } else {
+                page.setResources(resources);
+            }
+            org.apache.pdfbox.pdmodel.common.PDStream contents = new org.apache.pdfbox.pdmodel.common.PDStream(doc);
+            try (java.io.OutputStream out = contents.createOutputStream(org.apache.pdfbox.cos.COSName.FLATE_DECODE)) {
+                out.write(("q /" + name + " Do Q\n").repeat(times).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            }
+            page.setContents(contents);
+            return write(doc);
+        }
+    }
+
+    /**
+     * One page that shows one letter in a font whose glyphs are drawn by the file itself, the procedure for that
+     * letter being small on disk and {@code glyphExpandedBytes} once expanded.
+     */
+    static byte[] documentWhoseDrawnFontExpandsTo(int glyphExpandedBytes) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            org.apache.pdfbox.cos.COSStream glyph = doc.getDocument().createCOSStream();
+            writeExpandingTo(glyph, "1000 0 d0\n", glyphExpandedBytes);
+            org.apache.pdfbox.cos.COSDictionary glyphs = new org.apache.pdfbox.cos.COSDictionary();
+            glyphs.setItem(org.apache.pdfbox.cos.COSName.getPDFName("a"), glyph);
+
+            org.apache.pdfbox.cos.COSArray differences = new org.apache.pdfbox.cos.COSArray();
+            differences.add(org.apache.pdfbox.cos.COSInteger.get(97));
+            differences.add(org.apache.pdfbox.cos.COSName.getPDFName("a"));
+            org.apache.pdfbox.cos.COSDictionary encoding = new org.apache.pdfbox.cos.COSDictionary();
+            encoding.setItem(org.apache.pdfbox.cos.COSName.TYPE, org.apache.pdfbox.cos.COSName.ENCODING);
+            encoding.setItem(org.apache.pdfbox.cos.COSName.DIFFERENCES, differences);
+
+            org.apache.pdfbox.cos.COSArray matrix = new org.apache.pdfbox.cos.COSArray();
+            for (float value : new float[] {0.001f, 0, 0, 0.001f, 0, 0}) {
+                matrix.add(new org.apache.pdfbox.cos.COSFloat(value));
+            }
+            org.apache.pdfbox.cos.COSDictionary font = new org.apache.pdfbox.cos.COSDictionary();
+            font.setItem(org.apache.pdfbox.cos.COSName.TYPE, org.apache.pdfbox.cos.COSName.FONT);
+            font.setItem(org.apache.pdfbox.cos.COSName.SUBTYPE, org.apache.pdfbox.cos.COSName.TYPE3);
+            font.setItem(org.apache.pdfbox.cos.COSName.FONT_BBOX, new PDRectangle(0, 0, 1000, 1000));
+            font.setItem(org.apache.pdfbox.cos.COSName.FONT_MATRIX, matrix);
+            font.setItem(org.apache.pdfbox.cos.COSName.CHAR_PROCS, glyphs);
+            font.setItem(org.apache.pdfbox.cos.COSName.ENCODING, encoding);
+            font.setInt(org.apache.pdfbox.cos.COSName.FIRST_CHAR, 97);
+            font.setInt(org.apache.pdfbox.cos.COSName.LAST_CHAR, 97);
+
+            org.apache.pdfbox.cos.COSDictionary fonts = new org.apache.pdfbox.cos.COSDictionary();
+            fonts.setItem(org.apache.pdfbox.cos.COSName.getPDFName("T3"), font);
+            org.apache.pdfbox.pdmodel.PDResources resources = new org.apache.pdfbox.pdmodel.PDResources();
+            resources.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.FONT, fonts);
+            page.setResources(resources);
+
+            org.apache.pdfbox.pdmodel.common.PDStream contents = new org.apache.pdfbox.pdmodel.common.PDStream(doc);
+            try (java.io.OutputStream out = contents.createOutputStream(org.apache.pdfbox.cos.COSName.FLATE_DECODE)) {
+                out.write("BT /T3 12 Tf 72 700 Td (a) Tj ET\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            }
+            page.setContents(contents);
+            return write(doc);
+        }
+    }
+
+    /** A document of {@code realPages} pages whose page tree says it has {@code declaredPages}. */
+    static byte[] documentDeclaringAPageCountItDoesNotHave(int realPages, int declaredPages) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDFont font = helvetica();
+            for (int i = 1; i <= realPages; i++) {
+                PDPage page = new PDPage(PDRectangle.LETTER);
+                doc.addPage(page);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    writeLine(cs, font, 72, 700, "Page " + i);
+                }
+            }
+            doc.getPages().getCOSObject().setInt(org.apache.pdfbox.cos.COSName.COUNT, declaredPages);
+            return write(doc);
+        }
+    }
+
+    private static void writeExpandingTo(org.apache.pdfbox.cos.COSStream stream, String firstLine, int expandedBytes)
+            throws IOException {
+        byte[] block = "% nothing to see here, many times over\n".repeat(1024).getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        try (java.io.OutputStream out = stream.createOutputStream(org.apache.pdfbox.cos.COSName.FLATE_DECODE)) {
+            out.write(firstLine.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            for (int written = 0; written < expandedBytes; written += block.length) {
+                out.write(block);
+            }
+        }
+    }
+
+    /** The same small file that expands far, with its content labelled a picture, which is the file's own claim and nothing more. */
+    static byte[] documentWhoseContentCallsItselfAPicture(int expandedBytes) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            org.apache.pdfbox.pdmodel.common.PDStream stream = new org.apache.pdfbox.pdmodel.common.PDStream(doc);
+            writeExpandingTo(stream.getCOSObject(), "", expandedBytes);
+            stream.getCOSObject().setItem(org.apache.pdfbox.cos.COSName.SUBTYPE, org.apache.pdfbox.cos.COSName.IMAGE);
+            page.setContents(stream);
+            return write(doc);
+        }
+    }
+
     static byte[] corruptPdf() {
         return "%PDF-1.4\nthis is not a real PDF body".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     }
