@@ -50,14 +50,54 @@ describe('session store', () => {
    * exception for the framework to swallow.
    */
   it('records a genuine server error as a recoverable error state instead of throwing', async () => {
-    vi.mocked(getCurrentIdentity).mockRejectedValue(new ApiRequestError(503, { detail: 'outage' } as never))
+    vi.mocked(getCurrentIdentity).mockRejectedValue(new ApiRequestError(503, { detail: 'The database is away.' } as never))
 
     const store = useSessionStore()
     await expect(store.loadIdentity()).resolves.toBeUndefined()
 
     expect(store.status).toBe('error')
     expect(store.identity).toBeNull()
-    expect(store.lastError).toContain('503')
+    // The server's own explanation, which says what is wrong; not a status number.
+    expect(store.lastError).toBe('The database is away.')
+  })
+
+  it('records an error it has no better words for plainly, and says to try again', async () => {
+    vi.mocked(getCurrentIdentity).mockRejectedValue(new ApiRequestError(500, { detail: 'Unexpected.' } as never))
+
+    const store = useSessionStore()
+    await store.loadIdentity()
+
+    expect(store.lastError).toBe('Brownie could not confirm your sign-in. Try again in a moment.')
+  })
+
+  /**
+   * The app shell asks for the identity as it first renders, and the router guard asks again before the first page
+   * mounts. The second must wait for the first, not take "still loading" for an answer.
+   */
+  it('makes one request however many ask while it is under way, and everyone waits for its answer', async () => {
+    let answer: (value: never) => void = () => {}
+    vi.mocked(getCurrentIdentity).mockReturnValue(new Promise((resolve) => (answer = resolve as never)))
+    const store = useSessionStore()
+
+    const first = store.loadIdentity()
+    const second = store.loadIdentity()
+    expect(store.status).toBe('loading')
+    answer({ userId: 1, issuer: 'i', subject: 's', memberships: [{ workspaceId: 42, role: 'OWNER' }] } as never)
+    await Promise.all([first, second])
+
+    expect(getCurrentIdentity).toHaveBeenCalledTimes(1)
+    expect(store.status).toBe('authenticated')
+  })
+
+  it('becomes signed out when some other request finds the session has ended', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue({ userId: 1, issuer: 'i', subject: 's', memberships: [{ workspaceId: 42, role: 'OWNER' }] })
+    const store = useSessionStore()
+    await store.loadIdentity()
+
+    store.markSignedOut()
+
+    expect(store.status).toBe('anonymous')
+    expect(store.identity).toBeNull()
   })
 
   it('records a network failure the same way, then recovers on a later successful retry', async () => {

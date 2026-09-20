@@ -35,6 +35,12 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      path: '/your-data',
+      name: 'your-data',
+      component: () => import('@/views/YourDataView.vue'),
+      meta: { requiresSession: true },
+    },
+    {
       path: '/documents/new',
       name: 'new-document',
       component: () => import('@/views/NewDocumentView.vue'),
@@ -77,7 +83,8 @@ const router = createRouter({
  */
 router.beforeEach(async (to) => {
   const session = useSessionStore()
-  if (session.status === 'unknown') {
+  // "loading" too: the app shell starts the request as it first renders, which is before this runs on a page load.
+  if (session.status === 'unknown' || session.status === 'loading') {
     await session.loadIdentity()
   }
   if (to.meta.requiresSession && session.status === 'anonymous') {

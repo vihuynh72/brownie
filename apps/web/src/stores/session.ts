@@ -1,12 +1,23 @@
 import { defineStore } from 'pinia'
 import { ApiRequestError, getCurrentIdentity, logout, type MeResponse } from '@/api/client'
+import { describeCommonFailure } from '@/api/failures'
 
 interface SessionState {
   identity: MeResponse | null
   status: 'unknown' | 'loading' | 'authenticated' | 'anonymous' | 'error'
   /** Why the last identity load failed, for the recovery prompt; null unless status is 'error'. */
   lastError: string | null
+  /** The session ended while a page was open (not by signing out), and nobody has signed in since. */
+  sessionEnded: boolean
 }
+
+/**
+ * The identity request under way, per store. Whoever asks while one is
+ * under way waits for that one: the app shell asks as it first renders, and
+ * the router guard asks before the first page mounts, and the guard must not
+ * go ahead on a status of "still loading" as if it were an answer.
+ */
+const identityRequests = new WeakMap<object, Promise<void>>()
 
 /**
  * The server is authoritative for identity and workspace membership; this
@@ -25,6 +36,7 @@ export const useSessionStore = defineStore('session', {
     identity: null,
     status: 'unknown',
     lastError: null,
+    sessionEnded: false,
   }),
   getters: {
     personalWorkspaceId(state): number | undefined {
@@ -50,12 +62,21 @@ export const useSessionStore = defineStore('session', {
     },
   },
   actions: {
-    async loadIdentity(): Promise<void> {
+    loadIdentity(): Promise<void> {
+      const underWay = identityRequests.get(this)
+      if (underWay) return underWay
+      const request = this.fetchIdentity().finally(() => identityRequests.delete(this))
+      identityRequests.set(this, request)
+      return request
+    },
+
+    async fetchIdentity(): Promise<void> {
       this.status = 'loading'
       this.lastError = null
       try {
         this.identity = await getCurrentIdentity()
         this.status = 'authenticated'
+        this.sessionEnded = false
       } catch (error) {
         this.identity = null
         if (error instanceof ApiRequestError && error.status === 401) {
@@ -64,10 +85,18 @@ export const useSessionStore = defineStore('session', {
         }
         this.status = 'error'
         this.lastError =
-          error instanceof ApiRequestError
-            ? `Brownie could not confirm your sign-in (status ${error.status}).`
-            : 'Brownie could not be reached.'
+          describeCommonFailure(error, 'a way to confirm who is signed in') ??
+          'Brownie could not confirm your sign-in. Try again in a moment.'
       }
+    },
+
+    /** Some request found that the server no longer recognises this session; nothing is sent. */
+    markSignedOut(): void {
+      if (this.status !== 'authenticated') return
+      this.identity = null
+      this.status = 'anonymous'
+      this.lastError = null
+      this.sessionEnded = true
     },
 
     /**
@@ -80,6 +109,7 @@ export const useSessionStore = defineStore('session', {
       this.identity = null
       this.status = 'anonymous'
       this.lastError = null
+      this.sessionEnded = false
       return redirectUrl
     },
   },
