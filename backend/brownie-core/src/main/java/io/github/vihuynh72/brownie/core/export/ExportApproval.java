@@ -7,10 +7,11 @@ import java.util.Objects;
  * A person's own decision to approve one exact, already-validated revision
  * for export -- bound to the document revision, template version, and
  * validation manifest it was granted against; changing any of those
- * invalidates the approval. Approving again always appends a new row
- * (this codebase's established immutability discipline for every
- * revision-shaped record); {@code
- * findLatest} names the current one. An approval is current only while
+ * invalidates the approval. A row is never changed (this codebase's
+ * established immutability discipline for every revision-shaped record):
+ * a different decision appends a new row and {@code findLatest} names
+ * the current one, while the latest decision arriving a second time is
+ * answered with the row it already has. An approval is current only while
  * the document's own current revision still equals {@link #revisionId()}
  * -- {@link ExportService} checks that at both approval and export time,
  * never trusting an old approval's own once-true claim.

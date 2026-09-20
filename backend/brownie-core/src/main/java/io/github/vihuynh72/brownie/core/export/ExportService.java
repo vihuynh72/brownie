@@ -78,7 +78,9 @@ public class ExportService {
         Artifact docxArtifact = requireMatchingArtifact(workspaceId, userId, manifest.docxArtifactId(), manifest.docxSha256());
         Long pdfArtifactId = null;
         String pdfSha256 = null;
-        if (manifest.pdfArtifactId() != null) {
+        // What was approved is what is exported: someone who approved the Word file alone is not also handed a PDF.
+        // A receipt always names the Word file, whatever the format, because it is what the PDF was made from.
+        if (manifest.pdfArtifactId() != null && approval.format() != ExportFormat.DOCX) {
             Artifact pdfArtifact = requireMatchingArtifact(workspaceId, userId, manifest.pdfArtifactId(), manifest.pdfSha256());
             pdfArtifactId = pdfArtifact.id();
             pdfSha256 = pdfArtifact.sha256();
@@ -89,11 +91,14 @@ public class ExportService {
                 docxArtifact.id(), docxArtifact.sha256(), pdfArtifactId, pdfSha256, approval.format());
     }
 
+    /** Like the receipt below, answers only for a document that is still there; one in the trash has nothing to show. */
     public Optional<ExportApproval> findLatestApproval(long workspaceId, long userId, long documentId) {
+        requireDocument(workspaceId, userId, documentId);
         return exportApprovalRepository.findLatest(workspaceId, userId, documentId);
     }
 
     public Optional<ExportReceipt> findLatestReceipt(long workspaceId, long userId, long documentId) {
+        requireDocument(workspaceId, userId, documentId);
         return exportRepository.findLatest(workspaceId, userId, documentId);
     }
 

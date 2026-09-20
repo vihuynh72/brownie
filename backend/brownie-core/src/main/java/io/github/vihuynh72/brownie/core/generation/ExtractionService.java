@@ -9,7 +9,6 @@ import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException
 import io.github.vihuynh72.brownie.core.generation.usage.UsageBudget;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
-import io.github.vihuynh72.brownie.core.model.ModelMessage;
 import io.github.vihuynh72.brownie.core.model.ModelRequest;
 import io.github.vihuynh72.brownie.core.model.ModelTransportException;
 import io.github.vihuynh72.brownie.core.model.ModelUsage;
@@ -44,23 +43,36 @@ import java.util.Set;
  */
 public class ExtractionService {
 
-    private static final int MAX_OUTPUT_TOKENS = 2000;
+    /** The most one extraction request may produce; also the least a run's first request holds in the usage ledger. */
+    public static final int MAX_OUTPUT_TOKENS = 2000;
     private static final int MAX_ATTEMPTS = 2;
 
     private final DocumentExtractionService documentExtractionService;
     private final SourceService sourceService;
     private final ModelGateway modelGateway;
     private final ExtractionResponseParser responseParser;
+    private final TransportRetryPolicy transportRetryPolicy;
 
+    /** Reports a failure in transit at once, without trying again. */
     public ExtractionService(
             DocumentExtractionService documentExtractionService,
             SourceService sourceService,
             ModelGateway modelGateway,
             ExtractionResponseParser responseParser) {
+        this(documentExtractionService, sourceService, modelGateway, responseParser, TransportRetryPolicy.none());
+    }
+
+    public ExtractionService(
+            DocumentExtractionService documentExtractionService,
+            SourceService sourceService,
+            ModelGateway modelGateway,
+            ExtractionResponseParser responseParser,
+            TransportRetryPolicy transportRetryPolicy) {
         this.documentExtractionService = documentExtractionService;
         this.sourceService = sourceService;
         this.modelGateway = modelGateway;
         this.responseParser = responseParser;
+        this.transportRetryPolicy = java.util.Objects.requireNonNull(transportRetryPolicy, "transportRetryPolicy");
     }
 
     public ExtractionResult extract(
@@ -103,26 +115,23 @@ public class ExtractionService {
         excerpts.forEach(excerpt -> allowedSpanIds.add(excerpt.spanId()));
 
         ModelRequest request = ExtractionPromptBuilder.build(fieldDefinitions, excerpts, MAX_OUTPUT_TOKENS);
-        int estimatedInputTokens = UsageBudget.estimateTokens(promptText(request));
+        int estimatedInputTokens = UsageBudget.estimateInputTokens(request);
 
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             if (cancellationSignal.isCancellationRequested()) {
                 throw new ExtractionCancelledException();
             }
 
-            budget.reserveForCall(estimatedInputTokens, request.maxOutputTokens());
+            // Reserving, sending, keeping the reservation when the answer is
+            // lost, and the bounded retry of a failure in transit all live in
+            // one shared place; a retry there is not one of this loop's two
+            // attempts, which exist only to repair an unusable reply.
             ModelCompletion completion;
             try {
-                completion = modelGateway.complete(request);
-            } catch (ModelTransportException e) {
-                // The provider may have processed, and be billing for, a
-                // request whose outcome this process never confirmed --
-                // keep the reservation rather than refund it, and never
-                // retry a transport failure here (that belongs to a
-                // caller's own separate backoff policy, not this
-                // single-repair mechanism).
-                budget.retainReservationAfterLostResponse();
-                throw e;
+                completion = BoundedModelCall.complete(
+                        modelGateway, request, estimatedInputTokens, budget, cancellationSignal, transportRetryPolicy);
+            } catch (ModelCallCancelledException e) {
+                throw new ExtractionCancelledException();
             }
 
             boolean isLastAttempt = attempt == MAX_ATTEMPTS;
@@ -163,14 +172,6 @@ public class ExtractionService {
             }
         }
         throw new IllegalStateException("Unreachable: the loop above always returns or throws by its last attempt.");
-    }
-
-    private static String promptText(ModelRequest request) {
-        StringBuilder text = new StringBuilder();
-        for (ModelMessage message : request.messages()) {
-            text.append(message.content());
-        }
-        return text.toString();
     }
 
     /**
