@@ -27,6 +27,7 @@ function makeRouter(): Router {
       { path: '/signin', name: 'signin', component: stub },
       { path: '/chat', name: 'chat', component: stub },
       { path: '/trash', name: 'trash', component: { template: '<div data-test="trash">trash</div>' } },
+      { path: '/your-data', name: 'your-data', component: stub },
       { path: '/documents/new', name: 'new-document', component: stub },
       { path: '/templates/new', name: 'new-template', component: stub },
     ],
@@ -167,6 +168,35 @@ describe('App shell', () => {
 
     expect(router.currentRoute.value.path).toBe('/trash')
     expect(window.sessionStorage.getItem('brownie.signInIntent')).toBeNull()
+  })
+
+  /**
+   * Whichever request finds that the session has ended, the page it was on swaps to its signed-out state at once,
+   * taking with it what the person pressed and any message about it. The shell says what happened and takes focus.
+   */
+  it('says the session has ended, offers sign-in back to where the person was, and takes focus', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue(IDENTITY)
+    vi.mocked(listTemplates).mockResolvedValue([])
+    const { wrapper } = await mountApp('/trash')
+
+    useSessionStore().markSignedOut()
+    await flushPromises()
+
+    const notice = wrapper.get('[role="alert"]')
+    expect(notice.text()).toContain('Your session has ended')
+    expect(notice.get('a').attributes('href')).toBe('/signin?next=/trash')
+    expect(document.activeElement).toBe(notice.element)
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('says so when a signed-in account has no workspace, instead of leaving every page loading', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue({ ...IDENTITY, memberships: [] })
+    vi.mocked(listTemplates).mockResolvedValue([])
+    const { wrapper } = await mountApp('/')
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('No workspace for this account')
+    expect(wrapper.find('[data-test="home"]').exists()).toBe(false)
   })
 
   it('has no automatically-detectable accessibility violations in the identity-error state', async () => {
