@@ -1,0 +1,84 @@
+# Starts the pilot in the morning and stops it at night.
+#
+# The machine and the database are the only charges of any size that are
+# billed by the hour, and both can be stopped. Running them only during
+# published hours is most of the difference between a pilot that fits the
+# budget and one that does not, and it is honest for an invited pilot with
+# support hours: people are told when Brownie is awake.
+#
+# It does nothing at all unless the repository variable PILOT_HOURS is set to
+# "on", so merging this file does not start a schedule by itself. The times
+# below are UTC, which GitHub does not adjust for daylight saving; the
+# published hours have to be read from these, not the other way round.
+
+name: Pilot hours
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Start or stop the pilot now.
+        required: true
+        default: start
+        type: choice
+        options:
+          - start
+          - stop
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  power:
+    runs-on: ubuntu-latest
+    environment: pilot
+    if: github.event_name == 'workflow_dispatch' || vars.PILOT_HOURS == 'on'
+    steps:
+      - name: Decide what this run is for
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            action="${{ inputs.action }}"
+          elif [ "${{ github.event.schedule }}" = "0 15 * * *" ]; then
+            action="start"
+          else
+            action="stop"
+          fi
+          printf 'action=%s\n' "$action" >> "$GITHUB_OUTPUT"
+          printf 'Pilot hours: %s\n' "$action"
+
+      - name: Sign in to Azure as the deployment identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEPLOY }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start or stop the database and the machine
+        shell: bash
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          VM_NAME: ${{ vars.BROWNIE_VM_NAME }}
+          DB_SERVER: ${{ vars.BROWNIE_DB_SERVER_NAME }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = "start" ]; then
+            # The database first: the containers start as soon as the machine
+            # does, and an API that cannot reach its database spends its first
+            # minutes failing.
+            az postgres flexible-server start --resource-group "$RESOURCE_GROUP" --name "$DB_SERVER" --only-show-errors
+            az vm start --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --only-show-errors
+          else
+            # Deallocate, not "stop": a stopped machine that is still
+            # allocated is still charged for its cores.
+            az vm deallocate --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --only-show-errors
+            az postgres flexible-server stop --resource-group "$RESOURCE_GROUP" --name "$DB_SERVER" --only-show-errors
+          fi
+          printf 'Pilot %s.\n' "${ACTION}ed" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,125 @@
+# Builds the four images a deployment runs and pushes them to the registry,
+# each addressed by its content rather than by a tag.
+#
+# Started by hand, never by a merge: publishing is the first half of spending
+# money and changing what people see, and both halves stay deliberate. The
+# environment named below is what the deployment identity's federated
+# credential is bound to, so a workflow on another branch, or in a fork,
+# cannot obtain a token at all.
+
+name: Publish images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pilot
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Sign in to Azure as the publishing identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_PUBLISH }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to the registry
+        run: az acr login --name "${BROWNIE_REGISTRY%%.*}"
+        env:
+          BROWNIE_REGISTRY: ${{ vars.BROWNIE_REGISTRY }}
+
+      - name: Build and push
+        id: build
+        shell: bash
+        env:
+          REGISTRY: ${{ vars.BROWNIE_REGISTRY }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The single quotes below hold Go templates the Docker client
+          # expands, not shell expressions.
+          # shellcheck disable=SC2016
+          # linux/amd64 explicitly: the host is an AMD machine, and a runner
+          # that ever changed architecture must not silently publish an image
+          # the host cannot run.
+          #
+          # --provenance=false so that what is pushed is one image manifest
+          # and its digest is the digest of that image, rather than an index
+          # wrapping the image and an attestation.
+          build() {
+            local name="$1" file="$2" context="${3:-.}"
+            docker buildx build \
+              --platform linux/amd64 \
+              --provenance=false \
+              --file "$file" \
+              --tag "${REGISTRY}/${name}:${REVISION}" \
+              --push \
+              "$context"
+            local digest
+            digest="$(docker buildx imagetools inspect "${REGISTRY}/${name}:${REVISION}" --format '{{.Manifest.Digest}}')"
+            printf '%s=%s@%s\n' "${name//-/_}" "${REGISTRY}/${name}" "$digest" >> "$GITHUB_OUTPUT"
+            printf '| `%s` | `%s` |\n' "$name" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          }
+          printf '| image | digest |\n| --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
+          build brownie-api backend/brownie-api/Dockerfile
+          build brownie-worker backend/brownie-worker/Dockerfile
+          build brownie-web apps/web/Dockerfile
+          # The renderer's own directory as its context: it copies nothing in,
+          # and sending it the whole repository would only make it slower.
+          build brownie-renderer spike/docx-binding/render/Dockerfile spike/docx-binding/render
+
+      - name: Scan the published images
+        shell: bash
+        env:
+          API: ${{ steps.build.outputs.brownie_api }}
+          WORKER: ${{ steps.build.outputs.brownie_worker }}
+          WEB: ${{ steps.build.outputs.brownie_web }}
+          RENDERER: ${{ steps.build.outputs.brownie_renderer }}
+        run: |
+          set -euo pipefail
+          # The scanner runs from its own pinned image rather than an action,
+          # so that what scans the release is itself a known thing. It reports
+          # and does not fail the build: a scanner that is unavailable, or
+          # noisy about a fix that does not exist yet, must not become a
+          # reason to stop deploying a security fix of our own. What it finds
+          # is read by a person.
+          for image in "$API" "$WORKER" "$WEB" "$RENDERER"; do
+            printf '\n### %s\n\n```\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+              image --scanners vuln --severity HIGH,CRITICAL --quiet "$image" \
+              >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+            printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Record what was published
+        shell: bash
+        env:
+          API: ${{ steps.build.outputs.brownie_api }}
+          WORKER: ${{ steps.build.outputs.brownie_worker }}
+          WEB: ${{ steps.build.outputs.brownie_web }}
+          RENDERER: ${{ steps.build.outputs.brownie_renderer }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'revision=%s\n' "${{ github.sha }}"
+            printf 'api=%s\n' "$API"
+            printf 'worker=%s\n' "$WORKER"
+            printf 'web=%s\n' "$WEB"
+            printf 'renderer=%s\n' "$RENDERER"
+          } > published-images.txt
+          cat published-images.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: published-images
+          path: published-images.txt
+          retention-days: 90

@@ -1,0 +1,172 @@
+# Puts a published revision onto the machine, or puts the previous one back.
+#
+# The order is the whole point: migrations run first, from the new image, and
+# a failure there stops everything with the running release untouched; then
+# the containers are replaced and have to become healthy; then the deployment
+# is checked from outside, over the public address; and a failure at any point
+# after the migration puts the previous images back automatically.
+#
+# Nothing here can create or change infrastructure. The identity it signs in
+# as may restart this one machine and read the resource group, and that is all
+# it may do.
+
+name: Deploy to the pilot host
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: The commit that was published, as the publish run reported it.
+        required: true
+        type: string
+      action:
+        description: Deploy that revision, or put the previous images back.
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - rollback
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: pilot
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Sign in to Azure as the deployment identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEPLOY }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve the published images to their digests
+        if: inputs.action == 'deploy'
+        id: images
+        shell: bash
+        env:
+          REGISTRY: ${{ vars.BROWNIE_REGISTRY }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          # A tag is resolved to a digest here, once, and only the digest is
+          # sent to the machine: between resolving and deploying, a tag could
+          # be moved, and what ran would no longer be what was approved.
+          for name in brownie-api brownie-worker brownie-web brownie-renderer; do
+            digest="$(az acr manifest show-metadata \
+              --registry "${REGISTRY%%.*}" \
+              --name "${name}:${REVISION}" \
+              --query digest -o tsv)"
+            printf '%s=%s@%s\n' "${name//-/_}" "${REGISTRY}/${name}" "$digest" >> "$GITHUB_OUTPUT"
+            printf '%s %s\n' "$name" "$digest"
+          done
+
+      - name: Send the deployment to the machine
+        if: inputs.action == 'deploy'
+        shell: bash
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          VM_NAME: ${{ vars.BROWNIE_VM_NAME }}
+          REGISTRY: ${{ vars.BROWNIE_REGISTRY }}
+          API_IMAGE: ${{ steps.images.outputs.brownie_api }}
+          WORKER_IMAGE: ${{ steps.images.outputs.brownie_worker }}
+          WEB_IMAGE: ${{ steps.images.outputs.brownie_web }}
+          RENDER_IMAGE: ${{ steps.images.outputs.brownie_renderer }}
+          VAULT_NAME: ${{ vars.BROWNIE_VAULT_NAME }}
+          SERVER_NAME: ${{ vars.BROWNIE_SERVER_NAME }}
+          DB_HOST: ${{ vars.BROWNIE_DB_HOST }}
+          STORAGE_ENDPOINT: ${{ vars.BROWNIE_STORAGE_ENDPOINT }}
+          DELETION_RECORD_ENDPOINT: ${{ vars.BROWNIE_DELETION_RECORD_ENDPOINT }}
+          OIDC_ISSUER: ${{ vars.BROWNIE_OIDC_ISSUER }}
+          OIDC_CLIENT_ID: ${{ vars.BROWNIE_OIDC_CLIENT_ID }}
+          SUPPORT_CONTACT: ${{ vars.BROWNIE_SUPPORT_CONTACT }}
+          INVITED_ADDRESSES: ${{ vars.BROWNIE_INVITED_ADDRESSES }}
+          CERTIFICATE_CONTACT: ${{ vars.BROWNIE_CERTIFICATE_CONTACT }}
+        run: |
+          set -euo pipefail
+          # The script the machine runs is this repository's own deploy.sh
+          # with a prologue of values in front of it. The values are passed
+          # this way rather than as run-command parameters so that what
+          # arrives is exactly one script, quoted once, with no second layer
+          # of argument handling to get wrong.
+          {
+            printf 'export BROWNIE_REGISTRY=%q\n' "$REGISTRY"
+            printf 'export BROWNIE_API_IMAGE=%q\n' "$API_IMAGE"
+            printf 'export BROWNIE_WORKER_IMAGE=%q\n' "$WORKER_IMAGE"
+            printf 'export BROWNIE_WEB_IMAGE=%q\n' "$WEB_IMAGE"
+            printf 'export BROWNIE_RENDER_IMAGE=%q\n' "$RENDER_IMAGE"
+            printf 'export BROWNIE_VAULT_NAME=%q\n' "$VAULT_NAME"
+            printf 'export BROWNIE_SERVER_NAME=%q\n' "$SERVER_NAME"
+            printf 'export BROWNIE_DB_HOST=%q\n' "$DB_HOST"
+            printf 'export BROWNIE_STORAGE_ENDPOINT=%q\n' "$STORAGE_ENDPOINT"
+            printf 'export BROWNIE_DELETION_RECORD_ENDPOINT=%q\n' "$DELETION_RECORD_ENDPOINT"
+            printf 'export BROWNIE_OIDC_ISSUER=%q\n' "$OIDC_ISSUER"
+            printf 'export BROWNIE_OIDC_CLIENT_ID=%q\n' "$OIDC_CLIENT_ID"
+            printf 'export BROWNIE_SUPPORT_CONTACT=%q\n' "$SUPPORT_CONTACT"
+            printf 'export BROWNIE_INVITED_ADDRESSES=%q\n' "$INVITED_ADDRESSES"
+            printf 'export BROWNIE_CERTIFICATE_CONTACT=%q\n' "$CERTIFICATE_CONTACT"
+            printf 'export BROWNIE_COMPOSE_B64=%q\n' "$(base64 -w0 infra/azure/host/compose.yaml)"
+            cat infra/azure/host/deploy.sh
+          } > /tmp/run-on-host.sh
+
+          az vm run-command invoke \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "@/tmp/run-on-host.sh" \
+            --query "value[].message" -o tsv | tee /tmp/deploy-output.txt
+
+          # run-command reports success for having run the script, whatever
+          # the script decided, so its own last word is what is checked.
+          grep -q ' Done\.$' /tmp/deploy-output.txt \
+            || { echo "The deployment script did not finish; see its output above."; exit 1; }
+
+      - name: Put the previous images back
+        if: inputs.action == 'rollback'
+        shell: bash
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          VM_NAME: ${{ vars.BROWNIE_VM_NAME }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/rollback.sh <<'ROLLBACK'
+          set -euo pipefail
+          test -f /etc/brownie/images.previous.env || { echo "There is no previous release recorded on this machine."; exit 1; }
+          cp /etc/brownie/images.previous.env /etc/brownie/images.env
+          set -a
+          . /etc/brownie/images.env
+          set +a
+          docker compose -f /etc/brownie/compose.yaml up -d --wait --wait-timeout 300
+          docker compose -f /etc/brownie/compose.yaml ps --format '{{.Service}} {{.Status}} {{.Image}}'
+          echo "Done."
+          ROLLBACK
+          az vm run-command invoke \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "@/tmp/rollback.sh" \
+            --query "value[].message" -o tsv | tee /tmp/rollback-output.txt
+          grep -q 'Done\.' /tmp/rollback-output.txt || { echo "The rollback did not finish."; exit 1; }
+
+      - name: Verify the deployment from outside
+        shell: bash
+        env:
+          BROWNIE_BASE_URL: https://${{ vars.BROWNIE_SERVER_NAME }}
+        run: ./scripts/verify-deployment.sh
+
+      - name: Say what is running
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf '### Deployment\n\n'
+            printf -- '- action: %s\n' "${{ inputs.action }}"
+            printf -- '- revision: %s\n' "${{ inputs.revision }}"
+            printf -- '- address: https://%s\n' "${{ vars.BROWNIE_SERVER_NAME }}"
+          } >> "$GITHUB_STEP_SUMMARY"
