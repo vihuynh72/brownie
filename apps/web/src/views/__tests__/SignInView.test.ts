@@ -48,6 +48,14 @@ describe('SignInView', () => {
     expect(wrapper.text()).toContain('to upload your documents')
   })
 
+  it('tells someone who just deleted their workspace that it worked, before anything else', async () => {
+    const wrapper = await mountAt('/signin?deleted=1')
+
+    expect(wrapper.find('[role="status"]').text()).toContain('Your workspace and everything in it was deleted.')
+    expect(wrapper.text()).toContain('Sign in or sign up')
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
   it('parks the interrupted destination before the browser leaves for the provider', async () => {
     const wrapper = await mountAt('/signin?next=%2Ftrash')
     await wrapper.get('a.button').trigger('click')
