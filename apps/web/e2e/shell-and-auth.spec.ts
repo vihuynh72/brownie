@@ -62,6 +62,26 @@ test('a signed-out visitor following Trash Bin is sent to sign in, carrying that
   await context.close()
 })
 
+/**
+ * Typed into the address bar, not followed from a link: the page loads from nothing, and the app is still asking
+ * who is signed in when the router decides where to go. It has to wait for that answer.
+ */
+for (const [address, purpose] of [
+  ['/your-data', 'to see what Brownie keeps and for how long'],
+  ['/trash', 'to open your trash bin'],
+] as const) {
+  test(`a signed-out visitor opening ${address} directly is sent to sign in, carrying that destination`, async ({ browser }) => {
+    const context = await browser.newContext({ storageState: undefined })
+    const page = await context.newPage()
+
+    await page.goto(address)
+
+    await expect(page).toHaveURL(new RegExp(`/signin\\?next=${encodeURIComponent(address).replace(/%2F/g, '(%2F|/)')}$`))
+    await expect(page.getByText(purpose)).toBeVisible()
+    await context.close()
+  })
+}
+
 test('the sidebar collapses, stays collapsed across a reload, and reopens', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
@@ -97,11 +117,13 @@ test('at phone width the sidebar is a drawer that opens, closes on Escape, and n
   await expect(page.getByRole('button', { name: 'Open menu' })).toBeFocused()
 })
 
-test('the trash bin says why it is empty instead of showing a list that failed to load', async ({ page }) => {
-  await page.goto('/trash')
+test('the trash bin opens from the sidebar and says how long anything moved there is kept', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('link', { name: 'Trash Bin' }).click()
 
-  await expect(page.getByRole('heading', { name: 'Your trash bin is empty' })).toBeVisible()
-  await expect(page.getByText('nothing you can do in the app removes a document')).toBeVisible()
+  await expect(page).toHaveURL(/\/trash$/)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(/trash bin/i)
+  await expect(page.getByText(/can be restored exactly as they were for \d+ days/)).toBeVisible()
 })
 
 test('Chat sends you to the document the conversation would be about', async ({ page }) => {
