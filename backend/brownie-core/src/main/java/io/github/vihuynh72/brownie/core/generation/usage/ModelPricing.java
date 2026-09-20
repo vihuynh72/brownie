@@ -19,6 +19,12 @@ public record ModelPricing(BigDecimal inputCostPerMillionTokens, BigDecimal outp
         return new ModelPricing(new BigDecimal("0.75"), new BigDecimal("4.50"));
     }
 
+    /** The rates a cost was computed under, written beside every ledger row so a later change of price never rewrites what an old request cost. */
+    public String rateCard() {
+        return "USD per million tokens: input " + inputCostPerMillionTokens.toPlainString()
+                + ", output " + outputCostPerMillionTokens.toPlainString();
+    }
+
     public BigDecimal estimateCost(int inputTokens, int outputTokens) {
         BigDecimal inputCost = inputCostPerMillionTokens.multiply(BigDecimal.valueOf(inputTokens)).divide(ONE_MILLION, MathContext.DECIMAL64);
         BigDecimal outputCost = outputCostPerMillionTokens.multiply(BigDecimal.valueOf(outputTokens)).divide(ONE_MILLION, MathContext.DECIMAL64);
