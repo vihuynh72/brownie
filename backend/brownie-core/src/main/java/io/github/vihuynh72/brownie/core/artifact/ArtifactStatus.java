@@ -1,8 +1,10 @@
 package io.github.vihuynh72.brownie.core.artifact;
 
 /**
- * Only the states this codebase actually produces today. DELETE_REQUESTED
- * and DELETED arrive once deletion exists to produce them.
+ * Every state an artifact row can be in. There is no deleted state:
+ * permanent deletion removes the row itself and records the removal in the
+ * deletion ledger, so a status here always describes a file that is still
+ * on record.
  */
 public enum ArtifactStatus {
     UPLOADING,

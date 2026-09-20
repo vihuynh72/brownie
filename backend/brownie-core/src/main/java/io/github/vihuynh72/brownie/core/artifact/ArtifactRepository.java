@@ -47,8 +47,8 @@ public interface ArtifactRepository {
      * a successful return as exclusive ownership of the scan -- two
      * concurrent callers cannot both proceed to interpret a scan result
      * for the same artifact. The tradeoff: a process that crashes after
-     * entering SCANNING leaves the artifact stuck there with no automatic
-     * retry.
+     * entering SCANNING leaves the artifact stuck there until the worker's
+     * file housekeeping returns it to QUARANTINED.
      */
     Artifact beginScanning(long workspaceId, long userId, long artifactId);
 
