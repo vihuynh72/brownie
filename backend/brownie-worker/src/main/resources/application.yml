@@ -7,16 +7,54 @@ spring:
     url: ${BROWNIE_DB_URL}
     username: ${BROWNIE_DB_USERNAME}
     password: ${BROWNIE_DB_PASSWORD}
+    hikari:
+      # As in brownie-api: a pass that cannot get a connection fails in
+      # seconds and runs again on its next turn, instead of holding its
+      # thread for the pool's default half minute.
+      connection-timeout: 5000
   ai:
     openai:
       # Same convention as brownie-api's identical entry: no default, so a
       # real profile fails fast if unset.
       api-key: ${BROWNIE_OPENAI_API_KEY}
+      # As in brownie-api: the provider's client sends each request once, so
+      # that every request sent is one the usage ledger reserved. Retrying is
+      # the application's decision, made where the reservation is made.
+      max-retries: 0
+      chat:
+        max-retries: 0
 
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
+  worker:
+    # How long each kind of leftover is kept. brownie-api reads the same
+    # four variables to tell people what happens to their data, so what is
+    # said and what is done are one setting.
+    retention:
+      artifact-sweep:
+        abandoned-after: ${BROWNIE_RETENTION_ABANDONED_UPLOAD:PT24H}
+        rejected-after: ${BROWNIE_RETENTION_REFUSED_FILE:PT24H}
+        unreferenced-after: ${BROWNIE_RETENTION_UNUSED_FILE:PT24H}
+      ledger-maintenance:
+        audit-retention: ${BROWNIE_RETENTION_AUDIT_RECORD:P90D}
+    # serve: claim jobs and run every sweep until stopped (the default).
+    # replay-deletions: apply the deletions recorded outside the database to
+    # the database this worker is pointed at, report, and end. Nothing on a
+    # timer runs in that mode. It is the step between restoring a backup and
+    # letting anyone in; any other value is refused at start-up.
+    mode: ${BROWNIE_WORKER_MODE:serve}
   storage:
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+  usage:
+    # The model allowance, enforced by the usage ledger before every request
+    # is sent. brownie-api and brownie-worker must be given the same values:
+    # each checks the requests it makes itself against the same ledger.
+    # A run's bound counts every attempt and resume of its job; the monthly
+    # bounds are calendar months in UTC.
+    run-max-requests: ${BROWNIE_MODEL_RUN_MAX_REQUESTS:6}
+    run-limit-usd: ${BROWNIE_MODEL_RUN_USD_LIMIT:0.10}
+    workspace-monthly-limit-usd: ${BROWNIE_MODEL_WORKSPACE_MONTHLY_USD_LIMIT:2.00}
+    global-monthly-limit-usd: ${BROWNIE_MODEL_MONTHLY_USD_LIMIT:15.00}
   ai:
     openai:
       # The one evaluated snapshot this gateway is fixed to -- must match

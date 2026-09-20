@@ -14,6 +14,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BrownieEnvironmentListenerTest {
 
@@ -88,6 +89,34 @@ class BrownieEnvironmentListenerTest {
         StandardEnvironment environment = environmentWith("staging");
 
         assertThrows(IllegalArgumentException.class, () -> listener.resolveAndActivate(environment));
+    }
+
+    /**
+     * The conditions that turn scheduling and the replay on compare without regard to case, so a worker given
+     * "SERVE" would already be claiming jobs by the time anything else could object. The value is settled here,
+     * before any bean exists.
+     */
+    @Test
+    void aWorkerModeThatIsNotExactlyOneOfTheTwoStopsStartupBeforeAnythingRuns() {
+        for (String unknown : new String[] {"SERVE", "Serve", "replay", "REPLAY-DELETIONS", "replay-deletions ", ""}) {
+            StandardEnvironment environment = environmentWith("local");
+            environment.getPropertySources().addFirst(new MapPropertySource("mode", Map.of("brownie.worker.mode", unknown)));
+            IllegalStateException refused =
+                    assertThrows(IllegalStateException.class, () -> listener.resolveAndActivate(environment), unknown);
+            assertTrue(refused.getMessage().contains("Nothing was started"));
+        }
+        // The same through the environment variable, which is how an operator or the restore drill sets it.
+        StandardEnvironment misspelt = environmentWith("local");
+        misspelt.getPropertySources().addFirst(new org.springframework.core.env.SystemEnvironmentPropertySource(
+                "mode", Map.of("BROWNIE_WORKER_MODE", "Replay-Deletions")));
+        assertThrows(IllegalStateException.class, () -> listener.resolveAndActivate(misspelt));
+        for (String known : new String[] {"serve", "replay-deletions"}) {
+            StandardEnvironment environment = environmentWith("local");
+            environment.getPropertySources().addFirst(new org.springframework.core.env.SystemEnvironmentPropertySource(
+                    "mode", Map.of("BROWNIE_WORKER_MODE", known)));
+            assertEquals(BrownieEnvironment.LOCAL, listener.resolveAndActivate(environment));
+        }
+        assertEquals(BrownieEnvironment.LOCAL, listener.resolveAndActivate(environmentWith("local")));
     }
 
     private static StandardEnvironment environmentWith(String brownieEnvironment) {
