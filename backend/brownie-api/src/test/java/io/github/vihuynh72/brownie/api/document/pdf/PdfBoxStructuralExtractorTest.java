@@ -13,6 +13,7 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -154,6 +155,115 @@ class PdfBoxStructuralExtractorTest {
         PdfExtractionOutcome outcome = extract(PdfFixtures.encryptedDocument());
         assertTrue(outcome instanceof PdfExtractionOutcome.Unsupported, "expected unsupported, got " + outcome);
         assertEquals(UnsupportedPdfReason.ENCRYPTED, ((PdfExtractionOutcome.Unsupported) outcome).reason());
+    }
+
+    @Test
+    void aDocumentWithMorePagesThanAreReadIsRefusedWholeNotReadInPart() throws IOException {
+        PdfBoxStructuralExtractor threePagesAtMost = new PdfBoxStructuralExtractor(3, 1_000_000, 64L * 1024 * 1024);
+
+        PdfExtractionOutcome four = threePagesAtMost.extract(new ByteArrayInputStream(PdfFixtures.multiPageDocument(4)));
+        PdfExtractionOutcome three = threePagesAtMost.extract(new ByteArrayInputStream(PdfFixtures.multiPageDocument(3)));
+
+        PdfExtractionOutcome.Unsupported refused = assertInstanceOf(PdfExtractionOutcome.Unsupported.class, four);
+        assertEquals(UnsupportedPdfReason.TOO_MANY_PAGES, refused.reason());
+        assertTrue(refused.detail().contains("4 pages"));
+        assertInstanceOf(PdfExtractionOutcome.Supported.class, three);
+    }
+
+    @Test
+    void aSmallFileThatExpandsFarBeyondItsSizeIsRefusedInsteadOfBeingHeldInMemory() throws IOException {
+        byte[] bomb = PdfFixtures.documentWhoseContentExpandsTo(8 * 1024 * 1024);
+        assertTrue(bomb.length < 256 * 1024, "the fixture is only a bomb if it is small on disk, was " + bomb.length);
+        PdfBoxStructuralExtractor oneMebibyteAtMost = new PdfBoxStructuralExtractor(200, 1_000_000, 1024 * 1024);
+
+        PdfExtractionOutcome outcome = oneMebibyteAtMost.extract(new ByteArrayInputStream(bomb));
+
+        PdfExtractionOutcome.Unsupported refused = assertInstanceOf(PdfExtractionOutcome.Unsupported.class, outcome);
+        assertEquals(UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED, refused.reason());
+    }
+
+    @Test
+    void aFormThePageFindsOnlyThroughItsParentIsChargedLikeAnyOther() throws IOException {
+        byte[] bomb = PdfFixtures.documentDrawingOneForm(8 * 1024 * 1024, 1, true);
+        assertTrue(bomb.length < 256 * 1024, "the fixture is only a bomb if it is small on disk, was " + bomb.length);
+        PdfBoxStructuralExtractor oneMebibyteAtMost = new PdfBoxStructuralExtractor(200, 1_000_000, 1024 * 1024);
+
+        PdfExtractionOutcome outcome = oneMebibyteAtMost.extract(new ByteArrayInputStream(bomb));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, outcome).reason());
+    }
+
+    @Test
+    void whatAStreamCallsItselfDoesNotDecideWhetherItIsCharged() throws IOException {
+        byte[] bomb = PdfFixtures.documentWhoseContentCallsItselfAPicture(8 * 1024 * 1024);
+        assertTrue(bomb.length < 256 * 1024, "the fixture is only a bomb if it is small on disk, was " + bomb.length);
+        PdfBoxStructuralExtractor oneMebibyteAtMost = new PdfBoxStructuralExtractor(200, 1_000_000, 1024 * 1024);
+
+        PdfExtractionOutcome outcome = oneMebibyteAtMost.extract(new ByteArrayInputStream(bomb));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, outcome).reason());
+    }
+
+    @Test
+    void aModestFormIsChargedEveryTimeItIsDrawnNotOnce() throws IOException {
+        PdfBoxStructuralExtractor oneMebibyteAtMost = new PdfBoxStructuralExtractor(200, 1_000_000, 1024 * 1024);
+        byte[] drawnAHundredTimes = PdfFixtures.documentDrawingOneForm(64 * 1024, 100, false);
+        byte[] drawnFiveTimes = PdfFixtures.documentDrawingOneForm(64 * 1024, 5, false);
+
+        PdfExtractionOutcome hundred = oneMebibyteAtMost.extract(new ByteArrayInputStream(drawnAHundredTimes));
+        PdfExtractionOutcome five = oneMebibyteAtMost.extract(new ByteArrayInputStream(drawnFiveTimes));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, hundred).reason());
+        // Read to the end and found to hold no text, which is a different answer from being refused for its size.
+        assertEquals(
+                UnsupportedPdfReason.NO_EXTRACTABLE_TEXT,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, five).reason());
+    }
+
+    @Test
+    void aFontWhoseGlyphsTheFileDrawsItselfIsChargedForThemBeforeItIsLoaded() throws IOException {
+        byte[] bomb = PdfFixtures.documentWhoseDrawnFontExpandsTo(8 * 1024 * 1024);
+        assertTrue(bomb.length < 256 * 1024, "the fixture is only a bomb if it is small on disk, was " + bomb.length);
+        PdfBoxStructuralExtractor oneMebibyteAtMost = new PdfBoxStructuralExtractor(200, 1_000_000, 1024 * 1024);
+
+        PdfExtractionOutcome outcome = oneMebibyteAtMost.extract(new ByteArrayInputStream(bomb));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, outcome).reason());
+    }
+
+    @Test
+    void theNumberOfPagesAFileDeclaresIsNotTakenOnTrust() throws IOException {
+        PdfBoxStructuralExtractor threePagesAtMost = new PdfBoxStructuralExtractor(3, 1_000_000, 64L * 1024 * 1024);
+
+        PdfExtractionOutcome claimsOne = threePagesAtMost.extract(
+                new ByteArrayInputStream(PdfFixtures.documentDeclaringAPageCountItDoesNotHave(4, 1)));
+        PdfExtractionOutcome claimsNine = threePagesAtMost.extract(
+                new ByteArrayInputStream(PdfFixtures.documentDeclaringAPageCountItDoesNotHave(2, 9)));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_MANY_PAGES,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, claimsOne).reason());
+        PdfExtractionOutcome.Supported read = assertInstanceOf(PdfExtractionOutcome.Supported.class, claimsNine);
+        assertEquals(2, read.graph().pages().size());
+    }
+
+    @Test
+    void moreTextThanAnyDocumentOfItsKindHoldsIsRefused() throws IOException {
+        PdfBoxStructuralExtractor twentyCharactersAtMost = new PdfBoxStructuralExtractor(200, 20, 64L * 1024 * 1024);
+
+        PdfExtractionOutcome outcome = twentyCharactersAtMost.extract(new ByteArrayInputStream(PdfFixtures.twoLineDocument()));
+
+        assertEquals(
+                UnsupportedPdfReason.TOO_LARGE_WHEN_EXPANDED,
+                assertInstanceOf(PdfExtractionOutcome.Unsupported.class, outcome).reason());
     }
 
     @Test

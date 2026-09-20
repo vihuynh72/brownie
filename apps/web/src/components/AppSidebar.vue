@@ -184,8 +184,9 @@ async function signOut(): Promise<void> {
           </RouterLink>
         </div>
 
-        <p v-if="session.status !== 'authenticated'" class="sidebar__note">Sign in to see your templates.</p>
-        <p v-else-if="templates.status === 'loading'" class="sidebar__note">Loading…</p>
+        <p v-if="session.status === 'anonymous'" class="sidebar__note">Sign in to see your templates.</p>
+        <p v-else-if="session.status === 'error'" class="sidebar__note">Your templates could not be loaded.</p>
+        <p v-else-if="session.status !== 'authenticated' || templates.status === 'loading'" class="sidebar__note">Loading…</p>
         <p v-else-if="templates.status === 'error'" class="sidebar__note">Your templates could not be loaded.</p>
         <p v-else-if="templates.usable.length === 0" class="sidebar__note">Nothing taught yet.</p>
         <ul v-else class="sidebar__list">
@@ -207,6 +208,10 @@ async function signOut(): Promise<void> {
         <RouterLink class="sidebar__link" to="/trash" @click="closeIfDrawer">
           <AppIcon name="trash" />
           <span>Trash Bin</span>
+        </RouterLink>
+        <RouterLink class="sidebar__link" to="/your-data" @click="closeIfDrawer">
+          <AppIcon name="shield" />
+          <span>Your data</span>
         </RouterLink>
 
         <hr class="sidebar__rule" />

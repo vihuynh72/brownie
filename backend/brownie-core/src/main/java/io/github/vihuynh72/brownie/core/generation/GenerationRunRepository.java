@@ -14,7 +14,11 @@ public interface GenerationRunRepository {
     /**
      * Records the run for a job, or returns the run that job already has:
      * a start request replayed under the same idempotency key resolves to
-     * the same job, and one job is ever one run.
+     * the same job, and one job is ever one run. Must be called in the same
+     * transaction that enqueued the job: it takes the document's row lock
+     * and throws {@code DocumentNotFoundException} for a document that is in
+     * the trash, which rolls that job back with it, so work can never be
+     * committed for a document someone has just put in the trash.
      */
     GenerationRun record(long workspaceId, long userId, NewGenerationRun run);
 

@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/data-practices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this deployment does with what people give it, as the numbers and names a privacy page shows: how long each kind of thing is kept, which model provider sees source text when a person asks for a draft or a rewrite, and whom to ask. Every period is read from the same setting the background worker acts on. */
+        get: operations["getDataPractices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -392,6 +409,23 @@ export interface paths {
         put?: never;
         /** Make a durable human-wait job eligible for another claim. */
         post: operations["resumeWaitingJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/jobs/{jobId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts a job that gave up (DEAD or FAILED) again, with a fresh run of attempts and a new deadline. It needs no idempotency key: asked again while the job is queued or running, it answers with the job as it is and starts nothing twice. The restart is written to the workspace's audit record. */
+        post: operations["retryJob"];
         delete?: never;
         options?: never;
         head?: never;
@@ -784,7 +818,7 @@ export interface paths {
         /** The latest export approval recorded for this document, if any. */
         get: operations["getLatestExportApproval"];
         put?: never;
-        /** Approve an already-clean validation manifest for export. Refused if the manifest is stale against the document's current revision or still has an unresolved blocking finding. */
+        /** Approve an already-clean validation manifest for export. Refused if the manifest is stale against the document's current revision or still has an unresolved blocking finding. Approving again what is already the document's latest approval (same person, manifest and format) answers with that approval, so a repeated request records nothing twice. Any other approval, including going back to a format chosen earlier, is a new one and becomes the latest, which is the one an export follows. */
         post: operations["approveExport"];
         delete?: never;
         options?: never;
@@ -801,7 +835,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Produce an export receipt from the document's latest export approval. Refused if that approval is stale against the current revision, or if a named artifact no longer matches the hash its own validation manifest recorded. */
+        /** Produce an export receipt from the document's latest export approval. Refused if that approval is stale against the current revision, or if a named artifact no longer matches the hash its own validation manifest recorded. Exporting the same approval again answers with the receipt that already exists, so a repeated request issues no second receipt and no second audit entry. */
         post: operations["exportDocument"];
         delete?: never;
         options?: never;
@@ -854,6 +888,127 @@ export interface paths {
         get: operations["downloadArtifact"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/deletions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The workspace's deletion ledger, most recent first: what is in the trash, what was restored, and what was deleted for good. A title is present only while a document is still in the trash; the ledger itself keeps ids, states and times, never what a person wrote. */
+        get: operations["listDeletions"];
+        put?: never;
+        /** With scope DOCUMENT, moves one document to the trash: it disappears from every read, its unfinished jobs are cancelled, no change to it is accepted, and it can be restored until it is deleted for good or its retention runs out. Trashing a document already in the trash answers with the entry that holds it. With scope WORKSPACE, deletes the caller's own workspace for good in this call, including the caller's identity record; every session of the caller has ended by the time it returns. Only the workspace's owner may ask. It happens entirely or not at all: while a worker is still stopping one of the workspace's jobs the answer is 409 and nothing has changed. */
+        post: operations["createDeletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/deletions/{deletionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One deletion request and how far it has got. After something is deleted for good, pendingObjectCount is how many of its stored files the worker has not removed yet, and the state becomes VERIFIED once that is zero and a recount finds nothing left. */
+        get: operations["getDeletion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/deletions/{deletionId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes a document back out of the trash exactly as it was. Jobs that were cancelled when it went in stay cancelled. Restoring something already restored answers with the same entry. */
+        post: operations["restoreDeletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/deletions/{deletionId}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deletes a trashed document for good. Every database row that belongs to it is removed before this returns, so nothing can read it again; its stored files, and any source file nothing else uses, are queued and removed by the worker. Deleting something already deleted answers with the same entry. */
+        post: operations["purgeDeletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this workspace has used of its model allowance in the current calendar month (UTC). It reports this workspace's figures only: of the allowance every workspace shares, it says whether it is used up and never how much anybody else spent. */
+        get: operations["getWorkspaceUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/support-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every support grant this workspace has given, most recent first, open or not. */
+        get: operations["listSupportGrants"];
+        put?: never;
+        /** The workspace's owner lets support act in this workspace, for one scope and a whole number of days, seven at most. It carries no free text. One grant per scope is open at a time; giving and revoking are both written to the workspace's audit record. */
+        post: operations["createSupportGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/support-grants/{grantId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes an open support grant back, effective immediately. */
+        post: operations["revokeSupportGrant"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1063,6 +1218,11 @@ export interface components {
                 message?: string;
             }[];
             recoveryActions: string[];
+            /**
+             * @description Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH is this workspace's own monthly allowance, which starts again next calendar month; GLOBAL_MONTH is the allowance every workspace shares, which only whoever runs the service can raise.
+             * @enum {string}
+             */
+            limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
             /** @description Present only when code is RULE_VALIDATION_FAILED: one entry per way the proposed rule's payload does not hold against the draft's own field definitions. */
             problems?: {
                 reason?: string;
@@ -1237,6 +1397,8 @@ export interface components {
             assistSourceMediaTypes: string[];
             /** @description Media types a template can be taught from. */
             templateMediaTypes: string[];
+            /** @description How many days something stays in the trash before it is deleted for good. */
+            trashRetentionDays: number;
         };
         AssistTextRequest: {
             text: string;
@@ -1569,6 +1731,96 @@ export interface components {
             /** Format: date-time */
             exportedAt: string;
         };
+        CreateDeletionRequest: {
+            /** @enum {string} */
+            scope: "DOCUMENT" | "WORKSPACE";
+            /**
+             * Format: int64
+             * @description Required when scope is DOCUMENT; must be absent when scope is WORKSPACE.
+             */
+            documentId?: number;
+        };
+        DeletionResponse: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            scope: "DOCUMENT" | "WORKSPACE";
+            /** Format: int64 */
+            targetId: number;
+            /**
+             * @description TRASHED is restorable. PURGED means every database row is gone and access has ended, while stored files may still be waiting for removal. VERIFIED means a recount found nothing left.
+             * @enum {string}
+             */
+            state: "TRASHED" | "RESTORED" | "PURGED" | "VERIFIED";
+            /** @description The document's title, only while it is still in the trash. */
+            title?: string | null;
+            /** Format: date-time */
+            requestedAt: string;
+            /**
+             * Format: date-time
+             * @description When something in the trash is deleted for good if nobody restores it first.
+             */
+            purgeAfter?: string | null;
+            /** Format: date-time */
+            restoredAt?: string | null;
+            /** Format: date-time */
+            purgedAt?: string | null;
+            /** Format: date-time */
+            verifiedAt?: string | null;
+            pendingObjectCount: number;
+        };
+        WorkspaceDeletionResponse: {
+            /**
+             * Format: int64
+             * @description The ledger entry that records the deletion. Nobody can read it through the API afterwards.
+             */
+            deletionId: number;
+        };
+        UsageResponse: {
+            /** @description What this workspace's model requests cost this calendar month (UTC); a request still in flight counts at the amount held for it. */
+            monthUsedUsd: number;
+            monthLimitUsd: number;
+            monthRemainingUsd: number;
+            monthRequests: number;
+            /** @description True when the allowance every workspace shares would not hold even the cheapest request, whatever this workspace has left. */
+            sharedAllowanceExhausted: boolean;
+        };
+        CreateSupportGrantRequest: {
+            /**
+             * @description CONTENT (documents and files themselves) includes METADATA (states, codes, timings, counts).
+             * @enum {string}
+             */
+            scope: "METADATA" | "CONTENT";
+            days: number;
+        };
+        SupportGrantResponse: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            scope: "METADATA" | "CONTENT";
+            /** Format: date-time */
+            grantedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            /** @description Neither revoked nor expired at the moment of the response. */
+            active: boolean;
+        };
+        DataPracticesResponse: {
+            trashRetentionDays: number;
+            /** @description After how long an upload that was never finished is removed. */
+            abandonedUploadHours: number;
+            /** @description After how long a refused or quarantined file loses its stored bytes. */
+            refusedFileHours: number;
+            /** @description After how long a file nothing refers to is removed. */
+            unusedFileHours: number;
+            auditRecordDays: number;
+            modelProvider: string;
+            modelName: string;
+            /** @description Whoever runs this deployment published this; absent until they have. */
+            supportContact?: string | null;
+        };
     };
     responses: {
         /** @description Request validation failed. */
@@ -1616,8 +1868,28 @@ export interface components {
                 "application/problem+json": components["schemas"]["Error"];
             };
         };
+        /** @description Something the service depends on is away, and the same request is worth making again shortly; nothing was lost or changed. The code says what: STORAGE_UNAVAILABLE (files cannot be stored or read), SCANNER_UNAVAILABLE (an upload cannot be scanned yet, and stays unreadable until it is), RENDERER_BUSY (every slot for preparing a document stayed taken; with a Retry-After header), or DATABASE_UNAVAILABLE, which any route at all can answer and which is therefore not repeated under each one. */
+        ServiceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A model allowance is used up (code USAGE_LIMIT_REACHED): what is left would not hold this request, or the first request of this run. Nothing was sent to the model and nothing was queued. The error's limit property says which allowance. A replay of a start that was accepted earlier is answered with that start instead. */
+        UsageLimitReached: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
+        GrantId: number;
+        DeletionId: number;
         WorkspaceId: number;
         DocumentId: number;
         RevisionId: number;
@@ -1659,6 +1931,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getDataPractices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The deployment's data practices. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataPracticesResponse"];
+                };
             };
         };
     };
@@ -2108,6 +2400,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            429: components["responses"]["UsageLimitReached"];
             /** @description The one model call did not produce a usable answer; nothing on the document changed. */
             502: {
                 headers: {
@@ -2196,6 +2489,8 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["UsageLimitReached"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getExtractionResult: {
@@ -2221,6 +2516,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getGenerationQuestions: {
@@ -2245,6 +2541,7 @@ export interface operations {
                     "application/json": components["schemas"]["QuestionResponse"][];
                 };
             };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     applyGenerationResult: {
@@ -2300,6 +2597,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getJob: {
@@ -2380,6 +2678,40 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    retryJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                jobId: components["parameters"]["JobId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job, queued again or already active. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Either the job finished or was cancelled, so there is nothing to start again (code CONFLICT), or its document has changed or is in the trash since the job began, so its result could never be accepted (code JOB_TARGET_STALE); start new work instead. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     streamWorkspaceEvents: {
@@ -2511,6 +2843,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Error"];
                 };
             };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     completeUpload: {
@@ -2535,6 +2868,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     extractArtifact: {
@@ -2560,6 +2894,7 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listTemplates: {
@@ -2694,6 +3029,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getTemplateVersion: {
@@ -3000,6 +3336,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getLatestValidation: {
@@ -3050,6 +3387,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getLatestCompilation: {
@@ -3155,6 +3493,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["UnprocessableContent"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getLatestExportReceipt: {
@@ -3203,6 +3542,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     downloadArtifact: {
@@ -3227,6 +3567,287 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listDeletions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every deletion request of the workspace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResponse"][];
+                };
+            };
+        };
+    };
+    createDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description The workspace is gone. Its stored files are removed in the background. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceDeletionResponse"];
+                };
+            };
+            /** @description The document is in the trash (or already was). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The caller is not a member of this workspace, or is a member but not its owner and asked to delete it. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description A worker is still stopping one of the workspace's jobs (code DELETION_WAITING_FOR_RUNNING_WORK). Nothing was deleted and no session was ended; the same request succeeds once that job has stopped. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                deletionId: components["parameters"]["DeletionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The deletion request. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    restoreDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                deletionId: components["parameters"]["DeletionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document is back. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description It was already deleted for good (code DELETION_NOT_OPEN). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    purgeDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                deletionId: components["parameters"]["DeletionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted for good. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Either it was restored first (code DELETION_NOT_OPEN), or a worker is still stopping a job for this document (code DELETION_WAITING_FOR_RUNNING_WORK); nothing was deleted, and the same request succeeds once that job has stopped. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWorkspaceUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description This month's usage. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageResponse"];
+                };
+            };
+        };
+    };
+    listSupportGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workspace's support grants. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportGrantResponse"][];
+                };
+            };
+        };
+    };
+    createSupportGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSupportGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description The grant, open from now. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportGrantResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description A grant of this scope is already open (code SUPPORT_GRANT_ALREADY_OPEN); revoke it first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeSupportGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                grantId: components["parameters"]["GrantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant, revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportGrantResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No open grant with this id is visible in this workspace; one already revoked, or past its expiry, is not open. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
 }

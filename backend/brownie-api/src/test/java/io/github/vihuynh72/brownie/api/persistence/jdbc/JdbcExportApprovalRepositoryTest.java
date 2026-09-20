@@ -132,6 +132,32 @@ class JdbcExportApprovalRepositoryTest {
     }
 
     @Test
+    void approvingTheLatestApprovalAgainIsOneDecisionButGoingBackToAnEarlierChoiceIsANewOne() {
+        long userId = newUser("subject-export-approval-repeat").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        TemplateVersion activated = newActivatedTemplateVersion(workspaceId, userId);
+        long documentId = newDocument(workspaceId, userId, activated);
+        long revisionId = currentRevisionId(workspaceId, userId, documentId);
+        long manifestId = insertValidationManifest(workspaceId, userId, documentId, revisionId, activated);
+
+        ExportApproval both = exportApprovalRepository.save(
+                workspaceId, userId, documentId, revisionId, activated.id(), manifestId, ExportFormat.BOTH);
+        ExportApproval bothAgain = exportApprovalRepository.save(
+                workspaceId, userId, documentId, revisionId, activated.id(), manifestId, ExportFormat.BOTH);
+        assertThat(bothAgain.id()).isEqualTo(both.id());
+
+        ExportApproval wordAlone = exportApprovalRepository.save(
+                workspaceId, userId, documentId, revisionId, activated.id(), manifestId, ExportFormat.DOCX);
+        ExportApproval backToBoth = exportApprovalRepository.save(
+                workspaceId, userId, documentId, revisionId, activated.id(), manifestId, ExportFormat.BOTH);
+
+        assertThat(backToBoth.id()).isNotIn(both.id(), wordAlone.id());
+        ExportApproval latest = exportApprovalRepository.findLatest(workspaceId, userId, documentId).orElseThrow();
+        assertThat(latest.id()).isEqualTo(backToBoth.id());
+        assertThat(latest.format()).isEqualTo(ExportFormat.BOTH);
+    }
+
+    @Test
     void oneUsersContextCannotReadAnotherWorkspacesExportApproval() {
         UserIdentity userA = newUser("subject-export-approval-rls-a");
         UserIdentity userB = newUser("subject-export-approval-rls-b");

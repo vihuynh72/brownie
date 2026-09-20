@@ -4,7 +4,12 @@ import io.github.vihuynh72.brownie.core.assist.AssistCommand;
 import io.github.vihuynh72.brownie.core.assist.AssistCommandParser;
 import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException;
 import io.github.vihuynh72.brownie.core.generation.usage.ModelPricing;
+import io.github.vihuynh72.brownie.core.generation.usage.MemberUsageLedger;
+import io.github.vihuynh72.brownie.core.generation.usage.MemberUsageRepository;
+import io.github.vihuynh72.brownie.core.generation.usage.MonthlyUsageLimits;
 import io.github.vihuynh72.brownie.core.generation.usage.UsageBudget;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageLimitKind;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageLimitReachedException;
 import io.github.vihuynh72.brownie.core.generation.usage.UsageLimits;
 import io.github.vihuynh72.brownie.core.model.JsonSchema;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
@@ -31,6 +36,7 @@ import io.github.vihuynh72.brownie.core.validation.ValidationFinding;
 import io.github.vihuynh72.brownie.core.validation.ValidationManifest;
 import io.github.vihuynh72.brownie.core.validation.ValidationService;
 import io.github.vihuynh72.brownie.core.validation.ValidationSeverity;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -101,18 +107,30 @@ public class AssistService {
     private final ValidationService validationService;
     private final ModelGateway modelGateway;
     private final ObjectMapper objectMapper;
+    private final MemberUsageRepository usageRepository;
+    private final UsageLimits directRequestLimits;
+    private final MonthlyUsageLimits monthlyUsageLimits;
+    private final String modelName;
 
     public AssistService(
             RevisionService revisionService,
             TemplateService templateService,
             ValidationService validationService,
             ModelGateway modelGateway,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            MemberUsageRepository usageRepository,
+            UsageLimits directRequestLimits,
+            MonthlyUsageLimits monthlyUsageLimits,
+            @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
         this.validationService = validationService;
         this.modelGateway = modelGateway;
         this.objectMapper = objectMapper;
+        this.usageRepository = usageRepository;
+        this.directRequestLimits = directRequestLimits;
+        this.monthlyUsageLimits = monthlyUsageLimits;
+        this.modelName = modelName;
     }
 
     public enum Kind {
@@ -160,7 +178,7 @@ public class AssistService {
             case AssistCommand.RewriteField rewrite -> {
                 FieldDefinition field = context.field(rewrite.fieldId());
                 String current = context.currentText(field.fieldId());
-                String revised = rewriteThroughModel(field, current, rewrite);
+                String revised = rewriteThroughModel(workspaceId, userId, field, current, rewrite);
                 List<Long> evidence = context.revision().evidence().getOrDefault(field.fieldId(), List.of());
                 PatchProposal proposal = revisionService.proposePatch(
                         workspaceId, userId, documentId, currentRevisionId,
@@ -170,7 +188,7 @@ public class AssistService {
             }
             case AssistCommand.ExplainFinding explain -> {
                 ValidationFinding finding = context.findingFor(explain.fieldId()).orElseThrow();
-                yield new Execution(Kind.EXPLAIN_FINDING, interpretation.summary(), null, explainThroughModel(context, finding), List.of());
+                yield new Execution(Kind.EXPLAIN_FINDING, interpretation.summary(), null, explainThroughModel(workspaceId, userId, finding), List.of());
             }
             case AssistCommand.DraftFromSources ignored ->
                     new Execution(Kind.DRAFT, interpretation.summary(), null, null, List.of());
@@ -255,7 +273,8 @@ public class AssistService {
                 new Scope(found.fieldId(), label, null, found.message()), true, true, List.of());
     }
 
-    private String rewriteThroughModel(FieldDefinition field, String current, AssistCommand.RewriteField rewrite) {
+    private String rewriteThroughModel(
+            long workspaceId, long userId, FieldDefinition field, String current, AssistCommand.RewriteField rewrite) {
         String instruction = rewrite.mode() == AssistCommand.RewriteMode.SHORTEN
                 ? "shorten"
                 : "rewrite" + (rewrite.instruction() == null ? "" : ": " + rewrite.instruction());
@@ -267,14 +286,14 @@ public class AssistService {
                 List.of(new ModelMessage(ModelMessageRole.SYSTEM, REWRITE_POLICY), new ModelMessage(ModelMessageRole.USER, user)),
                 new JsonSchema(REWRITE_SCHEMA),
                 MAX_OUTPUT_TOKENS);
-        String value = readString(completeBounded(request), "value");
+        String value = readString(completeBounded(workspaceId, userId, request), "value");
         if (value.length() > MAX_FIELD_TEXT_LENGTH) {
             throw new AssistModelException("The model's rewrite was longer than a field allows.");
         }
         return value;
     }
 
-    private String explainThroughModel(Context context, ValidationFinding finding) {
+    private String explainThroughModel(long workspaceId, long userId, ValidationFinding finding) {
         String field = finding.fieldId() == null ? "(whole document)" : finding.fieldId() + " (" + AssistCommandParser.labelFor(finding.fieldId()) + ")";
         String user = "Finding code: " + finding.code() + "\n"
                 + "Severity: " + finding.code().severity() + "\n"
@@ -285,18 +304,30 @@ public class AssistService {
                 List.of(new ModelMessage(ModelMessageRole.SYSTEM, EXPLAIN_POLICY), new ModelMessage(ModelMessageRole.USER, user)),
                 new JsonSchema(EXPLAIN_SCHEMA),
                 MAX_OUTPUT_TOKENS);
-        return readString(completeBounded(request), "explanation");
+        return readString(completeBounded(workspaceId, userId, request), "explanation");
     }
 
-    /** One physical call under the same per-run limits the worker uses; every way it can fail is one 502 with a readable reason. */
-    private String completeBounded(ModelRequest request) {
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
-        String promptText = request.messages().stream().map(ModelMessage::content).reduce("", (a, b) -> a + "\n" + b);
+    /**
+     * One physical call, written into the usage ledger before it is sent and
+     * charged to the person who asked. Every way the call itself can fail is
+     * one 502 with a readable reason; an allowance that is used up is not a
+     * failure and is reported as what it is.
+     */
+    private String completeBounded(long workspaceId, long userId, ModelRequest request) {
+        ModelPricing pricing = ModelPricing.gpt5Mini();
+        UsageBudget budget = new UsageBudget(
+                directRequestLimits,
+                pricing,
+                new MemberUsageLedger(
+                        usageRepository, workspaceId, userId, modelName, pricing, directRequestLimits, monthlyUsageLimits));
         ModelCompletion completion;
         try {
-            budget.reserveForCall(UsageBudget.estimateTokens(promptText), request.maxOutputTokens());
+            budget.reserveForCall(UsageBudget.estimateInputTokens(request), request.maxOutputTokens(), request.promptVersion());
             completion = modelGateway.complete(request);
         } catch (BudgetExceededException e) {
+            if (e.kind() == UsageLimitKind.WORKSPACE_MONTH || e.kind() == UsageLimitKind.GLOBAL_MONTH) {
+                throw new UsageLimitReachedException(e.kind(), e.getMessage());
+            }
             throw new AssistModelException("This request is over the per-request model budget.");
         } catch (ModelTransportException e) {
             budget.retainReservationAfterLostResponse();

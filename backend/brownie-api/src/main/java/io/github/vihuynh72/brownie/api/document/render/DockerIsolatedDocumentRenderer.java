@@ -1,21 +1,32 @@
 package io.github.vihuynh72.brownie.api.document.render;
 
+import io.github.vihuynh72.brownie.api.document.pdf.BoundedPdfTextStripper;
+import io.github.vihuynh72.brownie.api.document.pdf.PdfReadingBudget;
 import io.github.vihuynh72.brownie.core.compile.DocumentRenderException;
 import io.github.vihuynh72.brownie.core.compile.DocumentRenderer;
 import io.github.vihuynh72.brownie.core.compile.RenderedPdf;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -42,14 +53,33 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
     private static final long DEADLINE_SECONDS = 60;
     private static final long OUTPUT_LOG_CAP_BYTES = 64L * 1024;
 
+    private static final byte[] PDF_SIGNATURE = "%PDF-".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    /**
+     * What comes back from the sandbox is no more trusted than what went in, so it is read under the same
+     * limits as an upload: this ceiling on what the library holds, and the reading limits an upload's text is
+     * read under.
+     */
+    private static final long REREAD_MAX_EXPANDED_BYTES = 128L * 1024 * 1024;
+
     private final String imageTag;
+    private final String expectedImageId;
 
     public DockerIsolatedDocumentRenderer() {
-        this("brownie-spike-renderer:pinned");
+        this("brownie-spike-renderer:pinned", null);
     }
 
     public DockerIsolatedDocumentRenderer(String imageTag) {
+        this(imageTag, null);
+    }
+
+    /**
+     * {@code expectedImageId} is the image's content address ({@code
+     * sha256:...}). A tag can be pointed at a different image by anyone who
+     * can build on the host; when an id is given, nothing else is ever run.
+     */
+    public DockerIsolatedDocumentRenderer(String imageTag, String expectedImageId) {
         this.imageTag = imageTag;
+        this.expectedImageId = expectedImageId == null || expectedImageId.isBlank() ? null : expectedImageId.trim();
     }
 
     @Override
@@ -68,24 +98,19 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
             makeReadOnly(input);
             makeWorldWritable(outDir);
 
+            // Looked up once and then run by that id, not by the tag: the tag could be pointed somewhere else between
+            // the two, and the id is also what is written down as having produced this output.
+            String imageId = resolveImageId();
             String containerName = "brownie-render-" + UUID.randomUUID();
-            List<String> command = renderCommand(inDir, outDir, containerName);
+            List<String> command = renderCommand(inDir, outDir, containerName, imageId);
             int exitCode = runWithDeadline(command, containerName);
             if (exitCode != 0) {
                 throw new DocumentRenderException(
                         "Isolated renderer exited with status " + exitCode + " (a timeout or resource limit kills the same way).");
             }
 
-            Path outputPdf = outDir.resolve("input.pdf");
-            if (!Files.isRegularFile(outputPdf)) {
-                throw new DocumentRenderException("Isolated renderer reported success but produced no output PDF.");
-            }
-            long size = Files.size(outputPdf);
-            if (size >= OUTPUT_MAX_BYTES) {
-                throw new DocumentRenderException("Rendered PDF hit the " + OUTPUT_MAX_BYTES + "-byte quota; likely truncated.");
-            }
-            byte[] pdfBytes = Files.readAllBytes(outputPdf);
-            return new RenderedPdf(pdfBytes, RENDERER_VERSION, extractText(pdfBytes));
+            byte[] pdfBytes = readRenderedOutput(outDir.resolve("input.pdf"), OUTPUT_MAX_BYTES);
+            return new RenderedPdf(pdfBytes, RENDERER_VERSION + "; image " + imageId, extractText(pdfBytes));
         } catch (IOException e) {
             throw new DocumentRenderException("Failed to stage or read back the isolated render job.", e);
         } finally {
@@ -93,7 +118,75 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
         }
     }
 
-    private List<String> renderCommand(Path inDir, Path outDir, String containerName) {
+    /**
+     * Reads what the sandbox left behind without trusting it to be what it
+     * should be. The directory is writable from inside the container, so a
+     * renderer that had been taken over could leave a symbolic link there
+     * instead of a PDF, and a reader that followed it would hand back
+     * whatever file on this host the link named. The link is never
+     * followed (the open itself refuses one, so there is no moment between
+     * checking and reading), only a plain file is accepted, no more than
+     * the quota is read however large the file claims to be, and what is
+     * read has to begin like a PDF.
+     */
+    static byte[] readRenderedOutput(Path outputPdf, long maxBytes) throws IOException {
+        BasicFileAttributes attributes;
+        try {
+            attributes = Files.readAttributes(outputPdf, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (NoSuchFileException e) {
+            throw new DocumentRenderException("Isolated renderer reported success but produced no output PDF.");
+        }
+        if (!attributes.isRegularFile()) {
+            throw new DocumentRenderException("Isolated renderer left something other than a plain file where its output belongs.");
+        }
+        byte[] pdfBytes;
+        try (SeekableByteChannel channel =
+                     Files.newByteChannel(outputPdf, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+                InputStream in = Channels.newInputStream(channel)) {
+            pdfBytes = in.readNBytes((int) Math.min(Integer.MAX_VALUE, maxBytes));
+        }
+        if (pdfBytes.length >= maxBytes) {
+            throw new DocumentRenderException("Rendered PDF hit the " + maxBytes + "-byte quota; likely truncated.");
+        }
+        if (pdfBytes.length < PDF_SIGNATURE.length
+                || !java.util.Arrays.equals(pdfBytes, 0, PDF_SIGNATURE.length, PDF_SIGNATURE, 0, PDF_SIGNATURE.length)) {
+            throw new DocumentRenderException("Isolated renderer's output is not a PDF.");
+        }
+        return pdfBytes;
+    }
+
+    /** The content address of the image the tag names right now, or a refusal if it is not the one this deployment approved. */
+    String resolveImageId() {
+        String imageId;
+        try {
+            Process inspect = new ProcessBuilder("docker", "image", "inspect", "--format", "{{.Id}}", imageTag)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            // Waited for first, read second: a read has no deadline, and what is printed (one line) is far too
+            // little to fill the pipe and hold the command up.
+            if (!inspect.waitFor(15, TimeUnit.SECONDS)) {
+                inspect.destroyForcibly();
+                throw new DocumentRenderException("Looking up the renderer image did not finish in time.");
+            }
+            byte[] output = inspect.getInputStream().readNBytes(256);
+            imageId = new String(output, java.nio.charset.StandardCharsets.US_ASCII).trim();
+            if (inspect.exitValue() != 0 || !imageId.matches("sha256:[0-9a-f]{64}")) {
+                throw new DocumentRenderException("The renderer image " + imageTag + " is not present on this host.");
+            }
+        } catch (IOException e) {
+            throw new DocumentRenderException("Failed to look up the renderer image.", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DocumentRenderException("Interrupted while looking up the renderer image.", e);
+        }
+        if (expectedImageId != null && !expectedImageId.equals(imageId)) {
+            throw new DocumentRenderException(
+                    "The renderer image " + imageTag + " is not the approved one, so nothing was rendered with it.");
+        }
+        return imageId;
+    }
+
+    private List<String> renderCommand(Path inDir, Path outDir, String containerName, String imageId) {
         return List.of(
                 "docker", "run", "--rm",
                 "--name", containerName,
@@ -109,7 +202,7 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
                 "--ulimit", "fsize=" + OUTPUT_MAX_BYTES,
                 "-v", inDir.toAbsolutePath() + ":/in:ro",
                 "-v", outDir.toAbsolutePath() + ":/out",
-                imageTag,
+                imageId,
                 "soffice", "--headless", "--norestore", "--nolockcheck", "--nodefault",
                 "-env:UserInstallation=file:///home/renderer/.lo-profile",
                 "--convert-to", "pdf", "--outdir", "/out", "/in/input.docx");
@@ -235,9 +328,12 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
     }
 
     private String extractText(byte[] pdfBytes) {
-        try (PDDocument document = Loader.loadPDF(pdfBytes)) {
-            return new PDFTextStripper().getText(document);
-        } catch (IOException e) {
+        try (PDDocument document = Loader.loadPDF(
+                pdfBytes, "", null, null, MemoryUsageSetting.setupMainMemoryOnly(REREAD_MAX_EXPANDED_BYTES).streamCache)) {
+            return new BoundedPdfTextStripper(PdfReadingBudget.standard()).getText(document);
+        } catch (IOException | RuntimeException e) {
+            // Unchecked too: that is how the reading limits announce themselves, and how the library fails on a
+            // file that is not what it claims to be.
             throw new DocumentRenderException("Rendered PDF could not be independently re-read to extract its text.", e);
         }
     }
@@ -278,17 +374,43 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
         }
     }
 
+    /**
+     * Never throws: this runs as a render finishes, and a failure here must
+     * not take the place of the render's own result. What cannot be removed
+     * (the container runs as another user and may leave something this
+     * process cannot even list) is logged and left.
+     */
     private void deleteRecursively(Path root) {
-        try (var paths = Files.walk(root)) {
-            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
-                try {
-                    Files.deleteIfExists(path);
-                } catch (IOException e) {
-                    log.warn("Failed to delete render staging path {}.", path, e);
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                    delete(file);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException failure) {
+                    log.warn("Could not read render staging path {} to clean it up.", file, failure);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path directory, IOException failure) {
+                    delete(directory);
+                    return FileVisitResult.CONTINUE;
                 }
             });
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             log.warn("Failed to walk render staging directory {} for cleanup.", root, e);
+        }
+    }
+
+    private void delete(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException | RuntimeException e) {
+            log.warn("Failed to delete render staging path {}.", path, e);
         }
     }
 }

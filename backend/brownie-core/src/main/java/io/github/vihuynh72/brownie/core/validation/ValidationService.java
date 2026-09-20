@@ -208,7 +208,9 @@ public class ValidationService {
                 findings);
     }
 
+    /** Answers only for a document that is still there: one in the trash has no validation to show, the same as one that never existed. */
     public Optional<ValidationManifest> findLatest(long workspaceId, long userId, long documentId, long revisionId) {
+        revisionService.findDocument(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
         return validationRepository.findLatest(workspaceId, userId, documentId, revisionId);
     }
 
@@ -255,8 +257,8 @@ public class ValidationService {
      * gets the most severe result any finding named against its own {@code
      * fieldId} produced, or {@link ValidationState#PASSED} when none did --
      * every item within one repeated field shares its field-level result,
-     * since no check in this task is yet item-granular; a named, honest
-     * scope boundary, not an oversight.
+     * since none of the checks names a single item; a deliberate boundary,
+     * not an oversight.
      */
     private static Map<FieldItemRef, ValidationState> perFieldValidationStates(DocumentRevision revision, List<ValidationFinding> findings) {
         Map<String, ValidationState> worstByField = new LinkedHashMap<>();

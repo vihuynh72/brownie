@@ -20,7 +20,10 @@ import io.github.vihuynh72.brownie.core.generation.LabeledExcerpt;
 import io.github.vihuynh72.brownie.core.generation.RequiredFactsUnresolvedException;
 import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException;
 import io.github.vihuynh72.brownie.core.generation.usage.ModelPricing;
+import io.github.vihuynh72.brownie.core.generation.TransportRetryPolicy;
+import io.github.vihuynh72.brownie.core.generation.usage.MonthlyUsageLimits;
 import io.github.vihuynh72.brownie.core.generation.usage.UsageBudget;
+import io.github.vihuynh72.brownie.worker.persistence.JdbcWorkerUsageRepository;
 import io.github.vihuynh72.brownie.core.generation.usage.UsageLimits;
 import io.github.vihuynh72.brownie.core.job.JobCompletion;
 import io.github.vihuynh72.brownie.core.job.JobFailure;
@@ -50,6 +53,7 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -103,6 +107,11 @@ class GenerationExtractionJobProcessor {
     private final JobOutputPublisher jobOutputPublisher;
     private final Duration leaseDuration;
     private final ObjectMapper objectMapper;
+    private final JdbcWorkerUsageRepository usageRepository;
+    private final String modelName;
+    private final UsageLimits durableRunLimits;
+    private final UsageLimits attemptLimits;
+    private final MonthlyUsageLimits monthlyUsageLimits;
 
     GenerationExtractionJobProcessor(
             BlobStore blobStore,
@@ -111,7 +120,29 @@ class GenerationExtractionJobProcessor {
             CompositionResponseParser compositionResponseParser,
             JobLeaseRepository jobLeaseRepository,
             JobOutputPublisher jobOutputPublisher,
-            @Value("${brownie.worker.generation.lease-duration:PT2M}") Duration leaseDuration) {
+            JdbcWorkerUsageRepository usageRepository,
+            @Value("${brownie.worker.generation.lease-duration:PT2M}") Duration leaseDuration,
+            @Value("${brownie.ai.openai.model}") String modelName,
+            @Value("${brownie.usage.run-max-requests:6}") int runMaxRequests,
+            @Value("${brownie.usage.run-limit-usd:0.10}") BigDecimal runLimitUsd,
+            @Value("${brownie.usage.workspace-monthly-limit-usd:2.00}") BigDecimal workspaceMonthlyLimitUsd,
+            @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd) {
+        this.usageRepository = usageRepository;
+        this.modelName = modelName;
+        // What the ledger holds a whole run to, counted across every attempt
+        // and resume of the job. A run that stops to ask a question makes its
+        // extraction request twice and its composition request once, so the
+        // bound on requests is that with room for one repair and one retry.
+        this.durableRunLimits = new UsageLimits(
+                runMaxRequests,
+                UsageLimits.defaultRunLimits().maxInputTokens(),
+                UsageLimits.defaultRunLimits().maxOutputTokens(),
+                runLimitUsd);
+        // What one attempt may do before the ledger is even asked. The same
+        // configured figures, so raising the run's bound raises both; the
+        // token bounds are per attempt and are not configuration.
+        this.attemptLimits = this.durableRunLimits;
+        this.monthlyUsageLimits = new MonthlyUsageLimits(workspaceMonthlyLimitUsd, globalMonthlyLimitUsd);
         this.blobStore = blobStore;
         this.modelGateway = modelGateway;
         this.extractionResponseParser = extractionResponseParser;
@@ -162,18 +193,25 @@ class GenerationExtractionJobProcessor {
         // at all, so the two unused constructor arguments
         // (DocumentExtractionService, SourceService) are safely null, the
         // same pattern ExtractionServiceTest already establishes.
-        ExtractionService extractionService = new ExtractionService(null, null, modelGateway, extractionResponseParser);
+        ExtractionService extractionService =
+                new ExtractionService(null, null, modelGateway, extractionResponseParser, TransportRetryPolicy.standard());
+        // One budget for the whole attempt, extraction and composition
+        // together, backed by the ledger that counts the whole run.
+        UsageBudget budget = budgetFor(leasedJob);
 
         ExtractionResult result;
         try {
-            result = extractionService.extractFromExcerpts(fields, excerpts, freshBudget(), cancellationSignal);
+            result = extractionService.extractFromExcerpts(fields, excerpts, budget, cancellationSignal);
         } catch (ModelTransportException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     e.retryable() ? JobFailureKind.TRANSIENT_PROVIDER : JobFailureKind.DETERMINISTIC,
                     e.retryable() ? "MODEL_TRANSPORT_TRANSIENT" : "MODEL_TRANSPORT_REJECTED",
                     safeMessage(e.getMessage()), null));
             return;
-        } catch (ExtractionFailedException | ExtractionResponseParseException | BudgetExceededException e) {
+        } catch (BudgetExceededException e) {
+            releaseAfterFailure(leasedJob, usageRefused(e));
+            return;
+        } catch (ExtractionFailedException | ExtractionResponseParseException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     JobFailureKind.DETERMINISTIC, "GENERATION_EXTRACTION_UNUSABLE", safeMessage(e.getMessage()), null));
             return;
@@ -193,7 +231,7 @@ class GenerationExtractionJobProcessor {
                 QuestionDetectionService.detect(reconciled, fieldsStillNeedingAnAnswer, existingContentOf(bundle));
 
         if (detected.isEmpty()) {
-            ExtractionResult finalResult = composeIfNeeded(leasedJob, bundle, fields, reconciled, cancellationSignal);
+            ExtractionResult finalResult = composeIfNeeded(leasedJob, bundle, fields, reconciled, budget, cancellationSignal);
             if (finalResult != null) {
                 publishResult(leasedJob, finalResult);
             }
@@ -269,22 +307,26 @@ class GenerationExtractionJobProcessor {
             ExtractionInputBundle bundle,
             List<FieldDefinition> fields,
             ExtractionResult accepted,
+            UsageBudget budget,
             CancellationSignal cancellationSignal) {
         if (bundle.composableFieldIds().isEmpty()) {
             return accepted;
         }
-        CompositionService compositionService = new CompositionService(modelGateway, compositionResponseParser);
+        CompositionService compositionService =
+                new CompositionService(modelGateway, compositionResponseParser, TransportRetryPolicy.standard());
         try {
             return compositionService.compose(
-                    fields, bundle.composableFieldIds(), List.of(), accepted, freshBudget(), cancellationSignal);
+                    fields, bundle.composableFieldIds(), List.of(), accepted, budget, cancellationSignal);
         } catch (ModelTransportException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     e.retryable() ? JobFailureKind.TRANSIENT_PROVIDER : JobFailureKind.DETERMINISTIC,
                     e.retryable() ? "MODEL_TRANSPORT_TRANSIENT" : "MODEL_TRANSPORT_REJECTED",
                     safeMessage(e.getMessage()), null));
             return null;
-        } catch (CompositionFailedException | CompositionResponseParseException | BudgetExceededException
-                | RequiredFactsUnresolvedException e) {
+        } catch (BudgetExceededException e) {
+            releaseAfterFailure(leasedJob, usageRefused(e));
+            return null;
+        } catch (CompositionFailedException | CompositionResponseParseException | RequiredFactsUnresolvedException e) {
             releaseAfterFailure(leasedJob, new JobFailure(
                     JobFailureKind.DETERMINISTIC, "GENERATION_COMPOSITION_UNUSABLE", safeMessage(e.getMessage()), null));
             return null;
@@ -366,8 +408,28 @@ class GenerationExtractionJobProcessor {
         log.info("Job {} released after cancellation: {}.", leasedJob.job().id(), released);
     }
 
-    private static UsageBudget freshBudget() {
-        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+    private UsageBudget budgetFor(LeasedJob leasedJob) {
+        ModelPricing pricing = ModelPricing.gpt5Mini();
+        return new UsageBudget(
+                attemptLimits,
+                pricing,
+                new LeasedJobUsageLedger(
+                        usageRepository, leasedJob.leaseToken(), modelName, pricing, durableRunLimits, monthlyUsageLimits));
+    }
+
+    /**
+     * Never retried by the queue: asking again cannot make an allowance
+     * larger. The code says which limit it was, so whoever reads the job
+     * can tell "start the run again" from "wait for next month".
+     */
+    private static JobFailure usageRefused(BudgetExceededException refused) {
+        String code = switch (refused.kind()) {
+            case RUN -> "USAGE_RUN_LIMIT_REACHED";
+            case WORKSPACE_MONTH -> "USAGE_WORKSPACE_MONTH_LIMIT_REACHED";
+            case GLOBAL_MONTH -> "USAGE_GLOBAL_MONTH_LIMIT_REACHED";
+            case LEASE_LOST -> "GENERATION_LEASE_NOT_LIVE";
+        };
+        return new JobFailure(JobFailureKind.DETERMINISTIC, code, safeMessage(refused.getMessage()), null);
     }
 
     private static String safeMessage(String message) {

@@ -4,7 +4,6 @@ import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException
 import io.github.vihuynh72.brownie.core.generation.usage.UsageBudget;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
-import io.github.vihuynh72.brownie.core.model.ModelMessage;
 import io.github.vihuynh72.brownie.core.model.ModelRequest;
 import io.github.vihuynh72.brownie.core.model.ModelTransportException;
 import io.github.vihuynh72.brownie.core.model.ModelUsage;
@@ -52,10 +51,18 @@ public class CompositionService {
 
     private final ModelGateway modelGateway;
     private final CompositionResponseParser responseParser;
+    private final TransportRetryPolicy transportRetryPolicy;
 
+    /** Reports a failure in transit at once, without trying again. */
     public CompositionService(ModelGateway modelGateway, CompositionResponseParser responseParser) {
+        this(modelGateway, responseParser, TransportRetryPolicy.none());
+    }
+
+    public CompositionService(
+            ModelGateway modelGateway, CompositionResponseParser responseParser, TransportRetryPolicy transportRetryPolicy) {
         this.modelGateway = modelGateway;
         this.responseParser = responseParser;
+        this.transportRetryPolicy = java.util.Objects.requireNonNull(transportRetryPolicy, "transportRetryPolicy");
     }
 
     /**
@@ -93,20 +100,19 @@ public class CompositionService {
         });
 
         ModelRequest request = CompositionPromptBuilder.build(composableFieldIds, maxCharactersByFieldId, facts, MAX_OUTPUT_TOKENS);
-        int estimatedInputTokens = UsageBudget.estimateTokens(promptText(request));
+        int estimatedInputTokens = UsageBudget.estimateInputTokens(request);
 
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             if (cancellationSignal.isCancellationRequested()) {
                 throw new CompositionCancelledException();
             }
 
-            budget.reserveForCall(estimatedInputTokens, request.maxOutputTokens());
             ModelCompletion completion;
             try {
-                completion = modelGateway.complete(request);
-            } catch (ModelTransportException e) {
-                budget.retainReservationAfterLostResponse();
-                throw e;
+                completion = BoundedModelCall.complete(
+                        modelGateway, request, estimatedInputTokens, budget, cancellationSignal, transportRetryPolicy);
+            } catch (ModelCallCancelledException e) {
+                throw new CompositionCancelledException();
             }
 
             boolean isLastAttempt = attempt == MAX_ATTEMPTS;
@@ -146,14 +152,6 @@ public class CompositionService {
             }
         }
         throw new IllegalStateException("Unreachable: the loop above always returns or throws by its last attempt.");
-    }
-
-    private static String promptText(ModelRequest request) {
-        StringBuilder text = new StringBuilder();
-        for (ModelMessage message : request.messages()) {
-            text.append(message.content());
-        }
-        return text.toString();
     }
 
     private static void requireComposableScalarTextField(String fieldId, Map<String, FieldDefinition> fieldsById) {

@@ -73,6 +73,67 @@ class PoiDocxStructuralExtractorTest {
         assertNotNull(image.imageRelationshipId());
     }
 
+    /**
+     * A package may declare its main document under any name, and the upload inspector reads only parts named as
+     * XML. Such a file reaches the library unread; nested this deeply it exhausts the library's stack, which must
+     * come out as an ordinary failure to parse and not as an error nothing records.
+     */
+    @Test
+    void aDocumentNestedDeeplyEnoughToExhaustTheLibraryIsAFailureToParseNotACrash() throws IOException {
+        int depth = 20_000;
+        // Each level carries something that does not compress, or the library's own check on how far an archive
+        // expands refuses the file first, and it is the nesting that is being proved here.
+        java.util.Random noise = new java.util.Random(1);
+        StringBuilder opening = new StringBuilder();
+        for (int i = 0; i < depth; i++) {
+            opening.append("<w:tbl><w:tr><w:tc w:rsidR=\"").append(Long.toHexString(noise.nextLong())).append("\">");
+        }
+        String body = opening + "</w:tc></w:tr></w:tbl>".repeat(depth);
+        String document = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>" + body
+                + "</w:body></w:document>";
+        String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                + "<Override PartName=\"/word/document.bin\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+                + "</Types>";
+        String relationships = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                + " Target=\"word/document.bin\"/></Relationships>";
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(bytes)) {
+            for (String[] part : new String[][] {
+                    {"[Content_Types].xml", contentTypes}, {"_rels/.rels", relationships}, {"word/document.bin", document}}) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(part[0]));
+                zip.write(part[1].getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
+
+        // On a thread with a stack of a known, modest size, so that the outcome does not depend on the machine: the
+        // default stack differs by operating system and processor, and on a large one this depth might just fit.
+        java.util.concurrent.atomic.AtomicReference<Throwable> thrown = new java.util.concurrent.atomic.AtomicReference<>();
+        Thread reader = new Thread(null, () -> {
+            try {
+                extractor.extract(new java.io.ByteArrayInputStream(bytes.toByteArray()));
+            } catch (Throwable failure) {
+                thrown.set(failure);
+            }
+        }, "small-stack-reader", 512 * 1024);
+        reader.start();
+        try {
+            reader.join(60_000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        io.github.vihuynh72.brownie.core.document.DocxParseException refused = org.junit.jupiter.api.Assertions.assertInstanceOf(
+                io.github.vihuynh72.brownie.core.document.DocxParseException.class, thrown.get());
+        // Not some other refusal that happens to come first: the stack really was exhausted, and that is what was caught.
+        org.junit.jupiter.api.Assertions.assertInstanceOf(StackOverflowError.class, refused.getCause());
+    }
+
     @Test
     void trackedChangeIsFlaggedUnsupported() throws IOException {
         assertUnsupported(DocxFixtures.withTrackedChange(), UnsupportedDocxFeature.TRACKED_CHANGES);
@@ -178,7 +239,7 @@ class PoiDocxStructuralExtractorTest {
      * Object.toString()}'s own identity-hash-code text (for example
      * {@code "[B@42721fe"}), different on every independent extraction of
      * the identical color, rather than a real hex string. Never caught
-     * before because nothing before this task's own layout comparator
+     * before because nothing before the layout comparator
      * ever compared two independently extracted {@code ResolvedStyle}
      * values for equality. Asserts both the real hex value and that two
      * separately extracted runs sharing the same color compare equal --

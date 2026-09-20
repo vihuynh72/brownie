@@ -141,6 +141,16 @@ class GenerationExtractionJobProcessorIntegrationTest {
     @Autowired
     private BlobStore blobStore;
 
+    @Autowired
+    private org.springframework.core.env.Environment environment;
+
+    /** Every request the worker sends is one the usage ledger reserved, so the provider's client must never resend one by itself. */
+    @Test
+    void theProvidersClientIsConfiguredToSendEachRequestOnce() {
+        assertThat(environment.getProperty("spring.ai.openai.max-retries", Integer.class)).isZero();
+        assertThat(environment.getProperty("spring.ai.openai.chat.max-retries", Integer.class)).isZero();
+    }
+
     @Test
     void aRealQueuedExtractionJobIsClaimedProcessedAndPublishesARealArtifact() throws Exception {
         long userId;
@@ -202,6 +212,28 @@ class GenerationExtractionJobProcessorIntegrationTest {
             }
             assertThat(result.get("scalarCandidates").get("meeting.title").get("value").asText())
                     .isEqualTo("Weekly Robotics Club Sync");
+
+            // The one request it made is in the ledger, charged to the person who asked for the run,
+            // closed with what the provider reported rather than what was held for it.
+            try (PreparedStatement usage = connection.prepareStatement("""
+                    SELECT workspace_id, requested_by_user_id, purpose, run_epoch, state, actual_input_tokens, actual_output_tokens,
+                           actual_cost_usd < reserved_cost_usd
+                    FROM model_usage WHERE job_id = ?
+                    """)) {
+                usage.setLong(1, jobId);
+                try (ResultSet row = usage.executeQuery()) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getLong(1)).isEqualTo(workspaceId);
+                    assertThat(row.getLong(2)).isEqualTo(userId);
+                    assertThat(row.getString(3)).isEqualTo("GENERATION");
+                    assertThat(row.getInt(4)).isZero();
+                    assertThat(row.getString(5)).isEqualTo("SETTLED");
+                    assertThat(row.getInt(6)).isEqualTo(50);
+                    assertThat(row.getInt(7)).isEqualTo(20);
+                    assertThat(row.getBoolean(8)).isTrue();
+                    assertThat(row.next()).as("one request, one row").isFalse();
+                }
+            }
         }
 
         // A second claim attempt finds nothing left to do -- the job reached a terminal state.
@@ -410,6 +442,128 @@ class GenerationExtractionJobProcessorIntegrationTest {
 
     private static String sha256Hex(String text) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * A run's bound used to live in the memory of one attempt, so every
+     * retry and every resume started again from zero. It is counted in the
+     * ledger now: a job whose earlier attempts already used the run's
+     * requests is refused before the model is called again, and the queue
+     * does not retry it, because asking again cannot make the bound larger.
+     */
+    @Test
+    void aRunThatAlreadyUsedItsRequestsInEarlierAttemptsIsRefusedBeforeTheModelIsCalledAgain() throws Exception {
+        long jobId;
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            jobId = insertClaimableJobWithBundle(connection);
+            long workspaceId = jobWorkspaceId(connection, jobId);
+            for (int request = 0; request < 6; request++) {
+                insertSettledUsage(connection, workspaceId, jobId, "0.001000");
+            }
+        }
+        int callsBefore = MODEL_CALLS.get();
+
+        LeasedJob leasedJob = jobLeaseRepository.claimNext(new WorkerId("test-worker-" + UUID.randomUUID()), Duration.ofMinutes(2))
+                .orElseThrow(() -> new AssertionError("Expected a real eligible job to be claimable."));
+        assertThat(leasedJob.job().id()).isEqualTo(jobId);
+        processor.process(leasedJob);
+
+        assertThat(MODEL_CALLS.get()).as("nothing was sent").isEqualTo(callsBefore);
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            assertThat(jobState(connection, jobId)).isEqualTo("DEAD");
+            assertThat(lastJobEventMessage(connection, jobId)).contains("limit of 6 model requests");
+            assertThat(usageRowCount(connection, jobId)).as("the refused request left no row behind").isEqualTo(6);
+        }
+    }
+
+    /** The same ledger holds the workspace to its month: a run in a workspace that has spent its allowance makes no request at all. */
+    @Test
+    void aWorkspaceThatHasSpentItsMonthlyAllowanceMakesNoFurtherRequest() throws Exception {
+        long jobId;
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            jobId = insertClaimableJobWithBundle(connection);
+            // Spent by some other, long-finished run of the same workspace: the default allowance is two dollars.
+            insertSettledUsage(connection, jobWorkspaceId(connection, jobId), jobId + 1_000_000, "2.000000");
+        }
+        int callsBefore = MODEL_CALLS.get();
+
+        LeasedJob leasedJob = jobLeaseRepository.claimNext(new WorkerId("test-worker-" + UUID.randomUUID()), Duration.ofMinutes(2))
+                .orElseThrow(() -> new AssertionError("Expected a real eligible job to be claimable."));
+        assertThat(leasedJob.job().id()).isEqualTo(jobId);
+        processor.process(leasedJob);
+
+        assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore);
+        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+            assertThat(jobState(connection, jobId)).isEqualTo("DEAD");
+            assertThat(lastJobEventMessage(connection, jobId)).contains("allowance").contains("this month");
+        }
+    }
+
+    private long insertClaimableJobWithBundle(Connection connection) throws Exception {
+        long userId = insertUser(connection);
+        long workspaceId = insertWorkspace(connection, userId);
+        insertMembership(connection, workspaceId, userId);
+        long artifactId = insertReadyArtifact(connection, workspaceId);
+        long extractionVersionId = insertExtractionVersion(connection, workspaceId, artifactId);
+        long templateId = insertTemplate(connection, workspaceId);
+        long templateVersionId = insertActivatedTemplateVersion(connection, workspaceId, templateId, artifactId, extractionVersionId);
+        long documentId = insertDocument(connection, workspaceId, templateId, templateVersionId);
+        long revisionId = insertDocumentRevision(connection, workspaceId, documentId, 1, null, userId, "a".repeat(64));
+        setDocumentCurrentRevision(connection, workspaceId, documentId, revisionId);
+        String bundleJson = """
+                {"fields":[{"fieldId":"meeting.title","type":"TEXT","cardinality":"SCALAR","requiredness":"REQUIRED"}],\
+                "excerpts":[{"spanId":1,"text":"A usage test bundle %s."}]}""".formatted(UUID.randomUUID());
+        String bundleHash = sha256Hex(bundleJson);
+        blobStore.writeNewAndDigest(
+                GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash),
+                new ByteArrayInputStream(bundleJson.getBytes(StandardCharsets.UTF_8)),
+                1_000_000);
+        return insertQueuedJob(connection, workspaceId, userId, documentId, revisionId, bundleHash);
+    }
+
+    private long jobWorkspaceId(Connection connection, long jobId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT workspace_id FROM job WHERE id = ?")) {
+            statement.setLong(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                result.next();
+                return result.getLong(1);
+            }
+        }
+    }
+
+    private void insertSettledUsage(Connection connection, long workspaceId, long jobId, String costUsd) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO model_usage (workspace_id, requested_by_user_id, purpose, job_id, model_name, prompt_version, rate_card, state,
+                                         reserved_input_tokens, reserved_output_tokens, reserved_cost_usd,
+                                         actual_input_tokens, actual_output_tokens, actual_cost_usd, closed_at)
+                VALUES (?, 1, 'GENERATION', ?, 'seeded-model', 'seeded-prompt', 'seeded rates', 'SETTLED', 1, 1, 0.010000, 1, 1, ?::numeric, now())
+                """)) {
+            statement.setLong(1, workspaceId);
+            statement.setLong(2, jobId);
+            statement.setString(3, costUsd);
+            statement.executeUpdate();
+        }
+    }
+
+    private String lastJobEventMessage(Connection connection, long jobId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT safe_message FROM job_event WHERE job_id = ? ORDER BY sequence DESC LIMIT 1")) {
+            statement.setLong(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                result.next();
+                return result.getString(1);
+            }
+        }
+    }
+
+    private long usageRowCount(Connection connection, long jobId) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("SELECT count(*) FROM model_usage WHERE job_id = ?")) {
+            statement.setLong(1, jobId);
+            try (ResultSet result = statement.executeQuery()) {
+                result.next();
+                return result.getLong(1);
+            }
+        }
     }
 
     private long insertUser(Connection connection) throws Exception {

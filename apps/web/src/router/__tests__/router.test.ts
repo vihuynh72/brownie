@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import router from '@/router'
 import { useSessionStore } from '@/stores/session'
+import { ApiRequestError, getCurrentIdentity } from '@/api/client'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -38,7 +39,7 @@ describe('router', () => {
    * so following one while signed out lands on the sign-in page rather
    * than on a screen whose first request comes back 401.
    */
-  it.each(['/documents/new', '/documents/12', '/templates/new', '/trash', '/chat'])(
+  it.each(['/documents/new', '/documents/12', '/templates/new', '/trash', '/your-data', '/chat'])(
     'sends a signed-out visitor from %s to the sign-in page, carrying where they were going',
     async (path) => {
       useSessionStore().status = 'anonymous'
@@ -58,6 +59,30 @@ describe('router', () => {
 
     await router.push('/')
     expect(router.currentRoute.value.name).toBe('home')
+  })
+
+  /**
+   * What happens on a real page load: the app shell has already started asking who is signed in by the time the
+   * guard runs, so the guard sees "loading", not "unknown". It has to wait for that answer, not go ahead.
+   */
+  it('waits for an identity request already under way, and then sends a signed-out visitor to sign in', async () => {
+    const session = useSessionStore()
+    session.status = 'unknown'
+    let answer: (error: unknown) => void = () => {}
+    vi.mocked(getCurrentIdentity).mockReturnValue(new Promise((_, reject) => (answer = reject)))
+    const underWay = session.loadIdentity()
+    expect(session.status).toBe('loading')
+
+    const navigation = router.push('/your-data')
+    // Let the router get as far as it will without the answer, as it does on a real page load, where the network is
+    // slower than the router.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    answer(new ApiRequestError(401, undefined))
+    await underWay
+    await navigation
+
+    expect(router.currentRoute.value.name).toBe('signin')
+    expect(router.currentRoute.value.query.next).toBe('/your-data')
   })
 
   /** A failed identity request is not the same as being signed out; the shell shows that failure with a retry. */

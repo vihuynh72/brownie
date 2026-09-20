@@ -100,6 +100,25 @@ class JobEventControllerTest {
         }
     }
 
+    /**
+     * With only a ceiling everyone shares, one person leaving tabs open becomes everyone else's "too many
+     * streams". Each person has a smaller one of their own.
+     */
+    @Test
+    void onePersonMayHoldAFewStreamsOpenNotAllOfThem() {
+        CapturingJobEventRepository events = new CapturingJobEventRepository(true, List.of());
+        try (ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor()) {
+            JobEventController controller = controller(events, true, executor);
+            OidcUser principal = oidcUserWith("https://issuer.example", "subject-7");
+
+            for (int i = 0; i < 4; i++) {
+                assertThat(controller.stream(42L, null, principal)).isNotNull();
+            }
+            // Far below the shared ceiling of twenty, and still refused: this person's own four are taken.
+            assertThatThrownBy(() -> controller.stream(42L, null, principal)).isInstanceOf(EventStreamCapacityException.class);
+        }
+    }
+
     private static JobEventController controller(
             CapturingJobEventRepository events,
             boolean hasWorkspaceAccess,

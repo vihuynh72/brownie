@@ -40,10 +40,12 @@ import {
   patchDocumentContent,
   recordReviewDecision,
   resumeGeneration,
+  retryJob,
   setFieldLock,
   startExtraction,
   uploadArtifactContent,
   validateDocument,
+  type ArtifactResponse,
   type DocumentResponse,
   type DocumentRevisionResponse,
   type DocumentSourceResponse,
@@ -63,6 +65,7 @@ import {
   type RuleResponse,
   type ValidationManifestResponse,
 } from '@/api/client'
+import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { describePayload, describeScope } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 
@@ -85,11 +88,19 @@ function announce(text: string): void {
 }
 
 const uploadLimit = ref<string | null>(null)
+/** The same limit in bytes, to tell a file refused for its size from one refused for what it unpacks to. */
+const uploadLimitBytes = ref<number | null>(null)
 onMounted(async () => {
   try {
-    uploadLimit.value = formatBytes((await loadCapabilities()).maxUploadBytes)
+    const { maxUploadBytes } = await loadCapabilities()
+    // An older server may not send the limit at all; then neither the hint nor a size refusal names one.
+    if (typeof maxUploadBytes === 'number' && maxUploadBytes > 0) {
+      uploadLimitBytes.value = maxUploadBytes
+      uploadLimit.value = formatBytes(maxUploadBytes)
+    }
   } catch {
     uploadLimit.value = null
+    uploadLimitBytes.value = null
   }
 })
 
@@ -310,15 +321,45 @@ async function loadDocumentSources(): Promise<void> {
   }
 }
 
-type ExtractionStage = 'idle' | 'starting' | 'running' | 'waiting-for-input' | 'resuming' | 'succeeded' | 'failed' | 'cancelled'
+/**
+ * 'unconfirmed' is a run that moved on to a state whose details this page could not read (its
+ * questions, or its result). Nothing is running here any more, so neither "Extracting…" nor Cancel
+ * is shown; and nothing new is started until "Check again" has read the run back, since a second
+ * start would be a second paid run.
+ */
+type ExtractionStage =
+  | 'idle'
+  | 'starting'
+  | 'running'
+  | 'waiting-for-input'
+  | 'resuming'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'unconfirmed'
 const extractionStage = ref<ExtractionStage>('idle')
 const extractionJobState = ref<string | null>(null)
 const extractionError = ref<string | null>(null)
 const extractionResultArtifactId = ref<number | null>(null)
 const extractionJobId = ref<number | null>(null)
 const cancellationRequested = ref(false)
-/** Set when polling gave up without a terminal state; "Check again" re-reads the run from the server. */
+/** Set when polling stopped without knowing where the run ended up; "Check again" re-reads the run from the server. */
 const extractionStalled = ref(false)
+/** Why polling stopped, shown beside "Check again". */
+const stalledMessage = ref('')
+/** What a run under way is doing, in words rather than the job queue's state names; null while there is nothing to say. */
+const runProgress = computed(() => {
+  switch (extractionJobState.value) {
+    case 'QUEUED':
+      return 'Waiting for a worker to pick this run up.'
+    case 'LEASED':
+      return 'Brownie is reading your source and filling in the fields.'
+    case 'CANCEL_REQUESTED':
+      return 'Stopping this run.'
+    default:
+      return null
+  }
+})
 /** Set while a run has sat QUEUED with no claim attempt for longer than a worker would take to notice it. */
 const noWorkerYet = ref(false)
 const openQuestions = ref<QuestionResponse[]>([])
@@ -332,14 +373,18 @@ const answeringQuestionId = ref<number | null>(null)
  * apply), or ended (say so). Nothing here starts a job.
  */
 async function rehydrateLatestRun(): Promise<void> {
+  try {
+    await followLatestRun()
+  } catch {
+    // The Assist tab starts as it would before any run; the runs themselves are safe on the server.
+  }
+}
+
+/** What rehydrateLatestRun does, but throwing when the runs could not be listed, so "Check again" can say so. */
+async function followLatestRun(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined) return
-  let runs: Awaited<ReturnType<typeof listGenerationRuns>>
-  try {
-    runs = (await listGenerationRuns(workspaceId, props.documentId)) ?? []
-  } catch {
-    return
-  }
+  const runs = (await listGenerationRuns(workspaceId, props.documentId)) ?? []
   const latest = runs[0]
   if (!latest) return
   extractionJobId.value = latest.jobId
@@ -356,8 +401,10 @@ async function rehydrateLatestRun(): Promise<void> {
     case 'WAITING_FOR_INPUT':
       try {
         openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, latest.jobId)
-      } catch {
-        openQuestions.value = []
+      } catch (error) {
+        // An empty question list would offer Continue with nothing answered.
+        stopFollowingUnreadRun('This run is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
+        break
       }
       extractionStage.value = 'waiting-for-input'
       break
@@ -371,8 +418,24 @@ async function rehydrateLatestRun(): Promise<void> {
       break
     default:
       extractionStage.value = 'failed'
-      extractionError.value = `The last run did not succeed (${latest.job.state}).`
+      // DEAD and FAILED are the job queue's names for a run that stopped trying, not words for a person.
+      extractionError.value =
+        latest.job.state === 'DEAD' || latest.job.state === 'FAILED'
+          ? 'The last run gave up before it could finish.'
+          : 'The last run ended without a result.'
   }
+}
+
+/**
+ * Stops following a run whose next step could not be read. The run is fine on the server; this
+ * page just does not know where it is, so it offers "Check again" rather than showing a run still
+ * under way, with a Cancel for it, or inviting a second, paid start.
+ */
+function stopFollowingUnreadRun(what: string, error: unknown, feature: string): void {
+  extractionStage.value = 'unconfirmed'
+  extractionStalled.value = true
+  const why = describeCommonFailure(error, feature)
+  stalledMessage.value = why ? `${what} ${why}` : what
 }
 
 type ApplyStage = 'idle' | 'applying' | 'proposed' | 'accepting' | 'accepted' | 'failed'
@@ -392,6 +455,25 @@ const validationManifest = ref<ValidationManifestResponse | null>(null)
 const checksHydratedForRevisionId = ref<number | null>(null)
 
 const exportFormat = ref<ExportFormat>('BOTH')
+/** As the format choice names them, not as the server spells them. */
+const FORMAT_NAMES: Record<ExportFormat, string> = { DOCX: 'DOCX', PDF: 'PDF', BOTH: 'DOCX and PDF' }
+/**
+ * Says what was exported in terms of what was asked for. A Word-only export is complete, not "only one
+ * file"; and when a PDF was asked for and could not be made, the Word file is offered with the reason.
+ */
+const exportOutcomeMessage = computed(() => {
+  const receipt = exportReceipt.value
+  if (!receipt) return ''
+  const hasPdf = receipt.pdfArtifactId != null
+  switch (receipt.format) {
+    case 'DOCX':
+      return 'DOCX exported.'
+    case 'PDF':
+      return hasPdf ? 'PDF exported.' : 'The PDF could not be made for this version, so the DOCX is offered instead.'
+    default:
+      return hasPdf ? 'Both files exported.' : 'The DOCX was exported; the PDF could not be made for this version.'
+  }
+})
 
 type ApprovalStage = 'idle' | 'approving' | 'approved' | 'failed'
 const approvalStage = ref<ApprovalStage>('idle')
@@ -414,17 +496,37 @@ const compareStage = ref<CompareStage>('idle')
 const compareError = ref<string | null>(null)
 const compareRevision = ref<DocumentRevisionResponse | null>(null)
 
-async function loadDocument(): Promise<void> {
+/** Why the first load failed, for the message that stands in for the editor; null otherwise. */
+const loadError = ref<string | null>(null)
+/**
+ * Why a reload after the first load failed. The editor stays exactly as it was -- the document last loaded, the
+ * person's drafts and their focus -- with this said above it, since what it shows may be out of date.
+ */
+const reloadError = ref<string | null>(null)
+/** Set when a request for this document found it gone; the messages that say so link to the trash bin. */
+const documentGone = ref(false)
+
+/** Brownie's own "not there": a document answers every read and write that way once it is in the trash. */
+function isDocumentGone(error: unknown): boolean {
+  return brownieSaysNotThere(error)
+}
+
+/** Loads the document and answers whether it could, so a caller never acts on a copy it only assumes is current. */
+async function loadDocument(): Promise<boolean> {
   const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined) return
-  // Only the first load shows the loading state. A reload after a save, a review decision or an
-  // accepted proposal keeps the editor mounted: unmounting it would drop keyboard focus and any
-  // text the person is typing at that moment.
-  if (document.value === null) loadState.value = 'loading'
+  if (workspaceId === undefined) return false
+  // Only the first load shows the loading state, and only its failure replaces the editor. A reload
+  // after a save, a review decision or an accepted proposal keeps the editor mounted: unmounting it
+  // would drop keyboard focus and any text the person is typing at that moment.
+  const reloading = document.value !== null
+  if (!reloading) loadState.value = 'loading'
   try {
     const loaded = await getDocument(workspaceId, props.documentId)
     document.value = loaded
     loadState.value = 'loaded'
+    loadError.value = null
+    reloadError.value = null
+    documentGone.value = false
     if (definitionsLoadedForVersionId.value !== loaded.templateVersionId) {
       await loadFieldDefinitions(workspaceId, loaded)
       void loadRules()
@@ -438,8 +540,26 @@ async function loadDocument(): Promise<void> {
       await loadDocumentSources()
       await rehydrateLatestRun()
     }
-  } catch {
-    loadState.value = 'error'
+    return true
+  } catch (error) {
+    const gone = isDocumentGone(error)
+    if (gone) documentGone.value = true
+    if (!reloading) {
+      loadState.value = 'error'
+      loadError.value = gone
+        ? 'This document is not available. It may have been moved to the trash, where it can be restored.'
+        : (describeCommonFailure(error, 'a way to open this document') ?? 'Could not load this document.')
+      return false
+    }
+    if (gone) {
+      reloadError.value =
+        'This document is no longer available, for example because it was moved to the trash in another tab. ' +
+        'What is shown here is the last version this page loaded.'
+    } else {
+      const why = describeCommonFailure(error, 'a way to open this document')
+      reloadError.value = `The latest version of this document could not be loaded, so what is shown here may be out of date.${why ? ` ${why}` : ''}`
+    }
+    return false
   }
 }
 
@@ -725,8 +845,15 @@ async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
       crypto.randomUUID(),
     )
     editNote.value = ''
-    await loadDocument()
-    reconcileDraftsAfterSave(sent)
+    if (await loadDocument()) {
+      reconcileDraftsAfterSave(sent)
+    } else {
+      // The save happened, but the copy on screen is still the one from before it, so the server's
+      // values cannot be taken from it. What was sent is what the server now holds; anything typed
+      // since stays unsaved, and its save, made against the revision on screen, is refused as stale
+      // and reloads the document.
+      cleanDrafts.value = JSON.parse(JSON.stringify(sent))
+    }
     saveStage.value = 'saved'
   } catch (error) {
     if (error instanceof ApiRequestError && error.status === 412) {
@@ -738,14 +865,35 @@ async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
       return
     }
     saveStage.value = 'failed'
-    if (error instanceof ApiRequestError && error.status === 409 && error.problem?.code === 'FIELD_LOCKED') {
-      saveError.value = error.problem.detail ?? 'A field you changed is locked. Unlock it first, or discard that change.'
-    } else if (error instanceof ApiRequestError && (error.status === 422 || error.status === 400)) {
-      saveError.value = error.problem?.detail ?? error.message
-    } else {
-      saveError.value = 'Could not save your changes. Try again.'
+    if (isDocumentGone(error)) documentGone.value = true
+    saveError.value = saveFailureMessage(error)
+  }
+}
+
+/** Why a save did not happen, in words that say what will help. The drafts stay as typed whatever it was. */
+function saveFailureMessage(error: unknown): string {
+  if (isDocumentGone(error)) {
+    return (
+      'Your changes were not saved: this document is no longer available, for example because it was moved to ' +
+      'the trash. They are still in the fields above.'
+    )
+  }
+  if (error instanceof ApiRequestError) {
+    if (error.status === 409 && error.problem?.code === 'FIELD_LOCKED') {
+      return error.problem.detail ?? 'A field you changed is locked. Unlock it first, or discard that change.'
+    }
+    if (error.status === 422 || error.status === 400) {
+      return error.problem?.detail ?? error.message
+    }
+    // Only the server knows how large one save may be, and its explanation says.
+    if (error.status === 413) {
+      return error.problem?.detail
+        ? `Your changes were not saved. ${error.problem.detail}`
+        : 'Your changes were not saved: together they are larger than one save may be.'
     }
   }
+  const why = describeCommonFailure(error, 'a way to save changes')
+  return why ? `Your changes were not saved. ${why}` : 'Could not save your changes. Try again.'
 }
 
 /**
@@ -755,10 +903,27 @@ async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
  */
 async function reloadedAfterStaleRevision(error: unknown): Promise<boolean> {
   if (!(error instanceof ApiRequestError && error.status === 412)) return false
-  fieldActionError.value = 'This document changed since you loaded it, so it was reloaded. Try again on the current version.'
-  announce('This document changed elsewhere and was reloaded.')
-  await loadDocument()
+  if (await loadDocument()) {
+    fieldActionError.value = 'This document changed since you loaded it, so it was reloaded. Try again on the current version.'
+    announce('This document changed elsewhere and was reloaded.')
+  } else {
+    // The reload's own message says why the current version is not on screen.
+    fieldActionError.value = 'This document changed since you loaded it, so that was not done.'
+  }
   return true
+}
+
+/**
+ * Says why a review decision or a lock did not happen. `fallback` names which one, for a failure
+ * no page words the same way.
+ */
+function reportFieldActionFailure(error: unknown, fallback: string): void {
+  if (isDocumentGone(error)) {
+    documentGone.value = true
+    fieldActionError.value = 'That was not done: this document is no longer available, for example because it was moved to the trash.'
+    return
+  }
+  fieldActionError.value = describeCommonFailure(error, 'field reviews and locks') ?? fallback
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -863,7 +1028,7 @@ async function recordRowReview(index: number, decision: ReviewDecision): Promise
     await loadDocument()
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    fieldActionError.value = `Could not record a review decision for row ${index + 1}. Try again.`
+    reportFieldActionFailure(error, `Could not record a review decision for row ${index + 1}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -885,7 +1050,7 @@ async function toggleRowLock(index: number): Promise<void> {
     await loadDocument()
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    fieldActionError.value = `Could not change the lock for row ${index + 1}. Try again.`
+    reportFieldActionFailure(error, `Could not change the lock for row ${index + 1}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -936,12 +1101,13 @@ async function loadExistingPreview(): Promise<void> {
     const compilation = await getLatestCompilation(workspaceId, props.documentId, current.id)
     adoptPreview(compilation.pdfArtifactId, current.contentHash, current.revisionNumber)
   } catch (error) {
-    if (error instanceof ApiRequestError && error.status === 404) {
+    // A server without the route is not one with no preview yet: generating one would fail the same way.
+    if (error instanceof ApiRequestError && error.status === 404 && !error.routeMissing) {
       previewStage.value = previewArtifactId.value != null ? 'ready' : 'idle'
       return
     }
     previewStage.value = 'failed'
-    previewError.value = 'Could not check for an existing preview. Try again.'
+    previewError.value = describeCommonFailure(error, 'document previews') ?? 'Could not check for an existing preview. Try again.'
   }
 }
 
@@ -957,7 +1123,8 @@ async function regeneratePreview(): Promise<void> {
   } catch (error) {
     previewStage.value = 'failed'
     previewError.value =
-      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'The preview could not be generated. Try again.'
+      describeCommonFailure(error, 'document previews') ??
+      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'The preview could not be generated. Try again.')
   }
 }
 
@@ -1054,8 +1221,12 @@ watch(() => document.value?.currentRevision.id, (newRevisionId) => {
  * approval/export state is reset.
  *
  * A 422 carries a single server message rather than an itemized list.
+ *
+ * Anything else that every page words the same way -- a busy renderer, too many requests, a
+ * server without the route -- is said as such, with the server's own explanation where it gave
+ * one; `feature` names the step for a server that does not have it.
  */
-function checksFailureMessage(error: unknown): string {
+function checksFailureMessage(error: unknown, feature: string): string {
   if (error instanceof ApiRequestError) {
     if (error.status === 412) {
       resetChecksState()
@@ -1063,7 +1234,7 @@ function checksFailureMessage(error: unknown): string {
       validationError.value = message
       return message
     }
-    if (error.status === 404) {
+    if (error.status === 404 && !error.routeMissing) {
       resetApprovalAndExportState()
       return error.problem?.detail ?? 'That approval is no longer available. Validate again.'
     }
@@ -1071,7 +1242,7 @@ function checksFailureMessage(error: unknown): string {
       return error.problem?.detail ?? error.message
     }
   }
-  return 'Something went wrong. Try again.'
+  return describeCommonFailure(error, feature) ?? 'Something went wrong. Try again.'
 }
 
 async function validateCurrentRevision(): Promise<void> {
@@ -1100,7 +1271,7 @@ async function validateCurrentRevision(): Promise<void> {
     validationStage.value = 'validated'
   } catch (error) {
     validationStage.value = 'failed'
-    validationError.value = checksFailureMessage(error)
+    validationError.value = checksFailureMessage(error, 'document checks')
   }
 }
 
@@ -1127,7 +1298,7 @@ async function approveCurrentExport(): Promise<void> {
     approvalStage.value = 'approved'
   } catch (error) {
     approvalStage.value = 'failed'
-    approvalError.value = checksFailureMessage(error)
+    approvalError.value = checksFailureMessage(error, 'export approval')
   }
 }
 
@@ -1142,7 +1313,7 @@ async function exportApprovedDocument(): Promise<void> {
     exportStage.value = 'exported'
   } catch (error) {
     exportStage.value = 'failed'
-    exportError.value = checksFailureMessage(error)
+    exportError.value = checksFailureMessage(error, 'exports')
   }
 }
 
@@ -1202,7 +1373,10 @@ async function loadRevisionHistory(): Promise<void> {
     revisionsLoadState.value = 'loaded'
   } catch (error) {
     revisionsLoadState.value = 'error'
-    revisionsError.value = error instanceof ApiRequestError ? error.message : "Could not load this document's revision history."
+    revisionsError.value =
+      describeCommonFailure(error, 'revision history') ??
+      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
+      "Could not load this document's revision history."
   }
 }
 
@@ -1227,7 +1401,10 @@ async function compareToRevision(revisionId: number): Promise<void> {
   } catch (error) {
     if (requestToken !== compareRequestToken) return
     compareStage.value = 'error'
-    compareError.value = error instanceof ApiRequestError ? error.message : 'Could not load that revision.'
+    compareError.value =
+      describeCommonFailure(error, 'revision history') ??
+      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
+      'Could not load that revision.'
   }
 }
 
@@ -1248,6 +1425,49 @@ function fieldChanged(fieldId: string): boolean {
   )
 }
 
+/**
+ * Why a finished upload was not accepted, as a clause. The rejection reasons are the scanner's and
+ * the content inspector's own codes, and a file still waiting for its scan has none at all.
+ */
+function whyFileWasRefused(artifact: ArtifactResponse): string {
+  if (artifact.status !== 'REJECTED') return 'Brownie could not finish checking it'
+  switch (artifact.rejectionReason) {
+    case 'MALWARE_DETECTED':
+      return 'the malware scan flagged it'
+    case 'UNSUPPORTED_MEDIA_TYPE':
+      return 'Brownie cannot use that kind of file'
+    case 'DECOMPRESSION_LIMIT_EXCEEDED':
+      return 'it unpacks to far more than Brownie accepts'
+    case 'EXPIRED_ABANDONED_UPLOAD':
+      return 'the upload took too long to finish'
+    default:
+      return "it did not pass Brownie's checks"
+  }
+}
+
+/**
+ * Why an upload the server refused was not attached. A size refusal names the limit when this page
+ * knows it and the file is over it; otherwise the server's own explanation says what was too large,
+ * which for a package can be what it unpacks to rather than the file itself.
+ */
+function uploadFailureMessage(error: unknown, file: File): string {
+  if (error instanceof ApiRequestError && error.status === 413) {
+    const limit = uploadLimitBytes.value
+    const limitText = limit !== null && file.size > limit ? formatBytes(limit) : null
+    if (limitText) {
+      return `That file was not attached: it is larger than the ${limitText} upload limit.`
+    }
+    return error.problem?.detail
+      ? `That file was not attached. ${error.problem.detail}`
+      : 'That file was not attached: it is larger than Brownie accepts.'
+  }
+  if (error instanceof ApiRequestError && error.status === 415) {
+    return 'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.'
+  }
+  const why = describeCommonFailure(error, 'a way to attach sources')
+  return why ? `That file was not attached. ${why}` : 'Could not attach that file. Try again.'
+}
+
 async function onSourceFileChosen(event: Event): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const input = event.target as HTMLInputElement
@@ -1262,7 +1482,7 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     await uploadArtifactContent(workspaceId, allocated.id, file)
     const completed = await completeUpload(workspaceId, allocated.id)
     if (completed.status !== 'READY') {
-      sourceUploadError.value = `File was not accepted (${completed.rejectionReason ?? completed.status}).`
+      sourceUploadError.value = `That file was not attached: ${whyFileWasRefused(completed)}.`
       sourceUploadState.value = 'error'
       return
     }
@@ -1271,8 +1491,8 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
     selectedSourceId.value = attached.id
     sourceUploadState.value = 'idle'
-  } catch {
-    sourceUploadError.value = 'Could not attach that file. Try again.'
+  } catch (error) {
+    sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
   }
 }
@@ -1293,6 +1513,8 @@ async function tryGroundedExtraction(): Promise<void> {
 
   extractionStage.value = 'starting'
   extractionError.value = null
+  // The last run's state must not describe this one, or offer to start it again, before its first status read.
+  extractionJobState.value = null
   extractionResultArtifactId.value = null
   extractionStalled.value = false
   cancellationRequested.value = false
@@ -1308,16 +1530,35 @@ async function tryGroundedExtraction(): Promise<void> {
   } catch (error) {
     extractionStage.value = 'failed'
     extractionError.value =
-      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Could not start extraction. Try again.'
+      describeCommonFailure(error, 'extraction from sources') ??
+      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Could not start extraction. Try again.')
     return
   }
   await pollJobUntilTerminal(workspaceId, extractionJobId.value!)
 }
 
 /**
+ * The sentence for a failed status read that waiting cannot fix, or null for one worth waiting out
+ * (a lost connection, a server error, too many requests). Polling on through an ended session or a
+ * missing run would say "still checking" for ten minutes about something that can only ever answer
+ * the same way.
+ */
+function pollFailureWaitingCannotFix(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError)) return null
+  if (brownieSaysNotThere(error)) {
+    return 'This run is no longer available, for example because its document was moved to the trash.'
+  }
+  if (error.status === 401 || error.routeMissing) return describeCommonFailure(error, 'a way to check on a run')
+  if (error.status === 403) return 'Brownie no longer lets this account see this run, so this page stopped checking on it.'
+  return null
+}
+
+/**
  * Follows one job to a resting state. A failed status read is not a failed job: the loop keeps
  * going with a longer gap and tells the person it lost contact, because giving up here would
- * invite a second, paid start. After ten minutes it stops polling and offers "Check again"
+ * invite a second, paid start. It stops early only on an answer waiting cannot change (see
+ * pollFailureWaitingCannotFix), or when the run's questions or result cannot be read once it gets
+ * there, which "Check again" picks up. After ten minutes it stops polling and offers "Check again"
  * instead, since the job's real state is on the server whenever the person asks.
  */
 async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise<void> {
@@ -1332,8 +1573,18 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       job = await getJob(workspaceId, jobId)
       extractionError.value = null
       delayMs = 1500
-    } catch {
-      extractionError.value = 'Lost contact with the server; still checking on this run.'
+    } catch (error) {
+      if (extractionJobId.value !== jobId) return
+      const ending = pollFailureWaitingCannotFix(error)
+      if (ending !== null) {
+        extractionStage.value = 'failed'
+        extractionError.value = ending
+        return
+      }
+      extractionError.value =
+        error instanceof ApiRequestError && error.status === 429
+          ? 'Brownie asked this page to check less often; still checking on this run.'
+          : 'Lost contact with the server; still checking on this run.'
       delayMs = Math.min(delayMs * 2, 15_000)
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       continue
@@ -1345,31 +1596,99 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
     // there is no worker to claim it, which the person should be told rather than left watching.
     noWorkerYet.value = job.state === 'QUEUED' && job.attemptCount === 0 && Date.now() - startedAt > 30_000
     if (job.state === 'WAITING_FOR_INPUT') {
-      openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, jobId)
+      try {
+        openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, jobId)
+      } catch (error) {
+        stopFollowingUnreadRun('This run is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
+        return
+      }
       extractionStage.value = 'waiting-for-input'
       return
     }
     if (terminalStates.has(job.state)) {
       if (job.state === 'SUCCEEDED') {
-        const result = await getExtractionResult(workspaceId, props.documentId, jobId)
+        let result
+        try {
+          result = await getExtractionResult(workspaceId, props.documentId, jobId)
+        } catch (error) {
+          stopFollowingUnreadRun('This run has finished, but its result could not be loaded.', error, 'run results')
+          return
+        }
         extractionResultArtifactId.value = result.artifactId
         extractionStage.value = 'succeeded'
       } else if (job.state === 'CANCELLED') {
         extractionStage.value = 'cancelled'
       } else {
         extractionStage.value = 'failed'
-        extractionError.value = `Extraction did not succeed (${job.state}).`
+        // FAILED or DEAD: the job queue's names for a run that stopped trying, not words for a person.
+        extractionError.value = 'This run gave up before it could finish.'
       }
       return
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
   extractionStalled.value = true
+  stalledMessage.value = 'Still running after ten minutes of checking. The run continues on the server.'
 }
 
 /** Re-reads the run from the server; used after polling stopped, and safe at any time. */
 async function checkRunAgain(): Promise<void> {
-  await rehydrateLatestRun()
+  try {
+    await followLatestRun()
+  } catch (error) {
+    // The run is as it was; only this check failed, so the offer to check stays.
+    stalledMessage.value = describeCommonFailure(error, 'a list of runs') ?? 'Brownie could not check on this run just now.'
+  }
+}
+
+const retryingRun = ref(false)
+/** The job the server said can never be started again, so the offer is not repeated for it. */
+const runThatCannotBeRetried = ref<number | null>(null)
+/**
+ * Only a run that gave up can be started again. Starting a new extraction from the same source on
+ * the same version of the document would find this same run and report the same ending, so this is
+ * the way forward until the document changes.
+ */
+const canRetryRun = computed(
+  () =>
+    extractionStage.value === 'failed' &&
+    extractionJobId.value !== null &&
+    extractionJobId.value !== runThatCannotBeRetried.value &&
+    (extractionJobState.value === 'DEAD' || extractionJobState.value === 'FAILED'),
+)
+
+async function retryRun(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  const jobId = extractionJobId.value
+  if (workspaceId === undefined || jobId === null) return
+  retryingRun.value = true
+  extractionError.value = null
+  try {
+    const job = await retryJob(workspaceId, jobId)
+    extractionJobState.value = job.state
+    extractionStalled.value = false
+    cancellationRequested.value = false
+    extractionStage.value = 'running'
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.problem?.code === 'JOB_TARGET_STALE') {
+      runThatCannotBeRetried.value = jobId
+      extractionError.value =
+        'This document has changed since that run began, so it cannot be started again. Start a new extraction instead.'
+    } else if (error instanceof ApiRequestError && !error.routeMissing && (error.status === 409 || error.status === 404)) {
+      // The run is not in the state this page last saw (another tab restarted it, or it has since
+      // finished), so asking again cannot help; what the server says now is what should be shown.
+      runThatCannotBeRetried.value = jobId
+      await rehydrateLatestRun()
+    } else {
+      // Nothing happened to the run. A server without the retry route says nothing about the run
+      // itself, so it keeps its ending and the offer stays for once the server has been updated.
+      extractionError.value = describeCommonFailure(error, 'a way to start a run again') ?? 'Could not start this run again. Try again.'
+    }
+    return
+  } finally {
+    retryingRun.value = false
+  }
+  await pollJobUntilTerminal(workspaceId, jobId)
 }
 
 /**
@@ -1390,8 +1709,8 @@ async function cancelExtraction(): Promise<void> {
       extractionStage.value = 'running'
       await pollJobUntilTerminal(workspaceId, jobId)
     }
-  } catch {
-    extractionError.value = 'Could not request cancellation. Try again.'
+  } catch (error) {
+    extractionError.value = describeCommonFailure(error, 'a way to cancel a run') ?? 'Could not request cancellation. Try again.'
   }
 }
 
@@ -1405,8 +1724,8 @@ async function submitAnswer(questionId: number): Promise<void> {
   try {
     const answered = await answerQuestion(workspaceId, questionId, answerValue)
     openQuestions.value = openQuestions.value.map((question) => (question.id === answered.id ? answered : question))
-  } catch {
-    extractionError.value = 'Could not save that answer. Try again.'
+  } catch (error) {
+    extractionError.value = describeCommonFailure(error, "a way to answer a run's questions") ?? 'Could not save that answer. Try again.'
   } finally {
     answeringQuestionId.value = null
   }
@@ -1423,9 +1742,9 @@ async function resumeAfterAnswers(): Promise<void> {
     await resumeGeneration(workspaceId, props.documentId, jobId, crypto.randomUUID())
     extractionStage.value = 'running'
     await pollJobUntilTerminal(workspaceId, jobId)
-  } catch {
+  } catch (error) {
     extractionStage.value = 'waiting-for-input'
-    extractionError.value = 'Could not resume extraction. Try again.'
+    extractionError.value = describeCommonFailure(error, 'a way to continue a run once its questions are answered') ?? 'Could not resume extraction. Try again.'
   }
 }
 
@@ -1439,9 +1758,9 @@ async function applyResultToDocument(): Promise<void> {
   try {
     patchProposal.value = await applyGenerationResult(workspaceId, props.documentId, jobId)
     applyStage.value = 'proposed'
-  } catch {
+  } catch (error) {
     applyStage.value = 'failed'
-    applyError.value = 'Could not turn this result into a proposal. Try again.'
+    applyError.value = describeCommonFailure(error, "a way to apply a run's results") ?? 'Could not turn this result into a proposal. Try again.'
   }
 }
 
@@ -1472,7 +1791,8 @@ async function interpretAssistRequest(): Promise<void> {
   } catch (error) {
     assistStage.value = 'failed'
     assistError.value =
-      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not read that request. Try again.'
+      describeCommonFailure(error, 'the Assist composer') ??
+      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not read that request. Try again.')
   }
 }
 
@@ -1509,12 +1829,15 @@ async function runAssistRequest(): Promise<void> {
   } catch (error) {
     assistStage.value = 'failed'
     if (error instanceof ApiRequestError && error.status === 412) {
-      assistError.value = 'This document changed since you loaded it, so it was reloaded. Ask again on the current version.'
-      await loadDocument()
+      // The reload's own message says why, when the current version could not be read.
+      assistError.value = (await loadDocument())
+        ? 'This document changed since you loaded it, so it was reloaded. Ask again on the current version.'
+        : 'This document changed since you loaded it, so that was not done.'
       return
     }
     assistError.value =
-      error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not do that. Try again.'
+      describeCommonFailure(error, 'the Assist composer') ??
+      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not do that. Try again.')
   }
 }
 
@@ -1543,9 +1866,9 @@ async function acceptProposal(): Promise<void> {
     )
     applyStage.value = 'accepted'
     await loadDocument()
-  } catch {
+  } catch (error) {
     applyStage.value = 'proposed'
-    applyError.value = 'Could not apply this proposal. Try again.'
+    applyError.value = describeCommonFailure(error, 'a way to accept proposed changes') ?? 'Could not apply this proposal. Try again.'
   }
 }
 
@@ -1560,7 +1883,7 @@ async function recordFieldReview(fieldId: string, decision: ReviewDecision): Pro
     await loadDocument()
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    fieldActionError.value = `Could not record a review decision for ${fieldId}. Try again.`
+    reportFieldActionFailure(error, `Could not record a review decision for ${fieldId}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -1578,7 +1901,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
     await loadDocument()
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    fieldActionError.value = `Could not change the lock for ${fieldId}. Try again.`
+    reportFieldActionFailure(error, `Could not change the lock for ${fieldId}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -1600,7 +1923,8 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   </section>
 
   <section v-else-if="loadState === 'error'" class="field-error" role="alert">
-    <p>Could not load this document.</p>
+    <p>{{ loadError ?? 'Could not load this document.' }}</p>
+    <p v-if="documentGone"><RouterLink to="/trash">Open the trash bin</RouterLink></p>
     <RouterLink to="/">Back to your documents</RouterLink>
   </section>
 
@@ -1616,11 +1940,18 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
     </div>
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
     <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
+    <p v-if="reloadError" class="field-error" role="alert">
+      {{ reloadError }}
+      <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
+    </p>
 
     <div class="workspace-layout" :class="{ 'workspace-layout--with-preview': previewOpen }">
       <div class="card preview-pane">
         <h2>Content</h2>
-        <p v-if="fieldActionError" class="field-error" role="alert">{{ fieldActionError }}</p>
+        <p v-if="fieldActionError" class="field-error" role="alert">
+          {{ fieldActionError }}
+          <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+        </p>
 
         <div v-if="!hasAnyValue && !isDirty" class="empty-state">
           <p class="empty-state__title">Nothing filled in yet.</p>
@@ -1876,9 +2207,17 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 <li v-for="problem in rowProblems" :key="problem">{{ problem }}</li>
               </ul>
             </div>
-            <p v-if="saveError" class="field-error" role="alert">{{ saveError }}</p>
+            <p v-if="saveError" class="field-error" role="alert">
+              {{ saveError }}
+              <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+            </p>
             <div v-if="saveStage === 'conflict'" class="field-error conflict-notice" role="alert">
-              <p>
+              <!-- The revision on screen is only the current one when the reload after the conflict worked. -->
+              <p v-if="reloadError">
+                This document changed since you started editing, and its latest version could not be loaded, so
+                nothing was saved. Your edits are still in the fields above.
+              </p>
+              <p v-else>
                 This document changed since you started editing (revision
                 {{ document.currentRevision.revisionNumber }} is now current). Your edits are still in the fields
                 above. Save them onto the latest version, or discard them to see what changed.
@@ -2072,7 +2411,13 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 <button
                   class="button button--primary"
                   type="button"
-                  :disabled="extractionStage === 'starting' || extractionStage === 'running' || extractionStage === 'waiting-for-input' || extractionStage === 'resuming'"
+                  :disabled="
+                    extractionStage === 'starting' ||
+                    extractionStage === 'running' ||
+                    extractionStage === 'waiting-for-input' ||
+                    extractionStage === 'resuming' ||
+                    extractionStage === 'unconfirmed'
+                  "
                   @click="tryGroundedExtraction"
                 >
                   {{ extractionStage === 'starting' || extractionStage === 'running' ? 'Extracting…' : 'Try grounded extraction' }}
@@ -2086,17 +2431,22 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 >
                   {{ cancellationRequested ? 'Cancellation requested…' : 'Cancel' }}
                 </button>
-                <p v-if="extractionStage === 'running'" aria-live="polite">Job status: {{ extractionJobState }}</p>
+                <p v-if="extractionStage === 'running' && runProgress" aria-live="polite">{{ runProgress }}</p>
                 <p v-if="extractionStage === 'running' && noWorkerYet" class="field-error" role="status">
                   No worker has picked this run up yet. If the Brownie worker is not running, the run waits until it is;
                   you can cancel it and try again later.
                 </p>
                 <p v-if="extractionStage === 'cancelled'" aria-live="polite">This run was cancelled. Nothing was applied.</p>
                 <div v-if="extractionStalled" class="field-hint" role="status">
-                  <p>Still running after ten minutes of checking. The run continues on the server.</p>
+                  <p>{{ stalledMessage }}</p>
                   <button class="button" type="button" @click="checkRunAgain">Check again</button>
                 </div>
                 <p v-if="extractionError" class="field-error" role="alert">{{ extractionError }}</p>
+                <div v-if="canRetryRun" class="field-row__actions">
+                  <button class="button" type="button" :disabled="retryingRun" @click="retryRun">
+                    {{ retryingRun ? 'Starting again…' : 'Try this run again' }}
+                  </button>
+                </div>
 
                 <div v-if="extractionStage === 'waiting-for-input' || extractionStage === 'resuming'" class="question-list" aria-live="polite">
                   <p class="field-hint">A few things need your input before this can finish.</p>
@@ -2159,7 +2509,8 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                     Apply to document
                   </button>
                   <p v-if="applyStage === 'applying'" aria-live="polite">Preparing proposal…</p>
-                  <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
+                  <!-- Only a failed apply is said here; a failed accept is said beside the proposal, which may have come from the composer instead. -->
+                  <p v-if="applyError && applyStage === 'failed'" class="field-error" role="alert">{{ applyError }}</p>
 
                 </div>
               </template>
@@ -2203,6 +2554,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 >
                   {{ applyStage === 'accepting' ? 'Applying…' : 'Accept and update document' }}
                 </button>
+                <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
                 <p v-if="applyStage === 'accepted'" aria-live="polite">Applied to the document.</p>
                 <p
                   v-if="acceptResult && Object.values(acceptResult.fieldStatuses).some((s) => s !== 'CLEAN')"
@@ -2269,7 +2621,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 </template>
 
                 <div v-if="exportApproval">
-                  <p class="field-hint">Approved for: {{ exportApproval.format }}</p>
+                  <p class="field-hint">Approved for: {{ FORMAT_NAMES[exportApproval.format] }}</p>
                   <button
                     class="button button--primary"
                     type="button"
@@ -2282,11 +2634,9 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 </div>
 
                 <div v-if="exportReceipt">
-                  <p aria-live="polite">
-                    {{ exportReceipt.isCompletePair ? 'Both files exported.' : 'Only one file could be exported.' }}
-                  </p>
+                  <p aria-live="polite">{{ exportOutcomeMessage }}</p>
                   <ul class="source-list">
-                    <li>
+                    <li v-if="exportReceipt.format !== 'PDF' || exportReceipt.pdfArtifactId == null">
                       <a :href="artifactDownloadUrl(session.personalWorkspaceId!, exportReceipt.docxArtifactId)">Download DOCX</a>
                     </li>
                     <li v-if="exportReceipt.pdfArtifactId != null">

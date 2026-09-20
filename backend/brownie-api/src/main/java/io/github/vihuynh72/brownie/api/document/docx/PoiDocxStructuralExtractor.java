@@ -71,8 +71,26 @@ public final class PoiDocxStructuralExtractor implements DocxStructuralExtractor
         return PARSER_VERSION;
     }
 
+    /**
+     * The upload inspector refuses a part nested deeper than any real
+     * document, but it chooses the parts it reads by name, and a package
+     * may declare its main document under any name at all. What is left to
+     * such a file is to exhaust the stack of the library that reads it
+     * here. That arrives as an error and not an exception, so nothing that
+     * records a failed extraction would see it; it is turned into the
+     * ordinary failure to parse, which is recorded, so the same file is
+     * not read again and again.
+     */
     @Override
     public DocxExtractionOutcome extract(InputStream content) throws IOException {
+        try {
+            return read(content);
+        } catch (StackOverflowError e) {
+            throw new DocxParseException("The document is nested more deeply than any real document.", e);
+        }
+    }
+
+    private DocxExtractionOutcome read(InputStream content) throws IOException {
         XWPFDocument document;
         try {
             document = new XWPFDocument(content);

@@ -13,9 +13,11 @@ import {
   extractArtifact,
   listTemplates,
   uploadArtifactContent,
+  type ArtifactResponse,
   type DocumentSourceResponse,
   type TemplateResponse,
 } from '@/api/client'
+import { describeCommonFailure } from '@/api/failures'
 
 const session = useSessionStore()
 const router = useRouter()
@@ -23,6 +25,7 @@ const route = useRoute()
 
 const templates = ref<TemplateResponse[]>([])
 const templatesState = ref<'loading' | 'loaded' | 'error'>('loading')
+const templatesError = ref<string | null>(null)
 const selectedTemplateId = ref<number | null>(null)
 const title = ref('')
 const sourceFile = ref<File | null>(null)
@@ -30,6 +33,8 @@ const submitState = ref<'idle' | 'submitting' | 'error'>('idle')
 const submitError = ref<string | null>(null)
 const sourceWarning = ref<string | null>(null)
 const uploadLimit = ref<string | null>(null)
+/** The same limit in bytes, to tell a file refused for its size from one refused for what it unpacks to. */
+const uploadLimitBytes = ref<number | null>(null)
 
 const selectableTemplates = computed(() => templates.value.filter((t) => t.currentActiveVersionId != null))
 
@@ -46,17 +51,25 @@ async function loadTemplates(): Promise<void> {
       const preselected = selectableTemplates.value.find((t) => t.id === requested) ?? selectableTemplates.value[0]!
       selectedTemplateId.value = preselected.id
     }
-  } catch {
+  } catch (error) {
     templatesState.value = 'error'
+    // A server without the route, or one that cannot be reached, will not be fixed by reloading this page.
+    templatesError.value = describeCommonFailure(error, 'a way to list templates') ?? 'Could not load your templates. Try reloading the page.'
   }
 }
 
 onMounted(loadTemplates)
 onMounted(async () => {
   try {
-    uploadLimit.value = formatBytes((await loadCapabilities()).maxUploadBytes)
+    const { maxUploadBytes } = await loadCapabilities()
+    // An older server may not send the limit at all; then neither the hint nor a size refusal names one.
+    if (typeof maxUploadBytes === 'number' && maxUploadBytes > 0) {
+      uploadLimitBytes.value = maxUploadBytes
+      uploadLimit.value = formatBytes(maxUploadBytes)
+    }
   } catch {
     uploadLimit.value = null
+    uploadLimitBytes.value = null
   }
 })
 // session.personalWorkspaceId can still be undefined the instant this component mounts -- App.vue's
@@ -74,6 +87,58 @@ function onFileChange(event: Event): void {
   sourceFile.value = input.files?.[0] ?? null
 }
 
+/**
+ * Why a finished upload was not accepted, as a clause. The rejection reasons are the scanner's and
+ * the content inspector's own codes, and a file still waiting for its scan has none at all.
+ */
+function whyFileWasRefused(artifact: ArtifactResponse): string {
+  if (artifact.status !== 'REJECTED') return 'Brownie could not finish checking it'
+  switch (artifact.rejectionReason) {
+    case 'MALWARE_DETECTED':
+      return 'the malware scan flagged it'
+    case 'UNSUPPORTED_MEDIA_TYPE':
+      return 'Brownie cannot use that kind of file'
+    case 'DECOMPRESSION_LIMIT_EXCEEDED':
+      return 'it unpacks to far more than Brownie accepts'
+    case 'EXPIRED_ABANDONED_UPLOAD':
+      return 'the upload took too long to finish'
+    default:
+      return "it did not pass Brownie's checks"
+  }
+}
+
+/**
+ * What to say when the source file could not go with the new document, which exists either way.
+ * The Sources tab is offered only where attaching from there could work: a file too large or of the
+ * wrong kind, or a server without the route, would be refused there in just the same way.
+ */
+function attachFailureWarning(error: unknown, file: File): string {
+  if (error instanceof ApiRequestError && error.status === 413) {
+    const limit = uploadLimitBytes.value
+    const limitText = limit !== null && file.size > limit ? formatBytes(limit) : null
+    if (limitText) {
+      return `Your source file was not attached: it is larger than the ${limitText} upload limit. The document was still created.`
+    }
+    return error.problem?.detail
+      ? `Your source file was not attached. ${error.problem.detail} The document was still created.`
+      : 'Your source file was not attached: it is larger than Brownie accepts. The document was still created.'
+  }
+  if (error instanceof ApiRequestError && error.status === 415) {
+    return (
+      'Your source file was not attached: Brownie cannot use that kind of file as a source. The document was still ' +
+      'created; attach a plain-text (.txt) file from the Sources tab instead.'
+    )
+  }
+  const why = describeCommonFailure(error, 'a way to attach sources')
+  if (!why) {
+    return 'Your source file could not be attached. The document was still created; attach it again from the Sources tab.'
+  }
+  if (error instanceof ApiRequestError && error.routeMissing) {
+    return `Your source file could not be attached. ${why} The document was still created.`
+  }
+  return `Your source file could not be attached. ${why} The document was still created; attach it again from the Sources tab.`
+}
+
 /** The document's new source on success, or null -- with `sourceWarning` set -- when the file was refused or the upload failed. */
 async function attachSelectedSource(workspaceId: number, documentId: number): Promise<DocumentSourceResponse | null> {
   const file = sourceFile.value
@@ -83,14 +148,13 @@ async function attachSelectedSource(workspaceId: number, documentId: number): Pr
     await uploadArtifactContent(workspaceId, allocated.id, file)
     const completed = await completeUpload(workspaceId, allocated.id)
     if (completed.status !== 'READY') {
-      sourceWarning.value = `Your source file was not accepted (${completed.rejectionReason ?? completed.status}). The document was still created.`
+      sourceWarning.value = `Your source file was not attached: ${whyFileWasRefused(completed)}. The document was still created.`
       return null
     }
     await extractArtifact(workspaceId, allocated.id)
     return await attachDocumentSource(workspaceId, documentId, allocated.id)
-  } catch {
-    sourceWarning.value =
-      'Your source file could not be attached. The document was still created; attach it again from the Sources tab.'
+  } catch (error) {
+    sourceWarning.value = attachFailureWarning(error, file)
     return null
   }
 }
@@ -122,7 +186,11 @@ async function submit(): Promise<void> {
     })
   } catch (error) {
     submitState.value = 'error'
-    submitError.value = error instanceof ApiRequestError ? error.message : 'Something went wrong creating the document.'
+    // Never the error's own message: for an answer with no explanation that is "Request failed with status 502".
+    submitError.value =
+      describeCommonFailure(error, 'a way to create documents') ??
+      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
+      'Something went wrong creating the document.'
   }
 }
 </script>
@@ -138,9 +206,7 @@ async function submit(): Promise<void> {
     <h1>New document</h1>
 
     <p v-if="templatesState === 'loading'" aria-live="polite">Loading templates…</p>
-    <p v-else-if="templatesState === 'error'" class="field-error" role="alert">
-      Could not load your templates. Try reloading the page.
-    </p>
+    <p v-else-if="templatesState === 'error'" class="field-error" role="alert">{{ templatesError }}</p>
     <p v-else-if="selectableTemplates.length === 0">
       No templates are available to choose from yet.
     </p>

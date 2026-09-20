@@ -3,7 +3,6 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import ChatView from '@/views/ChatView.vue'
-import TrashView from '@/views/TrashView.vue'
 import { useSessionStore } from '@/stores/session'
 import { axe } from '@/test/axe'
 
@@ -16,7 +15,7 @@ import { listDocuments } from '@/api/client'
 
 const stub = { template: '<div />' }
 
-async function mountView(component: typeof ChatView | typeof TrashView) {
+async function mountView(component: typeof ChatView) {
   const router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -81,18 +80,5 @@ describe('ChatView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("don't have any documents yet")
-  })
-})
-
-describe('TrashView', () => {
-  beforeEach(() => setActivePinia(createPinia()))
-
-  /** An empty list would read like a load that failed; the page says why there is nothing here instead. */
-  it('says the bin is empty and why nothing arrives in it', async () => {
-    const wrapper = await mountView(TrashView)
-
-    expect(wrapper.get('h1').text()).toBe('Your trash bin is empty')
-    expect(wrapper.text()).toContain('nothing you can do in the app removes a document')
-    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })

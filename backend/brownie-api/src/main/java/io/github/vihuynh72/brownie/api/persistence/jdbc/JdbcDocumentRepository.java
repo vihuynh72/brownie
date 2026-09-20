@@ -42,6 +42,18 @@ import java.util.UUID;
 @Repository
 class JdbcDocumentRepository implements DocumentRepository {
 
+    /**
+     * A document in the trash answers every read of its own row as if it
+     * were not there, and the routines that append a revision refuse it on
+     * their own, inside the database. Reads of what hangs off a document
+     * (revisions, proposals, runs, compilations, manifests, receipts) are
+     * not filtered here: every one of them is reached through a caller that
+     * finds the document first. The two other places that look at the
+     * column are the question repository, because a question is answered
+     * by its own id, and the deletion ledger's title join.
+     */
+    private static final String NOT_TRASHED = " AND trashed_at IS NULL";
+
     private static final String DOCUMENT_COLUMNS =
             "id, workspace_id, title, template_id, template_version_id, current_revision_id, created_at";
     private static final String REVISION_COLUMNS =
@@ -151,7 +163,7 @@ class JdbcDocumentRepository implements DocumentRepository {
     public Optional<Document> find(long workspaceId, long userId, long documentId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.query(
-                        "SELECT " + DOCUMENT_COLUMNS + " FROM document WHERE workspace_id = ? AND id = ?",
+                        "SELECT " + DOCUMENT_COLUMNS + " FROM document WHERE workspace_id = ? AND id = ?" + NOT_TRASHED,
                         this::mapDocument,
                         workspaceId,
                         documentId)
@@ -164,7 +176,8 @@ class JdbcDocumentRepository implements DocumentRepository {
     public List<Document> findAllForWorkspace(long workspaceId, long userId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.query(
-                "SELECT " + DOCUMENT_COLUMNS + " FROM document WHERE workspace_id = ? ORDER BY created_at DESC, id DESC",
+                "SELECT " + DOCUMENT_COLUMNS + " FROM document WHERE workspace_id = ?" + NOT_TRASHED
+                        + " ORDER BY created_at DESC, id DESC",
                 this::mapDocument,
                 workspaceId);
     }
@@ -180,7 +193,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                             ON r.workspace_id = d.workspace_id
                             AND r.document_id = d.id
                             AND r.id = d.current_revision_id
-                        WHERE d.workspace_id = ? AND d.id = ?
+                        WHERE d.workspace_id = ? AND d.id = ? AND d.trashed_at IS NULL
                         """,
                         this::mapRevision,
                         workspaceId,
@@ -398,8 +411,11 @@ class JdbcDocumentRepository implements DocumentRepository {
                 || !receipt.requestHash().equals(record.requestHash())) {
             throw new IllegalStateException("Document mutation receipt does not match its idempotency record.");
         }
+        // A receipt outlives its document going to the trash, so a retried
+        // request that already succeeded once can arrive for a document
+        // that now answers nowhere; that is "not found", not a fault.
         Document document = find(record.workspaceId(), record.actorUserId(), receipt.documentId())
-                .orElseThrow(() -> new IllegalStateException("Document " + receipt.documentId() + " vanished after mutation."));
+                .orElseThrow(() -> new DocumentNotFoundException(receipt.documentId()));
         DocumentRevision revision = findRevision(
                         record.workspaceId(), record.actorUserId(), receipt.documentId(), receipt.revisionId())
                 .orElseThrow(() -> new IllegalStateException(

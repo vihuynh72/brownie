@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.job;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.job.JobEvent;
@@ -24,6 +25,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,6 +41,11 @@ class JobEventController {
 
     private static final int PAGE_SIZE = 100;
     private static final int MAX_CONCURRENT_STREAMS = 20;
+    /**
+     * A few tabs, not all twenty: with only a shared ceiling, one person
+     * leaving tabs open would be everyone else's "too many streams".
+     */
+    private static final int MAX_CONCURRENT_STREAMS_PER_PERSON = 4;
     private static final long STREAM_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(30);
     private static final long POLL_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(1);
     private static final long HEARTBEAT_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(10);
@@ -48,6 +55,7 @@ class JobEventController {
     private final UserIdentityRepository userIdentityRepository;
     private final ScheduledExecutorService eventStreamExecutor;
     private final AtomicInteger activeStreams = new AtomicInteger();
+    private final ConcurrentHashMap<Long, Integer> activeStreamsByPerson = new ConcurrentHashMap<>();
 
     JobEventController(
             JobEventRepository jobEventRepository,
@@ -85,35 +93,42 @@ class JobEventController {
         long cursor = cursor(lastEventId);
         long userId = currentUserId(principal);
         requireAccess(userId, workspaceId);
-        acquireStreamSlot();
+        acquireStreamSlot(userId);
 
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         AtomicLong deliveredCursor = new AtomicLong(cursor);
         AtomicLong lastHeartbeat = new AtomicLong(System.currentTimeMillis());
         AtomicBoolean closed = new AtomicBoolean();
         AtomicReference<ScheduledFuture<?>> scheduledTask = new AtomicReference<>();
-        Runnable cleanup = () -> closeStream(closed, scheduledTask);
+        Runnable cleanup = () -> closeStream(closed, scheduledTask, userId);
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
         emitter.onError(ignored -> cleanup.run());
 
-        if (requiresResync(workspaceId, userId, cursor)) {
-            sendResyncAndClose(emitter, cursor, cleanup);
+        try {
+            if (requiresResync(workspaceId, userId, cursor)) {
+                sendResyncAndClose(emitter, cursor, cleanup);
+                return emitter;
+            }
+            if (!deliverAvailable(emitter, workspaceId, userId, deliveredCursor, lastHeartbeat, cleanup)) {
+                return emitter;
+            }
+            ScheduledFuture<?> future = eventStreamExecutor.scheduleWithFixedDelay(
+                    () -> deliverAvailable(emitter, workspaceId, userId, deliveredCursor, lastHeartbeat, cleanup),
+                    POLL_INTERVAL_MILLIS,
+                    POLL_INTERVAL_MILLIS,
+                    TimeUnit.MILLISECONDS);
+            scheduledTask.set(future);
+            if (closed.get()) {
+                future.cancel(false);
+            }
             return emitter;
+        } catch (RuntimeException e) {
+            // The stream's own callbacks give the place back, but they only ever run for a stream that was handed
+            // over. One that fails before that has to give its place back here, or it is held until a restart.
+            cleanup.run();
+            throw e;
         }
-        if (!deliverAvailable(emitter, workspaceId, userId, deliveredCursor, lastHeartbeat, cleanup)) {
-            return emitter;
-        }
-        ScheduledFuture<?> future = eventStreamExecutor.scheduleWithFixedDelay(
-                () -> deliverAvailable(emitter, workspaceId, userId, deliveredCursor, lastHeartbeat, cleanup),
-                POLL_INTERVAL_MILLIS,
-                POLL_INTERVAL_MILLIS,
-                TimeUnit.MILLISECONDS);
-        scheduledTask.set(future);
-        if (closed.get()) {
-            future.cancel(false);
-        }
-        return emitter;
     }
 
     private boolean deliverAvailable(
@@ -167,14 +182,25 @@ class JobEventController {
         return cursor > 0 && !jobEventRepository.exists(workspaceId, userId, cursor);
     }
 
-    private void acquireStreamSlot() {
+    private void acquireStreamSlot(long userId) {
+        // The person's own count first, so that someone at their own ceiling never takes a shared slot even briefly.
+        int mine = activeStreamsByPerson.merge(userId, 1, Integer::sum);
+        if (mine > MAX_CONCURRENT_STREAMS_PER_PERSON) {
+            releasePersonSlot(userId);
+            throw new EventStreamCapacityException();
+        }
         if (activeStreams.incrementAndGet() > MAX_CONCURRENT_STREAMS) {
             activeStreams.decrementAndGet();
+            releasePersonSlot(userId);
             throw new EventStreamCapacityException();
         }
     }
 
-    private void closeStream(AtomicBoolean closed, AtomicReference<ScheduledFuture<?>> scheduledTask) {
+    private void releasePersonSlot(long userId) {
+        activeStreamsByPerson.computeIfPresent(userId, (id, count) -> count <= 1 ? null : count - 1);
+    }
+
+    private void closeStream(AtomicBoolean closed, AtomicReference<ScheduledFuture<?>> scheduledTask, long userId) {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
@@ -183,6 +209,7 @@ class JobEventController {
             future.cancel(false);
         }
         activeStreams.decrementAndGet();
+        releasePersonSlot(userId);
     }
 
     private void requireAccess(long userId, long workspaceId) {
@@ -194,8 +221,7 @@ class JobEventController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 

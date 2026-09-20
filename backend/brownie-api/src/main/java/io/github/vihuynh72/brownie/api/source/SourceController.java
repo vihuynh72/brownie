@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.source;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.evidence.EvidenceLocator;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
@@ -92,8 +93,7 @@ class SourceController {
         String subject = principal.getSubject();
         return userIdentityRepository
                 .findByIssuerAndSubject(issuer, subject)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Authenticated principal has no recorded identity for issuer/subject " + issuer + "/" + subject))
+                .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
     }
 

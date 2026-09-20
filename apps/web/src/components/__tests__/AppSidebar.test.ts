@@ -23,6 +23,7 @@ function makeRouter() {
       { path: '/signin', name: 'signin', component: stub },
       { path: '/chat', name: 'chat', component: stub },
       { path: '/trash', name: 'trash', component: stub },
+      { path: '/your-data', name: 'your-data', component: stub },
       { path: '/documents/new', name: 'new-document', component: stub },
       { path: '/templates/new', name: 'new-template', component: stub },
     ],
@@ -73,6 +74,15 @@ describe('AppSidebar', () => {
     expect(listTemplates).not.toHaveBeenCalled()
   })
 
+  /** On every page load a signed-in person is "loading" first; telling them to sign in then is simply wrong. */
+  it('says it is loading while it does not yet know who is signed in, not that they should sign in', async () => {
+    useSessionStore().status = 'loading'
+    const wrapper = await mountSidebar({ open: true, docked: true })
+
+    expect(wrapper.text()).not.toContain('Sign in to see your templates')
+    expect(wrapper.find('.sidebar__note').text()).toBe('Loading…')
+  })
+
   it('lists the workspace templates that can actually start a document', async () => {
     vi.mocked(listTemplates).mockResolvedValue([
       { id: 1, displayName: 'Club minutes', status: 'ACTIVE', currentActiveVersionId: 4, createdAt: '2026-09-01T10:00:00Z' },
@@ -87,6 +97,8 @@ describe('AppSidebar', () => {
     expect(wrapper.text()).toContain('Club minutes')
     expect(wrapper.text()).not.toContain('Half-taught draft')
     expect(wrapper.find('a[href="/documents/new?templateId=1"]').exists()).toBe(true)
+    // Where what is kept, for how long, and how to delete all of it can always be found.
+    expect(wrapper.find('a[href="/your-data"]').text()).toBe('Your data')
   })
 
   /** Opening a drawer that nothing has focus in leaves a keyboard user tabbing through the page behind it. */

@@ -193,6 +193,13 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- Reads compiled classes and checks which packages depend on which; used by one test. -->
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>1.4.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <!-- Stubs the real OpenAI HTTP endpoint so the real model gateway
            adapter's request/response handling is tested against actual
            wire traffic, the same role Testcontainers plays for Postgres

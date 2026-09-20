@@ -141,7 +141,9 @@ class JdbcArtifactRepository implements ArtifactRepository {
     public Artifact beginScanning(long workspaceId, long userId, long artifactId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         int updated = jdbcTemplate.update(
-                "UPDATE artifact SET status = 'SCANNING' WHERE id = ? AND workspace_id = ? AND status = 'QUARANTINED'",
+                // The start time is what the worker's housekeeping measures a stuck scan from; see the column's own migration.
+                "UPDATE artifact SET status = 'SCANNING', scan_started_at = now()"
+                        + " WHERE id = ? AND workspace_id = ? AND status = 'QUARANTINED'",
                 artifactId,
                 workspaceId);
         if (updated == 0) {

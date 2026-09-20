@@ -15,6 +15,8 @@ import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.generation.GenerationRun;
 import io.github.vihuynh72.brownie.core.generation.GenerationRunRepository;
 import io.github.vihuynh72.brownie.core.generation.LabeledExcerpt;
+import io.github.vihuynh72.brownie.core.generation.usage.ModelPricing;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageService;
 import io.github.vihuynh72.brownie.core.generation.RepeatedItemCandidate;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.CommandReceipt;
@@ -60,6 +62,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDate;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -104,6 +107,9 @@ public class GenerationOrchestrationService {
     private static final String EXTRACTING_STAGE = "extracting";
     private static final String DOCUMENT_RESOURCE_TYPE = "document";
     private static final long MAX_BUNDLE_BYTES = 2_000_000;
+    /** The least a run's first request can hold: one input token and the most an extraction may write back. */
+    private static final BigDecimal SMALLEST_FIRST_REQUEST_USD =
+            ModelPricing.gpt5Mini().estimateCost(1, ExtractionService.MAX_OUTPUT_TOKENS);
     private static final int SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH = 120;
 
     /**
@@ -132,6 +138,7 @@ public class GenerationOrchestrationService {
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final UsageService usageService;
     private final String modelName;
 
     public GenerationOrchestrationService(
@@ -149,6 +156,7 @@ public class GenerationOrchestrationService {
             CanonicalRequestHasher canonicalRequestHasher,
             ObjectMapper objectMapper,
             TransactionTemplate transactionTemplate,
+            UsageService usageService,
             @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
@@ -164,6 +172,7 @@ public class GenerationOrchestrationService {
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
+        this.usageService = usageService;
         this.modelName = modelName;
     }
 
@@ -177,6 +186,14 @@ public class GenerationOrchestrationService {
         Document document = revisionService
                 .findDocument(workspaceId, userId, documentId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
+        // Asked before anything is attached, segmented, staged or queued: the
+        // ledger refuses each request when it is about to be sent, but a run
+        // that cannot make even its first one should not be started at all.
+        // A replay of a start that was already accepted is answered with
+        // that start, whatever has been spent since.
+        if (!jobCommandRepository.enqueueWasAccepted(workspaceId, userId, idempotencyKey)) {
+            usageService.requireAllowanceFor(workspaceId, userId, SMALLEST_FIRST_REQUEST_USD);
+        }
         TemplateVersion templateVersion = templateService
                 .findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
                 .orElseThrow(() -> new TemplateVersionNotFoundException(document.templateId(), document.templateVersionId()));
@@ -194,13 +211,44 @@ public class GenerationOrchestrationService {
         ExtractionInputBundle bundle = ExtractionInputBundle.from(templateVersion.fieldDefinitions(), excerpts, existingContent, composableFieldIds);
 
         CanonicalRequestHash bundleHash = canonicalRequestHasher.hash(bundle);
-        writeBundleIfAbsent(workspaceId, bundleHash, bundle);
+        boolean bundleWrittenByThisCall = writeBundleIfAbsent(workspaceId, bundleHash, bundle);
 
         // The job and the run that owns it are one fact: a job with no run
         // could never be read back through a document, and a run naming a
         // job that was never enqueued would wait forever, so neither is
         // committed without the other. A replay under the same idempotency
-        // key returns the same job and therefore the same run.
+        // key returns the same job and therefore the same run. Recording
+        // the run also takes the document's row lock and refuses a document
+        // that went to the trash since it was read above, so no job is ever
+        // committed for one.
+        CommandReceipt receipt;
+        try {
+            receipt = enqueueWithRun(workspaceId, userId, documentId, document, snapshot, idempotencyKey, requestHash, bundleHash);
+        } catch (RuntimeException failure) {
+            if (bundleWrittenByThisCall) {
+                deleteUnownedBundle(workspaceId, bundleHash);
+            }
+            throw failure;
+        }
+        // The bundle holds the source's text, and permanent deletion finds a
+        // bundle only through the run that names it. A replayed start cites
+        // freshly made spans, so it wrote a bundle no run will ever name;
+        // that one is removed here rather than left where nothing reaches it.
+        if (bundleWrittenByThisCall && !runNamesBundle(workspaceId, userId, receipt.jobId(), bundleHash)) {
+            deleteUnownedBundle(workspaceId, bundleHash);
+        }
+        return receipt;
+    }
+
+    private CommandReceipt enqueueWithRun(
+            long workspaceId,
+            long userId,
+            long documentId,
+            Document document,
+            SourceSnapshot snapshot,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            CanonicalRequestHash bundleHash) {
         return transactionTemplate.execute(status -> {
             CommandReceipt receipt = jobCommandRepository.enqueue(
                     workspaceId,
@@ -227,6 +275,35 @@ public class GenerationOrchestrationService {
                             ExtractionPromptBuilder.PROMPT_VERSION));
             return receipt;
         });
+    }
+
+    private boolean runNamesBundle(long workspaceId, long userId, long jobId, CanonicalRequestHash bundleHash) {
+        return generationRunRepository
+                .findByJob(workspaceId, userId, jobId)
+                .map(run -> run.bundleHash().equals(bundleHash.value()))
+                .orElse(false);
+    }
+
+    /** Best effort: a bundle that could not be removed here is reported, since nothing else will ever look for it. */
+    private void deleteUnownedBundle(long workspaceId, CanonicalRequestHash bundleHash) {
+        String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash.value());
+        try {
+            blobStore.delete(objectKey);
+        } catch (IOException e) {
+            log.error("Could not remove generation input bundle {} that no run names.", objectKey, e);
+        }
+    }
+
+    /**
+     * The published result of one of this document's own runs. Goes through
+     * the same run check as every other read of a run, so a job that is not
+     * this document's, and any job of a document in the trash, is not found.
+     */
+    public long requireResultArtifactId(long workspaceId, long userId, long documentId, long jobId) {
+        requireRun(workspaceId, userId, documentId, jobId);
+        return jobOutputArtifactRepository
+                .findArtifactId(workspaceId, userId, jobId, GenerationJobTypes.EXTRACTION_RESULT_OUTPUT_KIND)
+                .orElseThrow(() -> new GenerationResultNotFoundException(jobId));
     }
 
     /**
@@ -383,6 +460,9 @@ public class GenerationOrchestrationService {
      * answers, or result be read through a document it was never about.
      */
     private GenerationRun requireRun(long workspaceId, long userId, long documentId, long jobId) {
+        // A run is read through its document, so a document that is in the
+        // trash takes its runs out of reach with it.
+        revisionService.findDocument(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
         return generationRunRepository
                 .findByJob(workspaceId, userId, jobId)
                 .filter(run -> run.documentId() == documentId)
@@ -554,13 +634,15 @@ public class GenerationOrchestrationService {
      * BlobStore#writeNewAndDigest} already gives {@code
      * JobOutputPublisher}'s own staged worker outputs.
      */
-    private void writeBundleIfAbsent(long workspaceId, CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
+    private boolean writeBundleIfAbsent(long workspaceId, CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
         String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash.value());
         try {
             byte[] json = objectMapper.writeValueAsBytes(bundle);
             blobStore.writeNewAndDigest(objectKey, new ByteArrayInputStream(json), MAX_BUNDLE_BYTES);
+            return true;
         } catch (BlobAlreadyExistsException ignored) {
-            // An identical bundle was already staged by an earlier attempt.
+            // An identical bundle was already staged by an earlier attempt, which is the one that owns it.
+            return false;
         } catch (IOException e) {
             throw new ArtifactStorageException("Could not write generation input bundle " + objectKey + ".", e);
         }

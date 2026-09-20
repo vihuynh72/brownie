@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import { useSessionStore } from '@/stores/session'
-import { listDocuments, type DocumentSummaryResponse } from '@/api/client'
+import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
+import { ApiRequestError, listDocuments, trashDocument, type DocumentSummaryResponse } from '@/api/client'
 
 const session = useSessionStore()
 const route = useRoute()
@@ -14,6 +15,7 @@ const documents = ref<DocumentSummaryResponse[]>([])
 const signInFailed = computed(() => route.query.signin === 'failed')
 const signInFailureReason = computed(() => (typeof route.query.reason === 'string' ? route.query.reason : null))
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+const loadError = ref('')
 
 const greeting = computed(() =>
   session.firstName ? `What's on your mind today, ${session.firstName}?` : "What's on your mind today?",
@@ -28,12 +30,77 @@ async function loadDocuments(): Promise<void> {
   try {
     documents.value = await listDocuments(workspaceId)
     loadState.value = 'loaded'
-  } catch {
+  } catch (error) {
+    loadError.value =
+      describeCommonFailure(error, 'a way to list documents') ??
+      'Brownie could not load your documents. If this keeps happening, let whoever runs this Brownie know.'
     loadState.value = 'error'
   }
 }
 
 onMounted(loadDocuments)
+
+// One document at a time: the list is rebuilt from what the server accepted,
+// so a second click cannot race the first one's answer.
+const trashingId = ref<number | null>(null)
+const trashNotice = ref<string | null>(null)
+const trashError = ref<string | null>(null)
+const trashNoticeElement = ref<HTMLElement | null>(null)
+const trashErrorElement = ref<HTMLElement | null>(null)
+// Set once a row leaves this list, so an empty list no longer reads as though there were never any documents.
+const removedFromList = ref(false)
+
+/**
+ * Moving a document to the trash asks for no confirmation because it loses
+ * nothing: the trash bin restores it exactly as it was. The row's own button
+ * disappears with the row, so focus goes to the sentence that says what just
+ * happened and where to undo it, rather than falling back to the top of the
+ * page for someone who is not looking at the screen.
+ */
+async function moveToTrash(document: DocumentSummaryResponse): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || trashingId.value !== null) {
+    return
+  }
+  trashingId.value = document.id
+  trashError.value = null
+  let retryable = false
+  try {
+    await trashDocument(workspaceId, document.id)
+    documents.value = documents.value.filter((candidate) => candidate.id !== document.id)
+    removedFromList.value = true
+    trashNotice.value = `Moved "${document.title}" to the trash.`
+  } catch (error) {
+    trashNotice.value = null
+    if (error instanceof ApiRequestError && error.routeMissing) {
+      // A server older than this page answers 404 for the route itself: the document is untouched and still listed.
+      trashError.value = `This Brownie server cannot move documents to the trash yet, so nothing was changed and "${document.title}" is still here. The server needs to be updated first.`
+    } else if (brownieSaysNotThere(error)) {
+      // Deleted for good from another tab or device: trying again could never work, so the row goes and the sentence says why.
+      // Only Brownie's own explained answer says that; a bare 404 came from something in front of it.
+      documents.value = documents.value.filter((candidate) => candidate.id !== document.id)
+      removedFromList.value = true
+      trashError.value = `"${document.title}" was already deleted, so it was taken off this list.`
+    } else {
+      // An ended session cannot be tried again from here; the page turns into its signed-out state instead.
+      retryable = !(error instanceof ApiRequestError && error.status === 401)
+      const reason = describeCommonFailure(error, 'a trash bin') ?? 'Try again.'
+      trashError.value = `Could not move "${document.title}" to the trash. ${reason}`
+    }
+  } finally {
+    trashingId.value = null
+  }
+  // The pressed button was disabled while the request ran, which drops keyboard focus; it is
+  // put back on that button when trying again makes sense, and on the explanation otherwise.
+  await nextTick()
+  if (retryable) {
+    globalThis.document.getElementById(`home-trash-${document.id}`)?.focus()
+  } else if (trashNotice.value) {
+    trashNoticeElement.value?.focus()
+  } else {
+    trashErrorElement.value?.focus()
+  }
+}
 watch(
   () => session.status,
   (status) => {
@@ -111,9 +178,18 @@ const recentDays = computed<DayGroup[]>(() => {
     <section v-if="session.status === 'authenticated'" class="home__recent" aria-labelledby="recent-heading">
       <h2 id="recent-heading" class="home__recent-title">Recent documents</h2>
 
+      <p v-if="trashNotice" ref="trashNoticeElement" class="home__notice" tabindex="-1">
+        {{ trashNotice }} <RouterLink to="/trash">Restore it from the trash bin</RouterLink>.
+      </p>
+      <p v-if="trashError" ref="trashErrorElement" class="field-error" role="alert" tabindex="-1">{{ trashError }}</p>
+
       <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Loading documents…</p>
       <p v-else-if="loadState === 'error'" class="field-error" role="alert">
-        Something went wrong loading your documents. Try reloading the page.
+        {{ loadError }}
+      </p>
+      <p v-else-if="documents.length === 0 && removedFromList" class="field-hint">
+        There are no documents here now. Anything moved to the trash can be restored from the
+        <RouterLink to="/trash">trash bin</RouterLink>.
       </p>
       <p v-else-if="documents.length === 0" class="field-hint">
         You don't have any documents yet. Upload your notes above, or
@@ -123,12 +199,23 @@ const recentDays = computed<DayGroup[]>(() => {
       <div v-for="day in recentDays" :key="day.key" class="home__day">
         <h3 class="home__day-heading">{{ day.heading }}</h3>
         <ul class="home__list">
-          <li v-for="entry in day.documents" :key="entry.document.id">
+          <!-- The action sits beside the link, never inside it: a button nested in a link is neither. -->
+          <li v-for="entry in day.documents" :key="entry.document.id" class="home__item">
             <RouterLink class="home__row" :to="`/documents/${entry.document.id}`">
               <span class="home__tile" aria-hidden="true"><AppIcon name="document" :size="20" /></span>
               <span class="home__row-title" :title="entry.document.title">{{ entry.document.title }}</span>
               <span class="home__row-time">{{ entry.time }}</span>
             </RouterLink>
+            <button
+              :id="`home-trash-${entry.document.id}`"
+              type="button"
+              class="icon-button"
+              :disabled="trashingId !== null"
+              @click="moveToTrash(entry.document)"
+            >
+              <AppIcon name="trash" :size="18" />
+              <span class="visually-hidden">Move {{ entry.document.title }} to the trash</span>
+            </button>
           </li>
         </ul>
       </div>
@@ -214,6 +301,25 @@ const recentDays = computed<DayGroup[]>(() => {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.home__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.home__notice {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-cocoa-wash);
+}
+
+/* The default link blue measures 4.48:1 on this wash, just under AA; the text colour is 11.96:1 and the underline still says "link". */
+.home__notice a {
+  color: var(--color-text);
 }
 
 .home__row {

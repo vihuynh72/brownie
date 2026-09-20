@@ -41,19 +41,52 @@ export type CompilationManifestResponse = components['schemas']['CompilationMani
 export type ExportApprovalResponse = components['schemas']['ExportApprovalResponse']
 export type ExportReceiptResponse = components['schemas']['ExportReceiptResponse']
 export type ExportFormat = components['schemas']['ApproveExportRequest']['format']
+export type DeletionResponse = components['schemas']['DeletionResponse']
+export type WorkspaceDeletionResponse = components['schemas']['WorkspaceDeletionResponse']
+export type DataPracticesResponse = components['schemas']['DataPracticesResponse']
+export type UsageResponse = components['schemas']['UsageResponse']
 export type LogoutResponse = components['schemas']['LogoutResponse']
 export type ApiError = components['schemas']['Error']
+
+/**
+ * How the server words a 404 for an address it has no route for at all, as
+ * opposed to a route that exists and a thing that does not. Every 404 carries
+ * the same code, so the wording is the only difference; and it has to be read
+ * here rather than asked for as a new code, because the server that sends it
+ * is by definition one that predates whatever this page expected of it.
+ */
+const NO_SUCH_ROUTE = /^No (static resource|endpoint) /
 
 /** Thrown for any non-2xx response; carries the server's own structured problem body when it sent one. */
 export class ApiRequestError extends Error {
   readonly status: number
   readonly problem: ApiError | undefined
+  /**
+   * The server that answered has no such route: this page is newer than it.
+   * Not the same as "not found", which on an existing route means the thing
+   * asked for is gone, and which pages act on (by removing a row, say).
+   */
+  readonly routeMissing: boolean
 
   constructor(status: number, problem: ApiError | undefined) {
     super(problem?.detail ?? problem?.title ?? `Request failed with status ${status}`)
     this.status = status
     this.problem = problem
+    this.routeMissing = status === 404 && NO_SUCH_ROUTE.test(problem?.detail ?? '')
   }
+}
+
+let sessionEndedListener: (() => void) | null = null
+
+/**
+ * Lets the session store learn that the server no longer recognises this
+ * browser's session, whichever request found out. Without it, a session
+ * that ends while a page is open (it expired, or its person was deleted)
+ * would leave every page saying "try again" to requests that can only ever
+ * answer 401, and never show the sign-in prompts those pages have for it.
+ */
+export function onSessionEnded(listener: (() => void) | null): void {
+  sessionEndedListener = listener
 }
 
 function readCookie(name: string): string | undefined {
@@ -113,6 +146,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const payload = isJson ? await response.json() : undefined
 
   if (!response.ok) {
+    // The identity request reports its own 401 (that is how signing in is detected at all), and signing out ends
+    // the session on purpose.
+    if (response.status === 401 && path !== '/api/v1/me' && path !== '/logout') {
+      sessionEndedListener?.()
+    }
     throw new ApiRequestError(response.status, isJson ? (payload as ApiError) : undefined)
   }
   return payload as T
@@ -135,6 +173,47 @@ export function logout(): Promise<LogoutResponse> {
 
 export function listDocuments(workspaceId: number): Promise<DocumentSummaryResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/documents`)
+}
+
+/**
+ * The workspace's deletion ledger, most recent first. An entry carries the
+ * document's title only while that document is still in the trash.
+ */
+export function listDeletions(workspaceId: number): Promise<DeletionResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/deletions`)
+}
+
+/** Restorable. Trashing a document that is already in the trash answers with the entry that holds it, so no idempotency key is needed. */
+export function trashDocument(workspaceId: number, documentId: number): Promise<DeletionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/deletions`, {
+    method: 'POST',
+    body: { scope: 'DOCUMENT', documentId },
+  })
+}
+
+export function restoreDeletion(workspaceId: number, deletionId: number): Promise<DeletionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/deletions/${deletionId}/restore`, { method: 'POST' })
+}
+
+/** Not reversible. A 409 with code DELETION_WAITING_FOR_RUNNING_WORK means nothing was deleted and the same call succeeds once a running job has stopped. */
+export function purgeDeletion(workspaceId: number, deletionId: number): Promise<DeletionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/deletions/${deletionId}/purge`, { method: 'POST' })
+}
+
+/**
+ * Not reversible, and nothing goes to the trash first: the workspace, everything in it and the person's sign-in
+ * record are deleted, and every session of theirs is ended, so the next request from this browser is a signed-out one.
+ */
+export function deleteWorkspace(workspaceId: number): Promise<WorkspaceDeletionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/deletions`, { method: 'POST', body: { scope: 'WORKSPACE' } })
+}
+
+export function getDataPractices(): Promise<DataPracticesResponse> {
+  return request('/api/v1/data-practices')
+}
+
+export function getWorkspaceUsage(workspaceId: number): Promise<UsageResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/usage`)
 }
 
 export function getDocument(workspaceId: number, documentId: number): Promise<DocumentResponse> {
@@ -222,6 +301,14 @@ export function cancelJob(workspaceId: number, jobId: number, idempotencyKey: st
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
   })
+}
+
+/**
+ * Starts a job that gave up again, as the same job. It takes no idempotency key because asking twice is
+ * harmless: the second request finds the job already queued and answers with it as it is.
+ */
+export function retryJob(workspaceId: number, jobId: number): Promise<JobResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/retry`, { method: 'POST' })
 }
 
 export function startExtraction(

@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.web;
 
+import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.job.EventStreamCapacityException;
 import io.github.vihuynh72.brownie.api.job.JobRequestValidationException;
 import io.github.vihuynh72.brownie.api.export.ExportRequestValidationException;
@@ -8,12 +9,16 @@ import io.github.vihuynh72.brownie.api.generation.AssistRequestValidationExcepti
 import io.github.vihuynh72.brownie.api.generation.GenerationRequestValidationException;
 import io.github.vihuynh72.brownie.api.generation.GenerationResultEmptyException;
 import io.github.vihuynh72.brownie.api.generation.GenerationResultNotFoundException;
+import io.github.vihuynh72.brownie.api.retention.DeletionRequestValidationException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
+import io.github.vihuynh72.brownie.api.support.SupportGrantRequestValidationException;
 import io.github.vihuynh72.brownie.core.generation.SourceNotExtractableException;
 import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStorageException;
+import io.github.vihuynh72.brownie.core.artifact.BlobStoreUnavailableException;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
+import io.github.vihuynh72.brownie.core.compile.RenderCapacityExceededException;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactTooLargeException;
@@ -35,12 +40,20 @@ import io.github.vihuynh72.brownie.core.job.IdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.job.InvalidJobTransitionException;
 import io.github.vihuynh72.brownie.core.job.JobDeadlineExceededException;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
+import io.github.vihuynh72.brownie.core.job.JobTargetStaleException;
+import io.github.vihuynh72.brownie.core.support.SupportGrantConflictException;
+import io.github.vihuynh72.brownie.core.support.SupportGrantNotFoundException;
 import io.github.vihuynh72.brownie.api.question.QuestionRequestValidationException;
 import io.github.vihuynh72.brownie.api.source.DocumentSourceRequestValidationException;
 import io.github.vihuynh72.brownie.core.question.QuestionNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentContentValidationException;
 import io.github.vihuynh72.brownie.core.revision.DocumentIdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageLimitReachedException;
+import io.github.vihuynh72.brownie.core.retention.DeletionRequestNotFoundException;
+import io.github.vihuynh72.brownie.core.retention.DeletionStateConflictException;
+import io.github.vihuynh72.brownie.core.retention.DeletionWaitingForRunningWorkException;
+import io.github.vihuynh72.brownie.core.retention.WorkspaceDeletionNotPermittedException;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevisionConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentTemplateVersionUnavailableException;
 import io.github.vihuynh72.brownie.core.revision.FieldLockedException;
@@ -59,6 +72,7 @@ import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableExc
 import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
 import io.github.vihuynh72.brownie.core.validation.ValidationManifestNotFoundException;
+import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -68,11 +82,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
@@ -134,6 +151,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
      */
     @ExceptionHandler(ArtifactStorageException.class)
     public ResponseEntity<Object> handleArtifactStorage(ArtifactStorageException ex, WebRequest request) {
+        if (ex.getCause() instanceof BlobStoreUnavailableException) {
+            // Nothing is wrong with the file or the request: the store is away, and the same request works once it is back.
+            log.warn("Blob storage could not be reached: {}", ex.getMessage());
+            ProblemDetail unavailable = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+            unavailable.setTitle("File storage is unavailable");
+            unavailable.setDetail("Files cannot be stored or read right now. Nothing was lost; try again shortly.");
+            enrich(unavailable, "STORAGE_UNAVAILABLE");
+            return handleExceptionInternal(ex, unavailable, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
+        }
         log.error("Stored artifact content could not be read", ex);
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problem.setTitle("Stored file could not be read");
@@ -156,7 +182,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class,
             ValidationManifestNotFoundException.class, ExportNotApprovedException.class,
             ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
-            RuleNotFoundException.class})
+            RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -316,7 +342,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.PRECONDITION_FAILED, request);
     }
 
-    /** Reachable for the first time by a real caller now that a field can actually become EXPLICITLY_LOCKED (DocumentController's own lock route) -- a real, pre-existing gap this task's own new caller exposes, the same class of gap SourceNotExtractableException named once before. */
+    /** Reachable by a real caller because a field can become EXPLICITLY_LOCKED (DocumentController's own lock route); without this the refusal to change a locked field would surface as an unexplained 500. */
     @ExceptionHandler(FieldLockedException.class)
     public ResponseEntity<Object> handleFieldLocked(FieldLockedException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
@@ -325,6 +351,37 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         enrich(problem, "FIELD_LOCKED");
         problem.setProperty("fieldId", ex.fieldId());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** Restoring what was already deleted for good, or deleting what was already restored: the entry exists, but it is no longer open. */
+    @ExceptionHandler(DeletionStateConflictException.class)
+    public ResponseEntity<Object> handleDeletionStateConflict(DeletionStateConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "DELETION_NOT_OPEN");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** Nothing was deleted and nothing is wrong: a worker is still letting go of the target's work, and the same request succeeds once it has. */
+    @ExceptionHandler(DeletionWaitingForRunningWorkException.class)
+    public ResponseEntity<Object> handleDeletionWaiting(DeletionWaitingForRunningWorkException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "DELETION_WAITING_FOR_RUNNING_WORK");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** A member who is not the owner knows the workspace exists, so this is a refusal, not a pretence that it is missing. */
+    @ExceptionHandler(WorkspaceDeletionNotPermittedException.class)
+    public ResponseEntity<Object> handleWorkspaceDeletionNotPermitted(
+            WorkspaceDeletionNotPermittedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.FORBIDDEN);
+        problem.setTitle("Forbidden");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "FORBIDDEN");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.FORBIDDEN, request);
     }
 
     @ExceptionHandler(StaleExportApprovalException.class)
@@ -435,13 +492,44 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             JobRequestValidationException.class, DocumentRequestValidationException.class,
             ValidationRequestValidationException.class, ExportRequestValidationException.class,
             GenerationRequestValidationException.class, QuestionRequestValidationException.class,
-            DocumentSourceRequestValidationException.class, AssistRequestValidationException.class})
+            DocumentSourceRequestValidationException.class, AssistRequestValidationException.class,
+            DeletionRequestValidationException.class, SupportGrantRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
         problem.setDetail(ex.getMessage());
         enrich(problem, "MALFORMED_REQUEST");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
+    }
+
+    /** The job could be started again, but what it would work on has moved on since, so its result could never be accepted; start new work instead. */
+    @ExceptionHandler(JobTargetStaleException.class)
+    public ResponseEntity<Object> handleJobTargetStale(JobTargetStaleException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "JOB_TARGET_STALE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(SupportGrantConflictException.class)
+    public ResponseEntity<Object> handleSupportGrantConflict(SupportGrantConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "SUPPORT_GRANT_ALREADY_OPEN");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** Not a failure: an allowance is used up, nothing was sent, and the property says which allowance so a client can tell "next month" from "ask whoever runs this". */
+    @ExceptionHandler(UsageLimitReachedException.class)
+    public ResponseEntity<Object> handleUsageLimitReached(UsageLimitReachedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
+        problem.setTitle("Too Many Requests");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "USAGE_LIMIT_REACHED");
+        problem.setProperty("limit", ex.kind().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.TOO_MANY_REQUESTS, request);
     }
 
     @ExceptionHandler(EventStreamCapacityException.class)
@@ -636,14 +724,94 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
      * client only ever sees a safe, generic message, never {@code
      * ex.getMessage()} or a stack trace.
      */
+    /** Only reached by a body that did not declare its length; one that did is refused by the filter before it is read. */
+    @ExceptionHandler(RequestBodyTooLargeException.class)
+    public ResponseEntity<Object> handleBodyTooLarge(RequestBodyTooLargeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONTENT_TOO_LARGE);
+        problem.setTitle("Content Too Large");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "CONTENT_TOO_LARGE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONTENT_TOO_LARGE, request);
+    }
+
+    /** Nothing is wrong with the document: every render slot stayed busy for as long as this request would wait. */
+    @ExceptionHandler(RenderCapacityExceededException.class)
+    public ResponseEntity<Object> handleRenderCapacity(RenderCapacityExceededException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail("Too many documents are being prepared right now. Nothing was changed; try again shortly.");
+        enrich(problem, "RENDERER_BUSY");
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "10");
+        return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
+    /**
+     * The session is real but names nobody. It is ended here, so the
+     * browser's next request is an ordinary signed-out one and the person
+     * is sent to sign in, instead of meeting the same refusal on every
+     * route for as long as the session would have lasted.
+     */
+    @ExceptionHandler(AuthenticatedIdentityMissingException.class)
+    public ResponseEntity<Object> handleIdentityMissing(AuthenticatedIdentityMissingException ex, WebRequest request) {
+        log.warn("A session named a person with no identity record; the session was ended.");
+        if (request instanceof ServletWebRequest servletRequest) {
+            HttpSession session = servletRequest.getRequest().getSession(false);
+            if (session != null) {
+                session.invalidate();
+            }
+        }
+        SecurityContextHolder.clearContext();
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNAUTHORIZED);
+        problem.setTitle("Unauthorized");
+        problem.setDetail("This session is no longer valid. Sign in again.");
+        enrich(problem, "SESSION_NO_LONGER_VALID");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNAUTHORIZED, request);
+    }
+
+    /** The database went away in the middle of a request that had already got past the session lookup. */
+    @ExceptionHandler({
+            org.springframework.jdbc.CannotGetJdbcConnectionException.class,
+            org.springframework.transaction.CannotCreateTransactionException.class,
+            org.springframework.dao.DataAccessResourceFailureException.class})
+    public ResponseEntity<Object> handleDatabaseUnavailable(RuntimeException ex, WebRequest request) {
+        log.warn("The database could not be reached: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail("The service cannot reach its database right now. Nothing was changed; try again shortly.");
+        enrich(problem, "DATABASE_UNAVAILABLE");
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "5");
+        return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Object> handleUnexpected(Exception ex, WebRequest request) {
+        if (ex instanceof RuntimeException runtime && DatabaseUnavailableFilter.isDatabaseUnreachable(runtime)) {
+            // A connection cut under a transaction arrives as a failed rollback, not as any of the types named above.
+            return handleDatabaseUnavailable(runtime, request);
+        }
         log.error("Unhandled exception while processing request", ex);
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problem.setTitle("Internal Server Error");
         problem.setDetail("An unexpected error occurred. If this persists, report it with the correlation ID below.");
         enrich(problem, "INTERNAL_ERROR");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
+    }
+
+    /**
+     * A body cut off for its size while it was being read reaches here as a body that could not be read, because
+     * that is what its reader makes of any failure. It is answered as what it is.
+     */
+    @Override
+    protected ResponseEntity<Object> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof RequestBodyTooLargeException tooLarge) {
+                return handleBodyTooLarge(tooLarge, request);
+            }
+        }
+        return super.handleHttpMessageNotReadable(ex, headers, status, request);
     }
 
     @Override

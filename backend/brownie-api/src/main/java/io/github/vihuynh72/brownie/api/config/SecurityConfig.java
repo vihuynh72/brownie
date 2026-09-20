@@ -1,6 +1,8 @@
 package io.github.vihuynh72.brownie.api.config;
 
 import io.github.vihuynh72.brownie.api.identity.oidc.BrownieOidcUserService;
+import io.github.vihuynh72.brownie.api.web.ratelimit.RateLimitFilter;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,6 +13,7 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.regex.Pattern;
@@ -64,8 +67,11 @@ class SecurityConfig {
             HttpSecurity http,
             BrownieOidcUserService oidcUserService,
             ClientRegistrationRepository clientRegistrationRepository,
-            ObjectMapper objectMapper)
+            ObjectMapper objectMapper,
+            ObjectProvider<RateLimitFilter> rateLimitFilter)
             throws Exception {
+        // Straight after the session has said who is asking, and before CSRF, sign-in and the rest answer anything.
+        rateLimitFilter.ifAvailable(filter -> http.addFilterAfter(filter, SecurityContextHolderFilter.class));
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/oauth2/**", "/login/**", "/logout", "/error", "/test-support/**")
                         .permitAll()

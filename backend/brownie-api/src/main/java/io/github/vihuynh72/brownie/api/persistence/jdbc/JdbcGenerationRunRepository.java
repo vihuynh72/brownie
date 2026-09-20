@@ -2,6 +2,7 @@ package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
 import io.github.vihuynh72.brownie.core.generation.GenerationRun;
 import io.github.vihuynh72.brownie.core.generation.GenerationRunRepository;
+import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,6 +41,17 @@ class JdbcGenerationRunRepository implements GenerationRunRepository {
     @Transactional
     public GenerationRun record(long workspaceId, long userId, NewGenerationRun run) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
+        // Takes the document's row lock and answers nothing for a document
+        // in the trash. Moving a document to the trash needs that same lock,
+        // so the two are serialized: either the trash sees this run's job
+        // and cancels it, or this sees the trash and the caller's whole
+        // transaction, job included, is rolled back.
+        boolean live = !jdbcTemplate
+                .queryForList("SELECT document_id FROM lock_document_current_revision(?, ?)", Long.class, workspaceId, run.documentId())
+                .isEmpty();
+        if (!live) {
+            throw new DocumentNotFoundException(run.documentId());
+        }
         jdbcTemplate.update(
                 """
                 INSERT INTO generation_run (

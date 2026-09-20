@@ -66,6 +66,10 @@ class ApiExceptionHandlerIntegrationTest {
 
         assertThat(response.getResponse().getStatus()).isEqualTo(404);
         assertThat(body).containsEntry("code", "NOT_FOUND");
+        // The web app tells "this server has no such route" from "that thing is not there" by these words alone, since
+        // both carry the same code, and it has to go on recognising them from servers older than itself. A change of
+        // wording (a framework upgrade, say) must fail here, not quietly turn the web app's explanation into a vague one.
+        assertThat((String) body.get("detail")).startsWith("No static resource ");
         assertThat(body.get("correlationId")).isNotNull();
         assertThat(response.getResponse().getHeader(CorrelationIdFilter.HEADER_NAME)).isNotNull();
     }

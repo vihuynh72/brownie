@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiRequestError, getCurrentIdentity, createDocument } from '@/api/client'
+import { ApiRequestError, getCurrentIdentity, createDocument, listDocuments, onSessionEnded } from '@/api/client'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -10,6 +10,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 describe('api client', () => {
   afterEach(() => {
+    onSessionEnded(null)
     vi.unstubAllGlobals()
     document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 UTC'
   })
@@ -52,5 +53,37 @@ describe('api client', () => {
 
     await expect(getCurrentIdentity()).rejects.toBeInstanceOf(ApiRequestError)
     await expect(getCurrentIdentity()).rejects.toMatchObject({ status: 404, problem })
+  })
+
+  /**
+   * What the owner's own machine showed: a page newer than the server behind it asked for a route the server did
+   * not have. That is not "not found" in the sense a page acts on, and has to be told apart where it is caught.
+   */
+  it('tells a route the server does not have apart from a thing that is not there', () => {
+    const noRoute = new ApiRequestError(404, {
+      status: 404, title: 'Not Found', code: 'NOT_FOUND', detail: 'No static resource api/v1/data-practices.',
+      correlationId: 'c', fields: [], recoveryActions: [],
+    })
+    const noDocument = new ApiRequestError(404, {
+      status: 404, title: 'Not Found', code: 'NOT_FOUND', detail: 'Document 12 not found.',
+      correlationId: 'c', fields: [], recoveryActions: [],
+    })
+
+    expect(noRoute.routeMissing).toBe(true)
+    expect(noDocument.routeMissing).toBe(false)
+    expect(new ApiRequestError(404, undefined).routeMissing).toBe(false)
+    expect(new ApiRequestError(500, noRoute.problem).routeMissing).toBe(false)
+  })
+
+  it('reports a session that ended to whoever listens, except for the identity request, which reports its own', async () => {
+    const ended = vi.fn()
+    onSessionEnded(ended)
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response(null, { status: 401 }))))
+
+    await expect(getCurrentIdentity()).rejects.toMatchObject({ status: 401 })
+    expect(ended).not.toHaveBeenCalled()
+
+    await expect(listDocuments(7)).rejects.toMatchObject({ status: 401 })
+    expect(ended).toHaveBeenCalledTimes(1)
   })
 })

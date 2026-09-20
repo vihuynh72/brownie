@@ -195,6 +195,86 @@ class ExportTransactionIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
         assertThat(latest.get("id").asLong()).isEqualTo(receipt.get("id").asLong());
+
+        // The export is on the record beside its receipt: who, which revision, which format, and nothing the document said.
+        try (java.sql.Connection connection = java.sql.DriverManager.getConnection(
+                        POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                java.sql.PreparedStatement statement = connection.prepareStatement("""
+                        SELECT a.actor_user_id = r.actor_user_id, a.resource_type, a.details::text, r.revision_id,
+                               (a.details ->> 'revisionId')::bigint
+                        FROM audit_event a JOIN export_receipt r ON r.id = (a.details ->> 'exportReceiptId')::bigint
+                        WHERE a.workspace_id = ? AND a.action = 'DOCUMENT_EXPORTED' AND a.resource_id = ?
+                        """)) {
+            statement.setLong(1, workspaceId);
+            statement.setLong(2, documentId);
+            try (java.sql.ResultSet rs = statement.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getBoolean(1)).as("recorded in the exporter's own name").isTrue();
+                assertThat(rs.getString(2)).isEqualTo("document");
+                // Validating wrote the revision that was exported, so the receipt, not the draft this test created, names it.
+                assertThat(rs.getLong(4)).as("the receipt's revision").isEqualTo(receipt.get("revisionId").asLong());
+                assertThat(rs.getLong(5)).as("the audit row's revision").isEqualTo(receipt.get("revisionId").asLong());
+                assertThat(rs.getString(3))
+                        .contains("\"exportReceiptId\": " + receipt.get("id").asLong())
+                        .contains("\"format\": \"BOTH\"")
+                        .doesNotContain("Spring Budget");
+                assertThat(rs.next()).as("one export, one audit row").isFalse();
+            }
+        }
+
+        // A second click, or a retry after a lost response: the same approval and the same receipt, not new ones, and
+        // still one entry in the audit record.
+        JsonNode approvedAgain = readJson(mockMvc.perform(post(documentsPath(workspaceId) + "/" + documentId + "/export-approval")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"validationManifestId\":" + manifest.get("id").asLong() + ",\"format\":\"BOTH\"}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        JsonNode exportedAgain = readJson(mockMvc.perform(post(documentsPath(workspaceId) + "/" + documentId + "/export")
+                        .cookie(session)
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(approvedAgain.get("id").asLong()).isEqualTo(receipt.get("exportApprovalId").asLong());
+        assertThat(exportedAgain.get("id").asLong()).isEqualTo(receipt.get("id").asLong());
+        try (java.sql.Connection connection = java.sql.DriverManager.getConnection(
+                        POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                java.sql.PreparedStatement statement = connection.prepareStatement("""
+                        SELECT (SELECT count(*) FROM export_approval WHERE document_id = ?),
+                               (SELECT count(*) FROM export_receipt WHERE document_id = ?),
+                               (SELECT count(*) FROM audit_event WHERE action = 'DOCUMENT_EXPORTED' AND resource_id = ?)
+                        """)) {
+            statement.setLong(1, documentId);
+            statement.setLong(2, documentId);
+            statement.setLong(3, documentId);
+            try (java.sql.ResultSet rs = statement.executeQuery()) {
+                rs.next();
+                assertThat(rs.getLong(1)).as("approvals").isEqualTo(1);
+                assertThat(rs.getLong(2)).as("receipts").isEqualTo(1);
+                assertThat(rs.getLong(3)).as("audit rows").isEqualTo(1);
+            }
+        }
+        // A different choice is a different decision, and is recorded as one.
+        mockMvc.perform(post(documentsPath(workspaceId) + "/" + documentId + "/export-approval")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"validationManifestId\":" + manifest.get("id").asLong() + ",\"format\":\"DOCX\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.id")
+                        .value(org.hamcrest.Matchers.not((int) receipt.get("exportApprovalId").asLong())));
+
+        // And what was approved is what is exported: the Word file alone, though a PDF of this revision exists.
+        JsonNode wordOnly = readJson(mockMvc.perform(post(documentsPath(workspaceId) + "/" + documentId + "/export")
+                        .cookie(session)
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(wordOnly.get("format").asText()).isEqualTo("DOCX");
+        assertThat(wordOnly.get("docxArtifactId").asLong()).isEqualTo(docxArtifactId);
+        assertThat(wordOnly.get("pdfArtifactId").isNull()).isTrue();
+        assertThat(wordOnly.get("id").asLong()).isNotEqualTo(receipt.get("id").asLong());
     }
 
     @Test

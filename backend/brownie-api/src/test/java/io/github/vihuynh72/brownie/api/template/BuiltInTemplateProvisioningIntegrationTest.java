@@ -125,6 +125,15 @@ class BuiltInTemplateProvisioningIntegrationTest {
     @Autowired
     private io.github.vihuynh72.brownie.core.artifact.BlobStore blobStore;
 
+    @Autowired
+    private io.github.vihuynh72.brownie.core.artifact.ArtifactService artifactService;
+
+    @Autowired
+    private io.github.vihuynh72.brownie.core.document.DocumentExtractionService documentExtractionService;
+
+    @Autowired
+    private io.github.vihuynh72.brownie.core.template.TemplateService templateService;
+
     @Test
     void bothBuiltInTemplatesAreActivatedAndListableAfterProvisioning() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-fresh-workspace");
@@ -241,6 +250,94 @@ class BuiltInTemplateProvisioningIntegrationTest {
                 .andReturn());
         assertThat(templates).hasSize(1);
         assertThat(templates.get(0).get("displayName").asText()).isEqualTo("Owner's Own Template");
+    }
+
+    /**
+     * What a first sign-in leaves behind when the renderer is down or busy at its last step: a built-in that was
+     * drafted and never activated, and a second one that was never reached.
+     */
+    @Test
+    void aBuiltInLeftNeverActivatedByAnInterruptedAttemptIsFinishedAndTheMissingOneIsCreated() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-interrupted-provisioning");
+        long workspaceId = ensureWorkspace("subject-interrupted-provisioning").id();
+        long userId =
+                userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-interrupted-provisioning").orElseThrow().id();
+        var first = io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry.all().get(0);
+        draftFrom(workspaceId, userId, first.displayName(), packagedBytes(first.id()));
+
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+
+        JsonNode templates = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(templates).hasSize(2);
+        for (JsonNode template : templates) {
+            assertThat(template.get("status").asText()).isEqualTo("ACTIVE");
+            assertThat(template.get("currentActiveVersionId").isNull()).isFalse();
+        }
+    }
+
+    @Test
+    void anOwnersOwnDraftUnderABuiltInsNameIsNotTakenForAnInterruptedAttempt() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-own-draft-same-name");
+        long workspaceId = ensureWorkspace("subject-own-draft-same-name").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-own-draft-same-name").orElseThrow().id();
+        var builtIns = io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry.all();
+        // The first built-in's name over a different file: the name matches, what it was made from does not.
+        draftFrom(workspaceId, userId, builtIns.get(0).displayName(), packagedBytes(builtIns.get(1).id()));
+
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+
+        JsonNode templates = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(templates).hasSize(1);
+        assertThat(templates.get(0).get("status").asText()).isEqualTo("DRAFT");
+    }
+
+    /** The same new person signing in twice at the same moment, from two tabs or two devices. */
+    @Test
+    void twoSignInsAtTheSameMomentPrepareTheBuiltInsOnce() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-two-sign-ins-at-once");
+        long workspaceId = ensureWorkspace("subject-two-sign-ins-at-once").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-two-sign-ins-at-once").orElseThrow().id();
+        java.util.concurrent.CountDownLatch together = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            List<java.util.concurrent.Future<?>> both = new java.util.ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                both.add(pool.submit(() -> {
+                    together.await();
+                    builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+                    return null;
+                }));
+            }
+            together.countDown();
+            for (java.util.concurrent.Future<?> one : both) {
+                one.get(120, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        JsonNode templates = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(templates).hasSize(2);
+    }
+
+    private void draftFrom(long workspaceId, long userId, String displayName, byte[] docx) {
+        var artifact = artifactService.initiateUpload(workspaceId, userId, displayName + ".docx");
+        artifactService.receiveContent(workspaceId, userId, artifact.id(), new java.io.ByteArrayInputStream(docx));
+        artifactService.finalizeUpload(workspaceId, userId, artifact.id());
+        documentExtractionService.extract(workspaceId, userId, artifact.id());
+        templateService.createDraft(workspaceId, userId, displayName, artifact.id());
+    }
+
+    private static byte[] packagedBytes(String builtInId) throws java.io.IOException {
+        try (var in = new org.springframework.core.io.ClassPathResource("builtin-templates/" + builtInId + ".docx").getInputStream()) {
+            return in.readAllBytes();
+        }
     }
 
     private long uploadMinimalDocx(Cookie session, long workspaceId) throws Exception {

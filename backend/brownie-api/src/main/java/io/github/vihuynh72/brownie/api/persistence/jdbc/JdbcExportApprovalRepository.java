@@ -36,11 +36,27 @@ class JdbcExportApprovalRepository implements ExportApprovalRepository {
             long validationManifestId,
             ExportFormat format) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
+        // Approving what is already the document's latest approval is one decision however many times the request
+        // arrives: a second click, or a retry after a lost response, gets the approval that already exists. Only
+        // the latest counts as a repeat. The latest approval is what gets exported, so someone who approved both
+        // formats, then Word alone, then both again has made three decisions, and answering the third with the
+        // first would leave Word alone in force. The lock makes two arriving together take turns, so the second
+        // finds what the first wrote.
+        jdbcTemplate.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended('export_approval:' || ?::text, 0))", rs -> null, documentId);
+        Optional<ExportApproval> latest = latestFor(workspaceId, documentId);
+        if (latest.isPresent()
+                && latest.get().validationManifestId() == validationManifestId
+                && latest.get().format() == format
+                && latest.get().actorUserId() == userId) {
+            return latest.get();
+        }
         return jdbcTemplate.queryForObject(
                 """
                 INSERT INTO export_approval
-                    (workspace_id, document_id, revision_id, template_version_id, validation_manifest_id, format, actor_user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (workspace_id, document_id, revision_id, template_version_id, validation_manifest_id, format, actor_user_id,
+                     approved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, clock_timestamp())
                 RETURNING\
                 """ + " " + COLUMNS,
                 this::mapApproval,
@@ -57,9 +73,18 @@ class JdbcExportApprovalRepository implements ExportApprovalRepository {
     @Transactional(readOnly = true)
     public Optional<ExportApproval> findLatest(long workspaceId, long userId, long documentId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return latestFor(workspaceId, documentId);
+    }
+
+    /**
+     * By id, not by time. Approvals of one document are written one at a time, under the lock, so their ids are in
+     * the order the decisions were taken; a clock can be set back between two of them, and the one the person had
+     * moved away from would then be the one exported.
+     */
+    private Optional<ExportApproval> latestFor(long workspaceId, long documentId) {
         return jdbcTemplate.query(
                         "SELECT " + COLUMNS + " FROM export_approval WHERE workspace_id = ? AND document_id = ? "
-                                + "ORDER BY approved_at DESC LIMIT 1",
+                                + "ORDER BY id DESC LIMIT 1",
                         this::mapApproval,
                         workspaceId,
                         documentId)

@@ -44,6 +44,8 @@ public class BrownieEnvironmentListener
         implements ApplicationListener<ApplicationEnvironmentPreparedEvent>, Ordered {
 
     static final String ENVIRONMENT_PROPERTY = "BROWNIE_ENVIRONMENT";
+    /** Also how {@code BROWNIE_WORKER_MODE} is read: an environment variable answers to its property's name. */
+    static final String MODE_PROPERTY = "brownie.worker.mode";
     private static final String ACTIVE_PROFILES_PROPERTY = "spring.profiles.active";
 
     @Override
@@ -52,6 +54,7 @@ public class BrownieEnvironmentListener
     }
 
     BrownieEnvironment resolveAndActivate(ConfigurableEnvironment environment) {
+        requireKnownMode(environment.getProperty(MODE_PROPERTY));
         BrownieEnvironment resolved = BrownieEnvironment.fromValue(environment.getProperty(ENVIRONMENT_PROPERTY));
         environment
                 .getPropertySources()
@@ -59,6 +62,21 @@ public class BrownieEnvironmentListener
                         "brownieEnvironment", Map.of(ACTIVE_PROFILES_PROPERTY, resolved.configValue())));
         environment.setActiveProfiles(resolved.configValue());
         return resolved;
+    }
+
+    /**
+     * The mode decides which beans exist, and the conditions that decide it
+     * compare without regard to case, so by the time anything could look at
+     * the value again a worker given {@code SERVE} would already be serving
+     * and one given {@code Replay-Deletions} already replaying. It is
+     * therefore settled here, before there are any beans: exactly one of
+     * the two spellings, or nothing starts. Unset means serve.
+     */
+    static void requireKnownMode(String mode) {
+        if (mode != null && !mode.equals("serve") && !mode.equals("replay-deletions")) {
+            throw new IllegalStateException(
+                    MODE_PROPERTY + " must be exactly \"serve\" or \"replay-deletions\", not \"" + mode + "\". Nothing was started.");
+        }
     }
 
     @Override

@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import WorkspaceView from '@/views/WorkspaceView.vue'
 import { useSessionStore } from '@/stores/session'
-import type { DocumentResponse, DocumentRevisionResponse, JobResponse, QuestionResponse } from '@/api/client'
+import type { DocumentResponse, DocumentRevisionResponse, DocumentSourceResponse, JobResponse, QuestionResponse } from '@/api/client'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -21,6 +21,7 @@ vi.mock('@/api/client', async () => {
     listDocumentSources: vi.fn(),
     listGenerationRuns: vi.fn(),
     cancelJob: vi.fn(),
+    retryJob: vi.fn(),
     compileRevision: vi.fn(),
     getLatestCompilation: vi.fn(),
     getEvidenceExcerpt: vi.fn(),
@@ -66,6 +67,7 @@ import {
   artifactDownloadUrl,
   attachDocumentSource,
   cancelJob,
+  retryJob,
   compileRevision,
   completeUpload,
   executeAssist,
@@ -175,6 +177,7 @@ async function mountWorkspaceView() {
     history: createWebHistory(),
     routes: [
       { path: '/', component: { template: '<div />' } },
+      { path: '/trash', component: { template: '<div />' } },
       { path: '/documents/:id', component: WorkspaceView },
     ],
   })
@@ -196,6 +199,7 @@ async function mountWorkspaceViewAttached() {
     history: createWebHistory(),
     routes: [
       { path: '/', component: { template: '<div />' } },
+      { path: '/trash', component: { template: '<div />' } },
       { path: '/documents/:id', component: WorkspaceView },
     ],
   })
@@ -677,6 +681,40 @@ describe('WorkspaceView checks tab', () => {
     const pdfLink = wrapper.findAll('a').find((a) => a.text() === 'Download PDF')
     expect(docxLink?.attributes('href')).toBe(artifactDownloadUrl(7, 900))
     expect(pdfLink?.attributes('href')).toBe(artifactDownloadUrl(7, 901))
+    expect(wrapper.text()).toContain('Both files exported.')
+  })
+
+  it('says what was exported in terms of what was asked for, and offers only that', async () => {
+    authenticate()
+    vi.mocked(getLatestValidation).mockResolvedValue(validationManifestResponse())
+    vi.mocked(getLatestExportApproval).mockResolvedValue(exportApprovalResponse({ format: 'DOCX' }))
+
+    // A Word-only export is complete, not "only one file".
+    vi.mocked(getLatestExportReceipt).mockResolvedValue(
+      exportReceiptResponse({ format: 'DOCX', pdfArtifactId: null, pdfSha256: null, isCompletePair: false }),
+    )
+    const wordOnly = await mountWorkspaceView()
+    await openChecksTab(wordOnly)
+    expect(wordOnly.text()).toContain('DOCX exported.')
+    expect(wordOnly.text()).not.toContain('Only one file')
+    expect(wordOnly.findAll('a').some((a) => a.text() === 'Download PDF')).toBe(false)
+
+    // A PDF export offers the PDF and not the Word file it was made from.
+    vi.mocked(getLatestExportReceipt).mockResolvedValue(exportReceiptResponse({ format: 'PDF' }))
+    const pdfOnly = await mountWorkspaceView()
+    await openChecksTab(pdfOnly)
+    expect(pdfOnly.text()).toContain('PDF exported.')
+    expect(pdfOnly.findAll('a').some((a) => a.text() === 'Download DOCX')).toBe(false)
+    expect(pdfOnly.findAll('a').some((a) => a.text() === 'Download PDF')).toBe(true)
+
+    // Both were asked for and the PDF could not be made: the Word file, and the reason.
+    vi.mocked(getLatestExportReceipt).mockResolvedValue(
+      exportReceiptResponse({ format: 'BOTH', pdfArtifactId: null, pdfSha256: null, isCompletePair: false }),
+    )
+    const withoutPdf = await mountWorkspaceView()
+    await openChecksTab(withoutPdf)
+    expect(withoutPdf.text()).toContain('the PDF could not be made')
+    expect(withoutPdf.findAll('a').some((a) => a.text() === 'Download DOCX')).toBe(true)
   })
 
   it('rehydrates an already-validated, approved, and exported revision when the Checks tab opens', async () => {
@@ -695,7 +733,7 @@ describe('WorkspaceView checks tab', () => {
 
     expect(getLatestValidation).toHaveBeenCalledWith(7, 1, 1)
     expect(wrapper.text()).toContain('Ready to export')
-    expect(wrapper.text()).toContain('Approved for: BOTH')
+    expect(wrapper.text()).toContain('Approved for: DOCX and PDF')
     expect(wrapper.findAll('a').find((a) => a.text() === 'Download DOCX')).toBeTruthy()
     // Nothing was actually clicked -- this state came entirely from rehydration.
     expect(validateDocument).not.toHaveBeenCalled()
@@ -1497,6 +1535,7 @@ describe('WorkspaceView generation runs survive a reload', () => {
     vi.mocked(getGenerationQuestions).mockReset()
     vi.mocked(getJob).mockReset()
     vi.mocked(cancelJob).mockReset()
+    vi.mocked(retryJob).mockReset()
     vi.mocked(startExtraction).mockReset()
     const session = useSessionStore()
     session.status = 'authenticated'
@@ -1561,6 +1600,84 @@ describe('WorkspaceView generation runs survive a reload', () => {
     const second = await mountWorkspaceView()
     await second.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
     expect(second.text()).toContain('This run was cancelled.')
+  })
+
+  it('starts a run that gave up again as the same run, and follows it to its result', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('DEAD')])
+    vi.mocked(retryJob).mockResolvedValue(jobResponse('QUEUED'))
+    vi.mocked(getJob).mockResolvedValue(jobResponse('SUCCEEDED'))
+    vi.mocked(getExtractionResult).mockResolvedValue({ artifactId: 900 })
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+    expect(wrapper.text()).toContain('The last run gave up before it could finish.')
+    // The job queue's own name for that ending is not a word for a person.
+    expect(wrapper.text()).not.toContain('DEAD')
+
+    await wrapper.findAll('button').find((b) => b.text() === 'Try this run again')!.trigger('click')
+    await flushPromises()
+
+    expect(retryJob).toHaveBeenCalledWith(7, 42)
+    // Nothing new was started: the same job is what gets followed.
+    expect(startExtraction).not.toHaveBeenCalled()
+    expect(getJob).toHaveBeenCalledWith(7, 42)
+    expect(wrapper.text()).not.toContain('gave up')
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Try this run again')).toBe(false)
+  })
+
+  it('says to start a new extraction when the document has changed since the run that gave up', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('FAILED')])
+    vi.mocked(retryJob).mockRejectedValue(
+      new ApiRequestError(409, { status: 409, title: 'Conflict', code: 'JOB_TARGET_STALE', correlationId: 'c', fields: [], recoveryActions: [] }),
+    )
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+
+    await wrapper.findAll('button').find((b) => b.text() === 'Try this run again')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('Start a new extraction instead.')
+    expect(getJob).not.toHaveBeenCalled()
+    // An offer that can never succeed is not made a second time.
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Try this run again')).toBe(false)
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
+  it('shows what the run really became when another tab already restarted it and it has since finished', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns)
+      .mockResolvedValueOnce([generationRun('DEAD')])
+      .mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    vi.mocked(retryJob).mockRejectedValue(
+      new ApiRequestError(409, { status: 409, title: 'Conflict', code: 'CONFLICT', correlationId: 'c', fields: [], recoveryActions: [] }),
+    )
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+
+    await wrapper.findAll('button').find((b) => b.text() === 'Try this run again')!.trigger('click')
+    await flushPromises()
+
+    expect(listGenerationRuns).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).not.toContain('gave up')
+    expect(wrapper.text()).not.toContain('Could not start this run again')
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Try this run again')).toBe(false)
+  })
+
+  it('does not offer to start a cancelled or finished run again', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('CANCELLED')])
+    const wrapper = await mountWorkspaceView()
+    await wrapper.findAll('button[role="tab"]').find((tab) => tab.text() === 'Assist')?.trigger('click')
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Try this run again')).toBe(false)
   })
 
   it('requests cancellation of a running job and shows it as requested until the job really ends', async () => {
@@ -1727,6 +1844,7 @@ describe('WorkspaceView saved, conflict, limits and rules', () => {
       uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
+      trashRetentionDays: 30,
     })
     vi.mocked(listTemplateVersionRules).mockReset().mockResolvedValue([])
     window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
@@ -2102,5 +2220,792 @@ describe('WorkspaceView keeps typed text across a save', () => {
     vi.useRealTimers()
     await flushPromises()
     expect(wrapper.text()).toContain('No worker has picked this run up yet')
+  })
+})
+
+/** A refusal from a Brownie server, carrying its own explanation. */
+function refusal(status: number, code: string, detail?: string): ApiRequestError {
+  return new ApiRequestError(status, { status, title: 'Refused', code, detail, correlationId: 'c', fields: [], recoveryActions: [] })
+}
+
+/** How a server that predates a route answers for it. */
+function noSuchRoute(path: string): ApiRequestError {
+  return refusal(404, 'NOT_FOUND', `No static resource ${path}.`)
+}
+
+/** What fetch throws when no answer came back at all. */
+function networkFailure(): TypeError {
+  return new TypeError('Failed to fetch')
+}
+
+const DOCUMENT_GONE = refusal(404, 'NOT_FOUND', 'No document 1 in this workspace.')
+const RENDERER_BUSY = refusal(503, 'RENDERER_BUSY', 'Too many documents are being prepared right now. Nothing was changed; try again shortly.')
+const RATE_LIMITED = refusal(429, 'RATE_LIMITED', 'Too many requests in a short time. Wait 12 seconds and try again.')
+const ONE_SOURCE: DocumentSourceResponse[] = [
+  { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+]
+const TEN_MEGABYTE_LIMIT = {
+  maxUploadBytes: 10485760,
+  uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
+  assistSourceMediaTypes: ['text/plain'],
+  templateMediaTypes: [],
+  trashRetentionDays: 30,
+}
+
+describe('WorkspaceView says what went wrong, and keeps what the person has', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/')
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listTemplateVersionRules).mockReset().mockResolvedValue([])
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue(TEN_MEGABYTE_LIMIT)
+    vi.mocked(getLatestValidation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getLatestExportApproval).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getLatestExportReceipt).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(compileRevision).mockReset()
+    vi.mocked(patchDocumentContent).mockReset()
+    vi.mocked(recordReviewDecision).mockReset()
+    vi.mocked(setFieldLock).mockReset()
+    vi.mocked(retryJob).mockReset()
+    vi.mocked(getJob).mockReset()
+    vi.mocked(startExtraction).mockReset()
+    vi.mocked(getGenerationQuestions).mockReset()
+    vi.mocked(getExtractionResult).mockReset()
+    vi.mocked(answerQuestion).mockReset()
+    vi.mocked(resumeGeneration).mockReset()
+    vi.mocked(cancelJob).mockReset()
+    vi.mocked(applyGenerationResult).mockReset()
+    vi.mocked(acceptPatchProposal).mockReset()
+    vi.mocked(interpretAssist).mockReset()
+    vi.mocked(executeAssist).mockReset()
+    vi.mocked(validateDocument).mockReset()
+    vi.mocked(approveExport).mockReset()
+    vi.mocked(exportDocument).mockReset()
+    vi.mocked(listDocumentRevisions).mockReset()
+    vi.mocked(getDocumentRevision).mockReset()
+    vi.mocked(allocateUpload).mockReset().mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'notes.txt' })
+    vi.mocked(uploadArtifactContent).mockReset().mockResolvedValue({ id: 5, status: 'SCANNING', displayFilename: 'notes.txt' })
+    vi.mocked(completeUpload).mockReset().mockResolvedValue({ id: 5, status: 'READY', displayFilename: 'notes.txt' })
+    vi.mocked(extractArtifact).mockReset().mockResolvedValue({ status: 'COMPLETE' })
+    vi.mocked(attachDocumentSource).mockReset().mockResolvedValue(ONE_SOURCE[0]!)
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  type Wrapper = Awaited<ReturnType<typeof mountWorkspaceView>>
+
+  async function openTab(wrapper: Wrapper, name: string) {
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === name)!.trigger('click')
+    await flushPromises()
+  }
+
+  function buttonNamed(wrapper: Wrapper, text: string) {
+    return wrapper.findAll('button').find((button) => button.text() === text)
+  }
+
+  async function chooseSourceFile(wrapper: Wrapper, size?: number) {
+    const input = wrapper.find('#attach-source')
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
+    if (size !== undefined) Object.defineProperty(file, 'size', { value: size })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+  }
+
+  describe('when the document is reloaded after an action', () => {
+    it('keeps the editor, the typed values and keyboard focus when the reload fails, and says the page may be out of date', async () => {
+      vi.mocked(getDocument).mockReset().mockResolvedValueOnce(DOCUMENT_WITH_A_SCALAR_FIELD).mockRejectedValueOnce(networkFailure())
+      vi.mocked(recordReviewDecision).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision)
+      const wrapper = await mountWorkspaceViewAttached()
+      try {
+        const date = wrapper.find('[id="edit-meeting.date"]')
+        ;(date.element as HTMLInputElement).focus()
+        await date.setValue('2026-04-09')
+
+        await wrapper.find('button[aria-label="Accept meeting.title"]').trigger('click')
+        await flushPromises()
+
+        expect(wrapper.text()).not.toContain('Could not load this document')
+        expect(wrapper.find('[id="edit-meeting.date"]').element).toBe(date.element)
+        expect((date.element as HTMLInputElement).value).toBe('2026-04-09')
+        expect(document.activeElement).toBe(date.element)
+        expect(wrapper.text()).toContain('The latest version of this document could not be loaded, so what is shown here may be out of date.')
+        expect(wrapper.text()).toContain('Brownie could not be reached.')
+        expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('says the document went to the trash, and links there, when a reload finds it gone', async () => {
+      vi.mocked(getDocument).mockReset().mockResolvedValueOnce(DOCUMENT_WITH_A_SCALAR_FIELD).mockRejectedValueOnce(DOCUMENT_GONE)
+      vi.mocked(setFieldLock).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD.currentRevision)
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('button[aria-label="Lock meeting.title"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This document is no longer available, for example because it was moved to the trash in another tab.')
+      expect(wrapper.find('a[href="/trash"]').exists()).toBe(true)
+      expect(wrapper.find('[id="edit-meeting.title"]').exists()).toBe(true)
+    })
+
+    it('keeps what was just saved on screen when the reload after the save fails', async () => {
+      vi.mocked(getDocument)
+        .mockReset()
+        .mockResolvedValueOnce(DOCUMENT)
+        .mockRejectedValueOnce(refusal(503, 'DATABASE_UNAVAILABLE', 'The service cannot reach its database right now. Nothing was changed; try again shortly.'))
+      vi.mocked(patchDocumentContent).mockResolvedValue({ ...DOCUMENT.currentRevision, id: 2, revisionNumber: 2 })
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('[id="edit-meeting.title"]').setValue('Garden Club Planning')
+      await wrapper.find('form.field-list').trigger('submit')
+      await flushPromises()
+
+      expect((wrapper.find('[id="edit-meeting.title"]').element as HTMLInputElement).value).toBe('Garden Club Planning')
+      expect(wrapper.text()).toContain('Saved.')
+      expect(wrapper.text()).not.toContain('Unsaved changes')
+      expect(wrapper.text()).toContain('The service cannot reach its database right now.')
+      wrapper.unmount()
+    })
+
+    it('does not name a current revision it could not load after a conflicting save', async () => {
+      vi.mocked(getDocument).mockReset().mockResolvedValueOnce(DOCUMENT).mockRejectedValueOnce(networkFailure())
+      vi.mocked(patchDocumentContent).mockRejectedValue(refusal(412, 'STALE_REVISION', 'Revision moved on.'))
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('[id="edit-meeting.title"]').setValue('My title')
+      await wrapper.find('form.field-list').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('its latest version could not be loaded, so nothing was saved')
+      expect(wrapper.text()).not.toContain('is now current')
+      expect((wrapper.find('[id="edit-meeting.title"]').element as HTMLInputElement).value).toBe('My title')
+      wrapper.unmount()
+    })
+
+    it('does not claim a reload that failed after a review decision hit a revision that moved on', async () => {
+      vi.mocked(getDocument).mockReset().mockResolvedValueOnce(DOCUMENT_WITH_A_SCALAR_FIELD).mockRejectedValueOnce(networkFailure())
+      vi.mocked(recordReviewDecision).mockRejectedValue(refusal(412, 'STALE_REVISION', 'Revision moved on.'))
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('button[aria-label="Accept meeting.title"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This document changed since you loaded it, so that was not done.')
+      expect(wrapper.text()).not.toContain('so it was reloaded')
+    })
+
+    it('says a document that cannot be found on the first load may be in the trash, and links there', async () => {
+      vi.mocked(getDocument).mockReset().mockRejectedValue(DOCUMENT_GONE)
+      const wrapper = await mountWorkspaceView()
+
+      expect(wrapper.text()).toContain('This document is not available. It may have been moved to the trash, where it can be restored.')
+      expect(wrapper.find('a[href="/trash"]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Back to your documents')
+    })
+
+    it('says Brownie could not be reached when the first load gets no answer', async () => {
+      vi.mocked(getDocument).mockReset().mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+
+      expect(wrapper.text()).toContain('Brownie could not be reached.')
+      expect(wrapper.find('a[href="/trash"]').exists()).toBe(false)
+    })
+  })
+
+  describe('when a save is refused', () => {
+    it.each([
+      ['the document was moved to the trash', DOCUMENT_GONE, 'this document is no longer available, for example because it was moved to the trash', true],
+      ['the change is larger than one save may be', refusal(413, 'CONTENT_TOO_LARGE', 'A request body may be at most 1048576 bytes.'), 'A request body may be at most 1048576 bytes.', false],
+      ['the database is out of reach', refusal(503, 'DATABASE_UNAVAILABLE', 'The service cannot reach its database right now.'), 'The service cannot reach its database right now.', false],
+      ['the session ended', refusal(401, 'UNAUTHORIZED', 'Full authentication is required.'), 'Your session has ended.', false],
+      ['no answer came back', networkFailure(), 'Brownie could not be reached.', false],
+    ])('says so when %s, and keeps the typed value', async (_case, error, expected, linksToTrash) => {
+      vi.mocked(patchDocumentContent).mockRejectedValue(error)
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('[id="edit-meeting.title"]').setValue('Typed title')
+      await wrapper.find('form.field-list').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain(expected)
+      expect(wrapper.text()).not.toContain('Could not save your changes. Try again.')
+      expect(wrapper.find('a[href="/trash"]').exists()).toBe(linksToTrash)
+      expect((wrapper.find('[id="edit-meeting.title"]').element as HTMLInputElement).value).toBe('Typed title')
+      wrapper.unmount()
+    })
+  })
+
+  describe('with a generation run', () => {
+    it('keeps a run that gave up as it was when the server has no way to start it again, and says so', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('DEAD')])
+      vi.mocked(retryJob).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/jobs/42/retry'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try this run again')!.trigger('click')
+      await flushPromises()
+
+      // Nothing about the run changed, so it is not read back or marked as one that can never be retried.
+      expect(listGenerationRuns).toHaveBeenCalledTimes(1)
+      expect(getJob).not.toHaveBeenCalled()
+      expect(wrapper.find('[role="alert"]').text()).toContain('older than this page and does not have a way to start a run again yet')
+      expect(wrapper.text()).not.toContain('No static resource')
+      expect(buttonNamed(wrapper, 'Try this run again')).toBeTruthy()
+    })
+
+    it('says Brownie could not be reached when starting a run again gets no answer, and keeps the offer', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('DEAD')])
+      vi.mocked(retryJob).mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try this run again')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Brownie could not be reached.')
+      expect(wrapper.text()).not.toContain('Could not start this run again. Try again.')
+      expect(buttonNamed(wrapper, 'Try this run again')).toBeTruthy()
+    })
+
+    it('offers Check again, not a run still extracting with a Cancel, when a finished run\'s result cannot be read', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockResolvedValue(jobResponse('SUCCEEDED'))
+      vi.mocked(getExtractionResult).mockRejectedValue(RENDERER_BUSY)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This run has finished, but its result could not be loaded.')
+      expect(wrapper.text()).toContain('Too many documents are being prepared right now.')
+      expect(wrapper.text()).not.toContain('Extracting…')
+      expect(buttonNamed(wrapper, 'Cancel')).toBeUndefined()
+      // A second start would be a second paid run; the finished one is still there to pick up.
+      expect(buttonNamed(wrapper, 'Try grounded extraction')!.attributes('disabled')).toBeDefined()
+      expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+      await buttonNamed(wrapper, 'Check again')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('download the raw result')
+      expect(buttonNamed(wrapper, 'Check again')).toBeUndefined()
+    })
+
+    it('offers Check again, not an empty list to continue from, when the questions of a waiting run cannot be read', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockResolvedValue(jobResponse('WAITING_FOR_INPUT'))
+      vi.mocked(getGenerationQuestions).mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This run is waiting for your answers, but its questions could not be loaded.')
+      expect(wrapper.text()).not.toContain('Extracting…')
+      expect(buttonNamed(wrapper, 'Continue')).toBeUndefined()
+      expect(buttonNamed(wrapper, 'Check again')).toBeTruthy()
+    })
+
+    it('does the same when the questions of a waiting run cannot be read as the page opens', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+      vi.mocked(getGenerationQuestions).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/generations/42/questions'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      expect(wrapper.text()).toContain('This run is waiting for your answers, but its questions could not be loaded.')
+      expect(wrapper.text()).toContain('older than this page')
+      expect(buttonNamed(wrapper, 'Continue')).toBeUndefined()
+      expect(buttonNamed(wrapper, 'Check again')).toBeTruthy()
+    })
+
+    it('says so when Check again itself cannot reach the server, and keeps the offer', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+      vi.mocked(getGenerationQuestions).mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      vi.mocked(listGenerationRuns).mockRejectedValue(networkFailure())
+      await buttonNamed(wrapper, 'Check again')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).not.toContain('its questions could not be loaded')
+      expect(wrapper.text()).toContain('Brownie could not be reached.')
+      expect(buttonNamed(wrapper, 'Check again')).toBeTruthy()
+    })
+
+    it.each([
+      [401, refusal(401, 'UNAUTHORIZED', 'Full authentication is required.'), 'Your session has ended.'],
+      [403, refusal(403, 'FORBIDDEN', 'Access denied.'), 'Brownie no longer lets this account see this run'],
+      [404, refusal(404, 'NOT_FOUND', 'No job 42 in this workspace.'), 'This run is no longer available'],
+    ])('stops checking on a run and says why when the server answers %i', async (_status, error, expected) => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockRejectedValue(error)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      vi.useFakeTimers()
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await vi.advanceTimersByTimeAsync(30_000)
+      vi.useRealTimers()
+      await flushPromises()
+
+      expect(getJob).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain(expected)
+      expect(wrapper.text()).not.toContain('Lost contact')
+      expect(wrapper.text()).not.toContain('Extracting…')
+    })
+
+    /**
+     * A 404 with no explanation of Brownie's own came from something in front of it, a proxy during a deploy, say.
+     * It says nothing about the run, which may well still be going: stopping here would offer a second paid start.
+     */
+    it('keeps checking on a run through a 404 that Brownie did not send', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockRejectedValue(new ApiRequestError(404, undefined))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      vi.useFakeTimers()
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await vi.advanceTimersByTimeAsync(30_000)
+      vi.useRealTimers()
+      await flushPromises()
+
+      expect(vi.mocked(getJob).mock.calls.length).toBeGreaterThan(1)
+      expect(wrapper.text()).not.toContain('This run is no longer available')
+      expect(wrapper.text()).toContain('Lost contact with the server; still checking on this run.')
+      // Still following the run, so nothing offers to start another one.
+      expect(buttonNamed(wrapper, 'Try grounded extraction')).toBeUndefined()
+    })
+
+    it('does not offer to start a gone run again because the run before it gave up', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('DEAD')])
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 43, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockRejectedValue(refusal(404, 'NOT_FOUND', 'No job 43 in this workspace.'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This run is no longer available')
+      expect(buttonNamed(wrapper, 'Try this run again')).toBeUndefined()
+    })
+
+    it('keeps checking through a lost connection, and says Brownie asked it to slow down on a 429', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockRejectedValueOnce(networkFailure()).mockRejectedValueOnce(RATE_LIMITED).mockReturnValue(new Promise(() => {}))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      vi.useFakeTimers()
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(wrapper.text()).toContain('Lost contact with the server; still checking on this run.')
+
+      await vi.advanceTimersByTimeAsync(3_100)
+      expect(getJob).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).toContain('Brownie asked this page to check less often; still checking on this run.')
+      expect(wrapper.text()).not.toContain('Lost contact')
+    })
+
+    it('describes a run under way in words, not by the job queue\'s state name', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+      vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      expect(wrapper.text()).toContain('Brownie is reading your source and filling in the fields.')
+      expect(wrapper.text()).not.toContain('LEASED')
+      expect(wrapper.text()).not.toContain('Job status')
+    })
+
+    it('says a run that failed while being followed gave up, without the job queue\'s state name', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockResolvedValue({ commandId: 'c', jobId: 42, operation: 'start', status: 'ACCEPTED', acceptedAt: '2026-03-01T00:00:00Z' })
+      vi.mocked(getJob).mockResolvedValue(jobResponse('FAILED'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('This run gave up before it could finish.')
+      expect(wrapper.text()).not.toContain('FAILED')
+      expect(buttonNamed(wrapper, 'Try this run again')).toBeTruthy()
+    })
+
+    it('says a server without the route, rather than showing its raw answer, when an extraction cannot start', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(startExtraction).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/generations'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Try grounded extraction')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('older than this page and does not have extraction from sources yet')
+      expect(wrapper.text()).not.toContain('No static resource')
+    })
+
+    it('passes on the server\'s explanation when saving an answer or continuing a run is refused for load', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+      vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+      vi.mocked(answerQuestion).mockRejectedValueOnce(RENDERER_BUSY)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await wrapper.find(`#answer-${CONFLICT_QUESTION.id}`).setValue('Spring Planning')
+      await buttonNamed(wrapper, 'Save answer')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('Too many documents are being prepared right now.')
+      expect(wrapper.text()).not.toContain('Could not save that answer. Try again.')
+
+      vi.mocked(answerQuestion).mockResolvedValue({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Spring Planning' })
+      await buttonNamed(wrapper, 'Save answer')!.trigger('click')
+      await flushPromises()
+      vi.mocked(resumeGeneration).mockRejectedValue(RATE_LIMITED)
+      await buttonNamed(wrapper, 'Continue')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('Wait 12 seconds and try again.')
+      expect(wrapper.text()).not.toContain('Could not resume extraction. Try again.')
+    })
+
+    it('says a server without the route when a cancellation cannot be asked for', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('QUEUED')])
+      vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+      vi.mocked(cancelJob).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/jobs/42/cancel'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Cancel')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('does not have a way to cancel a run yet')
+      expect(wrapper.text()).not.toContain('Could not request cancellation. Try again.')
+    })
+
+    it('passes on the server\'s explanation when a finished run cannot be turned into a proposal', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+      vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+      vi.mocked(applyGenerationResult).mockRejectedValue(RENDERER_BUSY)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await buttonNamed(wrapper, 'Apply to document')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Too many documents are being prepared right now.')
+      expect(wrapper.text()).not.toContain('Could not turn this result into a proposal. Try again.')
+    })
+  })
+
+  describe('with the Assist composer', () => {
+    const CHANGE_TITLE = {
+      kind: 'CHANGE_FIELD' as const,
+      summary: 'Change Meeting title to "Spring Planning".',
+      scope: { fieldId: 'meeting.title', label: 'Meeting title', currentValue: 'Weekly Sync', findingMessage: null },
+      executable: true,
+      usesModel: false,
+      help: [],
+    }
+
+    async function ask(wrapper: Wrapper, text: string) {
+      await wrapper.find('#assist-composer').setValue(text)
+      await wrapper.find('form.assist-composer').trigger('submit')
+      await flushPromises()
+    }
+
+    it('says Brownie could not be reached when a request cannot be read', async () => {
+      vi.mocked(interpretAssist).mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+
+      await ask(wrapper, 'change meeting title to Spring Planning')
+
+      expect(wrapper.find('.assist-composer [role="alert"]').text()).toContain('Brownie could not be reached.')
+    })
+
+    it('says a server without the route, rather than showing its raw answer, when a request cannot run', async () => {
+      vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
+      vi.mocked(executeAssist).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/assist/execute'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+      await ask(wrapper, 'change meeting title to Spring Planning')
+
+      await buttonNamed(wrapper, 'Do it')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('.assist-composer [role="alert"]').text()).toContain('older than this page')
+      expect(wrapper.text()).not.toContain('No static resource')
+    })
+
+    it('does not claim a reload that failed after the revision moved on', async () => {
+      vi.mocked(getDocument).mockReset().mockResolvedValueOnce(DOCUMENT_WITH_A_SCALAR_FIELD).mockRejectedValueOnce(networkFailure())
+      vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
+      vi.mocked(executeAssist).mockRejectedValue(refusal(412, 'STALE_REVISION', 'moved'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+      await ask(wrapper, 'change meeting title to Spring Planning')
+
+      await buttonNamed(wrapper, 'Do it')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('.assist-composer [role="alert"]').text()).toContain('This document changed since you loaded it, so that was not done.')
+      expect(wrapper.text()).not.toContain('so it was reloaded')
+    })
+
+    it('passes on the server\'s explanation when a proposal cannot be accepted', async () => {
+      vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
+      vi.mocked(executeAssist).mockResolvedValue({
+        kind: 'CHANGE_FIELD', summary: 'Change Meeting title to "Spring Planning".', explanation: null, help: [],
+        proposal: {
+          id: 33, documentId: 1, baseRevisionId: 1, status: 'PROPOSED', createdAt: '2026-03-01T00:00:00Z',
+          proposedValues: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Spring Planning', values: null, evidenceSpanIds: [] } },
+          proposedRepeatedItemCount: 0, skippedRepeatedItems: [],
+        },
+      })
+      vi.mocked(acceptPatchProposal).mockRejectedValue(RATE_LIMITED)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Assist')
+      await ask(wrapper, 'change meeting title to Spring Planning')
+      await buttonNamed(wrapper, 'Do it')!.trigger('click')
+      await flushPromises()
+
+      await buttonNamed(wrapper, 'Accept and update document')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Wait 12 seconds and try again.')
+      expect(wrapper.text()).not.toContain('Could not apply this proposal. Try again.')
+    })
+  })
+
+  describe('when a source is attached', () => {
+    it('names the upload limit when a file over it is refused, and does not say to try again', async () => {
+      vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Upload exceeds the maximum allowed size of 10485760 bytes.'))
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper, 11 * 1024 * 1024)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe('That file was not attached: it is larger than the 10 MB upload limit.')
+      expect(wrapper.text()).not.toContain('Try again')
+    })
+
+    it('passes on the server\'s explanation of a size refusal when the limit is not known here', async () => {
+      vi.mocked(getCapabilities).mockReset().mockRejectedValue(networkFailure())
+      vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Upload exceeds the maximum allowed size of 10485760 bytes.'))
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper, 11 * 1024 * 1024)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe('That file was not attached. Upload exceeds the maximum allowed size of 10485760 bytes.')
+    })
+
+    it('passes on the server\'s explanation of a size refusal for a file under the limit, which is about what it unpacks to', async () => {
+      vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Package expands beyond 52428800 uncompressed bytes.'))
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper, 40 * 1024)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe('That file was not attached. Package expands beyond 52428800 uncompressed bytes.')
+    })
+
+    it('says a file of a kind Brownie cannot use was not attached, and what to attach instead', async () => {
+      vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(415, 'UNSUPPORTED_MEDIA_TYPE', 'Package is not a valid ZIP archive.'))
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe(
+        'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.',
+      )
+    })
+
+    it('says Brownie could not be reached when an upload gets no answer', async () => {
+      vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper)
+
+      expect(wrapper.find('[role="alert"]').text()).toContain('That file was not attached. Brownie could not be reached.')
+    })
+
+    it.each([
+      [{ id: 5, status: 'QUARANTINED' as const, rejectionReason: null }, 'That file was not attached: Brownie could not finish checking it.', 'QUARANTINED'],
+      [{ id: 5, status: 'REJECTED' as const, rejectionReason: 'MALWARE_DETECTED' }, 'That file was not attached: the malware scan flagged it.', 'MALWARE_DETECTED'],
+    ])('says why a finished upload was not accepted without its internal state (%o)', async (artifact, expected, internal) => {
+      vi.mocked(completeUpload).mockResolvedValue(artifact)
+      const wrapper = await mountWorkspaceView()
+
+      await chooseSourceFile(wrapper)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe(expected)
+      expect(wrapper.text()).not.toContain(internal)
+    })
+
+    it('falls back to the server\'s explanation of a size refusal when an older server does not send its limit', async () => {
+      vi.mocked(getCapabilities).mockReset().mockResolvedValue({
+        uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
+        assistSourceMediaTypes: ['text/plain'],
+        templateMediaTypes: [],
+      } as never)
+      vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Upload exceeds the maximum allowed size of 10485760 bytes.'))
+      const wrapper = await mountWorkspaceView()
+      expect(wrapper.text()).toContain('Plain-text notes or a transcript (.txt). Assist reads')
+
+      await chooseSourceFile(wrapper, 11 * 1024 * 1024)
+
+      expect(wrapper.find('[role="alert"]').text()).toBe('That file was not attached. Upload exceeds the maximum allowed size of 10485760 bytes.')
+      expect(wrapper.text()).not.toContain('undefined')
+      expect(wrapper.text()).not.toContain('null')
+    })
+  })
+
+  describe('on the other steps', () => {
+    it('passes on a busy renderer\'s own explanation when validation cannot run', async () => {
+      vi.mocked(validateDocument).mockRejectedValue(RENDERER_BUSY)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Checks')
+
+      await buttonNamed(wrapper, 'Validate this revision')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Too many documents are being prepared right now. Nothing was changed; try again shortly.')
+      expect(wrapper.text()).not.toContain('Something went wrong')
+    })
+
+    it('passes on the rate limit\'s own explanation when an approval is refused', async () => {
+      vi.mocked(validateDocument).mockResolvedValue(validationManifestResponse())
+      vi.mocked(approveExport).mockRejectedValue(RATE_LIMITED)
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Checks')
+      await buttonNamed(wrapper, 'Validate this revision')!.trigger('click')
+      await flushPromises()
+
+      await buttonNamed(wrapper, 'Approve for export')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Too many requests in a short time. Wait 12 seconds and try again.')
+      expect(wrapper.text()).not.toContain('Something went wrong')
+    })
+
+    it('does not take a server without the export route for an approval that has gone', async () => {
+      vi.mocked(validateDocument).mockResolvedValue(validationManifestResponse())
+      vi.mocked(approveExport).mockResolvedValue(exportApprovalResponse())
+      vi.mocked(exportDocument).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/export'))
+      const wrapper = await mountWorkspaceView()
+      await openTab(wrapper, 'Checks')
+      await buttonNamed(wrapper, 'Validate this revision')!.trigger('click')
+      await flushPromises()
+      await buttonNamed(wrapper, 'Approve for export')!.trigger('click')
+      await flushPromises()
+
+      await buttonNamed(wrapper, 'Export')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('older than this page and does not have exports yet')
+      expect(wrapper.text()).toContain('Approved for: DOCX and PDF')
+      expect(wrapper.text()).not.toContain('No static resource')
+    })
+
+    it('passes on the server\'s explanation when the preview cannot be checked', async () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+      vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(RENDERER_BUSY)
+      const wrapper = await mountWorkspaceView()
+
+      expect(wrapper.text()).toContain('Too many documents are being prepared right now.')
+      expect(wrapper.text()).not.toContain('Could not check for an existing preview. Try again.')
+    })
+
+    it('does not take a server without the preview route for a document with no preview yet', async () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+      vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/revisions/1/compilation'))
+      const wrapper = await mountWorkspaceView()
+
+      expect(wrapper.text()).toContain('older than this page and does not have document previews yet')
+      expect(wrapper.text()).not.toContain('No preview yet.')
+    })
+
+    it('says a server without the route, rather than showing its raw answer, when a preview cannot be made', async () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+      vi.mocked(compileRevision).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/revisions/1/compile'))
+      const wrapper = await mountWorkspaceView()
+
+      await buttonNamed(wrapper, 'Generate preview')!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('older than this page and does not have document previews yet')
+      expect(wrapper.text()).not.toContain('No static resource')
+    })
+
+    it('passes on the server\'s explanation when a review decision is refused for load', async () => {
+      vi.mocked(recordReviewDecision).mockRejectedValue(RATE_LIMITED)
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('button[aria-label="Accept meeting.title"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[role="alert"]').text()).toContain('Too many requests in a short time. Wait 12 seconds and try again.')
+      expect(wrapper.text()).not.toContain('Could not record a review decision')
+    })
+
+    it('says the document went to the trash, and links there, when a lock finds it gone', async () => {
+      vi.mocked(setFieldLock).mockRejectedValue(DOCUMENT_GONE)
+      const wrapper = await mountWorkspaceView()
+
+      await wrapper.find('button[aria-label="Lock meeting.title"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[role="alert"]').text()).toContain('That was not done: this document is no longer available')
+      expect(wrapper.find('a[href="/trash"]').exists()).toBe(true)
+    })
+
+    it('never puts a bare status number in a sentence when the revision history or a revision cannot be loaded', async () => {
+      vi.mocked(listDocumentRevisions).mockRejectedValueOnce(new ApiRequestError(502, undefined))
+      const wrapper = await mountWorkspaceView()
+
+      await openTab(wrapper, 'History')
+      expect(wrapper.text()).toContain('Brownie could not be reached. It may not be running')
+      expect(wrapper.text()).not.toContain('502')
+
+      vi.mocked(listDocumentRevisions).mockResolvedValue([HISTORY_REVISION_1, HISTORY_REVISION_2])
+      await openTab(wrapper, 'Assist')
+      await openTab(wrapper, 'History')
+      vi.mocked(getDocumentRevision).mockRejectedValue(new ApiRequestError(502, undefined))
+      await wrapper.find('button[aria-label="Compare revision 1 to current"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('.compare-panel [role="alert"]').text()).toContain('Brownie could not be reached. It may not be running')
+      expect(wrapper.text()).not.toContain('502')
+    })
   })
 })

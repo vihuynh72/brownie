@@ -111,11 +111,11 @@ public class ArtifactService {
      * for a given artifact at a time: a call that arrives while a scan is
      * already in flight is rejected with a conflict rather than allowed to
      * race it. A process that crashes after entering SCANNING leaves the
-     * artifact stuck there with no automatic recovery -- retrying this
-     * call will not un-stick it, since QUARANTINED is required to begin a
-     * scan; unsticking it is deferred to a future job/lease system, the
-     * same kind of gap as the abandoned-upload handling below. Idempotent
-     * once a terminal state (READY or REJECTED) is reached.
+     * artifact stuck there, and retrying this call will not un-stick it,
+     * since QUARANTINED is required to begin a scan; the worker's file
+     * housekeeping returns a scan that has been stuck far longer than any
+     * scan takes to QUARANTINED, after which this call rescans it.
+     * Idempotent once a terminal state (READY or REJECTED) is reached.
      */
     public Artifact finalizeUpload(long workspaceId, long userId, long artifactId) {
         Artifact artifact = require(workspaceId, userId, artifactId);
@@ -174,9 +174,11 @@ public class ArtifactService {
      * finds nothing reaches READY; a scan that completes and finds
      * something rejects the artifact but deliberately leaves its blob in
      * place, unlike every other rejection path here -- a detected threat
-     * is retained rather than destroyed, since it may still be needed for
-     * review, the opposite instinct from an ordinary unsupported upload
-     * that is simply useless. A scan that cannot complete at all reverts
+     * is retained rather than destroyed at once, since it may still be
+     * needed for review, the opposite instinct from an ordinary
+     * unsupported upload that is simply useless; the worker's file
+     * housekeeping removes it once the retention period for refused files
+     * has passed. A scan that cannot complete at all reverts
      * the artifact back to QUARANTINED and reports the failure separately
      * from a real verdict, so a transient scanner outage can never be
      * mistaken for -- or silently treated as -- a clean result.
@@ -257,13 +259,13 @@ public class ArtifactService {
     }
 
     /**
-     * There is no proactive, system-wide sweep for an upload nobody ever
-     * revisits -- see the comment in the artifact table's migration for
-     * why one was tried and reverted. Instead, every path that would touch
-     * an abandoned upload discovers it here, under the acting member's own
-     * normal, already-authorized context, and cleans it up on the spot:
-     * marks it REJECTED and removes any content it managed to write before
-     * being abandoned.
+     * An upload nobody ever revisits is refused by the worker's file
+     * housekeeping. This is the other half: a path that touches an
+     * abandoned upload before that sweep has reached it discovers it here,
+     * under the acting member's own normal, already-authorized context, and
+     * cleans it up on the spot -- marks it REJECTED and removes any content
+     * it managed to write before being abandoned -- so the answer a person
+     * gets never depends on when the sweep last ran.
      */
     private void expireAbandoned(long workspaceId, long userId, Artifact artifact) {
         rejectAndCleanUp(workspaceId, userId, artifact, "EXPIRED_ABANDONED_UPLOAD");
