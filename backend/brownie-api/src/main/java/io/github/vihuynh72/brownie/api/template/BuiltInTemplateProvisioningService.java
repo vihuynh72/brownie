@@ -13,7 +13,10 @@ import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.HexFormat;
 import java.security.MessageDigest;
@@ -60,24 +63,92 @@ public class BuiltInTemplateProvisioningService {
     }
 
     /**
-     * Idempotent: does nothing once the workspace already has at least one
-     * template, whether that is a previously provisioned built-in or one
-     * the owner created themselves. Checking "does this workspace have any
+     * Idempotent: once the workspace has at least one template, whether a
+     * previously provisioned built-in or one the owner created themselves,
+     * nothing new is given to it. Checking "does this workspace have any
      * template yet" rather than recording a one-time provisioning flag
-     * keeps this self-healing -- a workspace left with zero templates after
-     * a previous attempt failed partway (for example, the isolated
-     * renderer was briefly unavailable) is retried the next time this
-     * runs, instead of being permanently skipped.
+     * keeps this self-healing: a workspace left with zero templates after
+     * a previous attempt failed is retried the next time this runs.
+     *
+     * <p>An attempt can also fail after it has written something: the last
+     * step renders the template, and the renderer can be down, or busy for
+     * longer than anyone waits. What that leaves behind is a built-in that
+     * was never activated, which nobody can make a document from and which,
+     * being a template, used to stop every later attempt. So every draft is
+     * created before anything is activated, which makes such a draft the
+     * sign of an interrupted attempt wherever it stopped; and finding one,
+     * this finishes it and creates whichever built-ins are still missing.
+     * Without that sign a missing built-in is left missing: the owner may
+     * have removed it.
      */
     public void ensureBuiltInTemplates(long workspaceId, long userId) {
-        List<Template> existing = templateService.findAll(workspaceId, userId);
-        if (!existing.isEmpty()) {
+        // Two sign-ins of the same new person at the same moment (two tabs, two devices) would each find no
+        // templates and each create them all. One goes first; the other then finds them there. Within this
+        // process only, like the request limits: a second API instance would need this in the database.
+        synchronized (TURNS[(int) Math.floorMod(workspaceId, (long) TURNS.length)]) {
+            List<Template> existing = templateService.findAll(workspaceId, userId);
+            if (existing.isEmpty()) {
+                provision(workspaceId, userId, BuiltInMinutesTemplateRegistry.all(), new LinkedHashMap<>());
+                return;
+            }
+            if (finishInterruptedProvisioning(workspaceId, userId, existing)) {
+                existing = templateService.findAll(workspaceId, userId);
+            }
             repairUnreadableBuiltIns(workspaceId, userId, existing);
-            return;
         }
+    }
+
+    private static final Object[] TURNS = new Object[64];
+
+    static {
+        for (int i = 0; i < TURNS.length; i++) {
+            TURNS[i] = new Object();
+        }
+    }
+
+    private boolean finishInterruptedProvisioning(long workspaceId, long userId, List<Template> existing) {
+        Map<BuiltInMinutesTemplate, Template> neverActivated = new LinkedHashMap<>();
+        List<BuiltInMinutesTemplate> missing = new ArrayList<>();
         for (BuiltInMinutesTemplate builtIn : BuiltInMinutesTemplateRegistry.all()) {
-            provision(workspaceId, userId, builtIn);
+            boolean present = false;
+            for (Template template : existing) {
+                if (!template.displayName().equals(builtIn.displayName())) {
+                    continue;
+                }
+                present = true;
+                if (isNeverActivatedBuiltIn(workspaceId, userId, template, builtIn)) {
+                    neverActivated.putIfAbsent(builtIn, template);
+                }
+            }
+            if (!present) {
+                missing.add(builtIn);
+            }
         }
+        if (neverActivated.isEmpty()) {
+            return false;
+        }
+        log.warn("Workspace {} has {} built-in template(s) that were never activated; finishing what an earlier attempt started.",
+                workspaceId, neverActivated.size());
+        provision(workspaceId, userId, missing, neverActivated);
+        return true;
+    }
+
+    /**
+     * The name alone is not enough: the owner may have a draft of their own
+     * under the same name, and finishing that would overwrite their fields
+     * with the built-in's. Only a draft made from exactly the packaged file
+     * is one of these.
+     */
+    private boolean isNeverActivatedBuiltIn(long workspaceId, long userId, Template template, BuiltInMinutesTemplate builtIn) {
+        if (template.currentActiveVersionId() != null) {
+            return false;
+        }
+        Optional<TemplateVersion> draft = templateService.findDraftVersion(workspaceId, userId, template.id());
+        if (draft.isEmpty()) {
+            return false;
+        }
+        Optional<Artifact> source = artifactRepository.find(workspaceId, userId, draft.get().sourceArtifactId());
+        return source.isPresent() && sha256Hex(readPackagedTemplate(builtIn.id())).equals(source.get().sha256());
     }
 
     /**
@@ -134,18 +205,35 @@ public class BuiltInTemplateProvisioningService {
         }
     }
 
-    private void provision(long workspaceId, long userId, BuiltInMinutesTemplate builtIn) {
+    /** Creates a draft for each of {@code toCreate}, then activates those and every draft in {@code alreadyDrafted}. */
+    private void provision(
+            long workspaceId,
+            long userId,
+            List<BuiltInMinutesTemplate> toCreate,
+            Map<BuiltInMinutesTemplate, Template> alreadyDrafted) {
+        Map<BuiltInMinutesTemplate, Template> drafts = new LinkedHashMap<>(alreadyDrafted);
+        for (BuiltInMinutesTemplate builtIn : toCreate) {
+            drafts.put(builtIn, createDraft(workspaceId, userId, builtIn));
+        }
+        for (Map.Entry<BuiltInMinutesTemplate, Template> draft : drafts.entrySet()) {
+            bindAndActivate(workspaceId, userId, draft.getValue(), draft.getKey());
+        }
+    }
+
+    private Template createDraft(long workspaceId, long userId, BuiltInMinutesTemplate builtIn) {
         byte[] bytes = readPackagedTemplate(builtIn.id());
         Artifact artifact = artifactService.initiateUpload(workspaceId, userId, builtIn.displayName() + ".docx");
         artifactService.receiveContent(workspaceId, userId, artifact.id(), new java.io.ByteArrayInputStream(bytes));
         artifactService.finalizeUpload(workspaceId, userId, artifact.id());
         documentExtractionService.extract(workspaceId, userId, artifact.id());
+        return templateService.createDraft(workspaceId, userId, builtIn.displayName(), artifact.id());
+    }
 
-        Template template = templateService.createDraft(workspaceId, userId, builtIn.displayName(), artifact.id());
+    private void bindAndActivate(long workspaceId, long userId, Template template, BuiltInMinutesTemplate builtIn) {
         TemplateVersion draft = templateService
                 .findDraftVersion(workspaceId, userId, template.id())
                 .orElseThrow(() -> new IllegalStateException(
-                        "Built-in template " + builtIn.id() + " has no draft version immediately after creating it."));
+                        "Built-in template " + builtIn.id() + " has no draft version to activate."));
         TemplateVersion bound = templateService.replaceDraftBindings(
                 workspaceId, userId, template.id(), draft.versionNumber(), builtIn.fields());
         templateService.activate(workspaceId, userId, template.id(), bound.versionNumber());

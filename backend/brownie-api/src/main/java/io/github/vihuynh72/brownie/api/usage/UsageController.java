@@ -1,9 +1,10 @@
-package io.github.vihuynh72.brownie.api.template;
+package io.github.vihuynh72.brownie.api.usage;
 
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageService;
+import io.github.vihuynh72.brownie.core.generation.usage.UsageSummary;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
-import io.github.vihuynh72.brownie.core.rule.RuleService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
@@ -12,40 +13,44 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
+import java.math.BigDecimal;
 
 /**
- * The rules of one template version, draft or activated. {@code
- * RuleController}'s unversioned listing answers only for the current
- * draft, which an activated template no longer has, so a document (always
- * created from an activated version) reads its rules here.
+ * What this workspace has used of its model allowance this calendar month.
+ * It never reports what other workspaces used, only whether the allowance
+ * everyone shares is used up, because that is the part that affects this
+ * person.
  */
 @RestController
-@RequestMapping("/api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/rules")
-class TemplateVersionRuleController {
+@RequestMapping("/api/v1/workspaces/{workspaceId}/usage")
+class UsageController {
 
-    private final RuleService ruleService;
+    private final UsageService usageService;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
-    TemplateVersionRuleController(
-            RuleService ruleService,
+    UsageController(
+            UsageService usageService,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
-        this.ruleService = ruleService;
+        this.usageService = usageService;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
     }
 
     @GetMapping
-    List<RuleController.RuleResponse> list(
-            @PathVariable long workspaceId,
-            @PathVariable long templateId,
-            @PathVariable long versionId,
-            @AuthenticationPrincipal OidcUser principal) {
+    UsageResponse usage(@PathVariable long workspaceId, @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
-        return ruleService.findForVersion(workspaceId, userId, templateId, versionId).stream().map(RuleController.RuleResponse::from).toList();
+        UsageSummary summary = usageService.summary(workspaceId, userId);
+        BigDecimal limit = usageService.monthlyLimits().workspaceUsd();
+        BigDecimal remaining = limit.subtract(summary.workspaceMonthCostUsd()).max(BigDecimal.ZERO);
+        return new UsageResponse(
+                summary.workspaceMonthCostUsd(),
+                limit,
+                remaining,
+                summary.workspaceMonthRequests(),
+                summary.sharedAllowanceExhausted());
     }
 
     private long currentUserId(OidcUser principal) {
@@ -55,5 +60,14 @@ class TemplateVersionRuleController {
                 .findByIssuerAndSubject(issuer, subject)
                 .orElseThrow(() -> new AuthenticatedIdentityMissingException())
                 .id();
+    }
+
+    /** Amounts are US dollars. {@code monthUsedUsd} counts a request still in flight, and one whose outcome was never learned, at the most it could have cost. */
+    record UsageResponse(
+            BigDecimal monthUsedUsd,
+            BigDecimal monthLimitUsd,
+            BigDecimal monthRemainingUsd,
+            long monthRequests,
+            boolean sharedAllowanceExhausted) {
     }
 }
