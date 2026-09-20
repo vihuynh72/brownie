@@ -41,6 +41,39 @@ run `install` again whenever any of those change (a "class path resource
 The pinned JDK lives in `.toolchains/`; a newer system Java starts the
 app too, but everything here is built and tested on 21.
 
+`brownie-worker` carries out what the API only records: it deletes what
+has been in the trash too long, removes the files of anything deleted for
+good, tidies unused files, and runs model jobs. Start it in a second
+terminal, with the same `.env` but its own database login:
+
+```sh
+set -o allexport
+source .env
+set +o allexport
+cd backend
+export JAVA_HOME="$PWD/../.toolchains/jdk-21.0.12.1+1/Contents/Home"
+BROWNIE_DB_USERNAME=brownie_worker BROWNIE_DB_PASSWORD=brownie_worker_local_only \
+  ./mvnw -pl brownie-worker spring-boot:run
+```
+
+After pulling or changing code, stop both, run `./mvnw -q -DskipTests
+clean install` again, and start both. A page that answers "the Brownie
+server that answered is older than this page" means the API was not
+restarted; reloading the page cannot fix that.
+
+`Web server failed to start. Port 8081 was already in use.` means an older
+API is still running, often from a terminal that has since been closed.
+Find it and stop it by process id:
+
+```sh
+lsof -nP -iTCP:8081 -sTCP:LISTEN          # which process, since when
+kill $(lsof -nP -iTCP:8081 -sTCP:LISTEN -t | sort -u)
+```
+
+The API applies any new database migrations as it starts, and it does that
+*before* it takes the port: a start that then fails on the port has already
+migrated the database, so the next start finds nothing left to apply.
+
 Keep the clone outside any cloud-synced folder (iCloud Drive's Desktop
 and Documents, OneDrive, Dropbox). A build writes thousands of files under
 `target/`, and a sync client answers with conflict copies named
@@ -124,6 +157,278 @@ above, since they are only recreated on a truly empty volume):
 docker compose -f infra/local/compose.yaml down -v
 ```
 
+## Trash, deletion, and file housekeeping
+
+A document's row on the home page has a "Move to the trash" action. A
+trashed document answers on no route and accepts no change, its unfinished
+jobs are cancelled, and the Trash Bin restores it exactly as it was for
+`BROWNIE_TRASH_RETENTION_DAYS` days (30 when unset; the web app reads the
+number from `GET /api/v1/capabilities`). "Delete forever" in the Trash Bin,
+or that period running out, deletes it for good: every database row that
+belongs to it is removed in one transaction, so access ends the moment the
+request returns, and the object keys of its files (compiled and validated
+output, job output, the per-run objects, and any source file nothing else
+uses) are queued. `POST /api/v1/workspaces/{id}/deletions` with
+`{"scope":"WORKSPACE"}` deletes the caller's own workspace the same way,
+with the caller's identity record, and ends every session of that person;
+signing in again starts a new, empty workspace. In the web app that is the
+"Delete everything" part of the **Your data** page: it asks for the phrase
+`delete my workspace` to be typed, deletes, and lands on the sign-in page
+with a line saying it worked.
+
+**Your data** (in the sidebar) is where a person reads what Brownie keeps,
+for how long, and who else sees any of it: the model provider and model
+name, that sign-in is Microsoft's, that every upload is scanned. Every
+period on it comes from `GET /api/v1/data-practices`, which reads the same
+settings the worker acts on, so the page cannot promise a period the system
+does not keep. It also shows this month's model use against the workspace's
+allowance and the kinds and size of file accepted. `BROWNIE_SUPPORT_CONTACT`
+is who the page tells people to ask; unset, it says nobody has been named
+yet.
+
+What remains afterwards is the deletion ledger (`deletion_request`,
+`deletion_blob_task`): ids, states, times, counts, and opaque object keys,
+never a title or a filename. No application database login can write it;
+both runtime roles reach it only through database routines.
+
+`brownie-worker` is the only process that removes a deleted document's
+stored files. Every 30 seconds it carries out trash whose time has run
+out, removes queued objects, and marks a request `VERIFIED` once a recount
+finds no row and no queued object left. With no worker running, a document
+deleted for good is already unreadable, and its files wait in the queue
+until a worker starts. Every ten minutes the worker also tidies files
+nobody will come back to: an upload abandoned for a day is refused, a scan
+cut short by a crash is returned to the state it can be retried from,
+refused or quarantined files lose their stored bytes after a day (the row
+stays as a record), and a ready file that nothing has referred to for a
+day is refused and removed. The periods are the
+`brownie.worker.retention.*` properties. Four of them are what the
+**Your data** page tells people, so they are set through one environment
+variable each that both programs read: `BROWNIE_RETENTION_ABANDONED_UPLOAD`,
+`BROWNIE_RETENTION_REFUSED_FILE`, `BROWNIE_RETENTION_UNUSED_FILE` and
+`BROWNIE_RETENTION_AUDIT_RECORD` (ISO-8601 durations such as `PT24H` or
+`P90D`), beside `BROWNIE_TRASH_RETENTION_DAYS`. Setting the worker's
+property directly would change what happens without changing what people
+are told.
+
+## Model allowance, audit record, and operating the system
+
+**What a model request may cost.** Every request to the model is written
+to a ledger (`model_usage`) before it is sent: which workspace, which
+person, which run, the model, the prompt version, and the rate card the
+estimate was priced with. The amount held is released when the answer
+comes back and the real token counts replace it. A request that would go
+past an allowance is refused before it is sent, so a limit is never
+discovered by overspending it. There are three allowances, all
+configuration (see `.env.example`): one run (6 requests, $0.10, counted
+across every attempt and resume of that run's job), one workspace for the
+calendar month in UTC ($2.00), and every workspace together for the month
+($15.00). One attempt is also held to 40,000 input and 8,000 output
+tokens, which are not configuration. The amount held for a request is its
+whole input, response schema included, at a quarter of a token per ASCII
+character and a token and a half per character of anything else, plus the
+most it may write back. `brownie-api` refuses an Assist rewrite, and a new
+extraction run whose first request would not fit, with
+`429 USAGE_LIMIT_REACHED`, and says which allowance; a replay of a start
+it already accepted still gets that start's receipt. `brownie-worker` ends
+a run with a usage code instead of retrying it. `GET
+/api/v1/workspaces/{id}/usage` reports a workspace's own month and only
+whether the shared allowance is used up, never what anyone else spent. A
+held amount whose request never reported back is kept as spent after 30
+minutes, which errs on the side of the budget. A network failure, a 429
+or a 5xx from the provider is retried at most twice with a growing,
+jittered pause inside the same attempt, each try reserved like any other
+request; a retry the allowance will not pay for is not made, and the run
+is tried again later as the transient failure it was. A refusal, a
+malformed answer or a cancelled run is not retried. The provider's own
+client is configured to send each request once
+(`spring.ai.openai.max-retries: 0`), so nothing reaches the provider that
+the ledger did not reserve first.
+
+**The audit record.** `audit_event` holds the actions someone may later
+need to account for: a document trashed, restored, or deleted for good; a
+workspace deleted; a document exported; a job started again by hand; a
+support grant given or revoked. A row is ids, an action, a time, the
+request's correlation id and a few counts or codes, never a title, a
+filename or a field value, and it is written in the same transaction as
+the action it describes. Neither application login can change or remove a
+row. The worker removes rows older than 90 days
+(`brownie.worker.retention.ledger-maintenance.audit-retention`).
+
+**Starting a run again.** `POST /api/v1/workspaces/{id}/jobs/{jobId}/retry`
+puts a job that ended `DEAD` or `FAILED` back in the queue with a fresh run
+of attempts and a new deadline; the Assist tab offers it as "Try this run
+again". It refuses a job whose document has changed or is in the trash
+since the job began (`409 JOB_TARGET_STALE`), because its result could
+never be accepted; start a new extraction instead.
+
+**Support grants.** A workspace's owner can record permission for support
+to act in that workspace, for `METADATA` or `CONTENT`, for one to seven
+days, and take it back while it is open
+(`/api/v1/workspaces/{id}/support-grants`).
+A grant holds no free text. Nothing in the application reads a workspace
+on support's behalf today; the grant is the record such access must find
+first. The web app has no screen for these routes, by decision: until
+something reads a grant, a screen for granting would promise access control
+that does not exist yet.
+
+**How the system is doing.** One query, run as the database owner, answers
+with a single row of counts and no content: queued, running, waiting and
+recently dead jobs; the age of the oldest queued job; leases that have run
+out; open and overdue trash; deletions that failed or await verification;
+stored files still queued for removal; uploads, long scans and quarantined
+files; this month's model requests and cost; stale and unsettled
+reservations; open support grants; and the last day's audit events. No
+application login may run it.
+
+```sh
+docker compose -f infra/local/compose.yaml exec postgres \
+  psql -U brownie_migration -d brownie -x -c "SELECT * FROM operations_summary()"
+```
+
+## Backup, restore, and when something it depends on is down
+
+**A backup is never the last step.** A backup holds everything as of the
+moment it was taken, including whatever is deleted for good afterwards,
+so restoring one brings deleted documents back. To make a deletion survive
+that, `brownie-worker` copies every carried-out deletion out of the
+database, into a blob container of its own (`deletion-ledger`, one small
+JSON object per deletion: ids, times and counts, nothing a person wrote),
+and a deletion is only marked `VERIFIED` once that copy exists. Started
+with `BROWNIE_WORKER_MODE=replay-deletions`, the worker does one thing and
+ends: it applies every recorded deletion to the database it is pointed at,
+prints `DELETION_REPLAY entries=… replayed=… absent=… pending=…`, and exits
+0 only if nothing is left pending. In that mode nothing on a timer runs, so
+it cannot claim a job from a database that still holds work for documents
+it is about to remove. An entry names what it removed by id and by the
+moment it was created, and is applied to exactly that and nothing else: a
+restore also winds id sequences back, so an id alone can come to mean a
+different document, and one that merely shares a deleted one's id is never
+touched.
+
+```sh
+./scripts/backup-local.sh /path/to/new-directory
+./scripts/restore-drill-local.sh /path/to/that-directory
+```
+
+`backup-local.sh` dumps the database while it runs and copies the blob
+store's files, stopping the blob store for the few seconds that takes.
+`restore-drill-local.sh` rehearses a restore without touching the
+development stack: a throwaway Postgres, the dump restored into it, every
+session ended, the deletion record applied, a report of what changed, and
+the throwaway removed (`--keep` leaves it up, and so does a replay that did
+not finish). It needs `brownie-worker` built, and refuses a jar built
+before the worker could replay, because that worker would ignore the mode
+and start serving. It reads the deletion record from the development
+stack's blob store unless `BROWNIE_LOCAL_STORAGE_CONNECTION` names another;
+that must be the store of the stack the backup came from. A real restore
+follows the same order, and the API is started only after the replay has
+exited 0. Restoring the blob store as well puts the
+deletion record back in time with it; deletions made after that backup are
+then unknown to the replay, which is why a hosted deployment has to keep
+that container somewhere a restore of the rest does not reach.
+
+**When a dependency is down**, a person is told so and nothing restarts:
+
+| What is down | What a request gets | Afterwards |
+| --- | --- | --- |
+| Database | `503 DATABASE_UNAVAILABLE` with `Retry-After: 5`, from a filter outside everything else, because the session lookup is the first thing to fail; management health answers 503 | Both services reconnect by themselves |
+| Blob store | `503 STORAGE_UNAVAILABLE` within about a second on everything that stores or reads a file (uploads, downloads, previews, reading a source, starting or resuming a run, preparing, checking or exporting a document, activating a template); everything that needs only the database keeps working | The same request succeeds; the worker's sweeps run again on their next pass |
+| Virus scanner | `503 SCANNER_UNAVAILABLE` on completing an upload, and on anything that stores a file Brownie made itself (it is scanned too); the file stays `QUARANTINED` and cannot be read | Completing the upload again scans it; someone who first signed in during the outage, or while the renderer was down or busy, gets their built-in templates finished on their next sign-in |
+| Model provider | A network failure, 429 or 5xx is retried inside the run and then by the queue; a rejected key ends the run at once as `DEAD` with `MODEL_TRANSPORT_REJECTED`, and what was held for the request stays counted | Once the key is right, "Try this run again" (or the retry route) restarts the same run |
+
+**Changing a credential.** The API's and the worker's database passwords:
+`ALTER ROLE … PASSWORD …` as the database's administrator, put the new
+value in the process's environment, restart it. A running process keeps
+working on the connections it already holds and fails as they are
+replaced, so restart promptly; started with the old password it refuses to
+start. Sessions live in the database and survive the restart. To end every
+session at once, `TRUNCATE spring_session CASCADE` as the database owner;
+every browser is signed out on its next request. The model key and the
+sign-in client secret are changed at their providers, then in the
+environment, then both processes are restarted, and only then is the old
+value revoked.
+
+## Limits that protect the host and the people on it
+
+**What an upload must be.** A file is classified by its bytes, never by
+its name or a declared type, and is quarantined until it has been scanned.
+A Word package is walked before any parser sees it: at most 500 parts and
+200 MiB expanded; no part named twice (two readers could otherwise
+disagree about which one is the document, and part names differ only by
+case); no part that declares a document type, which is the door to entity
+expansion and external entities; no part nested more than 256 elements
+deep; no package that has expanded more than 200 to 1 past 8 MiB, asked
+both of the package as a whole and of the parts that each expanded that far
+added together (so that neither something incompressible put in front, nor
+cutting the same content into many small parts, hides it); and no
+relationship that points at something on a network other than as an
+ordinary hyperlink, which is how a document asks whoever opens it to fetch
+a remote template or object. What counts as local is a short list (a
+`file:` address with one or three slashes, a drive path, a bare relative
+path) and everything else counts as a network, because the ways of naming
+a network location are open-ended. A relationship to a path on the
+author's own disk is left alone, because nearly every document written in
+Word has one. The parts read this way are the ones named as XML (`.xml`,
+`.rels`, and the two endings the .NET packaging library uses); anything
+else is read only by the document library, which refuses a document type
+and entity expansion itself.
+
+A PDF is read only if it really has at most 200 pages (they are counted,
+not taken from what the file declares), and then under a budget that is
+charged as the reading goes: every time a page's content, a form or a
+font is about to be opened it is first expanded with nothing kept, and its
+size counted, so a form drawn a thousand times costs a thousand times.
+Past 128 MiB in total, two million characters, or 250,000 characters on
+one page, the whole file is refused, with the reason recorded, and none of
+it is kept. The rendered PDF that comes back from the sandbox is read under
+the same budget. What this does not bound is the PDF library opening the
+file in the first place: the file's own index may be compressed, and the
+library expands that in memory before anything here can count it. Uploads
+are limited to 10 MiB, by signed-in people only, which is what stands in
+front of that today.
+
+**What one person may ask for in a minute.** Counted per signed-in person
+(per address for anyone not signed in, an IPv6 address by its first 64
+bits), in this process's memory, which is
+the right size for one API instance: 30 requests that start paid model
+work, 30 that start a render, 120 upload requests, 300 other changes, 1,200
+reads, and 120 of anything when not signed in
+(`brownie.rate-limit.per-minute.*`; `brownie.rate-limit.enabled=false`
+turns it off). Past that the answer is `429 RATE_LIMITED` with
+`Retry-After`. The limiter runs inside the sign-in filter chain, straight
+after the session has said who is asking, so the requests that chain
+answers by itself (starting a sign-in, a request with no session, a failed
+CSRF check) are counted as well; only health checks and the error page are
+not. The event stream counts as a read, and is also limited by how many
+one person may have open. Any request body over 1 MiB
+(`brownie.web.max-body-bytes`), whatever it calls itself, is answered
+`413 CONTENT_TOO_LARGE`; only the route that receives a file is exempt,
+and it keeps its own, larger limit. Form bodies, which the server reads
+itself, are held to the same size by the server's own setting, and
+multipart bodies are not accepted at all, since no route takes one.
+
+**Renders.** At most two renders run at once (`brownie.render.max-concurrent`);
+others wait their turn, in order, for up to 20 seconds
+(`brownie.render.max-wait`) and are then answered `503 RENDERER_BUSY`.
+The renderer's image is looked up once per render and run by its content
+address, which is also written into the record of what produced the
+output; set `brownie.render.expected-image-id` to a `sha256:` id and no
+other image is ever run. What the sandbox leaves behind is read as if the
+sandbox had been taken over: a symbolic link is never followed, only a
+plain file is accepted, no more than the quota is read, and it has to
+begin like a PDF.
+
+**Repeats.** Approving again what is already the document's latest
+approval, or exporting the same approval a second time, answers with the
+record that already exists: no second approval, receipt or audit entry.
+Going back to an earlier choice of format is a new decision and a new
+approval, because the latest approval is what gets exported. A session
+whose person no longer has an identity record is answered
+`401 SESSION_NO_LONGER_VALID` and ended by the first route that looks the
+person up, which is every route but the two that describe the service
+itself (`/api/v1/capabilities` and `/api/v1/data-practices`).
+
 ## End-to-end tests
 
 Real Playwright specs drive the built app in a real Chromium browser against
@@ -183,6 +488,13 @@ provider's end-session URL, with that external hop stubbed), recovery from a
 failed identity request, and a failed optional source upload during document
 creation whose warning must survive navigation to the new document. The
 latter two inject server failures with `page.route`; none makes a model call.
+
+`trash-and-deletion.spec.ts` takes one document through its whole removal:
+off the home list into the Trash Bin, its own address answering 404, back
+out exactly as it was, then deleted for good after one confirmation by
+name, with the server's ledger showing the deletion and no title. The
+stored files are removed by `brownie-worker`, so that part is covered by
+the worker's own integration test rather than by the browser.
 
 `shell-and-auth.spec.ts` covers the navigation around every page: a
 signed-out visitor following the upload action or the trash bin is sent to
