@@ -6,6 +6,19 @@ info:
     The public API surface under /api/v1. It includes the platform
     self-check routes and the implemented workspace document, job, and
     persisted progress-event routes.
+
+    Three answers are described here once instead of under each route,
+    all in the Error shape. Any route can answer 429 RATE_LIMITED with a
+    Retry-After header, when one person (or, for someone not signed in,
+    one address) has made more requests of one kind in a minute than
+    allowed, and 503 DATABASE_UNAVAILABLE with a Retry-After header. Every
+    route that looks up the person asking, which is all of them but
+    /api/v1/capabilities and /api/v1/data-practices, can answer 401
+    SESSION_NO_LONGER_VALID, when the session is genuine but the person it
+    names has no identity record any more, in which case the session has
+    been ended. A request body larger than the API reads, other than a
+    file upload, is answered 413 CONTENT_TOO_LARGE whatever kind of body
+    it says it is.
 servers:
   - url: http://localhost:8081
     description: Local development
@@ -28,6 +41,23 @@ paths:
                 $ref: "#/components/schemas/CapabilitiesResponse"
         "401":
           description: Not signed in.
+
+  /api/v1/data-practices:
+    get:
+      operationId: getDataPractices
+      summary: >
+        What this deployment does with what people give it, as the numbers
+        and names a privacy page shows: how long each kind of thing is
+        kept, which model provider sees source text when a person asks for
+        a draft or a rewrite, and whom to ask. Every period is read from
+        the same setting the background worker acts on.
+      responses:
+        "200":
+          description: The deployment's data practices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataPracticesResponse"
 
   /api/v1/me:
     get:
@@ -419,6 +449,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "412":
           $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/UsageLimitReached"
         "502":
           description: The one model call did not produce a usable answer; nothing on the document changed.
 
@@ -503,6 +535,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/UsageLimitReached"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/result:
     get:
@@ -524,6 +560,8 @@ paths:
                 $ref: "#/components/schemas/ExtractionResultResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/questions:
     get:
@@ -545,6 +583,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/QuestionResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/generations/{jobId}/apply:
     post:
@@ -596,6 +636,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/jobs/{jobId}:
     get:
@@ -657,6 +699,40 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/workspaces/{workspaceId}/jobs/{jobId}/retry:
+    post:
+      operationId: retryJob
+      summary: >
+        Starts a job that gave up (DEAD or FAILED) again, with a fresh run
+        of attempts and a new deadline. It needs no idempotency key: asked
+        again while the job is queued or running, it answers with the job
+        as it is and starts nothing twice. The restart is written to the
+        workspace's audit record.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: The job, queued again or already active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            Either the job finished or was cancelled, so there is nothing
+            to start again (code CONFLICT), or its document has changed or
+            is in the trash since the job began, so its result could never
+            be accepted (code JOB_TARGET_STALE); start new work instead.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/events:
     get:
@@ -769,6 +845,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/complete:
     post:
@@ -788,6 +866,8 @@ paths:
                 $ref: "#/components/schemas/ArtifactResponse"
         "409":
           $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/extraction:
     post:
@@ -811,6 +891,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/templates:
     get:
@@ -937,6 +1019,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}:
     get:
@@ -1195,6 +1279,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/validation:
     get:
@@ -1233,6 +1319,8 @@ paths:
                 $ref: "#/components/schemas/CompilationManifestResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/compilation:
     get:
@@ -1258,7 +1346,12 @@ paths:
       summary: >
         Approve an already-clean validation manifest for export. Refused
         if the manifest is stale against the document's current revision
-        or still has an unresolved blocking finding.
+        or still has an unresolved blocking finding. Approving again what
+        is already the document's latest approval (same person, manifest
+        and format) answers with that approval, so a repeated request
+        records nothing twice. Any other approval, including going back to
+        a format chosen earlier, is a new one and becomes the latest, which
+        is the one an export follows.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/DocumentId"
@@ -1304,7 +1397,9 @@ paths:
         Produce an export receipt from the document's latest export
         approval. Refused if that approval is stale against the current
         revision, or if a named artifact no longer matches the hash its
-        own validation manifest recorded.
+        own validation manifest recorded. Exporting the same approval again
+        answers with the receipt that already exists, so a repeated request
+        issues no second receipt and no second audit entry.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/DocumentId"
@@ -1321,6 +1416,8 @@ paths:
           $ref: "#/components/responses/PreconditionFailed"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/export-receipt:
     get:
@@ -1360,6 +1457,8 @@ paths:
                 format: binary
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/uploads/{artifactId}/download:
     get:
@@ -1381,9 +1480,267 @@ paths:
                 format: binary
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/workspaces/{workspaceId}/deletions:
+    get:
+      operationId: listDeletions
+      summary: >
+        The workspace's deletion ledger, most recent first: what is in the
+        trash, what was restored, and what was deleted for good. A title is
+        present only while a document is still in the trash; the ledger
+        itself keeps ids, states and times, never what a person wrote.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Every deletion request of the workspace.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeletionResponse"
+    post:
+      operationId: createDeletion
+      summary: >
+        With scope DOCUMENT, moves one document to the trash: it disappears
+        from every read, its unfinished jobs are cancelled, no change to it
+        is accepted, and it can be restored until it is deleted for good or
+        its retention runs out. Trashing a document already in the trash
+        answers with the entry that holds it. With scope WORKSPACE, deletes
+        the caller's own workspace for good in this call, including the
+        caller's identity record; every session of the caller has ended by
+        the time it returns. Only the workspace's owner may ask. It happens
+        entirely or not at all: while a worker is still stopping one of the
+        workspace's jobs the answer is 409 and nothing has changed.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeletionRequest"
+      responses:
+        "200":
+          description: The workspace is gone. Its stored files are removed in the background.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDeletionResponse"
+        "201":
+          description: The document is in the trash (or already was).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: The caller is not a member of this workspace, or is a member but not its owner and asked to delete it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            A worker is still stopping one of the workspace's jobs (code
+            DELETION_WAITING_FOR_RUNNING_WORK). Nothing was deleted and no
+            session was ended; the same request succeeds once that job has
+            stopped.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/deletions/{deletionId}:
+    get:
+      operationId: getDeletion
+      summary: >
+        One deletion request and how far it has got. After something is
+        deleted for good, pendingObjectCount is how many of its stored files
+        the worker has not removed yet, and the state becomes VERIFIED once
+        that is zero and a recount finds nothing left.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DeletionId"
+      responses:
+        "200":
+          description: The deletion request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/deletions/{deletionId}/restore:
+    post:
+      operationId: restoreDeletion
+      summary: >
+        Takes a document back out of the trash exactly as it was. Jobs that
+        were cancelled when it went in stay cancelled. Restoring something
+        already restored answers with the same entry.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DeletionId"
+      responses:
+        "200":
+          description: The document is back.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: It was already deleted for good (code DELETION_NOT_OPEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/deletions/{deletionId}/purge:
+    post:
+      operationId: purgeDeletion
+      summary: >
+        Deletes a trashed document for good. Every database row that belongs
+        to it is removed before this returns, so nothing can read it again;
+        its stored files, and any source file nothing else uses, are queued
+        and removed by the worker. Deleting something already deleted
+        answers with the same entry.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DeletionId"
+      responses:
+        "200":
+          description: Deleted for good.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            Either it was restored first (code DELETION_NOT_OPEN), or a
+            worker is still stopping a job for this document (code
+            DELETION_WAITING_FOR_RUNNING_WORK); nothing was deleted, and the
+            same request succeeds once that job has stopped.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/usage:
+    get:
+      operationId: getWorkspaceUsage
+      summary: >
+        What this workspace has used of its model allowance in the current
+        calendar month (UTC). It reports this workspace's figures only: of
+        the allowance every workspace shares, it says whether it is used
+        up and never how much anybody else spent.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: This month's usage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageResponse"
+
+  /api/v1/workspaces/{workspaceId}/support-grants:
+    get:
+      operationId: listSupportGrants
+      summary: Every support grant this workspace has given, most recent first, open or not.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: The workspace's support grants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SupportGrantResponse"
+    post:
+      operationId: createSupportGrant
+      summary: >
+        The workspace's owner lets support act in this workspace, for one
+        scope and a whole number of days, seven at most. It carries no
+        free text. One grant per scope is open at a time; giving and
+        revoking are both written to the workspace's audit record.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSupportGrantRequest"
+      responses:
+        "201":
+          description: The grant, open from now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportGrantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: A grant of this scope is already open (code SUPPORT_GRANT_ALREADY_OPEN); revoke it first.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/support-grants/{grantId}/revoke:
+    post:
+      operationId: revokeSupportGrant
+      summary: Takes an open support grant back, effective immediately.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: The grant, revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportGrantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No open grant with this id is visible in this workspace; one already revoked, or past its expiry, is not open.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   parameters:
+    GrantId:
+      name: grantId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    DeletionId:
+      name: deletionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     WorkspaceId:
       name: workspaceId
       in: path
@@ -1491,6 +1848,31 @@ components:
             $ref: "#/components/schemas/Error"
     PreconditionFailed:
       description: The named approval or manifest is stale against the document's current revision.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: >
+        Something the service depends on is away, and the same request is
+        worth making again shortly; nothing was lost or changed. The code
+        says what: STORAGE_UNAVAILABLE (files cannot be stored or read),
+        SCANNER_UNAVAILABLE (an upload cannot be scanned yet, and stays
+        unreadable until it is), RENDERER_BUSY (every slot for preparing a
+        document stayed taken; with a Retry-After header), or
+        DATABASE_UNAVAILABLE, which any route at all can answer and which is
+        therefore not repeated under each one.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UsageLimitReached:
+      description: >
+        A model allowance is used up (code USAGE_LIMIT_REACHED): what is
+        left would not hold this request, or the first request of this
+        run. Nothing was sent to the model and nothing was queued. The
+        error's limit property says which allowance. A replay of a start
+        that was accepted earlier is answered with that start instead.
       content:
         application/problem+json:
           schema:
@@ -1904,6 +2286,14 @@ components:
           type: array
           items:
             type: string
+        limit:
+          type: string
+          enum: [WORKSPACE_MONTH, GLOBAL_MONTH]
+          description: >
+            Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH
+            is this workspace's own monthly allowance, which starts again
+            next calendar month; GLOBAL_MONTH is the allowance every
+            workspace shares, which only whoever runs the service can raise.
         problems:
           type: array
           description: >
@@ -2232,7 +2622,7 @@ components:
 
     CapabilitiesResponse:
       type: object
-      required: [maxUploadBytes, uploadMediaTypes, assistSourceMediaTypes, templateMediaTypes]
+      required: [maxUploadBytes, uploadMediaTypes, assistSourceMediaTypes, templateMediaTypes, trashRetentionDays]
       properties:
         maxUploadBytes:
           type: integer
@@ -2257,6 +2647,10 @@ components:
           items:
             type: string
           description: Media types a template can be taught from.
+        trashRetentionDays:
+          type: integer
+          minimum: 1
+          description: How many days something stays in the trash before it is deleted for good.
 
     AssistTextRequest:
       type: object
@@ -2915,3 +3309,148 @@ components:
         exportedAt:
           type: string
           format: date-time
+    CreateDeletionRequest:
+      type: object
+      required: [scope]
+      properties:
+        scope:
+          type: string
+          enum: [DOCUMENT, WORKSPACE]
+        documentId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Required when scope is DOCUMENT; must be absent when scope is WORKSPACE.
+    DeletionResponse:
+      type: object
+      required: [id, scope, targetId, state, requestedAt, pendingObjectCount]
+      properties:
+        id:
+          type: integer
+          format: int64
+        scope:
+          type: string
+          enum: [DOCUMENT, WORKSPACE]
+        targetId:
+          type: integer
+          format: int64
+        state:
+          type: string
+          enum: [TRASHED, RESTORED, PURGED, VERIFIED]
+          description: >
+            TRASHED is restorable. PURGED means every database row is gone
+            and access has ended, while stored files may still be waiting
+            for removal. VERIFIED means a recount found nothing left.
+        title:
+          type: [string, "null"]
+          description: The document's title, only while it is still in the trash.
+        requestedAt:
+          type: string
+          format: date-time
+        purgeAfter:
+          type: [string, "null"]
+          format: date-time
+          description: When something in the trash is deleted for good if nobody restores it first.
+        restoredAt:
+          type: [string, "null"]
+          format: date-time
+        purgedAt:
+          type: [string, "null"]
+          format: date-time
+        verifiedAt:
+          type: [string, "null"]
+          format: date-time
+        pendingObjectCount:
+          type: integer
+          minimum: 0
+    WorkspaceDeletionResponse:
+      type: object
+      required: [deletionId]
+      properties:
+        deletionId:
+          type: integer
+          format: int64
+          description: The ledger entry that records the deletion. Nobody can read it through the API afterwards.
+    UsageResponse:
+      type: object
+      required: [monthUsedUsd, monthLimitUsd, monthRemainingUsd, monthRequests, sharedAllowanceExhausted]
+      properties:
+        monthUsedUsd:
+          type: number
+          description: What this workspace's model requests cost this calendar month (UTC); a request still in flight counts at the amount held for it.
+        monthLimitUsd:
+          type: number
+        monthRemainingUsd:
+          type: number
+          minimum: 0
+        monthRequests:
+          type: integer
+          minimum: 0
+        sharedAllowanceExhausted:
+          type: boolean
+          description: True when the allowance every workspace shares would not hold even the cheapest request, whatever this workspace has left.
+    CreateSupportGrantRequest:
+      type: object
+      required: [scope, days]
+      properties:
+        scope:
+          type: string
+          enum: [METADATA, CONTENT]
+          description: CONTENT (documents and files themselves) includes METADATA (states, codes, timings, counts).
+        days:
+          type: integer
+          minimum: 1
+          maximum: 7
+    SupportGrantResponse:
+      type: object
+      required: [id, scope, grantedAt, expiresAt, active]
+      properties:
+        id:
+          type: integer
+          format: int64
+        scope:
+          type: string
+          enum: [METADATA, CONTENT]
+        grantedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: [string, "null"]
+          format: date-time
+        active:
+          type: boolean
+          description: Neither revoked nor expired at the moment of the response.
+
+    DataPracticesResponse:
+      type: object
+      required:
+        [trashRetentionDays, abandonedUploadHours, refusedFileHours, unusedFileHours, auditRecordDays, modelProvider, modelName]
+      properties:
+        trashRetentionDays:
+          type: integer
+          minimum: 1
+        abandonedUploadHours:
+          type: integer
+          minimum: 1
+          description: After how long an upload that was never finished is removed.
+        refusedFileHours:
+          type: integer
+          minimum: 1
+          description: After how long a refused or quarantined file loses its stored bytes.
+        unusedFileHours:
+          type: integer
+          minimum: 1
+          description: After how long a file nothing refers to is removed.
+        auditRecordDays:
+          type: integer
+          minimum: 1
+        modelProvider:
+          type: string
+        modelName:
+          type: string
+        supportContact:
+          type: [string, "null"]
+          description: Whoever runs this deployment published this; absent until they have.

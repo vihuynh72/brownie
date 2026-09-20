@@ -1,9 +1,9 @@
 # Local development infrastructure only. brownie-api and brownie-worker
 # still run directly on the host (mvnw / java -jar) against this database,
 # this Azurite, and this ClamAV -- they are not containerized here. Only
-# Postgres, Azurite, and ClamAV exist as real, consumed dependencies today;
-# the isolated document renderer and a reverse proxy are deliberately
-# absent until the phases that actually use them exist.
+# Postgres, Azurite, and ClamAV are services here. The isolated document
+# renderer is not: brownie-api starts one disposable container per render
+# with `docker run`. There is no reverse proxy locally.
 #
 # Start:      docker compose -f infra/local/compose.yaml up -d --wait
 # Stop:       docker compose -f infra/local/compose.yaml down
