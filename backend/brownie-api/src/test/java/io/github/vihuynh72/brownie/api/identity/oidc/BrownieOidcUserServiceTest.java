@@ -9,6 +9,7 @@ import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRole;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceStatus;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
 import org.springframework.security.oauth2.core.oidc.OidcIdToken;
 import org.springframework.security.oauth2.core.oidc.StandardClaimNames;
@@ -21,6 +22,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Isolates issuer-subject identity mapping from the real network calls a
@@ -44,6 +46,45 @@ class BrownieOidcUserServiceTest {
         assertThat(identityRepository.subject).isEqualTo("subject-x");
         assertThat(identityRepository.email).isEqualTo("person@example.com");
         assertThat(identityRepository.displayName).isEqualTo("Person Name");
+    }
+
+    /**
+     * The gate has to close before anything is written: a refused sign-in
+     * must not leave an identity row, a workspace, or a set of templates
+     * behind for an account that may never be let in.
+     */
+    @Test
+    void anAccountThatWasNotInvitedIsRefusedAndNothingIsRecorded() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-n", "subject-n", "stranger@example.com", "Stranger");
+        RecordingUserIdentityRepository identityRepository = new RecordingUserIdentityRepository();
+        RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                identityRepository,
+                workspaceRepository,
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com"));
+
+        assertThatThrownBy(() -> service.loadUser(null))
+                .isInstanceOf(OAuth2AuthenticationException.class)
+                .hasMessageContaining("invited");
+        assertThat(identityRepository.issuer).isNull();
+        assertThat(workspaceRepository.ensuredForUserId).isNull();
+    }
+
+    @Test
+    void anInvitedAccountSignsInAsUsual() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-i", "subject-i", "Secretary@example.com", "Secretary");
+        RecordingUserIdentityRepository identityRepository = new RecordingUserIdentityRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                identityRepository,
+                new RecordingWorkspaceRepository(),
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com"));
+
+        assertThat(service.loadUser(null)).isSameAs(fakeOidcUser);
+        assertThat(identityRepository.subject).isEqualTo("subject-i");
     }
 
     /** Entra External ID sends the literal word "unknown" for an account with no display name; that is not a name to greet anyone by. */
