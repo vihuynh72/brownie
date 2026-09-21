@@ -63,3 +63,12 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The scanner's own version, stated here rather than left to the
+          # default buried inside the action's bundled JavaScript. It is not a
+          # detail: which version runs decides which configuration syntax is
+          # understood, and a version that does not understand a line in
+          # .gitleaks.toml ignores it silently rather than complaining. Pinned
+          # to what this action already used, so this changes nothing today;
+          # raising it is then a deliberate edit, made together with a run of
+          # the scan against the whole history.
+          GITLEAKS_VERSION: "8.24.3"

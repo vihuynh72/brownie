@@ -63,30 +63,46 @@ public final class DockerIsolatedDocumentRenderer implements DocumentRenderer {
 
     private final String imageTag;
     private final String expectedImageId;
+    private final Path stagingRoot;
 
     public DockerIsolatedDocumentRenderer() {
-        this("brownie-spike-renderer:pinned", null);
+        this("brownie-spike-renderer:pinned", null, null);
     }
 
     public DockerIsolatedDocumentRenderer(String imageTag) {
-        this(imageTag, null);
+        this(imageTag, null, null);
+    }
+
+    public DockerIsolatedDocumentRenderer(String imageTag, String expectedImageId) {
+        this(imageTag, expectedImageId, null);
     }
 
     /**
      * {@code expectedImageId} is the image's content address ({@code
      * sha256:...}). A tag can be pointed at a different image by anyone who
      * can build on the host; when an id is given, nothing else is ever run.
+     *
+     * <p>{@code stagingRoot} is where a job's input and output directories
+     * are made. It matters because those directories are handed to the
+     * container as mounts, and a mount is resolved by the daemon wherever the
+     * daemon runs -- so when this process is itself in a container, the path
+     * has to name the same directory on both sides of that boundary. Unset,
+     * it is the ordinary temporary directory, which is right whenever this
+     * process and the daemon share a filesystem.
      */
-    public DockerIsolatedDocumentRenderer(String imageTag, String expectedImageId) {
+    public DockerIsolatedDocumentRenderer(String imageTag, String expectedImageId, String stagingRoot) {
         this.imageTag = imageTag;
         this.expectedImageId = expectedImageId == null || expectedImageId.isBlank() ? null : expectedImageId.trim();
+        this.stagingRoot = stagingRoot == null || stagingRoot.isBlank() ? null : Path.of(stagingRoot.trim());
     }
 
     @Override
     public RenderedPdf renderToPdf(byte[] docxBytes) {
         Path jobDir;
         try {
-            jobDir = Files.createTempDirectory("brownie-render-job-");
+            jobDir = stagingRoot == null
+                    ? Files.createTempDirectory("brownie-render-job-")
+                    : Files.createTempDirectory(stagingRoot, "brownie-render-job-");
         } catch (IOException e) {
             throw new DocumentRenderException("Failed to create an isolated staging directory for rendering.", e);
         }

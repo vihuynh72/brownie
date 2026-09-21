@@ -38,3 +38,7 @@ Thumbs.db
 /fixtures/private/
 /evals/private/
 /infra/azure/*.local.parameters.json
+# The filled-in deployment parameters name your own address, your subscription
+# and the people who receive budget warnings. Only the example is tracked.
+/infra/azure/main.bicepparam
+/infra/azure/PILOT-VALUES.md

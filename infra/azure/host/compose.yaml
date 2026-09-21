@@ -1,0 +1,116 @@
+# What runs on the hosted machine.
+#
+# Four containers: the proxy that is the public face, the API behind it, the
+# worker beside it, and the virus scanner both of them use. The database is
+# not here -- it is the managed server on the private network -- and neither
+# is the blob store, which is Azure's.
+#
+# The renderer is not a service either. The API starts one disposable
+# container per render and throws it away, which is why the API is the only
+# container given the Docker socket. That is the same privilege it has when it
+# runs as a user in the docker group on a development machine, and it is the
+# known cost of rendering this way; nothing here makes it larger.
+#
+# Image references are content addresses, written by deploy.sh from what the
+# publishing workflow pushed. A tag is never deployed: two deployments of the
+# same tag can be two different programs.
+#
+# BROWNIE_CONFIG_DIR is where the configuration and the certificate live. The
+# default is the deployed machine's; it is a variable so that this exact file
+# can be stood up on a development machine, against a throwaway database and a
+# storage emulator, and be seen to work before it is ever deployed. The
+# renderer's staging path is deliberately not a variable: it has to be the
+# same string inside the container and on the host, because the daemon
+# resolves a nested bind mount on the host.
+
+name: brownie
+
+services:
+  web:
+    image: ${BROWNIE_WEB_IMAGE}
+    restart: unless-stopped
+    environment:
+      BROWNIE_SERVER_NAME: ${BROWNIE_SERVER_NAME}
+      BROWNIE_API_HOST: api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${BROWNIE_CONFIG_DIR:-/etc/brownie}/tls:/etc/brownie/tls:ro
+      - ${BROWNIE_ACME_DIR:-/var/www/acme}:/var/www/acme:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # A real request, not "is the configuration valid": a proxy that has
+      # wedged still passes a configuration test, and this container is what
+      # decides whether a deployment is considered to have worked.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  api:
+    image: ${BROWNIE_API_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - ${BROWNIE_CONFIG_DIR:-/etc/brownie}/api.env
+    volumes:
+      # The socket is what lets the API start a renderer. Nothing else in this
+      # file has it.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The same absolute path inside and out: a renderer's input and output
+      # are bind mounts, and the daemon resolves a bind mount on the host, so
+      # a staging directory that exists only inside this container would mount
+      # as empty.
+      - /var/lib/brownie/render:/var/lib/brownie/render
+    # The socket is owned by the host's docker group; deploy.sh writes that
+    # group's number here, because it differs between machines.
+    group_add:
+      - "${BROWNIE_DOCKER_GID}"
+    depends_on:
+      clamav:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  worker:
+    image: ${BROWNIE_WORKER_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - ${BROWNIE_CONFIG_DIR:-/etc/brownie}/worker.env
+    depends_on:
+      api:
+        # The API owns the schema: it runs the migrations as it starts. A
+        # worker against a database the API has not migrated yet would fail
+        # every pass until it caught up.
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8091/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  clamav:
+    image: clamav/clamav-debian:1.4
+    restart: unless-stopped
+    volumes:
+      # Signatures survive a restart and are kept current by the image's own
+      # updater, so a deployment does not spend minutes downloading them.
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 120s
+
+volumes:
+  clamav-data:

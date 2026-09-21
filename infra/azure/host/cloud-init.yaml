@@ -1,0 +1,131 @@
+#cloud-config
+# Prepares the machine, once, when it is first created. It installs what is
+# needed to run containers and to read this deployment's own secrets, makes
+# the directories the containers expect, and puts a placeholder certificate in
+# place so that the proxy can start before a real one has been issued.
+#
+# It deliberately starts nothing: at first boot no image has been published
+# yet. The deployment workflow is what brings the application up, and it does
+# so by sending the current deploy script to this machine, so that script is
+# never a stale copy baked in here.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - openssl
+
+write_files:
+  # Container logs are the one thing that can fill a small disk without anyone
+  # doing anything wrong. Three files of 20 megabytes each, per container, is
+  # enough to investigate yesterday and cannot grow without bound.
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "20m", "max-file": "3" },
+        "live-restore": true
+      }
+
+  # Issues the certificate if there is none, renews it when it is close to
+  # expiring, and does nothing at all otherwise. Run daily by the timer below
+  # and once by the deployment. The proxy always reads the same two files, so
+  # nothing else has to know where the certificate came from.
+  - path: /usr/local/sbin/brownie-certificate.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      name="${1:-$(cat /etc/brownie/server-name 2>/dev/null || true)}"
+      contact="${2:-$(cat /etc/brownie/certificate-contact 2>/dev/null || true)}"
+      if [ -z "$name" ]; then
+        echo "No server name; nothing to issue a certificate for." >&2
+        exit 0
+      fi
+      mkdir -p /var/www/acme /etc/brownie/tls
+      register=(--register-unsafely-without-email)
+      if [ -n "$contact" ]; then
+        register=(--email "$contact")
+      fi
+      docker run --rm \
+        -v /etc/letsencrypt:/etc/letsencrypt \
+        -v /var/log/letsencrypt:/var/log/letsencrypt \
+        -v /var/www/acme:/var/www/acme \
+        certbot/certbot:v5.0.0 certonly --webroot --webroot-path /var/www/acme \
+        --non-interactive --agree-tos "${register[@]}" \
+        --keep-until-expiring --cert-name brownie -d "$name" || {
+          echo "Certificate issue or renewal did not succeed; the existing certificate is left in place." >&2
+          exit 0
+        }
+      live="/etc/letsencrypt/live/brownie"
+      if [ -f "$live/fullchain.pem" ]; then
+        install -m 0644 "$live/fullchain.pem" /etc/brownie/tls/fullchain.pem
+        install -m 0640 "$live/privkey.pem" /etc/brownie/tls/privkey.pem
+        docker kill --signal=HUP brownie-web-1 >/dev/null 2>&1 || true
+      fi
+
+  - path: /etc/systemd/system/brownie-certificate.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Issue or renew the Brownie certificate
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/brownie-certificate.sh
+
+  - path: /etc/systemd/system/brownie-certificate.timer
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Daily check of the Brownie certificate
+
+      [Timer]
+      OnCalendar=daily
+      RandomizedDelaySec=3600
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+runcmd:
+  # Docker from Docker's own repository rather than the distribution's, because
+  # the compose plugin and current engine are only there.
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable"
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
+  - systemctl enable --now docker
+
+  # The directories the containers expect. The staging directory belongs to
+  # the API container's own fixed account: it writes a renderer's input there
+  # and reads its output back, and the path is identical on both sides because
+  # the daemon resolves a bind mount here, on the host.
+  - mkdir -p /etc/brownie/tls /var/lib/brownie/render /var/www/acme /var/log/letsencrypt
+  - chown -R 10100:10100 /var/lib/brownie/render
+  - chmod 0750 /etc/brownie
+  - chmod 0755 /var/www/acme
+
+  # A placeholder certificate so the proxy can start on a machine that has
+  # never had a real one. It is replaced the first time the certificate script
+  # runs, which the deployment does before it finishes.
+  - >
+    test -f /etc/brownie/tls/fullchain.pem ||
+    openssl req -x509 -newkey rsa:2048 -nodes -days 30
+    -subj "/CN=brownie.invalid"
+    -keyout /etc/brownie/tls/privkey.pem -out /etc/brownie/tls/fullchain.pem
+  - chmod 0640 /etc/brownie/tls/privkey.pem
+  - systemctl enable --now brownie-certificate.timer

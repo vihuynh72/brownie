@@ -104,6 +104,25 @@ describe('HomeView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
+  /**
+   * The one refusal that must not say "try again": an account that was not
+   * invited will be refused every time, and a link inviting the person to
+   * repeat it would send them round a loop and tell them something untrue.
+   */
+  it('tells someone who was not invited that trying again will not help', async () => {
+    const session = useSessionStore()
+    session.status = 'anonymous'
+
+    const wrapper = await mountWithRouter('/?signin=failed&reason=not_invited')
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('invited people only')
+    expect(alert.text()).not.toContain('not_invited')
+    expect(alert.find('a[href="/signin"]').exists()).toBe(false)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
   it('greets a signed-in person by their first name only', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
     signedIn()

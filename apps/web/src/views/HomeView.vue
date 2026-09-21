@@ -14,6 +14,10 @@ const documents = ref<DocumentSummaryResponse[]>([])
 // (see the API's own sign-in failure handling). The code is rendered as text only.
 const signInFailed = computed(() => route.query.signin === 'failed')
 const signInFailureReason = computed(() => (typeof route.query.reason === 'string' ? route.query.reason : null))
+// One refusal is not worth trying again for: this Brownie is open to invited
+// people only, and nothing the person does at the sign-in page changes that.
+// Telling them to try again would be false, and would send them round a loop.
+const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'not_invited')
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
@@ -154,7 +158,11 @@ const recentDays = computed<DayGroup[]>(() => {
 
 <template>
   <div class="home">
-    <p v-if="signInFailed" class="card home__signin-error" role="alert">
+    <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
+      This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
+      should be, ask whoever invited you; signing in again with the same account will not change it.
+    </p>
+    <p v-else-if="signInFailed" class="card home__signin-error" role="alert">
       Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again; if
       it keeps failing, pass that reason on to whoever runs this Brownie.
       <RouterLink to="/signin">Try again</RouterLink>

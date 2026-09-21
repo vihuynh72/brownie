@@ -38,7 +38,7 @@ import java.util.List;
  */
 public class AzureDeletionLedgerArchive implements DeletionLedgerArchive {
 
-    private static final String CONTAINER_NAME = "deletion-ledger";
+    static final String CONTAINER_NAME = "deletion-ledger";
     private static final DateTimeFormatter NAME_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmssSSSSSS'Z'");
 
     private final BlobServiceClient blobServiceClient;

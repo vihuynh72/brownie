@@ -349,6 +349,138 @@ sign-in client secret are changed at their providers, then in the
 environment, then both processes are restarted, and only then is the old
 value revoked.
 
+## Deploying it somewhere other than a laptop
+
+Everything below is optional: Brownie runs locally with nothing deployed, and
+nothing here happens by itself. Publishing an image and deploying it are both
+started by hand.
+
+**The shape.** One small Linux machine runs four containers -- a proxy that is
+the public face, the API, the worker, and the virus scanner -- beside a
+managed PostgreSQL server that has no public address, two blob storage
+accounts, a key vault, a container registry and a log workspace. Rendering
+stays what it already is: the API starts a throwaway container per render,
+with no network, a read-only root and a memory limit, and throws it away. That
+is why this is a machine rather than a managed container platform, which gives
+a container no runtime of its own to do that with.
+
+The proxy is what makes the application and the API one origin, which the
+session cookie and the sign-in callback both depend on. It terminates TLS with
+a certificate issued for the machine's own `<label>.<region>.cloudapp.azure.com`
+name, renewed daily by a timer, and it passes the forwarded scheme, host and
+caller address from what it observed rather than from what the caller claimed.
+
+**What is where.**
+
+| Path | What it is |
+| --- | --- |
+| `infra/azure/main.bicep` and `infra/azure/modules/` | Every resource, identity, network rule and budget, deployed against one resource group |
+| `infra/azure/main.example.bicepparam` | Copy to `main.bicepparam` and fill in; it is ignored by git because it names your own addresses |
+| `infra/azure/host/cloud-init.yaml` | How the machine prepares itself, once, when it is created |
+| `infra/azure/host/compose.yaml` | What runs on it |
+| `infra/azure/host/deploy.sh` | Runs on the machine: reads the secrets, pulls the images, migrates, starts, checks, rolls back if the check fails |
+| `scripts/azure-what-if.sh` | Prints what a deployment would change, and changes nothing |
+| `scripts/azure-deploy.sh` | Creates or updates the resources. This one spends money |
+| `scripts/verify-deployment.sh` | Checks a running deployment from outside, over its public address |
+| `scripts/verify-deployment-on-host.sh` | Checks what only the machine can see, including that the renderer really is confined |
+| `.github/workflows/publish-images.yml` | Builds and pushes the four images, by digest, and scans them |
+| `.github/workflows/deploy-pilot.yml` | Puts a published revision on the machine, or puts the previous one back |
+| `.github/workflows/pilot-hours.yml` | Starts the machine and the database in the morning, stops them at night |
+
+**Setting it up, once.**
+
+1. Sign in with the Azure CLI and select the subscription you intend.
+2. `cp infra/azure/main.example.bicepparam infra/azure/main.bicepparam` and
+   fill in the five values it asks for. Export the two secrets it reads from
+   the environment (a generated database password, your SSH public key).
+3. `./scripts/azure-what-if.sh <resource-group>` and read the report.
+4. `./scripts/azure-deploy.sh <resource-group>`. Creating the role
+   assignments needs a role that can grant roles (Owner, or User Access
+   Administrator alongside Contributor); plain Contributor gets partway and
+   stops.
+5. Put five secrets in the key vault it created: `db-api-password`,
+   `db-worker-password`, `db-migration-password`, `oidc-client-secret`,
+   `openai-api-key`. The machine reads them at start-up and stores none of
+   them.
+6. Create the three database roles on the new server, from the machine, using
+   `infra/local/postgres/init/01-app-roles.sql` as the shape, with the
+   passwords you just stored. The server's own administrator exists to do this
+   and nothing else.
+7. Add the deployed callback `https://<name>/login/oauth2/code/entra` to the
+   identity provider's app registration, beside the local one.
+8. Set the repository variables the workflows read (`AZURE_TENANT_ID`,
+   `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID_PUBLISH`, `AZURE_CLIENT_ID_DEPLOY`,
+   `AZURE_RESOURCE_GROUP`, `BROWNIE_REGISTRY`, `BROWNIE_VM_NAME`,
+   `BROWNIE_DB_SERVER_NAME`, `BROWNIE_SERVER_NAME`, `BROWNIE_VAULT_NAME`,
+   `BROWNIE_DB_HOST`, `BROWNIE_STORAGE_ENDPOINT`,
+   `BROWNIE_DELETION_RECORD_ENDPOINT`, `BROWNIE_OIDC_ISSUER`,
+   `BROWNIE_OIDC_CLIENT_ID`, `BROWNIE_INVITED_ADDRESSES`,
+   `BROWNIE_SUPPORT_CONTACT`, `BROWNIE_CERTIFICATE_CONTACT`), and create a
+   GitHub environment named `pilot`. None of these is a secret; there is no
+   Azure credential in this repository at all, because the two identities are
+   federated to this repository and that environment.
+
+**Releasing.** Run *Publish images*, note the revision it reports, then run
+*Deploy to the pilot host* with that revision. The deployment migrates the
+database with the new image before anything serves it, so a failed migration
+leaves the running release untouched; then it replaces the containers, waits
+for them to be healthy, issues or renews the certificate, and checks the
+result from outside. If the check fails it puts the previous images back. The
+same workflow's `rollback` choice does that on demand.
+
+**Who can sign in.** The identity provider's own sign-up is open to anyone who
+reaches the address, so a deployed Brownie requires an invitation:
+`BROWNIE_INVITED_ADDRESSES` is the list of whole addresses that may sign in,
+and it is on by default wherever this is deployed. With the gate on and nobody
+listed, nobody signs in, including you. Someone who is refused is told plainly
+that this Brownie is open to invited people only and that trying again will
+not change it.
+
+**Hours.** The machine and the database are the only charges of any size
+billed by the hour, and running them only while people are actually using
+Brownie is most of the difference between fitting a small budget and not. Set
+the repository variable `PILOT_HOURS` to `on` and the schedule in
+`pilot-hours.yml` starts them in the morning and stops them at night; the
+times in that file are UTC, and they are the hours to publish to the people
+invited. Outside them the address does not answer, which is why it is a
+published hour rather than a surprise.
+
+**What to run after deploying.**
+
+```bash
+BROWNIE_BASE_URL=https://<name> ./scripts/verify-deployment.sh
+# and, on the machine itself:
+sudo ./scripts/verify-deployment-on-host.sh
+```
+
+The first checks TLS, the redirect from plain HTTP, the security headers, that
+the API is reached under the same address, that nothing answers without a
+session, that the management endpoint is not public, that a sign-in asks the
+provider to return to this address over HTTPS, and that one caller cannot make
+unlimited requests. The second checks that every container is healthy, that
+both programs are ready (their readiness includes the database, the blob store
+and the scanner), that the renderer image is the approved one and that a
+renderer container has no network, cannot write outside its own temporary
+space, is not root and is given neither our configuration nor a container
+runtime.
+
+**What those scripts cannot check, and you must.** Sign in with a real
+account, upload a file, generate a draft, edit it, export it, delete the
+document, and confirm the trash behaves. Do it with two unrelated accounts and
+confirm neither sees the other's documents. Those need a person and a real
+sign-in, and they are the last step before anyone is invited.
+
+**Operating it.** `pilot_summary()` answers what the invited group actually
+did -- how many came back on a second day, how many documents were started and
+exported, how often a person rewrote what the model proposed, what failed and
+what it cost -- and `operations_summary()` answers whether anything is stuck.
+Both are queries an operator runs; no route serves them and neither runtime
+role may execute them.
+
+```bash
+psql -U brownie_migration -d brownie -x -c "SELECT * FROM pilot_summary(30)"
+```
+
 ## Limits that protect the host and the people on it
 
 **What an upload must be.** A file is classified by its bytes, never by

@@ -34,9 +34,10 @@ class CompilationConfig {
             @Value("${brownie.render.max-concurrent:2}") int maxConcurrent,
             @Value("${brownie.render.max-wait:PT20S}") Duration maxWait,
             @Value("${brownie.render.image:brownie-spike-renderer:pinned}") String image,
-            @Value("${brownie.render.expected-image-id:}") String expectedImageId) {
+            @Value("${brownie.render.expected-image-id:}") String expectedImageId,
+            @Value("${brownie.render.staging-dir:}") String stagingDir) {
         return new ConcurrencyLimitedDocumentRenderer(
-                new DockerIsolatedDocumentRenderer(image, expectedImageId), maxConcurrent, maxWait);
+                new DockerIsolatedDocumentRenderer(image, expectedImageId, stagingDir), maxConcurrent, maxWait);
     }
 
     @Bean

@@ -103,13 +103,23 @@ class SecurityConfigIntegrationTest {
         assertThat(response.statusCode()).isEqualTo(403);
     }
 
-    /** A load balancer has no session: health answers anonymously on the management port, and nothing else there does. */
+    /**
+     * A load balancer has no session: health answers anonymously on the
+     * management port, and nothing else there does.
+     *
+     * <p>What is checked is that it answers, not that it says everything is
+     * well. Health now includes readings from the blob store and the virus
+     * scanner, and this context is deliberately pointed at addresses nothing
+     * is listening on, so the honest answer here is 503 with a document
+     * saying so -- which is itself the point of those readings. Asserting 200
+     * would only pass by making health blind to its dependencies again.
+     */
     @Test
     void healthIsAnsweredWithoutASessionAndTheRestOfTheManagementPortIsNot() throws Exception {
         HttpResponse<String> health = client.send(
                 HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + "/actuator/health")).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
-        assertThat(health.statusCode()).isEqualTo(200);
+        assertThat(health.statusCode()).isIn(200, 503);
         assertThat(health.body()).contains("\"status\"");
 
         HttpResponse<String> discovery = client.send(

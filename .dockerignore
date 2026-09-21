@@ -1,0 +1,19 @@
+# What never belongs in an image build context: build output, dependencies
+# that are fetched during the build, local secrets and local state.
+.git
+.github
+.toolchains
+tmp
+**/target
+**/node_modules
+**/dist
+**/coverage
+**/playwright-report
+**/test-results
+.env
+**/.env
+**/.env.*
+!**/.env.example
+fixtures/private
+spike
+infra/local

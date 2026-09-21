@@ -11,6 +11,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserService;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.oidc.OidcIdToken;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.stereotype.Service;
@@ -29,18 +31,27 @@ import org.springframework.stereotype.Service;
 public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest, OidcUser> {
 
     private static final Logger log = LoggerFactory.getLogger(BrownieOidcUserService.class);
+    /** What every test but the invitation ones wants: no gate. */
+    private static final InvitedPeople EVERYONE = new InvitedPeople(false, "");
 
     private final OAuth2UserService<OidcUserRequest, OidcUser> delegate;
     private final UserIdentityRepository userIdentityRepository;
     private final WorkspaceRepository workspaceRepository;
     private final BuiltInTemplateProvisioningService builtInTemplateProvisioningService;
+    private final InvitedPeople invitedPeople;
 
     @Autowired
     public BrownieOidcUserService(
             UserIdentityRepository userIdentityRepository,
             WorkspaceRepository workspaceRepository,
-            BuiltInTemplateProvisioningService builtInTemplateProvisioningService) {
-        this(new OidcUserService(), userIdentityRepository, workspaceRepository, builtInTemplateProvisioningService);
+            BuiltInTemplateProvisioningService builtInTemplateProvisioningService,
+            InvitedPeople invitedPeople) {
+        this(
+                new OidcUserService(),
+                userIdentityRepository,
+                workspaceRepository,
+                builtInTemplateProvisioningService,
+                invitedPeople);
     }
 
     /** Package-visible so a test can substitute a delegate that makes no real network call. */
@@ -49,21 +60,54 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
             UserIdentityRepository userIdentityRepository,
             WorkspaceRepository workspaceRepository,
             BuiltInTemplateProvisioningService builtInTemplateProvisioningService) {
+        this(delegate, userIdentityRepository, workspaceRepository, builtInTemplateProvisioningService, EVERYONE);
+    }
+
+    BrownieOidcUserService(
+            OAuth2UserService<OidcUserRequest, OidcUser> delegate,
+            UserIdentityRepository userIdentityRepository,
+            WorkspaceRepository workspaceRepository,
+            BuiltInTemplateProvisioningService builtInTemplateProvisioningService,
+            InvitedPeople invitedPeople) {
         this.delegate = delegate;
         this.userIdentityRepository = userIdentityRepository;
         this.workspaceRepository = workspaceRepository;
         this.builtInTemplateProvisioningService = builtInTemplateProvisioningService;
+        this.invitedPeople = invitedPeople;
     }
 
     @Override
     public OidcUser loadUser(OidcUserRequest userRequest) {
         OidcUser oidcUser = delegate.loadUser(userRequest);
+        refuseIfNotInvited(oidcUser);
         OidcIdToken idToken = oidcUser.getIdToken();
         UserIdentity identity = userIdentityRepository.recordLogin(
                 idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser));
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(identity.id());
         ensureBuiltInTemplatesWithoutBreakingLogin(workspace.id(), identity.id());
         return oidcUser;
+    }
+
+    /**
+     * Checked on every sign-in, not only the first, so that withdrawing an
+     * invitation ends access rather than only preventing a new account.
+     *
+     * <p>Nothing about the person is written to the log. The provider keeps
+     * its own record of who tried to sign in, and an address in an
+     * application log is one more copy of somebody's personal information in
+     * a place nobody thought about.
+     */
+    private void refuseIfNotInvited(OidcUser oidcUser) {
+        if (invitedPeople.mayUseBrownie(oidcUser.getEmail())) {
+            return;
+        }
+        log.warn("A sign-in was refused because the account is not on the invitation list.");
+        throw new OAuth2AuthenticationException(
+                new OAuth2Error(
+                        "not_invited",
+                        "This Brownie is open to invited people only.",
+                        null),
+                "This Brownie is open to invited people only.");
     }
 
     /**
