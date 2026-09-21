@@ -45,6 +45,20 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-jdbc</artifactId>
     </dependency>
+    <!-- The worker answers one question over HTTP and nothing else: whether
+         it is alive and whether the things it needs are reachable. Without
+         it, an operator can see that a container is running but not that it
+         is able to do any work, which is the failure that matters. The web
+         server it needs for that listens on the management port alone; the
+         application port is switched off in application.yml. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>

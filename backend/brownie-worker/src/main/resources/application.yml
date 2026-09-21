@@ -1,8 +1,37 @@
+# The worker serves no application traffic: the port below is switched off,
+# and the only thing it listens on is the management port further down, which
+# answers whether it is alive and whether the database and the blob store are
+# reachable. Both are needed before it can do anything at all, so a worker
+# that cannot reach them is not ready, and whatever is watching it should say
+# so rather than report a running container as a working one.
+server:
+  port: -1
+
+management:
+  server:
+    port: 8091
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        # Liveness deliberately stays as it is: it answers "restart me", and a
+        # storage outage is not something restarting fixes. Readiness answers
+        # "send me work", and without the blob store this process
+        # cannot remove a deleted file or keep the record of having done so --
+        # so it should say so rather than report itself fit through an outage
+        # of the one place every file lives.
+        readiness:
+          include: readinessState, db, fileStorage, deletionRecordStorage
+
 spring:
   application:
     name: brownie-worker
-  main:
-    web-application-type: none
   datasource:
     url: ${BROWNIE_DB_URL}
     username: ${BROWNIE_DB_USERNAME}
@@ -44,7 +73,12 @@ brownie:
     # letting anyone in; any other value is refused at start-up.
     mode: ${BROWNIE_WORKER_MODE:serve}
   storage:
+    # As in brownie-api: the connection string locally, the two endpoints and
+    # the platform's own identity when hosted. The worker writes the deletion
+    # record and removes stored files, so it needs both.
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+    endpoint: ${BROWNIE_STORAGE_ENDPOINT:}
+    deletion-record-endpoint: ${BROWNIE_DELETION_RECORD_STORAGE_ENDPOINT:}
   usage:
     # The model allowance, enforced by the usage ledger before every request
     # is sent. brownie-api and brownie-worker must be given the same values:
