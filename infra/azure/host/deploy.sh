@@ -177,8 +177,17 @@ log "Issuing or renewing the certificate."
 
 log "Checking what is now running."
 docker compose -f /etc/brownie/compose.yaml ps --format '{{.Service}} {{.Status}} {{.Image}}'
-curl -fsS -m 10 "https://${BROWNIE_SERVER_NAME}/api/v1/capabilities" -o /dev/null \
-  || fail "The deployed application did not answer its own capabilities route over HTTPS."
+# Every route but sign-in needs a session, so the answer that proves the
+# application is up is 401, not 200. Asking curl to treat any 4xx as a failure
+# would fail a deployment that worked perfectly -- which is exactly what
+# happened the first time this ran. What is being checked is that Brownie
+# itself answered over HTTPS: a 200 or a 401 both prove that, while a 502, a
+# 000 or anything else does not.
+answer="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "https://${BROWNIE_SERVER_NAME}/api/v1/capabilities" || true)"
+case "$answer" in
+  200|401) log "The deployed application answered over HTTPS ($answer)." ;;
+  *) fail "The deployed application did not answer its own capabilities route over HTTPS (got ${answer:-no response})." ;;
+esac
 
 log "Removing images nothing is using any more."
 docker image prune --force --filter "until=168h" > /dev/null || true
