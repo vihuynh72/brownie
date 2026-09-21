@@ -38,6 +38,16 @@ param adminSourceAddressPrefix = 'CHANGE-ME/32'
 param githubRepository = 'CHANGE-ME/brownie'
 param githubEnvironment = 'pilot'
 
+// GitHub does not always put the repository's NAME in the token it issues;
+// for some repositories it puts numeric ids instead, as in
+// repo:owner@165195947/name@1358914467:environment:pilot. A deployment that
+// trusts only the name form then refuses every workflow with AADSTS700213,
+// which reads like a misconfigured credential and is not. Supply both ids and
+// both forms are trusted. Find them with:
+//   gh api repos/<owner>/<name> --jq '{owner: .owner.id, repo: .id}'
+param githubOwnerId = ''
+param githubRepositoryId = ''
+
 // Where the budget warnings go. Cost data is hours behind, so these are an
 // early warning, not a stop.
 param budgetContactEmails = ['CHANGE-ME@example.com']
