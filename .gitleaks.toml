@@ -3,15 +3,46 @@ title = "brownie gitleaks config"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Azurite's fixed, publicly documented local-emulator development account key -- identical on every Azurite installation everywhere, not tied to any real Azure resource, and meaningless outside a local emulator instance."
+# One [allowlist] table, deliberately, rather than several [[allowlists]] entries.
+#
+# The plural form is newer: a global [[allowlists]] array is only read from
+# gitleaks 8.25.0 onwards, and the scanner this repository's checks actually run
+# is older than that. An older scanner does not complain about the plural form --
+# it simply does not see it, so every value below stops being allowed and the
+# scan fails on things that are not secrets. The singular form is understood by
+# every version, old and new, which is why everything lives in this one table.
+# Do not split it back up: from 8.25.0 the two forms together are an outright
+# error ("deprecated, it cannot be used alongside").
+#
+# Two groups of values are allowed here, both public constants rather than
+# credentials.
+#
+# First, Azurite's fixed local-emulator development account key. It is published
+# by Microsoft, identical on every Azurite installation everywhere, tied to no
+# real Azure resource, and meaningless outside a local emulator.
+#
+# Second, Azure's own built-in role definition identifiers, which are the same
+# public constants in every subscription in the world and are documented by
+# Microsoft under these exact values. They are the names of permissions, not
+# credentials: knowing one grants nothing.
+#
+# They are allowed by their exact values rather than by file path, so that a
+# genuine secret sitting in the same file would still be found.
+#
+# To check a change to this file against the scanner the checks really use,
+# before pushing rather than after, run it over the whole history:
+#
+#   docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3 \
+#     detect --source=/repo --redact --no-banner
+#
+# That is the same version and the same config pickup (no --config flag: the
+# scanner finds this file itself). Scanning with a newer image instead is what
+# hid this problem in the first place.
+[allowlist]
+description = "Azurite's published local-emulator key and Azure's public built-in role definition identifiers. Neither is a credential."
 regexes = [
+  # Azurite / Azure Storage Emulator well-known development account key
   '''Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==''',
-]
-
-[[allowlists]]
-description = "Azure's own built-in role definition identifiers, which are the same public constants in every subscription in the world -- Microsoft documents them by these exact values. They are named permissions, not credentials: knowing one grants nothing. They are allowed by their exact values rather than by path, so that a real secret in the same file would still be found."
-regexes = [
   # AcrPull, AcrPush
   '''7f951dda-4ed3-4680-a7ca-43fe172d538d''',
   '''8311e382-0749-4cb8-b61a-304f252e45ec''',
