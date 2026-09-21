@@ -26,7 +26,7 @@ import java.util.Optional;
  */
 public class AzureBlobStore implements BlobStore {
 
-    private static final String CONTAINER_NAME = "artifacts";
+    static final String CONTAINER_NAME = "artifacts";
     private static final int BUFFER_SIZE = 8192;
 
     private final BlobServiceClient blobServiceClient;
