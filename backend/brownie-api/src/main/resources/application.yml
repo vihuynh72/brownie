@@ -117,6 +117,15 @@ management:
       probes:
         enabled: true
       show-details: never
+      group:
+        # Liveness deliberately stays as it is: it answers "restart me", and a
+        # storage outage is not something restarting fixes. Readiness answers
+        # "send me work", and without the blob store or the scanner this
+        # process cannot accept an upload, keep a document, or export one --
+        # so it should say so rather than report itself fit through an outage
+        # of the one place every file lives.
+        readiness:
+          include: readinessState, db, fileStorage, deletionRecordStorage, clamAv
 
 brownie:
   environment: ${BROWNIE_ENVIRONMENT:local}
@@ -129,10 +138,16 @@ brownie:
     # callback must still arrive at this API's registered address.
     origin: ${BROWNIE_WEB_ORIGIN:${brownie.public-origin}}
   storage:
-    # Local/test only -- see AzureBlobStorageConfig, which refuses this setting
-    # outright on pilot/production. No production Blob Storage adapter
-    # exists yet.
+    # Local and test only -- AzureBlobStorageConfig refuses this setting
+    # outright on pilot and production, where the two endpoints below are
+    # used instead with the identity the platform gave the process.
     local-connection: ${BROWNIE_LOCAL_STORAGE_CONNECTION:}
+    # Where people's files live, and -- in a different storage account, which
+    # is checked -- the record of what has been deleted. The record has to
+    # survive a restore of the files: in one account, restoring the files
+    # would roll the record back with them and undo a deletion without trace.
+    endpoint: ${BROWNIE_STORAGE_ENDPOINT:}
+    deletion-record-endpoint: ${BROWNIE_DELETION_RECORD_STORAGE_ENDPOINT:}
   artifacts:
     max-upload-bytes: ${BROWNIE_MAX_UPLOAD_BYTES:10485760}
   retention:
@@ -148,6 +163,16 @@ brownie:
       refused-file: ${BROWNIE_RETENTION_REFUSED_FILE:PT24H}
       unused-file: ${BROWNIE_RETENTION_UNUSED_FILE:PT24H}
       audit-record: ${BROWNIE_RETENTION_AUDIT_RECORD:P90D}
+  invitations:
+    # Whether signing in requires an invitation, and who has one. The
+    # identity provider's own sign-up is open to anyone who reaches the
+    # address, which is right for a product and wrong for a pilot of about
+    # ten invited people. Off here and on for the hosted profiles below, so
+    # that a deployment cannot accidentally be open; with it on and nobody
+    # listed, nobody gets in at all, which is loud and immediate rather than
+    # quiet and permanent.
+    required: ${BROWNIE_INVITATIONS_REQUIRED:false}
+    addresses: ${BROWNIE_INVITED_ADDRESSES:}
   support:
     # Who people are told to ask about their data: an address, a name, a
     # link. Shown as written. Left empty, the page says nobody has been named.
@@ -310,6 +335,30 @@ spring:
         provider:
           entra:
             issuer-uri: ${BROWNIE_OIDC_ISSUER}
+server:
+  # Behind the proxy, so that the scheme, host and caller's address the
+  # application sees are the browser's and not the proxy's. Without this the
+  # sign-in callback would be built for http and the container's own name, and
+  # every caller who is not signed in would share one address, and so one
+  # request allowance. The API's port is not published outside the machine, so
+  # the only thing that can set these headers is the proxy in front of it.
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        # The session cookie is the whole of a person's identity here, so it
+        # never travels in the clear, is unreadable to script, and is not sent
+        # from another site -- lax rather than strict because the identity
+        # provider returns the browser to this origin by a redirect, which
+        # strict would arrive at with no session.
+        secure: true
+        http-only: true
+        same-site: lax
+brownie:
+  invitations:
+    # On by default wherever this is reachable from outside a laptop. The
+    # addresses are given per deployment; with none, nobody signs in.
+    required: ${BROWNIE_INVITATIONS_REQUIRED:true}
 logging:
   level:
     io.github.vihuynh72.brownie: INFO
@@ -325,6 +374,30 @@ spring:
         provider:
           entra:
             issuer-uri: ${BROWNIE_OIDC_ISSUER}
+server:
+  # Behind the proxy, so that the scheme, host and caller's address the
+  # application sees are the browser's and not the proxy's. Without this the
+  # sign-in callback would be built for http and the container's own name, and
+  # every caller who is not signed in would share one address, and so one
+  # request allowance. The API's port is not published outside the machine, so
+  # the only thing that can set these headers is the proxy in front of it.
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        # The session cookie is the whole of a person's identity here, so it
+        # never travels in the clear, is unreadable to script, and is not sent
+        # from another site -- lax rather than strict because the identity
+        # provider returns the browser to this origin by a redirect, which
+        # strict would arrive at with no session.
+        secure: true
+        http-only: true
+        same-site: lax
+brownie:
+  invitations:
+    # On by default wherever this is reachable from outside a laptop. The
+    # addresses are given per deployment; with none, nobody signs in.
+    required: ${BROWNIE_INVITATIONS_REQUIRED:true}
 logging:
   level:
     io.github.vihuynh72.brownie: WARN
