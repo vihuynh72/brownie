@@ -55,6 +55,10 @@ param githubRepository string
 @description('GitHub environment a workflow must run in to obtain a token.')
 param githubEnvironment string = 'pilot'
 
+@description('The numeric owner and repository ids GitHub may put in its token subject. Without them a deployment trusts only the plain-name form, and a workflow whose token carries ids is refused with AADSTS700213. Find them with: gh api repos/<owner>/<name> --jq "{owner: .owner.id, repo: .id}".')
+param githubOwnerId string = ''
+param githubRepositoryId string = ''
+
 @description('Monthly ceiling for this resource group, in the billing currency.')
 param monthlyBudgetAmount int = 60
 
@@ -170,6 +174,8 @@ module access 'modules/access.bicep' = {
     databaseServerName: data.outputs.serverName
     githubRepository: githubRepository
     githubEnvironment: githubEnvironment
+    githubOwnerId: githubOwnerId
+    githubRepositoryId: githubRepositoryId
   }
 }
 

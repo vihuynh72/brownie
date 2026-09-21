@@ -50,6 +50,20 @@ param githubRepository string
 @description('Name of the GitHub environment a workflow must be running in to obtain a token. An environment can require a reviewer, which is what keeps a merge from deploying by itself.')
 param githubEnvironment string = 'pilot'
 
+@description('The numeric owner id and repository id GitHub puts in its token subject, as in repo:owner@123/name@456. GitHub issues this form for some repositories instead of the plain-name form, and a credential that expects the wrong one is refused with AADSTS700213. Leave both empty to trust only the plain-name form. Find them with: gh api repos/<owner>/<name> --jq "{owner: .owner.id, repo: .id}".')
+param githubOwnerId string = ''
+param githubRepositoryId string = ''
+
+// Which subject a token carries is GitHub's choice, not ours, and it differs
+// between repositories. Rather than guess, both forms are trusted when the ids
+// are supplied: the tokens are otherwise identical, both are bound to the same
+// one repository and the same one environment, and trusting the form that is
+// never issued grants nothing to anybody.
+var trustIdQualifiedSubject = !empty(githubOwnerId) && !empty(githubRepositoryId)
+var githubOwnerAndRepo = trustIdQualifiedSubject
+  ? '${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}'
+  : githubRepository
+
 var acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 var acrPush = '8311e382-0749-4cb8-b61a-304f252e45ec'
 var keyVaultSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
@@ -103,6 +117,20 @@ resource publishFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/fed
   }
 }
 
+resource publishFederationById 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2024-11-30' = if (trustIdQualifiedSubject) {
+  parent: publishIdentity
+  name: 'github-${githubEnvironment}-by-id'
+  properties: {
+    issuer: 'https://token.actions.githubusercontent.com'
+    subject: 'repo:${githubOwnerAndRepo}:environment:${githubEnvironment}'
+    audiences: ['api://AzureADTokenExchange']
+  }
+  dependsOn: [
+    // Two credentials on one identity cannot be written at the same time.
+    publishFederation
+  ]
+}
+
 resource deployFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2024-11-30' = {
   parent: deployIdentity
   name: 'github-${githubEnvironment}'
@@ -111,6 +139,20 @@ resource deployFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/fede
     subject: 'repo:${githubRepository}:environment:${githubEnvironment}'
     audiences: ['api://AzureADTokenExchange']
   }
+}
+
+resource deployFederationById 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2024-11-30' = if (trustIdQualifiedSubject) {
+  parent: deployIdentity
+  name: 'github-${githubEnvironment}-by-id'
+  properties: {
+    issuer: 'https://token.actions.githubusercontent.com'
+    subject: 'repo:${githubOwnerAndRepo}:environment:${githubEnvironment}'
+    audiences: ['api://AzureADTokenExchange']
+  }
+  dependsOn: [
+    // Two credentials on one identity cannot be written at the same time.
+    deployFederation
+  ]
 }
 
 resource hostReadsSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {

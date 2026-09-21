@@ -77,8 +77,15 @@ ALTER ROLE brownie_migration PASSWORD :'migration_password';
 ALTER ROLE brownie_api       PASSWORD :'api_password';
 ALTER ROLE brownie_worker    PASSWORD :'worker_password';
 
--- None of the three need the cluster's own administrative database.
-REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+-- None of the three need the cluster's own administrative database. On a
+-- managed server the administrator is not a superuser and does not own that
+-- database, so this is allowed to fail: it is a tightening we would like, not
+-- one the rest depends on. Everything below it is required and stays fatal.
+DO $$ BEGIN
+  EXECUTE 'REVOKE CONNECT ON DATABASE postgres FROM PUBLIC';
+EXCEPTION WHEN insufficient_privilege OR undefined_object THEN
+  RAISE NOTICE 'Skipped revoking connect on the administrative database: the managed service owns it.';
+END $$;
 
 -- brownie_migration owns the public schema, so it and only it may create,
 -- alter or drop objects there.

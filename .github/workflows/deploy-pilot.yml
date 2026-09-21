@@ -90,12 +90,22 @@ jobs:
           CERTIFICATE_CONTACT: ${{ vars.BROWNIE_CERTIFICATE_CONTACT }}
         run: |
           set -euo pipefail
+          # The single quotes below are a heredoc delimiter and shell-quoted
+          # values, not expressions meant to expand.
+          # shellcheck disable=SC2016
           # The script the machine runs is this repository's own deploy.sh
           # with a prologue of values in front of it. The values are passed
           # this way rather than as run-command parameters so that what
           # arrives is exactly one script, quoted once, with no second layer
           # of argument handling to get wrong.
+          # The machine runs what it is sent with sh, not bash, and this script
+          # needs bash (pipefail, and ${!name} indirection). So it is written
+          # to a file first and bash is asked to run it, rather than being
+          # piped into whatever shell happens to be default.
           {
+            printf 'cat > /tmp/brownie-deploy.sh <<%s\n' "'BROWNIE_DEPLOY_EOF'"
+            cat infra/azure/host/deploy.sh
+            printf '\nBROWNIE_DEPLOY_EOF\n'
             printf 'export BROWNIE_REGISTRY=%q\n' "$REGISTRY"
             printf 'export BROWNIE_API_IMAGE=%q\n' "$API_IMAGE"
             printf 'export BROWNIE_WORKER_IMAGE=%q\n' "$WORKER_IMAGE"
@@ -112,7 +122,10 @@ jobs:
             printf 'export BROWNIE_INVITED_ADDRESSES=%q\n' "$INVITED_ADDRESSES"
             printf 'export BROWNIE_CERTIFICATE_CONTACT=%q\n' "$CERTIFICATE_CONTACT"
             printf 'export BROWNIE_COMPOSE_B64=%q\n' "$(base64 -w0 infra/azure/host/compose.yaml)"
-            cat infra/azure/host/deploy.sh
+            printf 'bash /tmp/brownie-deploy.sh\n'
+            printf 'rc=$?\n'
+            printf 'rm -f /tmp/brownie-deploy.sh\n'
+            printf 'exit $rc\n'
           } > /tmp/run-on-host.sh
 
           az vm run-command invoke \
@@ -135,7 +148,10 @@ jobs:
           VM_NAME: ${{ vars.BROWNIE_VM_NAME }}
         run: |
           set -euo pipefail
+          # As above: written to a file on the machine and run with bash,
+          # because what runs it there is sh.
           cat > /tmp/rollback.sh <<'ROLLBACK'
+          cat > /tmp/brownie-rollback-inner.sh <<'INNER'
           set -euo pipefail
           test -f /etc/brownie/images.previous.env || { echo "There is no previous release recorded on this machine."; exit 1; }
           cp /etc/brownie/images.previous.env /etc/brownie/images.env
@@ -145,6 +161,11 @@ jobs:
           docker compose -f /etc/brownie/compose.yaml up -d --wait --wait-timeout 300
           docker compose -f /etc/brownie/compose.yaml ps --format '{{.Service}} {{.Status}} {{.Image}}'
           echo "Done."
+          INNER
+          bash /tmp/brownie-rollback-inner.sh
+          rc=$?
+          rm -f /tmp/brownie-rollback-inner.sh
+          exit $rc
           ROLLBACK
           az vm run-command invoke \
             --resource-group "$RESOURCE_GROUP" \

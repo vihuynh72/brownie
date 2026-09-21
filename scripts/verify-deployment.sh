@@ -181,10 +181,16 @@ if [ "${BROWNIE_SKIP_RATE_LIMIT_CHECK:-0}" = "1" ]; then
   printf '  note  skipped by request (BROWNIE_SKIP_RATE_LIMIT_CHECK=1)\n'
   limit_hit="skipped"
 else
-  for _ in $(seq 1 140); do
-    code="$(status_of "$base/api/v1/me")"
-    if [ "$code" = "429" ]; then limit_hit="yes"; break; fi
-  done
+  # Sent all at once rather than one after another. The allowance refills
+  # while a sequential run is in flight, and over a real network -- a hundred
+  # milliseconds a request -- the refill outruns the sender and the limit is
+  # never reached, which reads as "no limit" when there is one. Twenty at a
+  # time outruns the refill on any link.
+  if printf '%s\n' $(seq 1 200) \
+    | xargs -P 20 -I{} curl "${curl_options[@]}" -o /dev/null -w '%{http_code}\n' "$base/api/v1/me" 2>/dev/null \
+    | grep -q '^429$'; then
+    limit_hit="yes"
+  fi
 fi
 if [ "$limit_hit" = "skipped" ]; then
   :
