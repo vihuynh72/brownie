@@ -3,7 +3,6 @@ package io.github.vihuynh72.brownie.api.source;
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
-import io.github.vihuynh72.brownie.core.source.AttachedSource;
 import io.github.vihuynh72.brownie.core.source.DocumentEvidence;
 import io.github.vihuynh72.brownie.core.source.DocumentSourceService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
@@ -18,7 +17,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -108,20 +106,6 @@ class DocumentSourceController {
                         case io.github.vihuynh72.brownie.core.evidence.EvidenceLocator.PlainText ignored -> "PLAIN_TEXT";
                     },
                     evidence.excerptText());
-        }
-    }
-
-    /** {@code id} is the workspace-level snapshot's id, the same value {@code SourceController.SnapshotResponse} reports for it. */
-    record DocumentSourceResponse(
-            long id, long artifactId, String displayFilename, String kind, OffsetDateTime fetchedAt, OffsetDateTime attachedAt) {
-        static DocumentSourceResponse from(AttachedSource attached) {
-            return new DocumentSourceResponse(
-                    attached.snapshot().id(),
-                    attached.snapshot().artifactId(),
-                    attached.displayFilename(),
-                    attached.snapshot().kind().name(),
-                    attached.snapshot().fetchedAt(),
-                    attached.link().attachedAt());
         }
     }
 }
