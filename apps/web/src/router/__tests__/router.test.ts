@@ -39,7 +39,7 @@ describe('router', () => {
    * so following one while signed out lands on the sign-in page rather
    * than on a screen whose first request comes back 401.
    */
-  it.each(['/documents/new', '/documents/12', '/templates/new', '/trash', '/your-data', '/chat'])(
+  it.each(['/documents/new', '/documents/12', '/templates/new', '/trash', '/your-data', '/chat', '/connections'])(
     'sends a signed-out visitor from %s to the sign-in page, carrying where they were going',
     async (path) => {
       useSessionStore().status = 'anonymous'
