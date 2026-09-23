@@ -698,7 +698,7 @@ class JdbcDocumentRepositoryTest {
             }
             long snapshotId;
             try (PreparedStatement statement = connection.prepareStatement(
-                    "INSERT INTO source_snapshot (workspace_id, artifact_id, kind) VALUES (?, ?, 'PLAIN_TEXT') RETURNING id")) {
+                    "INSERT INTO source_snapshot (workspace_id, artifact_id, kind) VALUES (?, ?, 'ARTIFACT') RETURNING id")) {
                 statement.setLong(1, workspaceId);
                 statement.setLong(2, artifactId);
                 try (ResultSet resultSet = statement.executeQuery()) {
