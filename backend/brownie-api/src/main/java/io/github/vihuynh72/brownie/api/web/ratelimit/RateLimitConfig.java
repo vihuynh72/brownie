@@ -26,6 +26,7 @@ class RateLimitConfig {
             @Value("${brownie.rate-limit.per-minute.model:30}") int model,
             @Value("${brownie.rate-limit.per-minute.render:30}") int render,
             @Value("${brownie.rate-limit.per-minute.upload:120}") int upload,
+            @Value("${brownie.rate-limit.per-minute.connector:60}") int connector,
             @Value("${brownie.rate-limit.per-minute.write:300}") int write,
             @Value("${brownie.rate-limit.per-minute.read:1200}") int read,
             @Value("${brownie.rate-limit.per-minute.anonymous:120}") int anonymous) {
@@ -33,6 +34,7 @@ class RateLimitConfig {
         perMinute.put(RateLimitClass.MODEL, model);
         perMinute.put(RateLimitClass.RENDER, render);
         perMinute.put(RateLimitClass.UPLOAD, upload);
+        perMinute.put(RateLimitClass.CONNECTOR, connector);
         perMinute.put(RateLimitClass.WRITE, write);
         perMinute.put(RateLimitClass.READ, read);
         perMinute.put(RateLimitClass.ANONYMOUS, anonymous);

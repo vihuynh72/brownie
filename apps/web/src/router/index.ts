@@ -41,6 +41,13 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      // Where Google sends a person back after its consent page, as well as the page itself.
+      path: '/connections',
+      name: 'connections',
+      component: () => import('@/views/ConnectionsView.vue'),
+      meta: { requiresSession: true },
+    },
+    {
       path: '/documents/new',
       name: 'new-document',
       component: () => import('@/views/NewDocumentView.vue'),

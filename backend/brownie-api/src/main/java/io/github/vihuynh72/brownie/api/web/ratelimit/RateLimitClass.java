@@ -13,6 +13,15 @@ public enum RateLimitClass {
     RENDER,
     /** Sends or finalizes a file, which means storage, a virus scan and a parser. */
     UPLOAD,
+    /**
+     * Makes Brownie call Google on the person's behalf: a consent completed,
+     * a disconnect, a file or an event read. Counted apart from everything
+     * else, and before a read counts as a read, because Google answers
+     * Brownie's one registration for every person at once, and one person
+     * making it call Google in a loop could get that registration throttled
+     * for all of them.
+     */
+    CONNECTOR,
     /** Any other change. */
     WRITE,
     /** Any read. The web app polls a running job about forty times a minute, so this is the generous one. */

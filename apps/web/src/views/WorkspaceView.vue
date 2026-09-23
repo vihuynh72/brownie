@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, onBeforeRouteLeave } from 'vue-router'
+import { RouterLink, onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { readDocumentHandoff } from '@/router/handoff'
 // PDF.js is the largest thing this page can load; it is fetched only once the preview pane is shown.
@@ -32,6 +32,7 @@ import {
   getLatestExportReceipt,
   getLatestValidation,
   getTemplateVersion,
+  importCalendarEvent,
   interpretAssist,
   listDocumentRevisions,
   listDocumentSources,
@@ -48,6 +49,7 @@ import {
   type ArtifactResponse,
   type DocumentResponse,
   type DocumentRevisionResponse,
+  type CalendarImportResponse,
   type DocumentSourceResponse,
   type EvidenceExcerptResponse,
   type ExportApprovalResponse,
@@ -68,6 +70,8 @@ import {
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { describePayload, describeScope } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
+import { consentOutcome, originLink, originSentence } from '@/connections/words'
+import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
 
 const props = defineProps<{ documentId: number }>()
 
@@ -145,6 +149,7 @@ async function loadRules(): Promise<void> {
 
 watch(activeTab, (tab) => {
   if (tab === 'rules' && (rulesLoadState.value === 'idle' || rulesLoadState.value === 'error')) void loadRules()
+  if (tab !== 'sources') calendarPickerStartsOpen.value = false
 })
 
 function selectTab(tab: InspectorTab): void {
@@ -304,6 +309,8 @@ const sourceUploadState = ref<'idle' | 'uploading' | 'error'>('idle')
 const sourceUploadError = ref<string | null>(null)
 /** Which attached source Assist extracts from; defaults to the most recently attached one. */
 const selectedSourceId = ref<number | null>(null)
+/** Sources attached on this page, by upload or by copying: kept when a list read before them arrives after them. */
+const sourcesAddedHere = new Set<number>()
 
 async function loadDocumentSources(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
@@ -312,13 +319,58 @@ async function loadDocumentSources(): Promise<void> {
     const sources = await listDocumentSources(workspaceId, props.documentId)
     // The server's list is the truth once it answers; until then, or if it answers with nothing
     // while the creation screen just handed a source over, the handoff copy stays on screen.
-    if (Array.isArray(sources) && sources.length > 0) attachedSources.value = sources
+    if (Array.isArray(sources) && sources.length > 0) {
+      const newer = attachedSources.value.filter(
+        (source) => sourcesAddedHere.has(source.id) && !sources.some((listed) => listed.id === source.id),
+      )
+      attachedSources.value = [...newer, ...sources]
+    }
   } catch {
     // The handoff copy (if any) stays on screen; attaching still works and refreshes the list.
   }
   if (selectedSourceId.value === null || !attachedSources.value.some((source) => source.id === selectedSourceId.value)) {
     selectedSourceId.value = attachedSources.value[0]?.id ?? null
   }
+}
+
+// Google sends the person back here after they connect Google Calendar from the Sources tab, with
+// what happened in the address. It is read once and taken out of the address, so a reload or a
+// shared link does not say it again, and it is said at the top of the page rather than in the
+// tab, which a narrow screen keeps in a closed drawer.
+const route = useRoute()
+const router = useRouter()
+const calendarConsent = ref(readCalendarConsent())
+/** The picker opens by itself on this first visit to the tab only. */
+const calendarPickerStartsOpen = ref(calendarConsent.value !== null)
+const calendarConsentElement = ref<HTMLElement | null>(null)
+watch(calendarConsentElement, (element) => element?.focus())
+function readCalendarConsent(): { tone: 'success' | 'failure'; text: string } | null {
+  const outcome = consentOutcome(route.query)
+  if (outcome === null) return null
+  const rest = { ...route.query }
+  delete rest.google
+  delete rest.access
+  delete rest.reason
+  void router.replace({ query: rest })
+  return { tone: outcome.tone, text: outcome.text }
+}
+
+/**
+ * Copies one calendar event into this document. Done here rather than in the picker, which lives
+ * in the Sources tab: a copy that finishes after the person has moved to another tab still joins
+ * the document's sources, where Assist looks for them.
+ */
+async function copyCalendarEvent(eventId: string): Promise<CalendarImportResponse> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined) throw new Error('Brownie is still confirming who is signed in.')
+  const selectedBefore = selectedSourceId.value
+  const result = await importCalendarEvent(workspaceId, props.documentId, eventId)
+  sourcesAddedHere.add(result.source.id)
+  attachedSources.value = [result.source, ...attachedSources.value.filter((attached) => attached.id !== result.source.id)]
+  // Chosen for Assist only if the person has not chosen another source meanwhile, and no run is reading one.
+  const runUnderWay = ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value)
+  if (!runUnderWay && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
+  return result
 }
 
 /**
@@ -1488,6 +1540,7 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     }
     await extractArtifact(workspaceId, allocated.id)
     const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
+    sourcesAddedHere.add(attached.id)
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
     selectedSourceId.value = attached.id
     sourceUploadState.value = 'idle'
@@ -1553,13 +1606,20 @@ function pollFailureWaitingCannotFix(error: unknown): string | null {
   return null
 }
 
+/** Set when this page goes away, so a run it was following is no longer asked about every few seconds. */
+let pageLeft = false
+onBeforeUnmount(() => {
+  pageLeft = true
+})
+
 /**
  * Follows one job to a resting state. A failed status read is not a failed job: the loop keeps
  * going with a longer gap and tells the person it lost contact, because giving up here would
  * invite a second, paid start. It stops early only on an answer waiting cannot change (see
  * pollFailureWaitingCannotFix), or when the run's questions or result cannot be read once it gets
  * there, which "Check again" picks up. After ten minutes it stops polling and offers "Check again"
- * instead, since the job's real state is on the server whenever the person asks.
+ * instead, since the job's real state is on the server whenever the person asks. It also stops as
+ * soon as the person leaves this page: nothing is left to show the answer to.
  */
 async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise<void> {
   const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'DEAD', 'CANCELLED'])
@@ -1567,14 +1627,14 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
   const deadline = startedAt + 10 * 60 * 1000
   let delayMs = 1500
   noWorkerYet.value = false
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !pageLeft) {
     let job
     try {
       job = await getJob(workspaceId, jobId)
       extractionError.value = null
       delayMs = 1500
     } catch (error) {
-      if (extractionJobId.value !== jobId) return
+      if (pageLeft || extractionJobId.value !== jobId) return
       const ending = pollFailureWaitingCannotFix(error)
       if (ending !== null) {
         extractionStage.value = 'failed'
@@ -1589,7 +1649,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       continue
     }
-    if (extractionJobId.value !== jobId) return
+    if (pageLeft || extractionJobId.value !== jobId) return
     extractionJobState.value = job.state
     cancellationRequested.value = cancellationRequested.value || job.cancellationRequestedAt != null
     // A worker claims a queued job within a couple of seconds. Thirty seconds with no attempt means
@@ -1627,6 +1687,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
+  if (pageLeft) return
   extractionStalled.value = true
   stalledMessage.value = 'Still running after ten minutes of checking. The run continues on the server.'
 }
@@ -1924,6 +1985,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
 
   <section v-else-if="loadState === 'error'" class="field-error" role="alert">
     <p>{{ loadError ?? 'Could not load this document.' }}</p>
+    <p v-if="calendarConsent">{{ calendarConsent.text }}</p>
     <p v-if="documentGone"><RouterLink to="/trash">Open the trash bin</RouterLink></p>
     <RouterLink to="/">Back to your documents</RouterLink>
   </section>
@@ -1940,6 +2002,16 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
     </div>
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
     <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
+    <p
+      v-if="calendarConsent"
+      ref="calendarConsentElement"
+      :class="calendarConsent.tone === 'success' ? 'workspace-notice' : 'field-error'"
+      :role="calendarConsent.tone === 'success' ? 'status' : 'alert'"
+      tabindex="-1"
+    >
+      {{ calendarConsent.text }}
+      <template v-if="calendarConsent.tone === 'success'">Copy an event from the Sources tab.</template>
+    </p>
     <p v-if="reloadError" class="field-error" role="alert">
       {{ reloadError }}
       <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
@@ -2325,11 +2397,26 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
               </p>
               <p v-if="sourceUploadState === 'uploading'" aria-live="polite">Uploading…</p>
               <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
+              <CalendarSourcePicker
+                v-if="session.personalWorkspaceId !== undefined"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :start-open="calendarPickerStartsOpen"
+                :unsaved-work="hasUnsavedWork()"
+                :copy-event="copyCalendarEvent"
+                @used="calendarConsent = null"
+              />
 
               <ul v-if="attachedSources.length > 0" class="source-list">
                 <li v-for="source in attachedSources" :key="source.id">
                   {{ source.displayFilename ?? `Source #${source.id}` }}
                   <span class="field-hint">(attached {{ new Date(source.attachedAt).toLocaleString() }})</span>
+                  <span v-if="originSentence(source)" class="field-hint source-list__origin">
+                    {{ originSentence(source) }}
+                    <a v-if="originLink(source)" :href="originLink(source) ?? undefined" target="_blank" rel="noopener noreferrer"
+                      >Open in Google Calendar<span class="visually-hidden"> (opens in a new tab)</span></a
+                    >
+                  </span>
                 </li>
               </ul>
               <p v-else class="field-hint">No sources attached to this document yet.</p>
@@ -2926,6 +3013,16 @@ dt {
 
 .source-list {
   padding-left: var(--space-5);
+}
+
+.source-list__origin {
+  display: block;
+}
+
+.workspace-notice {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-cocoa-wash);
 }
 
 .field-list {

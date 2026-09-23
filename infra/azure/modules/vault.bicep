@@ -1,5 +1,7 @@
-// Where the four secrets a hosted Brownie needs are kept: the two database
-// passwords, the sign-in client secret, and the model key. Nothing reads them
+// Where the secrets a hosted Brownie needs are kept: the three database
+// passwords, the sign-in client secret and the model key, and, when people may
+// connect a Google account, Google's client secret and the key that encrypts
+// the tokens Google hands back. Nothing reads them
 // from here at request time -- the host reads them once when it starts and
 // passes them to the processes as environment variables -- so the vault's job
 // is to be the one place they exist, with a record of who read them and a way

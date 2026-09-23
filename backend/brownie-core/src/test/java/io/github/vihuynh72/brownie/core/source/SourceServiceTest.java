@@ -33,7 +33,9 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -77,6 +79,40 @@ class SourceServiceTest {
         assertTrue(fixture.plainTextExtractionVersionRepository
                 .findByArtifact(WORKSPACE_ID, USER_ID, artifactId, fixture.plainTextExtractor.parserVersion())
                 .isPresent());
+    }
+
+    @Test
+    void aCopiedSourceIsExtractedLikeAnUploadAndKeepsWhereItCameFrom() {
+        Fixture fixture = new Fixture();
+        long artifactId = fixture.seedReadyPlainTextArtifact("Planned start: 2026-09-24 10:00.");
+        SourceOrigin origin = new SourceOrigin(7L, 11L, "event-1", "\"etag-1\"", OffsetDateTime.now(), "Weekly sync",
+                "https://www.google.com/calendar/event?eid=abc", SourceConversion.CALENDAR_EVENT_AS_TEXT);
+
+        SourceSnapshot snapshot = fixture.sourceService
+                .attachImportedSnapshot(WORKSPACE_ID, USER_ID, 1L, artifactId, SourceKind.GOOGLE_CALENDAR, origin, Instant.now())
+                .orElseThrow();
+
+        assertEquals(SourceKind.GOOGLE_CALENDAR, snapshot.kind());
+        assertEquals(origin, snapshot.origin());
+        assertTrue(fixture.plainTextExtractionVersionRepository
+                .findByArtifact(WORKSPACE_ID, USER_ID, artifactId, fixture.plainTextExtractor.parserVersion())
+                .isPresent());
+        assertEquals(snapshot.id(), fixture.sourceService.attachSnapshot(WORKSPACE_ID, USER_ID, artifactId).id(),
+                "attaching the copied artifact again finds its snapshot, origin and all");
+    }
+
+    @Test
+    void anUploadCannotBeRecordedAsCopiedAndACopyCannotLoseItsOrigin() {
+        Fixture fixture = new Fixture();
+        long artifactId = fixture.seedReadyPlainTextArtifact("Meeting notes.");
+        SourceOrigin origin = new SourceOrigin(7L, 11L, "event-1", "\"etag-1\"", null, null, null, SourceConversion.CALENDAR_EVENT_AS_TEXT);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> fixture.sourceService.attachImportedSnapshot(WORKSPACE_ID, USER_ID, 1L, artifactId, SourceKind.ARTIFACT, origin, Instant.now()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SourceSnapshot(1L, WORKSPACE_ID, artifactId, SourceKind.GOOGLE_CALENDAR, OffsetDateTime.now()));
+        assertThrows(IllegalArgumentException.class, () -> new SourceOrigin(7L, 11L, "event-1", "\"etag-1\"", null, null,
+                "javascript:alert(1)", SourceConversion.CALENDAR_EVENT_AS_TEXT));
     }
 
     @Test
@@ -423,6 +459,36 @@ class SourceServiceTest {
                 snapshotIdByArtifactId.put(artifactId, id);
                 return snapshot;
             });
+        }
+
+        @Override
+        public Optional<SourceSnapshot> createImported(
+                long workspaceId, long userId, long documentId, long artifactId, SourceKind kind, SourceOrigin origin, Instant fetchedAt) {
+            Optional<SourceSnapshot> copied = findImported(workspaceId, userId, origin.grantId(), origin.externalId(), origin.revision());
+            if (copied.isPresent()) {
+                return copied;
+            }
+            return Optional.of(byId.computeIfAbsent(nextIdFor(artifactId), id -> {
+                SourceSnapshot snapshot = new SourceSnapshot(id, workspaceId, artifactId, kind, fetchedAt.atOffset(ZoneOffset.UTC), origin);
+                snapshotIdByArtifactId.put(artifactId, id);
+                return snapshot;
+            }));
+        }
+
+        @Override
+        public Optional<SourceSnapshot> findImported(long workspaceId, long userId, long grantId, String externalId, String revision) {
+            return byId.values().stream()
+                    .filter(snapshot -> snapshot.workspaceId() == workspaceId && snapshot.origin() != null)
+                    .filter(snapshot -> snapshot.origin().grantId() == grantId
+                            && snapshot.origin().externalId().equals(externalId)
+                            && snapshot.origin().revision().equals(revision))
+                    .findFirst();
+        }
+
+        @Override
+        public Optional<SourceSnapshot> findLatestImportedWithContent(
+                long workspaceId, long userId, long grantId, String externalId, String sha256Hex) {
+            return Optional.empty();
         }
 
         private long nextIdFor(long artifactId) {

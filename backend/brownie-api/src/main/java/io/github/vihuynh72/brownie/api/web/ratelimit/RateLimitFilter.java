@@ -52,6 +52,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
                     + "|templates/" + ID + "/versions)$");
     private static final Pattern UPLOAD = Pattern.compile(
             "^/api/v1/workspaces/" + ID + "/(?:uploads(?:/" + ID + "/(?:content|complete))?|artifacts/" + ID + "/extraction)$");
+    /** Every route that makes Brownie call Google, whatever its method: the consent callback and everything under a Google connection. */
+    private static final Pattern CONNECTOR = Pattern.compile(
+            "^/api/v1/(?:connectors/google/callback|workspaces/" + ID + "/connections/google(?:/.*)?)$");
 
     private final RateLimiter rateLimiter;
 
@@ -92,10 +95,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     static RateLimitClass classify(HttpServletRequest request) {
         String method = request.getMethod();
+        String path = routedPath(request);
+        if (CONNECTOR.matcher(path).matches()) {
+            return RateLimitClass.CONNECTOR;
+        }
         if ("GET".equals(method) || "HEAD".equals(method)) {
             return RateLimitClass.READ;
         }
-        String path = routedPath(request);
         if (MODEL.matcher(path).matches()) {
             return RateLimitClass.MODEL;
         }

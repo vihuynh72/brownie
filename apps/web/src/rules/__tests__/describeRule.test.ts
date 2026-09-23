@@ -50,6 +50,16 @@ describe('describePayload', () => {
     expect(text).not.toMatch(/artifact/i)
   })
 
+  it('names events copied from Google Calendar as a place a value may come from', () => {
+    const text = describePayload({
+      kind: 'ALLOWED_SOURCE_KINDS',
+      fieldId: 'summary',
+      allowedSourceKinds: ['ARTIFACT', 'GOOGLE_CALENDAR'],
+    })
+
+    expect(text).toBe('summary: only allow values from uploaded files and events copied from Google Calendar')
+  })
+
   /** Leaving an unknown kind out would describe a narrower rule than the one that applies, so none is named. */
   it('does not name sources when the list is missing, empty or holds a kind this page has no words for', () => {
     for (const allowedSourceKinds of [undefined, null, [], ['ARTIFACT', 'CONNECTOR']]) {

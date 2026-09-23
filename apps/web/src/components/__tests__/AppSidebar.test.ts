@@ -24,6 +24,7 @@ function makeRouter() {
       { path: '/chat', name: 'chat', component: stub },
       { path: '/trash', name: 'trash', component: stub },
       { path: '/your-data', name: 'your-data', component: stub },
+      { path: '/connections', name: 'connections', component: stub },
       { path: '/documents/new', name: 'new-document', component: stub },
       { path: '/templates/new', name: 'new-template', component: stub },
     ],
@@ -99,6 +100,7 @@ describe('AppSidebar', () => {
     expect(wrapper.find('a[href="/documents/new?templateId=1"]').exists()).toBe(true)
     // Where what is kept, for how long, and how to delete all of it can always be found.
     expect(wrapper.find('a[href="/your-data"]').text()).toBe('Your data')
+    expect(wrapper.find('a[href="/connections"]').text()).toBe('Connections')
   })
 
   /** Opening a drawer that nothing has focus in leaves a keyboard user tabbing through the page behind it. */

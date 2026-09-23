@@ -199,6 +199,23 @@ brownie:
       # it is a deliberate, recorded decision, never something a caller's
       # request can select (see OpenAiModelGateway).
       model: ${BROWNIE_OPENAI_MODEL:gpt-5.4-mini-2026-03-17}
+  connectors:
+    # A person connecting their Google account so that Brownie can read a file
+    # or a calendar event they choose. Off until the client id is set; with it
+    # set, the secret and the token key are required too, and start-up says so
+    # (see ConnectorConfig). The token key encrypts the refresh tokens Google
+    # hands back and is never stored in the database: 32 random bytes, base64.
+    # Changing it makes every stored token unreadable, which shows as "connect
+    # again" rather than as an error; the id names the key in use, so that is
+    # what is recorded with each token.
+    token-key: ${BROWNIE_CONNECTOR_TOKEN_KEY:}
+    token-key-id: ${BROWNIE_CONNECTOR_TOKEN_KEY_ID:1}
+    google:
+      # Brownie's own registration with Google, which is not a way of signing
+      # in to Brownie. Google's callback is BROWNIE_PUBLIC_ORIGIN followed by
+      # /api/v1/connectors/google/callback, and must be registered exactly so.
+      client-id: ${BROWNIE_GOOGLE_CLIENT_ID:}
+      client-secret: ${BROWNIE_GOOGLE_CLIENT_SECRET:}
 
 logging:
   structured:
@@ -300,6 +317,13 @@ spring:
       # under this profile never make one.
       api-key: sk-test-not-a-real-key
 brownie:
+  connectors:
+    # Off in this profile whatever a developer's shell exports; the tests that
+    # need a connection set their own values, pointing at a stand-in Google.
+    token-key: ""
+    google:
+      client-id: ""
+      client-secret: ""
   storage:
     # A syntactically valid but unreachable target (port 65535, the same
     # convention the fake OIDC endpoints above use) -- BlobServiceClient

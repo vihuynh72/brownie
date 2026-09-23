@@ -10,8 +10,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.DelegatingAuthenticationEntryPoint;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import tools.jackson.databind.ObjectMapper;
@@ -97,9 +100,24 @@ class SecurityConfig {
                 // unauthenticated request to a protected route gets a plain 401
                 // so the (future) SPA can decide what to show, rather than
                 // silently following a redirect to the identity provider.
-                .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint(
-                        new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
+                .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint(authenticationEntryPoint()));
         return http.build();
+    }
+
+    /**
+     * The one exception to the plain 401: Google's consent callback is a page
+     * a browser is sent to, not a request the web app makes, so a person whose
+     * Brownie session ended while they were on Google's pages would otherwise
+     * be left looking at a bare error. They are sent to the connections page,
+     * which asks them to sign in again.
+     */
+    private AuthenticationEntryPoint authenticationEntryPoint() {
+        AuthenticationEntryPoint backToConnections =
+                (request, response, authException) -> response.sendRedirect(webOrigin + "/connections?google=failed&reason=signed_out");
+        return DelegatingAuthenticationEntryPoint.builder()
+                .defaultEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
+                .addEntryPointFor(backToConnections, PathPatternRequestMatcher.withDefaults().matcher("/api/v1/connectors/google/callback"))
+                .build();
     }
 
     /**

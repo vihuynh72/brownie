@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type Router } from 'vue-router'
 import WorkspaceView from '@/views/WorkspaceView.vue'
 import { useSessionStore } from '@/stores/session'
 import type { DocumentResponse, DocumentRevisionResponse, DocumentSourceResponse, JobResponse, QuestionResponse } from '@/api/client'
@@ -47,6 +47,10 @@ vi.mock('@/api/client', async () => {
     getLatestExportReceipt: vi.fn(),
     listDocumentRevisions: vi.fn(),
     getDocumentRevision: vi.fn(),
+    listConnections: vi.fn(),
+    startGoogleConsent: vi.fn(),
+    listCalendarEvents: vi.fn(),
+    importCalendarEvent: vi.fn(),
   }
 })
 
@@ -60,6 +64,9 @@ vi.mock('@/components/PdfPreview.vue', () => ({
 import {
   ApiRequestError,
   acceptPatchProposal,
+  importCalendarEvent,
+  listCalendarEvents,
+  listConnections,
   allocateUpload,
   answerQuestion,
   applyGenerationResult,
@@ -108,6 +115,21 @@ import type {
 import { axe } from '@/test/axe'
 import { documentHandoffState, type DocumentHandoff } from '@/router/handoff'
 import { resetCapabilitiesCache } from '@/capabilities'
+
+// Every page mounted here is taken down after its test. A page left mounted keeps following any run
+// it started, asking for the job every few seconds, and would otherwise outlive its test and read
+// the next test's mocks.
+const mountedViews: VueWrapper[] = []
+function mountView(options: { props: { documentId: number }; global: { plugins: Router[] }; attachTo?: HTMLElement }) {
+  const wrapper = mount(WorkspaceView, options)
+  mountedViews.push(wrapper)
+  return wrapper
+}
+afterEach(() => {
+  for (const wrapper of mountedViews.splice(0)) {
+    if (!wrapper.vm.$.isUnmounted) wrapper.unmount()
+  }
+})
 
 const DOCUMENT: DocumentResponse = {
   id: 1,
@@ -183,7 +205,7 @@ async function mountWorkspaceView() {
   })
   router.push('/documents/1')
   await router.isReady()
-  const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+  const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
   await flushPromises()
   return wrapper
 }
@@ -205,7 +227,7 @@ async function mountWorkspaceViewAttached() {
   })
   router.push('/documents/1')
   await router.isReady()
-  const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] }, attachTo: document.body })
+  const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
   return wrapper
 }
@@ -375,7 +397,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     })
     await router.push({ path: '/documents/1', state: documentHandoffState(handoff) })
     await router.isReady()
-    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
     await flushPromises()
     return wrapper
   }
@@ -421,7 +443,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     })
     await router.push('/documents/1')
     await router.isReady()
-    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -1566,6 +1588,29 @@ describe('WorkspaceView generation runs survive a reload', () => {
     await flushPromises()
 
     expect(startExtraction).toHaveBeenCalledWith(7, 1, 4, expect.any(String))
+  })
+
+  it('stops asking about a run once the person has left the page', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    let answer: (job: JobResponse) => void = () => {}
+    vi.mocked(getJob).mockReturnValueOnce(new Promise((resolve) => (answer = resolve))).mockResolvedValue(jobResponse('LEASED'))
+    const wrapper = await mountWorkspaceView()
+    expect(getJob).toHaveBeenCalledTimes(1)
+
+    const waits = vi.spyOn(window, 'setTimeout')
+    try {
+      wrapper.unmount()
+      answer(jobResponse('LEASED'))
+      await flushPromises()
+      // Had it kept following the run, it would now be waiting a moment to ask again.
+      expect(waits.mock.calls.filter(([, delay]) => (delay ?? 0) >= 1000)).toHaveLength(0)
+    } finally {
+      waits.mockRestore()
+    }
+    expect(getJob).toHaveBeenCalledTimes(1)
   })
 
   it('resumes a run that is waiting for answers straight from the server, without anyone clicking Extract', async () => {
@@ -3007,5 +3052,294 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       expect(wrapper.find('.compare-panel [role="alert"]').text()).toContain('Brownie could not be reached. It may not be running')
       expect(wrapper.text()).not.toContain('502')
     })
+  })
+})
+
+describe('WorkspaceView sources copied from Google Calendar', () => {
+  type Wrapper = Awaited<ReturnType<typeof mountWorkspaceView>>
+
+  const CALENDAR_CAPABILITIES = {
+    maxUploadBytes: 10485760,
+    uploadMediaTypes: [{ mediaType: 'text/plain', extension: 'txt' }],
+    assistSourceMediaTypes: ['text/plain'],
+    templateMediaTypes: [],
+    trashRetentionDays: 30,
+    googleConnectorAccess: ['CALENDAR_EVENTS' as const],
+  }
+
+  const COPIED: DocumentSourceResponse = {
+    id: 12,
+    artifactId: 13,
+    kind: 'GOOGLE_CALENDAR',
+    displayFilename: 'Budget review.txt',
+    fetchedAt: '2026-09-23T08:00:00Z',
+    attachedAt: '2026-09-23T08:00:00Z',
+    origin: {
+      provider: 'GOOGLE',
+      title: 'Budget review',
+      link: 'https://www.google.com/calendar/event?eid=abc',
+      modifiedAt: '2026-09-21T08:00:00Z',
+      conversion: 'CALENDAR_EVENT_AS_TEXT',
+    },
+  }
+
+  const UPLOADED: DocumentSourceResponse = {
+    id: 3,
+    artifactId: 5,
+    displayFilename: 'minutes.txt',
+    kind: 'ARTIFACT',
+    fetchedAt: '2026-03-01T00:00:00Z',
+    attachedAt: '2026-03-01T00:00:00Z',
+    origin: null,
+  }
+
+  let router: ReturnType<typeof createRouter>
+
+  async function mountAt(path: string): Promise<Wrapper> {
+    router = createRouter({
+      history: createWebHistory(),
+      routes: [
+        { path: '/', component: { template: '<div />' } },
+        { path: '/connections', component: { template: '<div />' } },
+        { path: '/documents/:id', component: WorkspaceView },
+      ],
+    })
+    router.push(path)
+    await router.isReady()
+    const wrapper = mountView({ props: { documentId: 1 }, attachTo: document.body, global: { plugins: [router] } })
+    await flushPromises()
+    await flushPromises()
+    return wrapper
+  }
+
+  async function openTab(wrapper: Wrapper, name: string) {
+    await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === name)!.trigger('click')
+    await flushPromises()
+  }
+
+  function sourceItems(wrapper: Wrapper) {
+    return wrapper.findAll('.source-list li')
+  }
+
+  const mountedWrappers: Wrapper[] = []
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+    vi.mocked(getDocument).mockReset().mockResolvedValue(DOCUMENT)
+    vi.mocked(getTemplateVersion).mockReset().mockResolvedValue(MINUTES_TEMPLATE_VERSION)
+    vi.mocked(listDocumentSources).mockReset().mockResolvedValue([])
+    vi.mocked(listGenerationRuns).mockReset().mockResolvedValue([])
+    vi.mocked(getLatestCompilation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue(CALENDAR_CAPABILITIES)
+    vi.mocked(listTemplateVersionRules).mockReset().mockResolvedValue([])
+    vi.mocked(listConnections).mockReset().mockResolvedValue([])
+    vi.mocked(listCalendarEvents).mockReset()
+    vi.mocked(importCalendarEvent).mockReset()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+  })
+
+  afterEach(() => {
+    while (mountedWrappers.length > 0) mountedWrappers.pop()?.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('labels a copied source with where it came from and links to it at Google, and an upload with neither', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([COPIED, UPLOADED])
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+
+    const [copied, uploaded] = sourceItems(wrapper)
+    expect(copied!.text().replace(/\s+/g, ' ')).toContain('Copied from Google Calendar as text on')
+    expect(copied!.text().replace(/\s+/g, ' ')).toContain(', when it had last been changed there on')
+    const link = copied!.find('a')
+    expect(link.attributes('href')).toBe('https://www.google.com/calendar/event?eid=abc')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(link.text()).toBe('Open in Google Calendar (opens in a new tab)')
+    expect(uploaded!.text()).not.toContain('Copied from')
+    expect(uploaded!.find('a').exists()).toBe(false)
+  })
+
+  it('never makes a link of an origin address that is not https, whatever the server sent', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { ...COPIED, origin: { ...COPIED.origin!, link: 'javascript:alert(1)' } },
+    ])
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+
+    expect(sourceItems(wrapper)[0]!.text()).toContain('Copied from Google Calendar')
+    expect(sourceItems(wrapper)[0]!.find('a').exists()).toBe(false)
+  })
+
+  it('does not offer Google Calendar when this Brownie has no Google set up', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({ ...CALENDAR_CAPABILITIES, googleConnectorAccess: [] })
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+
+    expect(wrapper.text()).not.toContain('Copy an event from Google Calendar')
+  })
+
+  it('adds a copied event to the sources, first and selected for Assist', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([UPLOADED])
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 1,
+        provider: 'GOOGLE',
+        access: 'CALENDAR_EVENTS',
+        state: 'ACTIVE',
+        accountEmail: 'me@example.org',
+        grantedScopes: [],
+        reconnectReason: null,
+        connectedAt: '2026-09-20T10:00:00Z',
+        tokenIssuedAt: '2026-09-20T10:00:00Z',
+        disconnectedAt: null,
+        providerRevocation: null,
+        grants: [],
+      },
+    ])
+    vi.mocked(listCalendarEvents).mockResolvedValue({
+      timeZone: null,
+      truncated: false,
+      events: [
+        {
+          id: 'evt1',
+          title: 'Budget review',
+          status: 'CONFIRMED',
+          allDay: false,
+          startDate: null,
+          endDate: null,
+          startsAt: '2026-09-22T09:00:00-07:00',
+          endsAt: '2026-09-22T10:00:00-07:00',
+          timeZone: null,
+          recurring: false,
+        },
+      ],
+    })
+    vi.mocked(importCalendarEvent).mockResolvedValue({ source: COPIED, newCopy: true })
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy an event from Google Calendar')!.trigger('click')
+    await flushPromises()
+    await wrapper.find('form.calendar-picker__window').trigger('submit')
+    await flushPromises()
+    await wrapper.find('#calendar-copy-evt1').trigger('click')
+    await flushPromises()
+
+    expect(importCalendarEvent).toHaveBeenCalledWith(7, 1, 'evt1')
+    const items = sourceItems(wrapper)
+    expect(items).toHaveLength(2)
+    expect(items[0]!.text()).toContain('Budget review.txt')
+    expect(items[0]!.text()).toContain('Copied from Google Calendar')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('comes back from connecting with what Google said, and takes it out of the address', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountAt('/documents/1?google=failed&access=calendar_events&reason=access_denied')
+    mountedWrappers.push(wrapper)
+
+    expect(router.currentRoute.value.query).toEqual({})
+    expect(router.currentRoute.value.path).toBe('/documents/1')
+    // Said at the top of the page, not in the tab a narrow screen keeps in a closed drawer, and focused so it is heard.
+    const said = wrapper.find('.workspace-topbar ~ [role="alert"]')
+    expect(said.text()).toBe("You chose not to allow access on Google's page, so nothing was connected.")
+    expect(document.activeElement).toBe(said.element)
+    expect(wrapper.find('.calendar-picker button[aria-expanded="true"]').exists()).toBe(true)
+    expect(wrapper.find('.calendar-picker').text()).toContain('Connect Google Calendar')
+
+    // The picker is where the person acts; switching tabs and back leaves it closed, and does not say it again.
+    await openTab(wrapper, 'Assist')
+    await openTab(wrapper, 'Sources')
+    expect(wrapper.find('.calendar-picker button[aria-expanded="false"]').exists()).toBe(true)
+  })
+
+  it('leaves the source the person chose for Assist alone when a copy finishes afterwards', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([UPLOADED, { ...UPLOADED, id: 4, artifactId: 6, displayFilename: 'agenda.txt' }])
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 1, provider: 'GOOGLE', access: 'CALENDAR_EVENTS', state: 'ACTIVE', accountEmail: 'me@example.org', grantedScopes: [],
+        reconnectReason: null, connectedAt: '2026-09-20T10:00:00Z', tokenIssuedAt: '2026-09-20T10:00:00Z', disconnectedAt: null,
+        providerRevocation: null, grants: [],
+      },
+    ])
+    vi.mocked(listCalendarEvents).mockResolvedValue({
+      timeZone: null,
+      truncated: false,
+      events: [{ id: 'evt1', title: 'Budget review', status: 'CONFIRMED', allDay: false, startDate: null, endDate: null,
+        startsAt: '2026-09-22T09:00:00-07:00', endsAt: '2026-09-22T10:00:00-07:00', timeZone: null, recurring: false }],
+    })
+    let finish: (value: { source: DocumentSourceResponse; newCopy: boolean }) => void = () => {}
+    vi.mocked(importCalendarEvent).mockReturnValue(new Promise((resolve) => (finish = resolve)))
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy an event from Google Calendar')!.trigger('click')
+    await flushPromises()
+    await wrapper.find('form.calendar-picker__window').trigger('submit')
+    await flushPromises()
+    await wrapper.find('#calendar-copy-evt1').trigger('click')
+
+    await openTab(wrapper, 'Assist')
+    const choice = wrapper.find('select#extract-source')
+    await choice.setValue('4')
+    finish({ source: COPIED, newCopy: true })
+    await flushPromises()
+
+    expect((wrapper.find('select#extract-source').element as HTMLSelectElement).value).toBe('4')
+  })
+
+  it('takes down what Google said once the person uses the Calendar control', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountAt('/documents/1?google=failed&access=calendar_events&reason=access_denied')
+    mountedWrappers.push(wrapper)
+    expect(wrapper.find('.workspace-topbar ~ [role="alert"]').exists()).toBe(true)
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy an event from Google Calendar')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.workspace-topbar ~ [role="alert"]').exists()).toBe(false)
+  })
+
+  it('keeps a copy that finishes after the person left the Sources tab', async () => {
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 1, provider: 'GOOGLE', access: 'CALENDAR_EVENTS', state: 'ACTIVE', accountEmail: 'me@example.org', grantedScopes: [],
+        reconnectReason: null, connectedAt: '2026-09-20T10:00:00Z', tokenIssuedAt: '2026-09-20T10:00:00Z', disconnectedAt: null,
+        providerRevocation: null, grants: [],
+      },
+    ])
+    vi.mocked(listCalendarEvents).mockResolvedValue({
+      timeZone: null,
+      truncated: false,
+      events: [{ id: 'evt1', title: 'Budget review', status: 'CONFIRMED', allDay: false, startDate: null, endDate: null,
+        startsAt: '2026-09-22T09:00:00-07:00', endsAt: '2026-09-22T10:00:00-07:00', timeZone: null, recurring: false }],
+    })
+    let finish: (value: { source: DocumentSourceResponse; newCopy: boolean }) => void = () => {}
+    vi.mocked(importCalendarEvent).mockReturnValue(new Promise((resolve) => (finish = resolve)))
+    const wrapper = await mountAt('/documents/1')
+    mountedWrappers.push(wrapper)
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy an event from Google Calendar')!.trigger('click')
+    await flushPromises()
+    await wrapper.find('form.calendar-picker__window').trigger('submit')
+    await flushPromises()
+    await wrapper.find('#calendar-copy-evt1').trigger('click')
+
+    await openTab(wrapper, 'Assist')
+    finish({ source: COPIED, newCopy: true })
+    await flushPromises()
+    await openTab(wrapper, 'Sources')
+
+    expect(sourceItems(wrapper)[0]!.text()).toContain('Budget review.txt')
+  })
+
+  it('leaves the address alone when it is not a return from Google', async () => {
+    const wrapper = await mountAt('/documents/1?google=maybe')
+    mountedWrappers.push(wrapper)
+
+    expect(router.currentRoute.value.query).toEqual({ google: 'maybe' })
+    expect(wrapper.find('.calendar-picker [role="alert"]').exists()).toBe(false)
   })
 })

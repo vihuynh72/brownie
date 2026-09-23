@@ -200,7 +200,7 @@ output registryLoginServer string = registry.outputs.loginServer
 @description('The database host name, resolvable only inside the network.')
 output databaseFqdn string = data.outputs.serverFullyQualifiedDomainName
 
-@description('Where the four secrets live.')
+@description('Where the secrets live.')
 output vaultUri string = vault.outputs.vaultUri
 
 @description('Storage endpoints the application is configured with.')

@@ -122,7 +122,9 @@ Brownie authenticates one kind of principal: customers signing in through
 the Entra External ID tenant configured above. That is the only identity
 provider integration in this codebase --
 there is no separate staff or admin login path today, and every row in
-`user_identity` belongs to a customer.
+`user_identity` belongs to a customer. Connecting a Google account (below) is
+not a second way in: it is done from inside a signed-in session and lets
+Brownie read something on that person's behalf, nothing more.
 
 The Microsoft/Azure account used to administer that tenant (create the
 app registration, manage billing, deploy resources) is a different,
@@ -156,6 +158,33 @@ above, since they are only recreated on a truly empty volume):
 ```sh
 docker compose -f infra/local/compose.yaml down -v
 ```
+
+## Connecting a Google account
+
+A person can connect their Google account to their workspace so that Brownie
+can read something there they choose. It is off until the deployment has its
+own registration with Google: `.env.example` lists the three settings and the
+exact callback to register, which is `BROWNIE_PUBLIC_ORIGIN` followed by
+`/api/v1/connectors/google/callback`.
+
+Each kind of access is agreed to on its own, on Google's consent page, and
+carries only the permission it needs: reading files the person picks in Google
+Drive (`drive.file`), or reading events on calendars they own
+(`calendar.events.owned.readonly`). Google's Drive permission would technically
+let an app change the files a person picks; Brownie never does, and its own
+record of what a person chose can only ever allow reading.
+
+What is kept is the refresh token Google hands back, encrypted with
+`BROWNIE_CONNECTOR_TOKEN_KEY` (which is never in the database), the account it
+belongs to, and the permissions Google says it granted. When Google stops
+accepting a token, because the person removed Brownie's access or it expired,
+the connection waits for them to connect again instead of retrying.
+Disconnecting asks Google to forget Brownie's access and wipes the token
+whatever Google answers; deleting the workspace does the same.
+
+While a Google Cloud project is in "Testing" status, Google makes the tokens it
+issues for these permissions stop working seven days after the person agreed.
+Publish the app in the Google Cloud console for connections that last.
 
 ## Trash, deletion, and file housekeeping
 
@@ -347,7 +376,11 @@ session at once, `TRUNCATE spring_session CASCADE` as the database owner;
 every browser is signed out on its next request. The model key and the
 sign-in client secret are changed at their providers, then in the
 environment, then both processes are restarted, and only then is the old
-value revoked.
+value revoked. The Google client secret is changed the same way, at Google
+first. The key that encrypts Google tokens (`BROWNIE_CONNECTOR_TOKEN_KEY`) is
+changed by giving the new key a new `BROWNIE_CONNECTOR_TOKEN_KEY_ID` and
+restarting: tokens encrypted with the old key can no longer be read, so each
+person's Google connection asks them to connect again, and nothing else breaks.
 
 ## Deploying it somewhere other than a laptop
 
@@ -419,6 +452,12 @@ caller address from what it observed rather than from what the caller claimed.
    GitHub environment named `pilot`. None of these is a secret; there is no
    Azure credential in this repository at all, because the two identities are
    federated to this repository and that environment.
+9. Optionally, to let people connect a Google account: register
+   `https://<name>/api/v1/connectors/google/callback` with Google, put two
+   more secrets in the vault, `google-client-secret` and `connector-token-key`
+   (`openssl rand -base64 32`), and set the repository variable
+   `BROWNIE_GOOGLE_CLIENT_ID`. A deployment with the variable set and either
+   secret missing stops before it changes anything.
 
 **Releasing.** Run *Publish images*, note the revision it reports, then run
 *Deploy to the pilot host* with that revision. The deployment migrates the
@@ -524,7 +563,9 @@ front of that today.
 (per address for anyone not signed in, an IPv6 address by its first 64
 bits), in this process's memory, which is
 the right size for one API instance: 30 requests that start paid model
-work, 30 that start a render, 120 upload requests, 300 other changes, 1,200
+work, 30 that start a render, 120 upload requests, 60 that make Brownie call
+Google on the person's behalf (reads included, because Google answers
+Brownie's one registration for everyone), 300 other changes, 1,200
 reads, and 120 of anything when not signed in
 (`brownie.rate-limit.per-minute.*`; `brownie.rate-limit.enabled=false`
 turns it off). Past that the answer is `429 RATE_LIMITED` with

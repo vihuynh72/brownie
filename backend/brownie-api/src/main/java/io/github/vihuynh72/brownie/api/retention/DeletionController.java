@@ -2,6 +2,8 @@ package io.github.vihuynh72.brownie.api.retention;
 
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
+import io.github.vihuynh72.brownie.core.connector.ConnectorService;
+import io.github.vihuynh72.brownie.core.connector.PendingRevocations;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.retention.DeletionRequest;
 import io.github.vihuynh72.brownie.core.retention.DeletionScope;
@@ -34,16 +36,19 @@ import java.util.List;
 class DeletionController {
 
     private final DeletionService deletionService;
+    private final ConnectorService connectorService;
     private final SessionRevoker sessionRevoker;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     DeletionController(
             DeletionService deletionService,
+            ConnectorService connectorService,
             SessionRevoker sessionRevoker,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.deletionService = deletionService;
+        this.connectorService = connectorService;
         this.sessionRevoker = sessionRevoker;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -75,7 +80,12 @@ class DeletionController {
         if (request.documentId() != null) {
             throw new DeletionRequestValidationException("documentId must be absent when scope is WORKSPACE.");
         }
+        // Google is asked to forget this person's access only once the workspace, and with it every stored token, is
+        // really gone: the tokens are read first, because the deletion removes the rows that hold them, and a
+        // deletion that is refused must leave the person's connections exactly as they were.
+        PendingRevocations googleAccess = connectorService.prepareForWorkspaceDeletion(workspaceId, userId);
         long deletionId = deletionService.deleteWorkspace(workspaceId, userId);
+        connectorService.revokeAfterWorkspaceDeletion(googleAccess);
         sessionRevoker.revokeAll(principal.getIssuer().toString(), principal.getSubject());
         HttpSession session = httpRequest.getSession(false);
         if (session != null) {

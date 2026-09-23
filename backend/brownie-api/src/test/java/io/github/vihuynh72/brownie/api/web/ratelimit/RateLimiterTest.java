@@ -86,6 +86,19 @@ class RateLimiterTest {
         assertThat(classOf("GET", "/api/v1/workspaces/7/events")).isEqualTo(RateLimitClass.READ);
     }
 
+    /** Whatever the method: a read that makes Brownie call Google costs Google's patience with Brownie as a whole. */
+    @Test
+    void everythingThatMakesBrownieCallGoogleIsCountedApartEvenAGet() {
+        assertThat(classOf("GET", "/api/v1/connectors/google/callback")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/disconnect")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/0x7/connections/google/disconnect")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("GET", "/api/v1/workspaces/7/connections/google/calendar/events")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/calendar/imports")).isEqualTo(RateLimitClass.CONNECTOR);
+        // Listing what is connected only reads Brownie's own records.
+        assertThat(classOf("GET", "/api/v1/workspaces/7/connections")).isEqualTo(RateLimitClass.READ);
+    }
+
     /**
      * The application reads {@code +3}, {@code 0x3} and a number followed by a space as the same document as
      * {@code 3}. A pattern that asked for digits would let each of them through to the expensive handler while
