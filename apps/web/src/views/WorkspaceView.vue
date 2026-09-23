@@ -1606,13 +1606,20 @@ function pollFailureWaitingCannotFix(error: unknown): string | null {
   return null
 }
 
+/** Set when this page goes away, so a run it was following is no longer asked about every few seconds. */
+let pageLeft = false
+onBeforeUnmount(() => {
+  pageLeft = true
+})
+
 /**
  * Follows one job to a resting state. A failed status read is not a failed job: the loop keeps
  * going with a longer gap and tells the person it lost contact, because giving up here would
  * invite a second, paid start. It stops early only on an answer waiting cannot change (see
  * pollFailureWaitingCannotFix), or when the run's questions or result cannot be read once it gets
  * there, which "Check again" picks up. After ten minutes it stops polling and offers "Check again"
- * instead, since the job's real state is on the server whenever the person asks.
+ * instead, since the job's real state is on the server whenever the person asks. It also stops as
+ * soon as the person leaves this page: nothing is left to show the answer to.
  */
 async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise<void> {
   const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'DEAD', 'CANCELLED'])
@@ -1620,14 +1627,14 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
   const deadline = startedAt + 10 * 60 * 1000
   let delayMs = 1500
   noWorkerYet.value = false
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !pageLeft) {
     let job
     try {
       job = await getJob(workspaceId, jobId)
       extractionError.value = null
       delayMs = 1500
     } catch (error) {
-      if (extractionJobId.value !== jobId) return
+      if (pageLeft || extractionJobId.value !== jobId) return
       const ending = pollFailureWaitingCannotFix(error)
       if (ending !== null) {
         extractionStage.value = 'failed'
@@ -1642,7 +1649,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       continue
     }
-    if (extractionJobId.value !== jobId) return
+    if (pageLeft || extractionJobId.value !== jobId) return
     extractionJobState.value = job.state
     cancellationRequested.value = cancellationRequested.value || job.cancellationRequestedAt != null
     // A worker claims a queued job within a couple of seconds. Thirty seconds with no attempt means
@@ -1680,6 +1687,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
+  if (pageLeft) return
   extractionStalled.value = true
   stalledMessage.value = 'Still running after ten minutes of checking. The run continues on the server.'
 }

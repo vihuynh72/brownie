@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type Router } from 'vue-router'
 import WorkspaceView from '@/views/WorkspaceView.vue'
 import { useSessionStore } from '@/stores/session'
 import type { DocumentResponse, DocumentRevisionResponse, DocumentSourceResponse, JobResponse, QuestionResponse } from '@/api/client'
@@ -116,6 +116,21 @@ import { axe } from '@/test/axe'
 import { documentHandoffState, type DocumentHandoff } from '@/router/handoff'
 import { resetCapabilitiesCache } from '@/capabilities'
 
+// Every page mounted here is taken down after its test. A page left mounted keeps following any run
+// it started, asking for the job every few seconds, and would otherwise outlive its test and read
+// the next test's mocks.
+const mountedViews: VueWrapper[] = []
+function mountView(options: { props: { documentId: number }; global: { plugins: Router[] }; attachTo?: HTMLElement }) {
+  const wrapper = mount(WorkspaceView, options)
+  mountedViews.push(wrapper)
+  return wrapper
+}
+afterEach(() => {
+  for (const wrapper of mountedViews.splice(0)) {
+    if (!wrapper.vm.$.isUnmounted) wrapper.unmount()
+  }
+})
+
 const DOCUMENT: DocumentResponse = {
   id: 1,
   title: 'Weekly Sync',
@@ -190,7 +205,7 @@ async function mountWorkspaceView() {
   })
   router.push('/documents/1')
   await router.isReady()
-  const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+  const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
   await flushPromises()
   return wrapper
 }
@@ -212,7 +227,7 @@ async function mountWorkspaceViewAttached() {
   })
   router.push('/documents/1')
   await router.isReady()
-  const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] }, attachTo: document.body })
+  const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] }, attachTo: document.body })
   await flushPromises()
   return wrapper
 }
@@ -382,7 +397,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     })
     await router.push({ path: '/documents/1', state: documentHandoffState(handoff) })
     await router.isReady()
-    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
     await flushPromises()
     return wrapper
   }
@@ -428,7 +443,7 @@ describe('WorkspaceView document handoff from the new-document screen', () => {
     })
     await router.push('/documents/1')
     await router.isReady()
-    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, global: { plugins: [router] } })
+    const wrapper = mountView({ props: { documentId: 1 }, global: { plugins: [router] } })
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -1573,6 +1588,29 @@ describe('WorkspaceView generation runs survive a reload', () => {
     await flushPromises()
 
     expect(startExtraction).toHaveBeenCalledWith(7, 1, 4, expect.any(String))
+  })
+
+  it('stops asking about a run once the person has left the page', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue([
+      { id: 3, artifactId: 5, displayFilename: 'notes.txt', kind: 'ARTIFACT', fetchedAt: '2026-03-01T00:00:00Z', attachedAt: '2026-03-01T00:00:00Z' },
+    ])
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    let answer: (job: JobResponse) => void = () => {}
+    vi.mocked(getJob).mockReturnValueOnce(new Promise((resolve) => (answer = resolve))).mockResolvedValue(jobResponse('LEASED'))
+    const wrapper = await mountWorkspaceView()
+    expect(getJob).toHaveBeenCalledTimes(1)
+
+    const waits = vi.spyOn(window, 'setTimeout')
+    try {
+      wrapper.unmount()
+      answer(jobResponse('LEASED'))
+      await flushPromises()
+      // Had it kept following the run, it would now be waiting a moment to ask again.
+      expect(waits.mock.calls.filter(([, delay]) => (delay ?? 0) >= 1000)).toHaveLength(0)
+    } finally {
+      waits.mockRestore()
+    }
+    expect(getJob).toHaveBeenCalledTimes(1)
   })
 
   it('resumes a run that is waiting for answers straight from the server, without anyone clicking Extract', async () => {
@@ -3068,7 +3106,7 @@ describe('WorkspaceView sources copied from Google Calendar', () => {
     })
     router.push(path)
     await router.isReady()
-    const wrapper = mount(WorkspaceView, { props: { documentId: 1 }, attachTo: document.body, global: { plugins: [router] } })
+    const wrapper = mountView({ props: { documentId: 1 }, attachTo: document.body, global: { plugins: [router] } })
     await flushPromises()
     await flushPromises()
     return wrapper
