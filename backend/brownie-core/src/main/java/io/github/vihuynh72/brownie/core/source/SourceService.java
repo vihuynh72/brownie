@@ -28,6 +28,7 @@ import io.github.vihuynh72.brownie.core.text.NormalizedText;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
 
@@ -90,6 +91,24 @@ public class SourceService {
         }
         documentExtractionService.extract(workspaceId, userId, artifactId);
         return sourceSnapshotRepository.create(workspaceId, userId, artifactId, SourceKind.ARTIFACT);
+    }
+
+    /**
+     * Designates a READY artifact that Brownie copied from a connected
+     * account as a source, with where it came from, or returns the snapshot
+     * already copied from the same version through the same choice. Extraction
+     * runs first, exactly as for an upload, and the snapshot is linked to the
+     * document in the same step it is recorded. {@code fetchedAt} is when the
+     * provider was read. Empty when the choice it was read through is no
+     * longer open, in which case nothing is recorded.
+     */
+    public Optional<SourceSnapshot> attachImportedSnapshot(
+            long workspaceId, long userId, long documentId, long artifactId, SourceKind kind, SourceOrigin origin, Instant fetchedAt) {
+        if (kind == SourceKind.ARTIFACT) {
+            throw new IllegalArgumentException("An upload has no origin elsewhere; it is attached with attachSnapshot.");
+        }
+        documentExtractionService.extract(workspaceId, userId, artifactId);
+        return sourceSnapshotRepository.createImported(workspaceId, userId, documentId, artifactId, kind, origin, fetchedAt);
     }
 
     /**
