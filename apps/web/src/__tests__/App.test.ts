@@ -28,6 +28,7 @@ function makeRouter(): Router {
       { path: '/chat', name: 'chat', component: stub },
       { path: '/trash', name: 'trash', component: { template: '<div data-test="trash">trash</div>' } },
       { path: '/your-data', name: 'your-data', component: stub },
+      { path: '/connections', name: 'connections', component: stub },
       { path: '/documents/new', name: 'new-document', component: stub },
       { path: '/templates/new', name: 'new-template', component: stub },
     ],

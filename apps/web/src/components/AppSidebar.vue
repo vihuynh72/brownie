@@ -209,6 +209,10 @@ async function signOut(): Promise<void> {
           <AppIcon name="trash" />
           <span>Trash Bin</span>
         </RouterLink>
+        <RouterLink class="sidebar__link" to="/connections" @click="closeIfDrawer">
+          <AppIcon name="link" />
+          <span>Connections</span>
+        </RouterLink>
         <RouterLink class="sidebar__link" to="/your-data" @click="closeIfDrawer">
           <AppIcon name="shield" />
           <span>Your data</span>
