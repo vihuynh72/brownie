@@ -46,6 +46,14 @@ export type WorkspaceDeletionResponse = components['schemas']['WorkspaceDeletion
 export type DataPracticesResponse = components['schemas']['DataPracticesResponse']
 export type UsageResponse = components['schemas']['UsageResponse']
 export type LogoutResponse = components['schemas']['LogoutResponse']
+export type ConnectionResponse = components['schemas']['ConnectionResponse']
+export type ConnectorAccess = ConnectionResponse['access']
+export type ResourceGrantResponse = components['schemas']['ResourceGrantResponse']
+export type ConsentStartResponse = components['schemas']['ConsentStartResponse']
+export type CalendarEventsResponse = components['schemas']['CalendarEventsResponse']
+export type CalendarEventResponse = components['schemas']['CalendarEventResponse']
+export type CalendarImportResponse = components['schemas']['CalendarImportResponse']
+export type SourceOriginResponse = components['schemas']['SourceOriginResponse']
 export type ApiError = components['schemas']['Error']
 
 /**
@@ -206,6 +214,39 @@ export function purgeDeletion(workspaceId: number, deletionId: number): Promise<
  */
 export function deleteWorkspace(workspaceId: number): Promise<WorkspaceDeletionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/deletions`, { method: 'POST', body: { scope: 'WORKSPACE' } })
+}
+
+/** The caller's own connections in this workspace, disconnected ones included, newest first. */
+export function listConnections(workspaceId: number): Promise<ConnectionResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections`)
+}
+
+/**
+ * Answers with the address of Google's consent page, which the page then
+ * navigates to itself; nothing is stored until Google sends the person back
+ * to {@code returnTo}, which is '/connections' or a document's own address.
+ */
+export function startGoogleConsent(workspaceId: number, access: ConnectorAccess, returnTo: string): Promise<ConsentStartResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google`, { method: 'POST', body: { access, returnTo } })
+}
+
+/** Disconnects every Google connection the caller has here; asking again changes nothing. */
+export function disconnectGoogle(workspaceId: number): Promise<ConnectionResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/disconnect`, { method: 'POST' })
+}
+
+/** Reads the person's calendar, so only when they ask: it also records that Brownie may read it. */
+export function listCalendarEvents(workspaceId: number, from: string, to: string): Promise<CalendarEventsResponse> {
+  const query = new URLSearchParams({ from, to })
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/calendar/events?${query.toString()}`)
+}
+
+/** Copies one event into the document as a source, already linked and read; there is nothing to attach afterwards. */
+export function importCalendarEvent(workspaceId: number, documentId: number, eventId: string): Promise<CalendarImportResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/calendar/imports`, {
+    method: 'POST',
+    body: { documentId, eventId },
+  })
 }
 
 export function getDataPractices(): Promise<DataPracticesResponse> {
