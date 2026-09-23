@@ -6,6 +6,13 @@
 # ${BROWNIE_API_HOST} is the API's name on the private network between the
 # containers; it is not reachable from outside this machine.
 
+# The API's own routes are logged by path alone. When an identity provider
+# sends a browser back, the address carries a code that can still be
+# exchanged for access, and its state, in the query string: the sign-in
+# callback does, and so does the one for connecting a Google account.
+# Nothing else in a query string there is worth keeping in a log either.
+log_format brownie_path_only '$remote_addr - [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+
 server {
     listen 80;
     listen [::]:80;
@@ -65,6 +72,7 @@ server {
     # the sign-in callback and its cookies for the address the browser
     # actually used, rather than for the container's own name.
     location ~ ^/(api|oauth2|login|logout)(/|$) {
+        access_log /var/log/nginx/access.log brownie_path_only;
         proxy_pass http://${BROWNIE_API_HOST}:8081;
         proxy_http_version 1.1;
         # Every one of these is set from what this server knows, never from
