@@ -98,7 +98,7 @@ class DeletionIntegrationTest {
             "job_output_artifact", "document", "document_revision", "document_command_receipt",
             "document_revision_field_evidence", "document_compilation", "question", "document_revision_field_state",
             "document_patch_proposal", "document_patch_proposal_evidence", "validation_manifest", "export_approval",
-            "export_receipt", "document_source", "generation_run");
+            "export_receipt", "document_source", "generation_run", "connector_connection", "connector_resource_grant");
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
