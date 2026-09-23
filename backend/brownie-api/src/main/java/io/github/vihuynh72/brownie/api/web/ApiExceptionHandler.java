@@ -12,12 +12,28 @@ import io.github.vihuynh72.brownie.api.generation.GenerationResultNotFoundExcept
 import io.github.vihuynh72.brownie.api.retention.DeletionRequestValidationException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
 import io.github.vihuynh72.brownie.api.support.SupportGrantRequestValidationException;
+import io.github.vihuynh72.brownie.api.connector.ConnectionRequestValidationException;
 import io.github.vihuynh72.brownie.core.generation.SourceNotExtractableException;
 import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStorageException;
 import io.github.vihuynh72.brownie.core.artifact.BlobStoreUnavailableException;
 import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
+import io.github.vihuynh72.brownie.core.connector.ConnectionAccountMismatchException;
+import io.github.vihuynh72.brownie.core.connector.ConnectionNotFoundException;
+import io.github.vihuynh72.brownie.core.connector.ConnectionReconnectRequiredException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorBlockedByOrganizationException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorConsentIncompleteException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorPermissionNotGrantedException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceRefusedException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceTooLargeException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceUnavailableException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceUnsupportedException;
+import io.github.vihuynh72.brownie.core.connector.InvalidCalendarRequestException;
+import io.github.vihuynh72.brownie.core.connector.ProviderMisconfiguredException;
+import io.github.vihuynh72.brownie.core.connector.ProviderTokenRejectedException;
+import io.github.vihuynh72.brownie.core.connector.ProviderUnavailableException;
 import io.github.vihuynh72.brownie.core.compile.RenderCapacityExceededException;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
@@ -493,7 +509,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             ValidationRequestValidationException.class, ExportRequestValidationException.class,
             GenerationRequestValidationException.class, QuestionRequestValidationException.class,
             DocumentSourceRequestValidationException.class, AssistRequestValidationException.class,
-            DeletionRequestValidationException.class, SupportGrantRequestValidationException.class})
+            DeletionRequestValidationException.class, SupportGrantRequestValidationException.class,
+            ConnectionRequestValidationException.class, InvalidCalendarRequestException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
@@ -717,13 +734,119 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
     }
 
+    /** This deployment has no Google connection set up, so there is nothing to connect or read through. */
+    @ExceptionHandler(ConnectorNotConfiguredException.class)
+    public ResponseEntity<Object> handleConnectorNotConfigured(ConnectorNotConfiguredException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONFLICT, "CONNECTOR_NOT_CONFIGURED", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ConnectionNotFoundException.class)
+    public ResponseEntity<Object> handleConnectionNotFound(ConnectionNotFoundException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.NOT_FOUND, "CONNECTION_NOT_FOUND",
+                "There is no Google connection for this. Connect your Google account first.", request);
+    }
+
     /**
-     * Catches anything Spring MVC's own handling does not recognize -- an
-     * unexpected {@code RuntimeException} from application code, for
-     * instance. The real exception is logged in full server-side; the
-     * client only ever sees a safe, generic message, never {@code
-     * ex.getMessage()} or a stack trace.
+     * The connection exists but Google no longer accepts it, or its token can
+     * no longer be read. A 409 and never a 401: a 401 means the Brownie session
+     * ended, and the page would sign the person out for something only a
+     * reconnect can fix. {@code reason} says which it was.
      */
+    @ExceptionHandler(ConnectionReconnectRequiredException.class)
+    public ResponseEntity<Object> handleConnectionReconnectRequired(ConnectionReconnectRequiredException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("Brownie can no longer use this Google connection. Connect your Google account again to carry on.");
+        enrich(problem, "CONNECTION_RECONNECT_REQUIRED");
+        problem.setProperty("access", ex.access().name());
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(ProviderUnavailableException.class)
+    public ResponseEntity<Object> handleProviderUnavailable(ProviderUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail("Google could not be reached. Nothing was changed; try again in a minute.");
+        enrich(problem, "CONNECTOR_PROVIDER_UNAVAILABLE");
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "30");
+        return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
+    /** Google refused Brownie's own credentials: not the person's to fix, and not worth their retrying. */
+    @ExceptionHandler(ProviderMisconfiguredException.class)
+    public ResponseEntity<Object> handleProviderMisconfigured(ProviderMisconfiguredException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.SERVICE_UNAVAILABLE, "CONNECTOR_MISCONFIGURED",
+                "Brownie's connection to Google is not set up correctly. Whoever runs Brownie has to fix it.", request);
+    }
+
+    /** Only reachable where a consent is completed; each is also turned into a redirect reason by the callback itself. */
+    @ExceptionHandler({
+            ProviderTokenRejectedException.class, ConnectionAccountMismatchException.class,
+            ConnectorPermissionNotGrantedException.class, ConnectorConsentIncompleteException.class})
+    public ResponseEntity<Object> handleConsentRefused(RuntimeException ex, WebRequest request) {
+        String code = switch (ex) {
+            case ProviderTokenRejectedException ignored -> "CONNECTION_RECONNECT_REQUIRED";
+            case ConnectionAccountMismatchException ignored -> "CONNECTION_ACCOUNT_MISMATCH";
+            case ConnectorPermissionNotGrantedException ignored -> "CONNECTOR_PERMISSION_NOT_GRANTED";
+            default -> "CONNECTOR_CONSENT_INCOMPLETE";
+        };
+        return connectorProblem(ex, HttpStatus.CONFLICT, code, ex.getMessage(), request);
+    }
+
+    /** The event the person chose is not there any more, or was called off; {@code reason} says which, and nothing was copied. */
+    @ExceptionHandler(ConnectorResourceUnavailableException.class)
+    public ResponseEntity<Object> handleConnectorResourceUnavailable(ConnectorResourceUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(switch (ex.reason()) {
+            case GONE -> "Google no longer has this event. Nothing was copied.";
+            case CANCELLED -> "This event was cancelled in the calendar. Nothing was copied.";
+        });
+        enrich(problem, "CONNECTOR_RESOURCE_UNAVAILABLE");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The copy met the same checks as an upload and was refused by them; {@code reason} is the artifact's own rejection code. */
+    @ExceptionHandler(ConnectorResourceRefusedException.class)
+    public ResponseEntity<Object> handleConnectorResourceRefused(ConnectorResourceRefusedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Content");
+        problem.setDetail("Brownie's checks refused the copy, so it was not kept as a source.");
+        enrich(problem, "CONNECTOR_RESOURCE_REFUSED");
+        problem.setProperty("reason", ex.reason());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** Something Brownie does not copy, such as a whole repeating series; the detail says what to choose instead. */
+    @ExceptionHandler(ConnectorResourceUnsupportedException.class)
+    public ResponseEntity<Object> handleConnectorResourceUnsupported(ConnectorResourceUnsupportedException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.UNPROCESSABLE_CONTENT, "CONNECTOR_RESOURCE_UNSUPPORTED", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ConnectorResourceTooLargeException.class)
+    public ResponseEntity<Object> handleConnectorResourceTooLarge(ConnectorResourceTooLargeException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONTENT_TOO_LARGE, "CONNECTOR_RESOURCE_TOO_LARGE",
+                "Google's answer was larger than Brownie reads. For a listing, choose a shorter window.", request);
+    }
+
+    /** The organization that manages the Google account does not allow this app: only its administrator can change that. */
+    @ExceptionHandler(ConnectorBlockedByOrganizationException.class)
+    public ResponseEntity<Object> handleConnectorBlockedByOrganization(ConnectorBlockedByOrganizationException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONFLICT, "CONNECTOR_BLOCKED_BY_ORGANIZATION",
+                "The organization that manages this Google account does not allow Brownie to read it. Its administrator can change that.", request);
+    }
+
+    private ResponseEntity<Object> connectorProblem(RuntimeException ex, HttpStatus status, String code, String detail, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(status);
+        problem.setTitle(status.getReasonPhrase());
+        problem.setDetail(detail);
+        enrich(problem, code);
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), status, request);
+    }
+
     /** Only reached by a body that did not declare its length; one that did is refused by the filter before it is read. */
     @ExceptionHandler(RequestBodyTooLargeException.class)
     public ResponseEntity<Object> handleBodyTooLarge(RequestBodyTooLargeException ex, WebRequest request) {
@@ -785,6 +908,13 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
     }
 
+    /**
+     * Catches anything Spring MVC's own handling does not recognize -- an
+     * unexpected {@code RuntimeException} from application code, for
+     * instance. The real exception is logged in full server-side; the
+     * client only ever sees a safe, generic message, never {@code
+     * ex.getMessage()} or a stack trace.
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Object> handleUnexpected(Exception ex, WebRequest request) {
         if (ex instanceof RuntimeException runtime && DatabaseUnavailableFilter.isDatabaseUnreachable(runtime)) {
