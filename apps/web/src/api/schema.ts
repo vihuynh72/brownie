@@ -1015,6 +1015,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every connection to an outside account this person has made in this workspace, disconnected ones included, newest first. A connection is the caller's own; another member's never appears. No token, and no provider-side account identifier, is ever part of the answer. */
+        get: operations["listConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts a consent for one kind of access to the caller's Google account and answers with the address of Google's consent page, which the page then navigates to itself. Nothing is stored until Google sends the person back to the consent callback. Checked against the session's CSRF token like every change; the answer is not cached. */
+        post: operations["startGoogleConsent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disconnects every Google connection the caller has in this workspace: each token is revoked at Google and wiped here whatever Google answers, and every read it had been granted is revoked. Copies already taken through it stay with the documents that use them. Answers with every connection as it now stands; asking again changes nothing. */
+        post: operations["disconnectGoogle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google/calendar/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The events on the caller's own primary Google calendar that overlap a window of at most 31 days, repeating events expanded into their occurrences, in start order, at most 50. Reading the calendar is recorded as the caller's choice (a read-only grant for it). Only ordinary events are listed, and only what choosing one needs; who was invited is never read. Everything is as planned in the calendar. The answer carries the caller's calendar, so it is never cached. */
+        get: operations["listCalendarEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google/calendar/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Copies one event of the caller's own primary Google calendar into a document as a text source. The event is read again by its id, so the copy is what the calendar holds now; it is written out as text whose times are labelled as planned, with their time zone, and all-day events as dates; the text goes through the same checks as an upload; and the source says where it came from. The same version of the same event, or a later version whose text is unchanged (a guest replying, say), links the copy already made (newCopy false); a change the text shows is a new copy, and the old one stays. The copy is linked to the document in the same step, so a document moved to the trash meanwhile takes it along. */
+        post: operations["importCalendarEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/google/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Where Google sends a person back after its consent page. It is a page a browser is sent to, not a request the web app makes: it always answers with a redirect to the page the consent was started from, carrying google=connected and access, or google=failed with access (when a consent was pending) and one of these reason codes: no_pending_request, state_mismatch, expired, not_allowed, not_configured, issuer_mismatch, no_code, permission_not_granted, no_refresh_token, different_account, blocked_by_organization, consent_expired, google_unavailable, provider_error, Google's own error code when it is a plain lowercase word (such as access_denied), or signed_out when the Brownie session has ended. no_pending_request and signed_out always return to /connections. */
+        get: operations["googleConsentCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1223,6 +1325,13 @@ export interface components {
              * @enum {string}
              */
             limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
+            /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED; with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets. */
+            reason?: string;
+            /**
+             * @description Present only when code is CONNECTION_RECONNECT_REQUIRED, naming the connection that must be made again.
+             * @enum {string}
+             */
+            access?: "DRIVE_FILES" | "CALENDAR_EVENTS";
             /** @description Present only when code is RULE_VALIDATION_FAILED: one entry per way the proposed rule's payload does not hold against the draft's own field definitions. */
             problems?: {
                 reason?: string;
@@ -1385,6 +1494,64 @@ export interface components {
              * @description When this document was linked to the source.
              */
             attachedAt: string;
+            /** @description Where a copied source came from; null for an upload. */
+            origin?: components["schemas"]["SourceOriginResponse"] | null;
+        };
+        /** @description What a page says about where a copy came from. The provider's own identifiers for it, and which connection it was read through, are not part of it. */
+        SourceOriginResponse: {
+            /** @enum {string} */
+            provider: "GOOGLE";
+            /** @description What it was called at the provider when it was copied. */
+            title?: string | null;
+            /** @description Where it can be opened at the provider; always an https address. */
+            link?: string | null;
+            /**
+             * Format: date-time
+             * @description When the provider says it last changed, as of the copy.
+             */
+            modifiedAt?: string | null;
+            /**
+             * @description How Brownie changed its form on the way in.
+             * @enum {string|null}
+             */
+            conversion?: "CALENDAR_EVENT_AS_TEXT" | null;
+        };
+        ImportCalendarEventRequest: {
+            /** Format: int64 */
+            documentId: number;
+            /** @description The event's id as the listing gave it, including one occurrence of a repeating event. */
+            eventId: string;
+        };
+        CalendarImportResponse: {
+            source: components["schemas"]["DocumentSourceResponse"];
+            /** @description False when this version of the event had already been copied, or its text is the same as the latest copy's, and this import linked that copy. */
+            newCopy: boolean;
+        };
+        CalendarEventsResponse: {
+            /** @description The calendar's own time zone, an IANA name. */
+            timeZone?: string | null;
+            /** @description True when the calendar holds more events in the window than were returned. */
+            truncated: boolean;
+            events: components["schemas"]["CalendarEventResponse"][];
+        };
+        /** @description One event to choose from, as planned in the calendar. An all-day event has startDate and endDate (its last day, included); a timed one has startsAt and endsAt with their offsets (endsAt null when the calendar says the event has no end time), and timeZone when the event names its own. */
+        CalendarEventResponse: {
+            id: string;
+            title?: string | null;
+            /** @enum {string} */
+            status: "CONFIRMED" | "TENTATIVE";
+            allDay: boolean;
+            /** Format: date */
+            startDate?: string | null;
+            /** Format: date */
+            endDate?: string | null;
+            /** Format: date-time */
+            startsAt?: string | null;
+            /** Format: date-time */
+            endsAt?: string | null;
+            timeZone?: string | null;
+            /** @description One occurrence of a repeating event. */
+            recurring: boolean;
         };
         CapabilitiesResponse: {
             /** Format: int64 */
@@ -1399,6 +1566,8 @@ export interface components {
             templateMediaTypes: string[];
             /** @description How many days something stays in the trash before it is deleted for good. */
             trashRetentionDays: number;
+            /** @description What a person can connect a Google account for here and then use. Empty when this deployment has no Google registration, so the interface does not offer it. A server from before connections existed leaves it out. */
+            googleConnectorAccess?: ("CALENDAR_EVENTS" | "DRIVE_FILES")[];
         };
         AssistTextRequest: {
             text: string;
@@ -1583,8 +1752,8 @@ export interface components {
              * @enum {string|null}
              */
             dateFormatStyle?: "LONG" | "SHORT" | "ISO" | null;
-            /** @description ALLOWED_SOURCE_KINDS only -- ARTIFACT is the only source kind this codebase produces today. */
-            allowedSourceKinds?: "ARTIFACT"[] | null;
+            /** @description ALLOWED_SOURCE_KINDS only -- ARTIFACT is an uploaded file; GOOGLE_CALENDAR is an event copied from the person's own Google calendar. */
+            allowedSourceKinds?: ("ARTIFACT" | "GOOGLE_CALENDAR")[] | null;
             /**
              * @description MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
              * @enum {string|null}
@@ -1806,6 +1975,57 @@ export interface components {
             revokedAt?: string | null;
             /** @description Neither revoked nor expired at the moment of the response. */
             active: boolean;
+        };
+        StartConsentRequest: {
+            /** @enum {string} */
+            access: "DRIVE_FILES" | "CALENDAR_EVENTS";
+            /** @description The page to come back to, /connections (the default) or a document's own address. */
+            returnTo?: string;
+        };
+        ConsentStartResponse: {
+            authorizationUrl: string;
+        };
+        ConnectionResponse: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            provider: "GOOGLE";
+            /** @enum {string} */
+            access: "DRIVE_FILES" | "CALENDAR_EVENTS";
+            /** @enum {string} */
+            state: "ACTIVE" | "RECONNECT_REQUIRED" | "DISCONNECTED";
+            /** @description The Google account's address as Google reported it, for showing back to the person; absent when Google did not say. */
+            accountEmail?: string | null;
+            /** @description What Google says it granted, which a person can make narrower than what was asked for. */
+            grantedScopes: string[];
+            /** @enum {string|null} */
+            reconnectReason?: "TOKEN_REJECTED" | "TOKEN_UNREADABLE" | "PERMISSION_MISSING" | null;
+            /** Format: date-time */
+            connectedAt: string;
+            /**
+             * Format: date-time
+             * @description When the person last agreed.
+             */
+            tokenIssuedAt?: string | null;
+            /** Format: date-time */
+            disconnectedAt?: string | null;
+            /**
+             * @description On a disconnected connection, what Google said when asked to forget Brownie's access.
+             * @enum {string|null}
+             */
+            providerRevocation?: "REVOKED" | "FAILED" | "NOT_NEEDED" | null;
+            /** @description What the person chose for Brownie to read through this connection, still open. Always empty for a disconnected connection, whose choices were all revoked. A server from before this list existed leaves it out. */
+            grants?: components["schemas"]["ResourceGrantResponse"][];
+        };
+        /** @description Something the person chose for Brownie to read through a connection. Brownie only ever reads it; the provider's own identifier for it is never shown. */
+        ResourceGrantResponse: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            type: "CALENDAR" | "DRIVE_FILE";
+            displayName?: string | null;
+            /** Format: date-time */
+            grantedAt: string;
         };
         DataPracticesResponse: {
             trashRetentionDays: number;
@@ -3847,6 +4067,306 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["Error"];
                 };
+            };
+        };
+    };
+    listConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's connections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionResponse"][];
+                };
+            };
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    startGoogleConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartConsentRequest"];
+            };
+        };
+        responses: {
+            /** @description Where to send the person. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentStartResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description This deployment has no Google connection set up (code CONNECTOR_NOT_CONFIGURED). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    disconnectGoogle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's connections after disconnecting. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionResponse"][];
+                };
+            };
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listCalendarEvents: {
+        parameters: {
+            query: {
+                /** @description The start of the window, a date and time with its UTC offset, such as 2026-09-24T00:00:00-07:00. */
+                from: string;
+                /** @description The end of the window, at least a minute and at most 31 days after from (two hours more are allowed, so that a month of local days that contains a change of clocks fits). */
+                to: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The events in the window. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarEventsResponse"];
+                };
+            };
+            /** @description A window that is missing, not a date and time with its offset, too short or too long (code MALFORMED_REQUEST). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The caller has no Calendar connection here (code CONNECTION_NOT_FOUND). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The connection must be made again (code CONNECTION_RECONNECT_REQUIRED, with access and reason), Google is not set up on this deployment (code CONNECTOR_NOT_CONFIGURED), or the organization managing the account does not allow the app (code CONNECTOR_BLOCKED_BY_ORGANIZATION). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Google's answer was larger than Brownie reads; a shorter window may help (code CONNECTOR_RESOURCE_TOO_LARGE). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Google could not answer now or is limiting requests (code CONNECTOR_PROVIDER_UNAVAILABLE, with Retry-After), or refused Brownie's own setup, such as the calendar service not being enabled for it (code CONNECTOR_MISCONFIGURED). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    importCalendarEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportCalendarEventRequest"];
+            };
+        };
+        responses: {
+            /** @description The document's source for the event. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarImportResponse"];
+                };
+            };
+            /** @description A missing document id or an event id that cannot be one (code MALFORMED_REQUEST). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The caller may not manage connections or sources in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such document for the caller, or it is in the trash, and Google is not asked (code NOT_FOUND); or the caller has no Calendar connection here, including one disconnected while the copy was being made (code CONNECTION_NOT_FOUND). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The event is gone or was cancelled (code CONNECTOR_RESOURCE_UNAVAILABLE, with reason GONE or CANCELLED), the connection must be made again (code CONNECTION_RECONNECT_REQUIRED), Google is not set up here (code CONNECTOR_NOT_CONFIGURED), or the organization managing the account does not allow the app (code CONNECTOR_BLOCKED_BY_ORGANIZATION). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The event is larger than Brownie copies (code CONNECTOR_RESOURCE_TOO_LARGE). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Brownie's checks refused the copy (code CONNECTOR_RESOURCE_REFUSED, with the artifact's rejection reason), or the event is not one Brownie copies: a whole repeating series rather than one of its occurrences, or not an ordinary event (code CONNECTOR_RESOURCE_UNSUPPORTED). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Google could not answer now (code CONNECTOR_PROVIDER_UNAVAILABLE, with Retry-After), refused Brownie's own setup (code CONNECTOR_MISCONFIGURED), or the malware scanner or file storage could not be reached (code SCANNER_UNAVAILABLE or STORAGE_UNAVAILABLE). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    googleConsentCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+                iss?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Back to the page the consent was started from, with its outcome. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
