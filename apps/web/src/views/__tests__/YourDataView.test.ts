@@ -8,7 +8,14 @@ import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, getDataPractices: vi.fn(), getWorkspaceUsage: vi.fn(), deleteWorkspace: vi.fn(), getCapabilities: vi.fn() }
+  return {
+    ...actual,
+    getDataPractices: vi.fn(),
+    getWorkspaceUsage: vi.fn(),
+    deleteWorkspace: vi.fn(),
+    getCapabilities: vi.fn(),
+    listConnections: vi.fn(),
+  }
 })
 
 import {
@@ -17,6 +24,7 @@ import {
   getCapabilities,
   getDataPractices,
   getWorkspaceUsage,
+  listConnections,
   type DataPracticesResponse,
 } from '@/api/client'
 import { resetCapabilitiesCache } from '@/capabilities'
@@ -101,6 +109,7 @@ describe('YourDataView', () => {
       trashRetentionDays: 14,
     })
     vi.mocked(deleteWorkspace).mockReset()
+    vi.mocked(listConnections).mockReset().mockResolvedValue([])
     assign.mockReset()
     Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, assign } })
     signIn()
@@ -124,6 +133,76 @@ describe('YourDataView', () => {
     expect(wrapper.text()).toContain('8 requests to the model')
     expect(wrapper.text()).toContain('Ask data@example.org.')
     expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
+  it('says what connecting Google keeps and shares, and that deleting everything takes that access back', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: ['CALENDAR_EVENTS'],
+    })
+    const wrapper = await mountPage()
+    const text = wrapper.text().replace(/\s+/g, ' ')
+
+    expect(text).toContain('If you connect a Google account: which account, what Google allowed and when')
+    expect(text).toContain('The access Google gives Brownie is deleted as soon as you disconnect Google.')
+    expect(text).toContain('never changes anything there')
+    expect(text).toContain('Brownie also asks Google to take back the access it still holds to any Google account you connected.')
+    expect(wrapper.find('a[href="/connections"]').text()).toBe('Connections')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('leaves Google out where this Brownie has none set up, or its server is from before connections', async () => {
+    // The default capabilities here have no googleConnectorAccess at all, as an older server sends them.
+    expect((await mountPage()).text()).not.toContain('Google')
+
+    document.body.innerHTML = ''
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 1,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: [],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: [],
+    })
+    expect((await mountPage()).text()).not.toContain('Google')
+  })
+
+  it('still says what connecting Google would mean when whether it is offered cannot be checked', async () => {
+    vi.mocked(getCapabilities).mockRejectedValue(new ApiRequestError(502, undefined))
+    const text = (await mountPage()).text().replace(/\s+/g, ' ')
+
+    expect(text).toContain('If you connect a Google account')
+    expect(text, 'whether this Brownie can reach Google at all is not known, so it promises nothing of it').not.toContain(
+      'Brownie also asks Google',
+    )
+  })
+
+  it('still says what is kept about a Google account after this Brownie stopped offering Google', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 1,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: [],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: [],
+    })
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 1, provider: 'GOOGLE', access: 'CALENDAR_EVENTS', state: 'ACTIVE', accountEmail: 'me@example.org', grantedScopes: [],
+        reconnectReason: null, connectedAt: '2026-09-20T10:00:00Z', tokenIssuedAt: '2026-09-20T10:00:00Z', disconnectedAt: null,
+        providerRevocation: null, grants: [],
+      },
+    ])
+    const text = (await mountPage()).text().replace(/\s+/g, ' ')
+
+    expect(listConnections).toHaveBeenCalledWith(7)
+    expect(text).toContain('If you connect a Google account: which account')
+    expect(text, 'this Brownie cannot reach Google now, so deleting cannot promise to ask it').not.toContain('Brownie also asks Google')
   })
 
   it('does not invent someone to ask when nobody has been named', async () => {

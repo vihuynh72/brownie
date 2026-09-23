@@ -6,11 +6,13 @@ import { useSessionStore } from '@/stores/session'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { dayCount, hourCount } from '@/periods'
 import { describeCommonFailure } from '@/api/failures'
+import { offeredAccess } from '@/connections/words'
 import {
   ApiRequestError,
   deleteWorkspace,
   getDataPractices,
   getWorkspaceUsage,
+  listConnections,
   type CapabilitiesResponse,
   type DataPracticesResponse,
   type UsageResponse,
@@ -39,6 +41,8 @@ const PRACTICES_WHAT = 'the details of how your data is kept and shared'
 const session = useSessionStore()
 const practices = ref<DataPracticesResponse | null>(null)
 const capabilities = ref<CapabilitiesResponse | null>(null)
+const capabilitiesFailed = ref(false)
+const hasConnections = ref(false)
 const usage = ref<UsageResponse | null>(null)
 const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 const loadError = ref<string | null>(null)
@@ -76,6 +80,15 @@ const acceptedFilesSentence = computed(() => {
   return typeof limit === 'number' && limit > 0 ? `${names}, up to ${formatBytes(limit)} each.` : `${names}.`
 })
 
+const googleOffered = computed(() => (offeredAccess(capabilities.value)?.length ?? 0) > 0)
+/**
+ * Whether to say what connecting a Google account keeps and shares: yes where this Brownie offers it, where the
+ * person has a connection (Google may have been switched off since, and what was kept is still kept), and when
+ * neither could be checked, since those sentences are all worded "if you connect". Not where the server says it
+ * has no Google set up and the person never connected, or is from before connections existed.
+ */
+const mentionsGoogle = computed(() => capabilitiesFailed.value || googleOffered.value || hasConnections.value)
+
 const money = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 })
 
 /** Usage from a server that sends every number this sentence needs; anything less leaves the section out. */
@@ -109,6 +122,7 @@ async function loadAcceptedFiles(): Promise<void> {
     capabilities.value = await loadCapabilities()
   } catch {
     capabilities.value = null
+    capabilitiesFailed.value = true
   }
 }
 
@@ -122,6 +136,22 @@ async function loadUsage(workspaceId: number | undefined): Promise<void> {
     }
   } catch {
     usage.value = null
+  }
+}
+
+async function loadConnections(workspaceId: number | undefined): Promise<void> {
+  if (workspaceId === undefined) return
+  try {
+    const connections = await listConnections(workspaceId)
+    if (session.personalWorkspaceId === workspaceId) {
+      hasConnections.value = connections.length > 0
+    }
+  } catch (error) {
+    // A server from before connections has no such route and so nothing kept; any other failure leaves it unknown,
+    // and the sentences about Google, all worded "if you connect", are said rather than left out.
+    if (!(error instanceof ApiRequestError && error.routeMissing) && session.personalWorkspaceId === workspaceId) {
+      hasConnections.value = true
+    }
   }
 }
 
@@ -192,6 +222,7 @@ onMounted(() => {
   void loadPractices()
   void loadAcceptedFiles()
   void loadUsage(session.personalWorkspaceId)
+  void loadConnections(session.personalWorkspaceId)
 })
 // The page can mount before the identity request has answered; usage is read as soon as the workspace is known.
 watch(
@@ -199,6 +230,7 @@ watch(
   (workspaceId, previous) => {
     if (workspaceId !== undefined && workspaceId !== previous) {
       void loadUsage(workspaceId)
+      void loadConnections(workspaceId)
     }
   },
 )
@@ -234,6 +266,11 @@ watch(
         A record of a few actions someone may need to account for afterwards (moving a document to the trash, deleting,
         exporting, starting a run again). It holds who and when, never a title or anything you wrote.
       </li>
+      <li v-if="mentionsGoogle">
+        If you connect a Google account: which account, what Google allowed and when, and the access Google gives
+        Brownie, kept encrypted. A calendar event you copy into a document is kept as text, like a file you attach, and
+        says where it came from.
+      </li>
     </ul>
 
     <h2 class="privacy__heading">How long</h2>
@@ -257,6 +294,10 @@ watch(
       <li v-else>A file that nothing refers to any more is removed automatically.</li>
       <li v-if="auditRecordPeriod">The record of actions is kept for {{ auditRecordPeriod }}.</li>
       <li v-else>The record of actions is kept for a set period, then removed.</li>
+      <li v-if="mentionsGoogle">
+        The access Google gives Brownie is deleted as soon as you disconnect Google. Which account was connected, and
+        when, stays with your workspace; copies already made stay with their documents.
+      </li>
       <li>
         When something is deleted for good, what remains is a note that a deletion happened: numbers, dates and
         counts, nothing of its contents. That note is what keeps it deleted if the system is ever restored from a
@@ -275,6 +316,11 @@ watch(
       </li>
       <li>Signing in is handled by Microsoft. Brownie receives who you are, never your password.</li>
       <li>Every file you upload is scanned for viruses on Brownie's own server before anything reads it.</li>
+      <li v-if="mentionsGoogle">
+        If you connect a Google account, Brownie reads from Google only what you ask for (the days of your calendar you
+        list, and the event you copy) and never changes anything there. See or remove it on the
+        <RouterLink to="/connections">Connections</RouterLink> page.
+      </li>
     </ul>
 
     <template v-if="acceptedFilesSentence">
@@ -304,6 +350,9 @@ watch(
       This deletes your workspace for good: every document, template, source and file, and your sign-in record. It
       cannot be undone, and nothing goes to the trash bin first. Signing in again afterwards starts a new, empty
       workspace.
+      <template v-if="googleOffered">
+        Brownie also asks Google to take back the access it still holds to any Google account you connected.
+      </template>
     </p>
     <button
       v-if="!confirming"
