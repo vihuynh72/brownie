@@ -22,6 +22,9 @@
 #   BROWNIE_INVITED_ADDRESSES        who may sign in at all, comma separated
 #   BROWNIE_SUPPORT_CONTACT          optional; shown to people on their data page
 #   BROWNIE_CERTIFICATE_CONTACT      optional; expiry warnings from the authority
+#   BROWNIE_GOOGLE_CLIENT_ID         optional; lets people connect a Google
+#                                    account, and then two more secrets are
+#                                    read from the vault
 #
 # The order matters and is the point of the script: migrate first with the new
 # image and stop if that fails, so a failed migration leaves the running
@@ -75,6 +78,21 @@ db_migration_password="$(secret db-migration-password)"
 oidc_client_secret="$(secret oidc-client-secret)"
 openai_api_key="$(secret openai-api-key)"
 
+# Connecting Google accounts is optional. With a client id it needs its secret
+# and the key that encrypts the tokens Google hands back, and a deployment that
+# names the one without the others stops here, before anything changes, rather
+# than starting an API that would refuse to start.
+google_settings=()
+if [ -n "${BROWNIE_GOOGLE_CLIENT_ID:-}" ]; then
+  log "Reading the two secrets Google connections need."
+  google_client_secret="$(secret google-client-secret)"
+  connector_token_key="$(secret connector-token-key)"
+  google_settings=(
+    "BROWNIE_GOOGLE_CLIENT_ID=${BROWNIE_GOOGLE_CLIENT_ID}"
+    "BROWNIE_GOOGLE_CLIENT_SECRET=${google_client_secret}"
+    "BROWNIE_CONNECTOR_TOKEN_KEY=${connector_token_key}")
+fi
+
 log "Pulling images."
 for image in "$BROWNIE_API_IMAGE" "$BROWNIE_WORKER_IMAGE" "$BROWNIE_WEB_IMAGE" "$BROWNIE_RENDER_IMAGE"; do
   docker pull --quiet "$image" > /dev/null || fail "Could not pull $image."
@@ -116,7 +134,8 @@ write_env /etc/brownie/api.env \
   "BROWNIE_RENDER_IMAGE=${BROWNIE_RENDER_IMAGE}" \
   "BROWNIE_RENDER_EXPECTED_IMAGE_ID=${render_image_id}" \
   "BROWNIE_SUPPORT_CONTACT=${BROWNIE_SUPPORT_CONTACT:-}" \
-  "BROWNIE_INVITED_ADDRESSES=${BROWNIE_INVITED_ADDRESSES:-}"
+  "BROWNIE_INVITED_ADDRESSES=${BROWNIE_INVITED_ADDRESSES:-}" \
+  ${google_settings[@]+"${google_settings[@]}"}
 
 write_env /etc/brownie/worker.env \
   "BROWNIE_ENVIRONMENT=pilot" \

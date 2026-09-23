@@ -14,7 +14,7 @@
 # ordinary Contributor deployment fails partway through, having created the
 # resources but none of the permissions between them.
 #
-# Afterwards, put the four secrets in the key vault it created; the host reads
+# Afterwards, put the secrets in the key vault it created; the host reads
 # them at start-up and holds no stored credential of its own. The deployment
 # prints the vault's address and the addresses of everything else the
 # application is configured with.

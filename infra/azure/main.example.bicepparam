@@ -74,7 +74,7 @@ param hostSize = 'Standard_B2als_v2'
 param databaseAdministratorPassword = readEnvironmentVariable('BROWNIE_DB_ADMIN_PASSWORD')
 param hostAdminPublicKey = readEnvironmentVariable('BROWNIE_HOST_SSH_PUBLIC_KEY')
 
-// Your own directory object id, so that you can write the four secrets.
+// Your own directory object id, so that you can write the secrets deploy.sh reads.
 // Find it with: az ad signed-in-user show --query id -o tsv
 param vaultAdministratorObjectId = ''
 
