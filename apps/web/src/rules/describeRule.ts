@@ -23,6 +23,7 @@ const OVERFLOW_LABELS: Record<string, string> = {
 /** A source of kind ARTIFACT is a file someone uploaded, which is what a person calls it. */
 const SOURCE_KIND_LABELS: Record<string, string> = {
   ARTIFACT: 'uploaded files',
+  GOOGLE_CALENDAR: 'events copied from Google Calendar',
 }
 
 /**
