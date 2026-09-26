@@ -557,6 +557,7 @@ describe('CalendarSourcePicker', () => {
     const sources = import.meta.glob(
       [
         '../CalendarSourcePicker.vue',
+        '../DriveSourcePicker.vue',
         '../../views/ConnectionsView.vue',
         '../../views/WorkspaceView.vue',
         '../../views/YourDataView.vue',
@@ -570,7 +571,7 @@ describe('CalendarSourcePicker', () => {
       eager: true,
       },
     ) as Record<string, string>
-    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(8)
+    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(9)
     for (const [file, text] of Object.entries(sources)) {
       // Reading the request-forgery cookie the server sets is not keeping anything; writing a cookie would be.
       expect(text, file).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie\s*=(?!=)|caches\./)

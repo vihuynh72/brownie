@@ -130,6 +130,7 @@ class JdbcRuleRepositoryTest {
                 new RulePayload.AllowedSectionOrder(List.of("agenda", "decisions", "action items")),
                 new RulePayload.DateDisplayFormat("meeting.date", DateFormatStyle.LONG),
                 new RulePayload.AllowedSourceKinds("meeting.title", List.of(SourceKind.ARTIFACT)),
+                new RulePayload.AllowedSourceKinds("meeting.title", List.of(SourceKind.values())),
                 new RulePayload.MissingValueBehavior(
                         "meeting.title", io.github.vihuynh72.brownie.core.rule.EmptyValueResolution.BLANK),
                 new RulePayload.AllowedOverflowBehavior(

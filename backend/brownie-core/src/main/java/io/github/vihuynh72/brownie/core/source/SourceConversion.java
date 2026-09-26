@@ -6,5 +6,7 @@ package io.github.vihuynh72.brownie.core.source;
  */
 public enum SourceConversion {
     /** A calendar event, written out by Brownie as labelled paragraphs of text. */
-    CALENDAR_EVENT_AS_TEXT
+    CALENDAR_EVENT_AS_TEXT,
+    /** A Google Doc, as the plain text Google's own export of it produces. */
+    GOOGLE_DOC_AS_TEXT
 }

@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.connector;
 import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorTokenCipher;
+import io.github.vihuynh72.brownie.core.connector.DriveFileReader;
 import io.github.vihuynh72.brownie.core.connector.TokenBinding;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -92,6 +93,18 @@ class ConnectorConfigTest {
         ConnectorTokenCipher cipher = config.connectorTokenCipher(key, "k1");
         TokenBinding binding = new TokenBinding(1, 2, ConnectorAccess.DRIVE_FILES, "a");
         assertThat(cipher.open(cipher.seal("token", binding), binding)).isEqualTo("token");
+    }
+
+    @Test
+    void driveIsOfferedOnlyWithGoogleSetUpAReaderThatCanOpenFilesAndTheSwitchOn() {
+        GoogleConnectorSetup google = setup(new MockEnvironment(), ORIGIN, "client", "secret", Base64.getEncoder().encodeToString(randomBytes(32)));
+        GoogleConnectorSetup noGoogle = new GoogleConnectorSetup(null);
+        DriveFileReader reader = new InMemoryDriveFileReader();
+
+        assertThat(config.driveOffer(google, reader, true).offered()).isTrue();
+        assertThat(config.driveOffer(google, reader, false).offered()).as("switched off").isFalse();
+        assertThat(config.driveOffer(google, config.driveFileReader(), true).offered()).as("no reader plugged in").isFalse();
+        assertThat(config.driveOffer(noGoogle, reader, true).offered()).as("no Google").isFalse();
     }
 
     @Test

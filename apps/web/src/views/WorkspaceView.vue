@@ -33,6 +33,7 @@ import {
   getLatestValidation,
   getTemplateVersion,
   importCalendarEvent,
+  importDriveFile,
   interpretAssist,
   listDocumentRevisions,
   listDocumentSources,
@@ -50,6 +51,7 @@ import {
   type DocumentResponse,
   type DocumentRevisionResponse,
   type CalendarImportResponse,
+  type DriveImportResponse,
   type DocumentSourceResponse,
   type EvidenceExcerptResponse,
   type ExportApprovalResponse,
@@ -70,8 +72,9 @@ import {
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { describePayload, describeScope } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
-import { consentOutcome, originLink, originSentence } from '@/connections/words'
+import { CONSENT_QUERY_KEYS, consentOutcome, originLink, originLinkLabel, originSentence } from '@/connections/words'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
+import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 
 const props = defineProps<{ documentId: number }>()
 
@@ -149,7 +152,10 @@ async function loadRules(): Promise<void> {
 
 watch(activeTab, (tab) => {
   if (tab === 'rules' && (rulesLoadState.value === 'idle' || rulesLoadState.value === 'error')) void loadRules()
-  if (tab !== 'sources') calendarPickerStartsOpen.value = false
+  if (tab !== 'sources') {
+    calendarPickerStartsOpen.value = false
+    drivePickerStartsOpen.value = false
+  }
 })
 
 function selectTab(tab: InspectorTab): void {
@@ -333,26 +339,34 @@ async function loadDocumentSources(): Promise<void> {
   }
 }
 
-// Google sends the person back here after they connect Google Calendar from the Sources tab, with
-// what happened in the address. It is read once and taken out of the address, so a reload or a
-// shared link does not say it again, and it is said at the top of the page rather than in the
-// tab, which a narrow screen keeps in a closed drawer.
+// Google sends the person back here after they connect Google Calendar, or choose files in Google
+// Drive, from the Sources tab, with what happened in the address. It is read once and taken out of
+// the address, so a reload or a shared link does not say it again, and it is said at the top of the
+// page rather than in the tab, which a narrow screen keeps in a closed drawer.
 const route = useRoute()
 const router = useRouter()
 const calendarConsent = ref(readCalendarConsent())
-/** The picker opens by itself on this first visit to the tab only. */
-const calendarPickerStartsOpen = ref(calendarConsent.value !== null)
+/** The control Google's answer was for opens by itself, on this first visit to the tab only. */
+const calendarPickerStartsOpen = ref(calendarConsent.value !== null && calendarConsent.value.access !== 'DRIVE_FILES')
+const drivePickerStartsOpen = ref(calendarConsent.value?.access === 'DRIVE_FILES')
 const calendarConsentElement = ref<HTMLElement | null>(null)
 watch(calendarConsentElement, (element) => element?.focus())
-function readCalendarConsent(): { tone: 'success' | 'failure'; text: string } | null {
+function readCalendarConsent(): { tone: 'success' | 'failure'; text: string; access: string | null; hint: string | null } | null {
   const outcome = consentOutcome(route.query)
   if (outcome === null) return null
   const rest = { ...route.query }
-  delete rest.google
-  delete rest.access
-  delete rest.reason
+  for (const key of CONSENT_QUERY_KEYS) delete rest[key]
   void router.replace({ query: rest })
-  return { tone: outcome.tone, text: outcome.text }
+  // What to do next, said only when there is something to copy.
+  const hint =
+    outcome.tone !== 'success'
+      ? null
+      : outcome.access === 'DRIVE_FILES'
+        ? (outcome.added ?? 0) > 0
+          ? 'Copy a file from the Sources tab.'
+          : null
+        : 'Copy an event from the Sources tab.'
+  return { tone: outcome.tone, text: outcome.text, access: outcome.access, hint }
 }
 
 /**
@@ -368,6 +382,19 @@ async function copyCalendarEvent(eventId: string): Promise<CalendarImportRespons
   sourcesAddedHere.add(result.source.id)
   attachedSources.value = [result.source, ...attachedSources.value.filter((attached) => attached.id !== result.source.id)]
   // Chosen for Assist only if the person has not chosen another source meanwhile, and no run is reading one.
+  const runUnderWay = ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value)
+  if (!runUnderWay && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
+  return result
+}
+
+/** Copies one picked Drive file into this document, done here for the same reason as a calendar event. */
+async function copyDriveFile(grantId: number): Promise<DriveImportResponse> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined) throw new Error('Brownie is still confirming who is signed in.')
+  const selectedBefore = selectedSourceId.value
+  const result = await importDriveFile(workspaceId, props.documentId, grantId)
+  sourcesAddedHere.add(result.source.id)
+  attachedSources.value = [result.source, ...attachedSources.value.filter((attached) => attached.id !== result.source.id)]
   const runUnderWay = ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value)
   if (!runUnderWay && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
   return result
@@ -2010,7 +2037,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
       tabindex="-1"
     >
       {{ calendarConsent.text }}
-      <template v-if="calendarConsent.tone === 'success'">Copy an event from the Sources tab.</template>
+      <template v-if="calendarConsent.hint">{{ calendarConsent.hint }}</template>
     </p>
     <p v-if="reloadError" class="field-error" role="alert">
       {{ reloadError }}
@@ -2406,6 +2433,15 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                 :copy-event="copyCalendarEvent"
                 @used="calendarConsent = null"
               />
+              <DriveSourcePicker
+                v-if="session.personalWorkspaceId !== undefined"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :start-open="drivePickerStartsOpen"
+                :unsaved-work="hasUnsavedWork()"
+                :copy-file="copyDriveFile"
+                @used="calendarConsent = null"
+              />
 
               <ul v-if="attachedSources.length > 0" class="source-list">
                 <li v-for="source in attachedSources" :key="source.id">
@@ -2414,7 +2450,7 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                   <span v-if="originSentence(source)" class="field-hint source-list__origin">
                     {{ originSentence(source) }}
                     <a v-if="originLink(source)" :href="originLink(source) ?? undefined" target="_blank" rel="noopener noreferrer"
-                      >Open in Google Calendar<span class="visually-hidden"> (opens in a new tab)</span></a
+                      >{{ originLinkLabel(source) }}<span class="visually-hidden"> (opens in a new tab)</span></a
                     >
                   </span>
                 </li>

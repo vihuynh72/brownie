@@ -51,6 +51,7 @@ vi.mock('@/api/client', async () => {
     startGoogleConsent: vi.fn(),
     listCalendarEvents: vi.fn(),
     importCalendarEvent: vi.fn(),
+    importDriveFile: vi.fn(),
   }
 })
 
@@ -65,6 +66,7 @@ import {
   ApiRequestError,
   acceptPatchProposal,
   importCalendarEvent,
+  importDriveFile,
   listCalendarEvents,
   listConnections,
   allocateUpload,
@@ -3341,5 +3343,80 @@ describe('WorkspaceView sources copied from Google Calendar', () => {
 
     expect(router.currentRoute.value.query).toEqual({ google: 'maybe' })
     expect(wrapper.find('.calendar-picker [role="alert"]').exists()).toBe(false)
+  })
+
+  describe('with Google Drive offered', () => {
+    const DRIVE_CAPABILITIES = { ...CALENDAR_CAPABILITIES, googleConnectorAccess: ['CALENDAR_EVENTS' as const, 'DRIVE_FILES' as const] }
+    const DRIVE_CONNECTION = {
+      id: 5, provider: 'GOOGLE' as const, access: 'DRIVE_FILES' as const, state: 'ACTIVE' as const, accountEmail: 'me@example.org',
+      grantedScopes: [], reconnectReason: null, connectedAt: '2026-09-20T10:00:00Z', tokenIssuedAt: '2026-09-20T10:00:00Z',
+      disconnectedAt: null, providerRevocation: null,
+      grants: [{ id: 11, type: 'DRIVE_FILE' as const, displayName: 'Minutes', grantedAt: '2026-09-22T10:00:00Z' }],
+    }
+    const DRIVE_COPIED: DocumentSourceResponse = {
+      id: 22,
+      artifactId: 23,
+      kind: 'GOOGLE_DRIVE',
+      displayFilename: 'Minutes.txt',
+      fetchedAt: '2026-09-23T08:00:00Z',
+      attachedAt: '2026-09-23T08:00:00Z',
+      origin: {
+        provider: 'GOOGLE',
+        title: 'Minutes',
+        link: 'https://docs.google.com/document/d/abc/edit',
+        modifiedAt: '2026-09-21T08:00:00Z',
+        conversion: 'GOOGLE_DOC_AS_TEXT',
+      },
+    }
+
+    beforeEach(() => {
+      vi.mocked(getCapabilities).mockResolvedValue(DRIVE_CAPABILITIES)
+      vi.mocked(listConnections).mockResolvedValue([DRIVE_CONNECTION])
+      vi.mocked(importDriveFile).mockReset()
+    })
+
+    it('comes back from choosing files with what was added, opens the Drive control, and takes every count out of the address', async () => {
+      const wrapper = await mountAt('/documents/1?google=picked&access=drive_files&added=1&unsupported=0&unavailable=0&unchecked=0&over_limit=0')
+      mountedWrappers.push(wrapper)
+
+      expect(router.currentRoute.value.query).toEqual({})
+      const said = wrapper.find('.workspace-topbar ~ [role="status"]')
+      expect(said.text().replace(/\s+/g, ' ')).toBe(
+        "1 file you chose is now on your list of files Brownie may read. Brownie reads a file's content only when you copy it into a " +
+          'document. Copy a file from the Sources tab.',
+      )
+      expect(document.activeElement).toBe(said.element)
+      expect(wrapper.find('.drive-picker button[aria-expanded="true"]').exists()).toBe(true)
+      expect(wrapper.find('.calendar-picker button[aria-expanded="false"]').exists(), 'the calendar control stays closed').toBe(true)
+    })
+
+    it('does not point to the Sources tab when a pick added nothing', async () => {
+      const wrapper = await mountAt('/documents/1?google=picked&access=drive_files&added=0')
+      mountedWrappers.push(wrapper)
+
+      expect(wrapper.find('.workspace-topbar ~ [role="status"]').text()).toBe(
+        "Google Drive is connected. Nothing was chosen in Google's file picker, so no file was added.",
+      )
+    })
+
+    it('adds a copied Drive file to the sources, first, and labels where it came from', async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue([UPLOADED])
+      vi.mocked(importDriveFile).mockResolvedValue({ source: DRIVE_COPIED, newCopy: true })
+      const wrapper = await mountAt('/documents/1')
+      mountedWrappers.push(wrapper)
+
+      await wrapper.findAll('button').find((button) => button.text() === 'Copy a file from Google Drive')!.trigger('click')
+      await flushPromises()
+      await wrapper.find('#drive-copy-11').trigger('click')
+      await flushPromises()
+
+      expect(importDriveFile).toHaveBeenCalledWith(7, 1, 11)
+      const items = sourceItems(wrapper)
+      expect(items).toHaveLength(2)
+      expect(items[0]!.text()).toContain('Minutes.txt')
+      expect(items[0]!.text()).toContain('Copied from Google Drive as text')
+      expect(items[0]!.find('a').text()).toBe('Open in Google Drive (opens in a new tab)')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    })
   })
 })

@@ -3,6 +3,9 @@ package io.github.vihuynh72.brownie.api.connector;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
+import io.github.vihuynh72.brownie.core.connector.GrantRevocationReason;
+import io.github.vihuynh72.brownie.core.connector.ResourceGrant;
+import io.github.vihuynh72.brownie.core.connector.ResourceGrantRepository;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.source.SourceConversion;
 import io.github.vihuynh72.brownie.core.source.SourceKind;
@@ -64,6 +67,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -197,6 +201,9 @@ class CalendarImportIntegrationTest {
 
     @Autowired
     private SourceSnapshotRepository sourceSnapshotRepository;
+
+    @Autowired
+    private ResourceGrantRepository resourceGrantRepository;
 
     @BeforeEach
     void resetGoogle() {
@@ -518,7 +525,7 @@ class CalendarImportIntegrationTest {
     }
 
     @Test
-    void theDatabaseKeepsACopysOriginWholeAndDeletingTheWorkspaceRemovesIt() throws Exception {
+    void theDatabaseKeepsACopysOriginWholeForEveryKindAndDeletingTheWorkspaceRemovesThem() throws Exception {
         Member member = signInAndConnectCalendar("subject-calendar-rows");
         long documentId = createDocument(member);
         stubEvent("weekly1", "1", "Weekly sync");
@@ -527,12 +534,20 @@ class CalendarImportIntegrationTest {
         long connectionId = count("SELECT origin_connection_id FROM source_snapshot WHERE id = ?", snapshotId);
         long grantId = count("SELECT origin_grant_id FROM source_snapshot WHERE id = ?", snapshotId);
         long spare = uploadPlainText(member, "An upload.");
+        long driveDoc = uploadPlainText(member, "A Doc's text.");
+        long driveText = uploadPlainText(member, "A text file.");
 
         try (Connection owner = ownerConnection()) {
+            String grant = connectionId + ", " + grantId;
             for (String[] refused : List.of(
                     new String[] {"'GOOGLE_CALENDAR', NULL, NULL, NULL, NULL, NULL", "source_snapshot_origin_shape"},
-                    new String[] {"'GOOGLE_CALENDAR', " + connectionId + ", " + grantId + ", 'x', '\"2\"', NULL", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_CALENDAR', " + grant + ", 'x', '\"2\"', NULL", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_CALENDAR', " + grant + ", 'x', '\"2\"', 'GOOGLE_DOC_AS_TEXT'", "source_snapshot_origin_shape"},
                     new String[] {"'ARTIFACT', NULL, NULL, 'x', '\"1\"', 'CALENDAR_EVENT_AS_TEXT'", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_DRIVE', NULL, NULL, 'fileA', '7', NULL", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_DRIVE', " + grant + ", 'fileA', NULL, NULL", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_DRIVE', " + grant + ", 'fileA', '7', 'CALENDAR_EVENT_AS_TEXT'", "source_snapshot_origin_shape"},
+                    new String[] {"'GOOGLE_DRIVE', " + grant + ", 'fileA', '7', 'SOMETHING_ELSE'", "source_snapshot_origin_shape"},
                     new String[] {"'SOMETHING_ELSE', NULL, NULL, NULL, NULL, NULL", "source_snapshot_kind_known"})) {
                 assertThatThrownBy(() -> owner.prepareStatement("INSERT INTO source_snapshot (workspace_id, artifact_id, kind, origin_connection_id,"
                         + " origin_grant_id, origin_external_id, origin_revision, origin_conversion) VALUES (" + member.workspaceId() + ", " + spare
@@ -542,7 +557,18 @@ class CalendarImportIntegrationTest {
             assertThatThrownBy(() -> owner.prepareStatement(
                     "UPDATE source_snapshot SET origin_link = 'javascript:alert(1)' WHERE id = " + snapshotId).execute())
                     .isInstanceOf(SQLException.class).hasMessageContaining("source_snapshot_origin_bounded");
+            // A Doc arrives as its exported text; a text file as it is, with no conversion.
+            long docGrant = insertDriveGrant(owner, member, connectionId, "docFile1");
+            long textGrant = insertDriveGrant(owner, member, connectionId, "textFile1");
+            owner.prepareStatement("INSERT INTO source_snapshot (workspace_id, artifact_id, kind, origin_connection_id, origin_grant_id,"
+                    + " origin_external_id, origin_revision, origin_conversion) VALUES (" + member.workspaceId() + ", " + driveDoc
+                    + ", 'GOOGLE_DRIVE', " + connectionId + ", " + docGrant + ", 'docFile1', '12', 'GOOGLE_DOC_AS_TEXT')").execute();
+            owner.prepareStatement("INSERT INTO source_snapshot (workspace_id, artifact_id, kind, origin_connection_id, origin_grant_id,"
+                    + " origin_external_id, origin_revision, origin_conversion) VALUES (" + member.workspaceId() + ", " + driveText
+                    + ", 'GOOGLE_DRIVE', " + connectionId + ", " + textGrant + ", 'textFile1', '3', NULL)").execute();
         }
+        assertThat(count("SELECT count(*) FROM source_snapshot WHERE workspace_id = ? AND kind = 'GOOGLE_DRIVE'", member.workspaceId()))
+                .isEqualTo(2);
         try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
             api.setAutoCommit(false);
             try (PreparedStatement context = api.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
@@ -561,7 +587,41 @@ class CalendarImportIntegrationTest {
         assertThat(count("SELECT count(*) FROM connector_resource_grant WHERE workspace_id = ?", member.workspaceId())).isZero();
         assertThat(count("SELECT count(*) FROM connector_connection WHERE workspace_id = ?", member.workspaceId())).isZero();
         assertThat(count("SELECT count(*) FROM artifact WHERE id = ?", artifactId)).isZero();
+        assertThat(count("SELECT count(*) FROM artifact WHERE id = ?", driveDoc)).isZero();
+        assertThat(count("SELECT count(*) FROM artifact WHERE id = ?", driveText)).isZero();
         assertThat(GOOGLE.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(urlPathEqualTo("/revoke")))).hasSize(1);
+    }
+
+    @Test
+    void forgettingAChoiceTakesItsConnectionBeforeTheChoiceSoDeletingTheWorkspaceCannotDeadlockWithIt() throws Exception {
+        Member member = signInAndConnectCalendar("subject-calendar-forget-order");
+        GOOGLE.stubFor(get(urlPathEqualTo(EVENTS)).withQueryParam("maxResults", equalTo("50")).willReturn(okJson("{\"items\":[]}")));
+        listEvents(member).andExpect(status().isOk());
+        long connectionId = count("SELECT id FROM connector_connection WHERE workspace_id = ?", member.workspaceId());
+        long grantId = count("SELECT id FROM connector_resource_grant WHERE workspace_id = ?", member.workspaceId());
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<Optional<ResourceGrant>> forgetting;
+        try (Connection deletion = ownerConnection()) {
+            deletion.setAutoCommit(false);
+            // Deleting the workspace holds the connection first ...
+            deletion.prepareStatement("SELECT id FROM connector_connection WHERE id = " + connectionId + " FOR UPDATE").executeQuery();
+            forgetting = executor.submit(() -> resourceGrantRepository.revoke(
+                    member.workspaceId(), member.userId(), grantId, GrantRevocationReason.REMOVED));
+            awaitABackendWaitingForALock();
+            // ... so forgetting waits there before touching the choice, and the deletion can still take the choice.
+            deletion.prepareStatement("SET LOCAL lock_timeout = '10s'").execute();
+            deletion.prepareStatement("SELECT id FROM connector_resource_grant WHERE id = " + grantId + " FOR UPDATE").executeQuery();
+            deletion.commit();
+        }
+        Optional<ResourceGrant> forgotten;
+        try {
+            forgotten = forgetting.get(60, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+        assertThat(forgotten).as("forgetting went through once the deletion let go")
+                .hasValueSatisfying(grant -> assertThat(grant.revokedReason()).isEqualTo(GrantRevocationReason.REMOVED));
     }
 
     // ---- helpers
@@ -908,6 +968,20 @@ class CalendarImportIntegrationTest {
         UriComponentsBuilder.fromUriString(url).build().getQueryParams()
                 .forEach((name, list) -> values.put(name, URLDecoder.decode(list.getFirst(), StandardCharsets.UTF_8)));
         return values;
+    }
+
+    private static long insertDriveGrant(Connection owner, Member member, long connectionId, String fileId) throws SQLException {
+        try (PreparedStatement insert = owner.prepareStatement("INSERT INTO connector_resource_grant"
+                + " (workspace_id, connection_id, resource_type, external_id, granted_by_user_id) VALUES (?, ?, 'DRIVE_FILE', ?, ?) RETURNING id")) {
+            insert.setLong(1, member.workspaceId());
+            insert.setLong(2, connectionId);
+            insert.setString(3, fileId);
+            insert.setLong(4, member.userId());
+            try (ResultSet rs = insert.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
     }
 
     private static Connection ownerConnection() throws SQLException {

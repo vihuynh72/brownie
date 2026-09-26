@@ -101,7 +101,7 @@ public class GoogleCalendarClient implements CalendarEventReader {
         GoogleHttp.Answer answer = get(uri, accessToken, EVENT_ANSWER_BYTES);
         // Google does not tell an event that was deleted apart from one that never existed, and neither does Brownie.
         if (answer.status() == 404 || answer.status() == 410) {
-            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.GONE);
+            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.GONE, ConnectorAccess.CALENDAR_EVENTS);
         }
         if (!answer.isSuccess()) {
             throw GoogleApiRefusals.of(http, answer, ConnectorAccess.CALENDAR_EVENTS, "calendar event");
@@ -109,7 +109,7 @@ public class GoogleCalendarClient implements CalendarEventReader {
         JsonNode body = http.json(answer);
         // A cancelled event may carry nothing but its id, so it is recognised before anything else is read from it.
         if ("cancelled".equals(GoogleHttp.text(body, "status"))) {
-            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED);
+            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED, ConnectorAccess.CALENDAR_EVENTS);
         }
         CalendarEvent event = event(body);
         if (!event.id().equals(eventId)) {

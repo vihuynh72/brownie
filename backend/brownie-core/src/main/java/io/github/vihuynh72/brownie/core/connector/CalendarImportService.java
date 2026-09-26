@@ -65,9 +65,6 @@ public class CalendarImportService {
     /** Google's event ids, including those of one occurrence of a repeating event, use only these characters. */
     private static final Pattern EVENT_ID = Pattern.compile("^[A-Za-z0-9_-]{1,1024}$");
     private static final int MAX_TITLE_CODE_POINTS = 500;
-    private static final int MAX_FILENAME_CODE_POINTS = 200;
-    /** Leaves room for ".txt" inside the 255 characters a file name is kept to. */
-    private static final int MAX_FILENAME_BASE_CHARS = 251;
 
     /** The document's source for the event, and whether this import made a new copy or linked one already made. */
     public record ImportOutcome(AttachedSource source, boolean newCopy) {
@@ -125,7 +122,7 @@ public class CalendarImportService {
         CalendarEvent event = read(calendar, () -> calendarReader.readEvent(calendar.accessToken(), eventId));
         Instant readAt = Instant.now();
         if (event.status() == CalendarEventStatus.CANCELLED) {
-            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED);
+            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED, ConnectorAccess.CALENDAR_EVENTS);
         }
         if (event.series()) {
             throw new ConnectorResourceUnsupportedException("This is a repeating series; choose one of its occurrences instead.");
@@ -216,29 +213,12 @@ public class CalendarImportService {
 
     private static String title(CalendarEvent event) {
         String title = CalendarEventText.oneLine(event.summary());
-        return title.isEmpty() ? null : firstCodePoints(title, MAX_TITLE_CODE_POINTS, Integer.MAX_VALUE);
+        return title.isEmpty() ? null : ImportedNames.firstCodePoints(title, MAX_TITLE_CODE_POINTS, Integer.MAX_VALUE);
     }
 
     /** The event's title as a file name: a slash would otherwise be read as a folder, and the name is cut to a length any page can show. */
     static String fileName(CalendarEvent event) {
-        String title = CalendarEventText.oneLine(event.summary()).replace('/', '-').replace('\\', '-');
-        String base = title.isEmpty() ? "Calendar event" : firstCodePoints(title, MAX_FILENAME_CODE_POINTS, MAX_FILENAME_BASE_CHARS).strip();
-        return base + ".txt";
-    }
-
-    /** At most {@code maxCodePoints} characters and {@code maxChars} UTF-16 units, cut between characters, never through one. */
-    private static String firstCodePoints(String text, int maxCodePoints, int maxChars) {
-        int end = 0;
-        int codePoints = 0;
-        while (end < text.length() && codePoints < maxCodePoints) {
-            int next = text.offsetByCodePoints(end, 1);
-            if (next > maxChars) {
-                break;
-            }
-            end = next;
-            codePoints++;
-        }
-        return text.substring(0, end);
+        return ImportedNames.textFileName(event.summary(), "Calendar event");
     }
 
     private static String sha256Hex(byte[] bytes) {

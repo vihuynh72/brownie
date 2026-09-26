@@ -457,7 +457,11 @@ caller address from what it observed rather than from what the caller claimed.
    more secrets in the vault, `google-client-secret` and `connector-token-key`
    (`openssl rand -base64 32`), and set the repository variable
    `BROWNIE_GOOGLE_CLIENT_ID`. A deployment with the variable set and either
-   secret missing stops before it changes anything.
+   secret missing stops before it changes anything. Picking Google Drive files
+   is off unless the repository variable `BROWNIE_GOOGLE_DRIVE_OFFERED` is
+   `true`, and even then it is offered only once this Brownie can read Drive
+   files; any value other than `true` or `false` stops the deployment before
+   it changes anything.
 
 **Releasing.** Run *Publish images*, note the revision it reports, then run
 *Deploy to the pilot host* with that revision. The deployment migrates the

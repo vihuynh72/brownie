@@ -3,14 +3,17 @@ package io.github.vihuynh72.brownie.api.connector;
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.connector.ConnectionAccountMismatchException;
+import io.github.vihuynh72.brownie.core.connector.ConnectionNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorBlockedByOrganizationException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorConsentIncompleteException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorPermissionNotGrantedException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorService;
+import io.github.vihuynh72.brownie.core.connector.DriveImportService;
 import io.github.vihuynh72.brownie.core.connector.ProviderMisconfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ProviderTokenRejectedException;
 import io.github.vihuynh72.brownie.core.connector.ProviderUnavailableException;
+import io.github.vihuynh72.brownie.core.connector.UsableConnection;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,6 +34,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -49,6 +53,14 @@ import java.util.regex.Pattern;
  * reason code the page turns into words. The code is one of a fixed set, or
  * Google's own error code when it is a plain lowercase word, so nothing
  * Google or anyone else put in the query string reaches the page as text.
+ *
+ * <p>A consent started to choose Drive files comes back the same way, with
+ * the chosen files' ids beside the code. It is checked and completed exactly
+ * like connecting again; only then are the ids, from this single-use and
+ * state-checked answer and nowhere else, recorded as the files Brownie may
+ * read, and the page is sent back with {@code google=picked} and how many
+ * were added and why the rest were not. What is logged is counts, never an
+ * id, the code or a token.
  */
 @RestController
 class GoogleConsentCallbackController {
@@ -57,6 +69,7 @@ class GoogleConsentCallbackController {
     private static final Pattern SAFE_PROVIDER_ERROR = Pattern.compile("^[a-z_]{1,64}$");
 
     private final ConnectorService connectorService;
+    private final DriveImportService driveImportService;
     private final GoogleConnectorSetup googleConnectorSetup;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
@@ -64,11 +77,13 @@ class GoogleConsentCallbackController {
 
     GoogleConsentCallbackController(
             ConnectorService connectorService,
+            DriveImportService driveImportService,
             GoogleConnectorSetup googleConnectorSetup,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository,
             @Value("${brownie.web.origin}") String webOrigin) {
         this.connectorService = connectorService;
+        this.driveImportService = driveImportService;
         this.googleConnectorSetup = googleConnectorSetup;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -81,6 +96,7 @@ class GoogleConsentCallbackController {
             @RequestParam(name = "state", required = false) String state,
             @RequestParam(name = "error", required = false) String error,
             @RequestParam(name = "iss", required = false) String issuer,
+            @RequestParam(name = "picked_file_ids", required = false) String pickedFileIds,
             @AuthenticationPrincipal OidcUser principal,
             HttpServletRequest request) {
         PendingConsent pending = PendingConsent.takeFrom(request.getSession(false));
@@ -117,8 +133,9 @@ class GoogleConsentCallbackController {
         if (code == null || code.isBlank()) {
             return failed(pending.returnTo(), pending, "no_code");
         }
+        UsableConnection connected;
         try {
-            connectorService.completeConsent(pending.workspaceId(), userId, pending.access(), code, pending.codeVerifier());
+            connected = connectorService.completeConsent(pending.workspaceId(), userId, pending.access(), code, pending.codeVerifier());
         } catch (ConnectorPermissionNotGrantedException e) {
             return failed(pending.returnTo(), pending, "permission_not_granted");
         } catch (ConnectorConsentIncompleteException e) {
@@ -134,7 +151,39 @@ class GoogleConsentCallbackController {
         } catch (ProviderMisconfiguredException | ConnectorNotConfiguredException e) {
             return failed(pending.returnTo(), pending, "not_configured");
         }
-        return redirect(pending.returnTo(), "google=connected&access=" + accessWord(pending));
+        if (!pending.pick()) {
+            return redirect(pending.returnTo(), "google=connected&access=" + accessWord(pending));
+        }
+        return recordPicks(pending, userId, connected, pickedFileIds);
+    }
+
+    /**
+     * After a pick's consent has completed: the ids Google sent beside it
+     * become the files Brownie may read, as far as Drive confirms them. A
+     * pick with nothing chosen still connected Drive, and says so; a pick
+     * that stopped partway says what it added and why it stopped
+     * ({@code stopped}), because Drive is connected by then.
+     */
+    private ResponseEntity<Void> recordPicks(PendingConsent pending, long userId, UsableConnection drive, String pickedFileIds) {
+        List<String> ids = pickedFileIds == null || pickedFileIds.isBlank() ? List.of() : List.of(pickedFileIds.split(",", -1));
+        DriveImportService.PickOutcome outcome;
+        try {
+            outcome = driveImportService.recordPicks(pending.workspaceId(), userId, drive, ids);
+        } catch (ConnectionNotFoundException e) {
+            // Disconnected while the pick was being recorded, which also took back anything it had added.
+            return failed(pending.returnTo(), pending, "not_connected");
+        }
+        String stopped = outcome.stoppedBy() == null ? "" : outcome.stoppedBy().name().toLowerCase(Locale.ROOT);
+        log.info("Google's Drive picker returned {} ids: {} on the list, {} not a kind Brownie reads, {} unavailable, {} unchecked, {} over the limit{}.",
+                ids.size(), outcome.added(), outcome.unsupported(), outcome.unavailable(), outcome.unchecked(), outcome.overLimit(),
+                stopped.isEmpty() ? "" : "; stopped (" + stopped + ")");
+        return redirect(pending.returnTo(), "google=picked&access=" + accessWord(pending)
+                + "&added=" + outcome.added()
+                + "&unsupported=" + outcome.unsupported()
+                + "&unavailable=" + outcome.unavailable()
+                + "&unchecked=" + outcome.unchecked()
+                + "&over_limit=" + outcome.overLimit()
+                + (stopped.isEmpty() ? "" : "&stopped=" + stopped));
     }
 
     /** The reason is one of a fixed set or a plain word Google chose, so it is the one thing about a failure that is logged. */

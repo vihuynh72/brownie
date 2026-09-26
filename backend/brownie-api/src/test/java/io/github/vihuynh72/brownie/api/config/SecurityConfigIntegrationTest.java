@@ -103,6 +103,22 @@ class SecurityConfigIntegrationTest {
         assertThat(response.statusCode()).isEqualTo(403);
     }
 
+    /** Picking Drive files, copying one and forgetting one are changes like any other: refused without the CSRF token. */
+    @Test
+    void theDriveRoutesAreRefusedWithoutACsrfToken() throws Exception {
+        for (String path : List.of("/api/v1/workspaces/1/connections/google/drive/picks", "/api/v1/workspaces/1/connections/google/drive/imports",
+                "/api/v1/workspaces/1/connections/google/drive/files/1/forget")) {
+            HttpResponse<Void> response = client.send(
+                    HttpRequest.newBuilder(URI.create(url(path)))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.discarding());
+
+            assertThat(response.statusCode()).as(path).isEqualTo(403);
+        }
+    }
+
     /**
      * A load balancer has no session: health answers anonymously on the
      * management port, and nothing else there does.

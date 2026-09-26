@@ -8,7 +8,17 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import io.github.vihuynh72.brownie.core.connector.DriveFileReader;
+import org.springframework.http.HttpMethod;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClient;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.RandomAccessFile;
 
 import static com.tngtech.archunit.base.DescribedPredicate.not;
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.assignableTo;
@@ -16,6 +26,7 @@ import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPac
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The boundaries the design depends on, checked against the compiled
@@ -127,6 +138,76 @@ class ModuleBoundariesTest {
                 .and().resideInAPackage("io.github.vihuynh72.brownie..")
                 .should().dependOnClassesThat().resideInAnyPackage("com.azure..")
                 .check(production);
+    }
+
+    private static final String GOOGLE_ADAPTER = "io.github.vihuynh72.brownie.api.connector.google..";
+
+    /**
+     * Reading a person's Drive files is for the classes that talk to Google,
+     * and for the stand-in that refuses every read where nothing may; nothing
+     * else can be plugged in to read them.
+     */
+    @Test
+    void onlyTheGoogleAdapterOrItsStandInReadsDrive() {
+        classes().that().implement(DriveFileReader.class)
+                .should().resideInAPackage(GOOGLE_ADAPTER)
+                .orShould().haveFullyQualifiedName("io.github.vihuynh72.brownie.api.connector.NotConfiguredDrive")
+                .check(production);
+    }
+
+    /**
+     * Google is only ever read. The one class that owns the token and
+     * revocation endpoints may post to them; nothing that talks to Google
+     * puts, patches, deletes or sends a request of a kind chosen at run time.
+     */
+    @Test
+    void theGoogleAdapterOnlyEverReads() {
+        noClasses().that().resideInAPackage(GOOGLE_ADAPTER).and().doNotHaveSimpleName("GoogleOAuthClient")
+                .should().callMethod(RestClient.class, "post")
+                .check(production);
+        noClasses().that().resideInAPackage(GOOGLE_ADAPTER)
+                .should().callMethod(RestClient.class, "put")
+                .orShould().callMethod(RestClient.class, "patch")
+                .orShould().callMethod(RestClient.class, "delete")
+                .orShould().callMethod(RestClient.class, "method", HttpMethod.class)
+                .check(production);
+    }
+
+    /** A Drive reader remembers nothing between calls: no token, no file, nothing a second request could find. */
+    @Test
+    void aDriveReaderKeepsNothingBetweenCalls() {
+        classes().that().implement(DriveFileReader.class).should().haveOnlyFinalFields().check(production);
+    }
+
+    /** Nothing that talks to Google writes to the disk, so a token or a person's file is never left in a file. */
+    @Test
+    void theGoogleAdapterNeverTouchesFiles() {
+        noClasses().that().resideInAPackage(GOOGLE_ADAPTER)
+                .should().dependOnClassesThat().resideInAPackage("java.nio.file..")
+                .orShould().dependOnClassesThat().belongToAnyOf(
+                        File.class, FileInputStream.class, FileOutputStream.class, FileReader.class, FileWriter.class, RandomAccessFile.class)
+                .check(production);
+    }
+
+    /**
+     * The adapter answers questions about Google and nothing else: it cannot
+     * reach sources, stored files or the database, so what it reads reaches
+     * them only through the checks the services apply.
+     */
+    @Test
+    void theGoogleAdapterReachesNothingButGoogle() {
+        noClasses().that().resideInAPackage(GOOGLE_ADAPTER)
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "io.github.vihuynh72.brownie.core.source..", "io.github.vihuynh72.brownie.core.artifact..",
+                        "io.github.vihuynh72.brownie.api.persistence..")
+                .check(production);
+    }
+
+    /** Three reads and nothing else: a fourth method would be a way to ask Drive for something more. */
+    @Test
+    void theDriveReaderHasExactlyThreeReads() {
+        assertThat(java.util.Arrays.stream(DriveFileReader.class.getDeclaredMethods()).map(java.lang.reflect.Method::getName).sorted())
+                .containsExactly("describeFile", "readGoogleDocAsText", "readTextFile");
     }
 
     /** A repository is reached through the port the core defines, so nothing but configuration can come to depend on how it is stored. */

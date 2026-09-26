@@ -96,6 +96,7 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
             long workspaceId, long userId, long documentId, long artifactId, SourceKind kind, SourceOrigin origin, Instant fetchedAt) {
         String grantType = switch (kind) {
             case GOOGLE_CALENDAR -> "CALENDAR";
+            case GOOGLE_DRIVE -> "DRIVE_FILE";
             case ARTIFACT -> throw new IllegalArgumentException("An upload has no origin elsewhere.");
         };
         TenantContext.setCurrentUser(jdbcTemplate, userId);

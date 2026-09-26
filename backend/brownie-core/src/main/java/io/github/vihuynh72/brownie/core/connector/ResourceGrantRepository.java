@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.core.connector;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Tenant-scoped persistence for what a person chose for Brownie to read. Only
@@ -19,4 +20,14 @@ public interface ResourceGrantRepository {
 
     /** The open grants through one connection, most recent first. */
     List<ResourceGrant> findOpen(long workspaceId, long userId, long connectionId);
+
+    /** One of this person's grants, open or revoked; empty when it is not theirs or does not exist. */
+    Optional<ResourceGrant> find(long workspaceId, long userId, long grantId);
+
+    /**
+     * Revokes one of this person's open grants, for the reason given, and
+     * returns it as it now is; empty when it is not theirs, does not exist or
+     * was already revoked. A revoked grant is never opened again.
+     */
+    Optional<ResourceGrant> revoke(long workspaceId, long userId, long grantId, GrantRevocationReason reason);
 }

@@ -12,6 +12,8 @@ vi.mock('@/api/client', async () => {
     ...actual,
     listConnections: vi.fn(),
     startGoogleConsent: vi.fn(),
+    startDrivePick: vi.fn(),
+    forgetDriveFile: vi.fn(),
     disconnectGoogle: vi.fn(),
     getCapabilities: vi.fn(),
   }
@@ -21,8 +23,10 @@ vi.mock('@/navigation', () => ({ navigateTo: vi.fn(), releaseIfStillHere: vi.fn(
 import {
   ApiRequestError,
   disconnectGoogle,
+  forgetDriveFile,
   getCapabilities,
   listConnections,
+  startDrivePick,
   startGoogleConsent,
   type CapabilitiesResponse,
   type ConnectionResponse,
@@ -110,6 +114,8 @@ describe('ConnectionsView', () => {
     resetCapabilitiesCache()
     vi.mocked(listConnections).mockReset().mockResolvedValue([])
     vi.mocked(startGoogleConsent).mockReset()
+    vi.mocked(startDrivePick).mockReset()
+    vi.mocked(forgetDriveFile).mockReset()
     vi.mocked(disconnectGoogle).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities(['CALENDAR_EVENTS']))
     vi.mocked(navigateTo).mockReset()
@@ -408,6 +414,226 @@ describe('ConnectionsView', () => {
 
     expect(wrapper.find('[role="alert"]').text()).toBe('Nothing was disconnected. Brownie is briefly unavailable.')
     expect(document.activeElement?.id).toBe('connections-disconnect-confirm')
+    wrapper.unmount()
+  })
+
+  it("offers Google's file picker as a test in development builds, only where Google is set up", async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true' })
+    const wrapper = await mountAt()
+
+    expect(import.meta.env.DEV).toBe(true)
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+    expect(startDrivePick).toHaveBeenCalledWith(7, '/connections')
+    expect(navigateTo).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true')
+    wrapper.unmount()
+
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities([]))
+    resetCapabilitiesCache()
+    const without = await mountAt()
+    expect(without.find('#connections-try-picker').exists()).toBe(false)
+    without.unmount()
+  })
+
+  it("says plainly when the server has no picker test", async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockRejectedValue(new ApiRequestError(404, problem(404, 'No endpoint POST /api/v1/workspaces/7/connections/google/drive/picks.', 'NOT_FOUND')))
+    const wrapper = await mountAt()
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toBe('The Brownie server that answered does not have the file picker test.')
+    wrapper.unmount()
+  })
+
+  it('says why a server that records picked files refuses the picker test, rather than that Google is not set up', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockRejectedValue(
+      new ApiRequestError(409, problem(409, 'Choosing and copying Google Drive files is not offered on this Brownie at the moment.', 'CONNECTOR_NOT_CONFIGURED')),
+    )
+    const wrapper = await mountAt()
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toBe(
+      'This Brownie server records the files you pick, so it refuses this test until Google Drive is offered here.',
+    )
+    wrapper.unmount()
+  })
+
+  it('says how many files Google sent back from its picker, and takes it out of the address', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountAt('/connections?google=connected&access=drive_files&picked=2')
+
+    expect(wrapper.find('[role="status"]').text()).toBe(
+      "Google Drive is connected. Google sent back 2 chosen files. Brownie did not open them; this was a test of Google's file picker.",
+    )
+    expect(router.currentRoute.value.query).toEqual({})
+    wrapper.unmount()
+
+    const cancelled = await mountAt('/connections?google=failed&access=drive_files&reason=access_denied&picked=0')
+    expect(cancelled.find('[role="alert"]').text()).toContain("Google sent back 0 chosen files.")
+    cancelled.unmount()
+
+    const odd = await mountAt('/connections?google=connected&access=drive_files&picked=<b>')
+    expect(odd.find('[role="status"]').text()).toBe('Google Drive is connected.')
+    odd.unmount()
+  })
+
+  describe('once this Brownie offers Google Drive', () => {
+    function driveConnection(overrides: Partial<ConnectionResponse> = {}): ConnectionResponse {
+      return connection({
+        id: 5,
+        access: 'DRIVE_FILES',
+        grantedScopes: ['https://www.googleapis.com/auth/drive.file'],
+        grants: [
+          { id: 11, type: 'DRIVE_FILE', displayName: 'Minutes', grantedAt: '2026-09-22T10:00:00Z' },
+          { id: 12, type: 'DRIVE_FILE', displayName: null, grantedAt: '2026-09-22T11:00:00Z' },
+        ],
+        ...overrides,
+      })
+    }
+
+    beforeEach(() => {
+      vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS', 'DRIVE_FILES']))
+    })
+
+    it('says what Brownie does with Drive, lists the files it may read, and replaces the development test', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection()])
+      const wrapper = await mountAt()
+
+      const section = wrapper.find('section[aria-labelledby="connections-drive"]')
+      expect(section.text()).toContain("reads a file's content only when you copy that file into a document")
+      expect(section.text()).not.toContain('cannot read files from Drive yet')
+      expect(section.text()).toContain('Minutes, since')
+      expect(section.text()).toContain('A file from Google Drive, since')
+      expect(section.text()).toContain('Copies already made from a file stay in your documents when you stop reading it.')
+      expect(buttonNamed(wrapper, 'Stop reading this file Minutes').exists()).toBe(true)
+      expect(buttonNamed(wrapper, 'Choose more files in Google Drive').exists()).toBe(true)
+      expect(wrapper.find('#connections-try-picker').exists()).toBe(false)
+      expect(text(wrapper)).toContain('Every file you chose in Google Drive is taken off your list too.')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+      wrapper.unmount()
+    })
+
+    it("chooses files in Google's own picker, which comes back here", async () => {
+      vi.mocked(listConnections).mockResolvedValue([])
+      vi.mocked(startDrivePick).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true' })
+      const wrapper = await mountAt()
+
+      expect(wrapper.find('section[aria-labelledby="connections-drive"]').text()).toContain(
+        "Nothing yet. Files you choose in Google's file picker are listed here.",
+      )
+      await buttonNamed(wrapper, 'Choose files in Google Drive').trigger('click')
+      await flushPromises()
+
+      expect(startDrivePick).toHaveBeenCalledWith(7, '/connections')
+      expect(navigateTo).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true')
+      expect(startGoogleConsent).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('offers to connect again by choosing files when Google stopped accepting Drive', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection({ state: 'RECONNECT_REQUIRED', reconnectReason: 'TOKEN_REJECTED' })])
+      const wrapper = await mountAt()
+
+      expect(buttonNamed(wrapper, 'Connect Google Drive again and choose files').exists()).toBe(true)
+      expect(wrapper.find('section[aria-labelledby="connections-drive"]').text()).toContain('Needs connecting again.')
+      wrapper.unmount()
+    })
+
+    it('stops reading one file on request, says copies stay, and shows the list as it now is', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection()])
+      vi.mocked(forgetDriveFile).mockResolvedValue([
+        driveConnection({ grants: [{ id: 12, type: 'DRIVE_FILE', displayName: null, grantedAt: '2026-09-22T11:00:00Z' }] }),
+      ])
+      const wrapper = await mountAt()
+
+      await buttonNamed(wrapper, 'Stop reading this file Minutes').trigger('click')
+      await flushPromises()
+
+      expect(forgetDriveFile).toHaveBeenCalledWith(7, 11)
+      const notice = wrapper.find('[role="status"]')
+      expect(notice.text()).toBe('Brownie will no longer read "Minutes". Copies already made from it stay where they are.')
+      expect(document.activeElement).toBe(notice.element)
+      expect(wrapper.find('section[aria-labelledby="connections-drive"]').text()).not.toContain('Minutes, since')
+      wrapper.unmount()
+    })
+
+    it('says a file already off the list is off it, and shows the list as it now is', async () => {
+      vi.mocked(listConnections).mockResolvedValueOnce([driveConnection()]).mockResolvedValue([
+        driveConnection({ grants: [{ id: 12, type: 'DRIVE_FILE', displayName: null, grantedAt: '2026-09-22T11:00:00Z' }] }),
+      ])
+      vi.mocked(forgetDriveFile).mockRejectedValue(new ApiRequestError(404, problem(404, 'Gone.', 'CONNECTOR_RESOURCE_NOT_FOUND')))
+      const wrapper = await mountAt()
+
+      await buttonNamed(wrapper, 'Stop reading this file Minutes').trigger('click')
+      await flushPromises()
+
+      const notice = wrapper.find('[role="status"]')
+      expect(notice.text()).toBe('"Minutes" was already off your list, so Brownie no longer reads it.')
+      expect(document.activeElement).toBe(notice.element)
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(listConnections).toHaveBeenCalledTimes(2)
+      expect(wrapper.find('section[aria-labelledby="connections-drive"]').text()).not.toContain('Minutes, since')
+      wrapper.unmount()
+    })
+
+    it('never quotes a placeholder as if it were the name of a file Drive gave no name', async () => {
+      vi.mocked(listConnections).mockResolvedValueOnce([driveConnection()]).mockResolvedValue([driveConnection({ grants: [] })])
+      vi.mocked(forgetDriveFile).mockRejectedValue(new ApiRequestError(404, problem(404, 'Gone.', 'CONNECTOR_RESOURCE_NOT_FOUND')))
+      const wrapper = await mountAt()
+
+      await buttonNamed(wrapper, 'Stop reading this file from Google Drive').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[role="status"]').text()).toBe('That file was already off your list, so Brownie no longer reads it.')
+      wrapper.unmount()
+    })
+
+    it('keeps the file, says so, and keeps the keyboard on its button when stopping fails', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection()])
+      vi.mocked(forgetDriveFile).mockRejectedValue(new ApiRequestError(503, problem(503, 'Down.', 'STORAGE_UNAVAILABLE')))
+      const wrapper = await mountAt()
+
+      await buttonNamed(wrapper, 'Stop reading this file Minutes').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[role="alert"]').text()).toMatch(/^"Minutes" is still on your list\. /)
+      expect(document.activeElement?.id).toBe('connections-forget-11')
+      wrapper.unmount()
+    })
+
+    it('says what a pick added when Google sends the person back, and takes it out of the address', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection()])
+      const wrapper = await mountAt(
+        '/connections?google=picked&access=drive_files&added=2&unsupported=1&unavailable=0&unchecked=0&over_limit=0',
+      )
+
+      expect(wrapper.find('[role="status"]').text()).toBe(
+        "2 files you chose are now on your list of files Brownie may read. Brownie reads a file's content only when you copy it into a document. " +
+          '1 file was not added: Brownie reads only Google Docs and plain-text (.txt) files.',
+      )
+      expect(router.currentRoute.value.query).toEqual({})
+      wrapper.unmount()
+    })
+  })
+
+  it('keeps saying Drive is not used where it is not offered, and still lets a listed file be stopped', async () => {
+    vi.mocked(listConnections).mockResolvedValue([
+      connection({
+        id: 5,
+        access: 'DRIVE_FILES',
+        grants: [{ id: 11, type: 'DRIVE_FILE', displayName: 'Minutes', grantedAt: '2026-09-22T10:00:00Z' }],
+      }),
+    ])
+    const wrapper = await mountAt()
+
+    const section = wrapper.find('section[aria-labelledby="connections-drive"]')
+    expect(section.text()).toContain('Brownie cannot read files from Drive yet')
+    expect(section.text()).not.toContain('Choose files in Google Drive')
+    expect(buttonNamed(wrapper, 'Stop reading this file Minutes').exists()).toBe(true)
     wrapper.unmount()
   })
 

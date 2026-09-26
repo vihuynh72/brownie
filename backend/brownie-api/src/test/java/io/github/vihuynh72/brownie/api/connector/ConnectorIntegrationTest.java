@@ -6,7 +6,11 @@ import io.github.vihuynh72.brownie.api.connector.google.GoogleConsentRequests;
 import io.github.vihuynh72.brownie.core.connector.ConnectionReconnectRequiredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorService;
+import io.github.vihuynh72.brownie.core.connector.GrantRevocationReason;
 import io.github.vihuynh72.brownie.core.connector.ReconnectReason;
+import io.github.vihuynh72.brownie.core.connector.ResourceGrant;
+import io.github.vihuynh72.brownie.core.connector.ResourceGrantRepository;
+import io.github.vihuynh72.brownie.core.connector.ResourceGrantType;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
@@ -60,12 +64,14 @@ import java.util.List;
 import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.containing;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlMatching;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +150,9 @@ class ConnectorIntegrationTest {
 
     @Autowired
     private ConnectorService connectorService;
+
+    @Autowired
+    private ResourceGrantRepository resourceGrantRepository;
 
     @BeforeEach
     void resetGoogle() {
@@ -491,6 +500,95 @@ class ConnectorIntegrationTest {
     }
 
     // ---- helpers
+
+    @Test
+    void whileDriveIsNotOfferedAPickOrACopyIsRefusedBeforeGoogleIsAskedAndForgettingStillAnswers() throws Exception {
+        Member member = signIn("subject-drive-not-offered");
+        String drive = connectionsPath(member) + "/google/drive";
+
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/v1/capabilities").cookie(member.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.googleConnectorAccess.length()").value(1))
+                .andExpect(jsonPath("$.googleConnectorAccess[0]").value("CALENDAR_EVENTS"));
+        for (String path : List.of(drive + "/picks", drive + "/imports", drive + "/files/1/forget")) {
+            mockMvc.perform(MockMvcRequestBuilders.post(path).cookie(member.session()).contentType("application/json").content("{}"))
+                    .andExpect(status().isForbidden());
+        }
+        mockMvc.perform(MockMvcRequestBuilders.post(drive + "/picks")
+                        .cookie(member.session()).with(csrf()).contentType("application/json").content("{\"returnTo\":\"https://elsewhere.example\"}"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(MockMvcRequestBuilders.post(drive + "/picks")
+                        .cookie(member.session()).with(csrf()).contentType("application/json").content("{\"returnTo\":\"/connections\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONNECTOR_NOT_CONFIGURED"));
+        assertThat(pendingIn(member)).as("nothing is pending, so no answer can complete one").isNull();
+        mockMvc.perform(MockMvcRequestBuilders.post(drive + "/imports")
+                        .cookie(member.session()).with(csrf()).contentType("application/json").content("{\"documentId\":1,\"grantId\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONNECTOR_NOT_CONFIGURED"));
+        mockMvc.perform(MockMvcRequestBuilders.post(drive + "/files/999999/forget").cookie(member.session()).with(csrf()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CONNECTOR_RESOURCE_NOT_FOUND"));
+        assertThat(GOOGLE.findAll(anyRequestedFor(urlMatching("/.*")))).as("Google is asked nothing").isEmpty();
+    }
+
+    @Test
+    void anOrdinaryConsentThatComesBackWithFileIdsRecordsNoneOfThem() throws Exception {
+        Member member = signIn("subject-consent-with-ids");
+        stubConsent(DRIVE_SCOPE, "1//refresh-drive-ids", "ya29.access-drive-ids");
+        stubDriveAccount("perm-ids", "ids@example.org");
+        Map<String, String> connect = startConsent(member, "DRIVE_FILES", "/connections");
+
+        assertThat(mockMvc.perform(MockMvcRequestBuilders.get(CALLBACK)
+                        .param("code", "4/stand-in").param("state", connect.get("state")).param("picked_file_ids", "fileA,fileB")
+                        .cookie(member.session()))
+                .andExpect(status().isFound()).andReturn().getResponse().getRedirectedUrl())
+                .isEqualTo("http://localhost:5173/connections?google=connected&access=drive_files");
+        assertThat(count("SELECT count(*) FROM connector_resource_grant WHERE workspace_id = ?", member.workspaceId()))
+                .as("only a pick's own answer is ever a pick").isZero();
+    }
+
+    @Test
+    void aChoiceIsFoundAndForgottenOnlyByItsOwnPersonAndIsNeverReopened() throws Exception {
+        Member member = signIn("subject-forget");
+        Member other = signIn("subject-forget-other");
+        stubConsent(DRIVE_SCOPE, "1//refresh-forget", "ya29.access-forget");
+        stubDriveAccount("perm-forget", "forget@example.org");
+        startConsentAndAnswer(member, "DRIVE_FILES", null);
+        long connectionId = count("SELECT id FROM connector_connection WHERE workspace_id = ?", member.workspaceId());
+        ResourceGrant chosen = resourceGrantRepository.grant(
+                member.workspaceId(), member.userId(), connectionId, ResourceGrantType.DRIVE_FILE, "fileChosen1", "Minutes");
+
+        assertThat(resourceGrantRepository.find(member.workspaceId(), member.userId(), chosen.id())).contains(chosen);
+        assertThat(resourceGrantRepository.find(member.workspaceId(), other.userId(), chosen.id()))
+                .as("another person does not see it").isEmpty();
+        assertThat(resourceGrantRepository.revoke(member.workspaceId(), other.userId(), chosen.id(), GrantRevocationReason.REMOVED))
+                .as("nor forget it").isEmpty();
+        assertThat(resourceGrantRepository.find(member.workspaceId(), member.userId(), chosen.id()).orElseThrow().revokedAt()).isNull();
+
+        ResourceGrant forgotten = resourceGrantRepository
+                .revoke(member.workspaceId(), member.userId(), chosen.id(), GrantRevocationReason.REMOVED).orElseThrow();
+        assertThat(forgotten.revokedAt()).isNotNull();
+        assertThat(forgotten.revokedReason()).isEqualTo(GrantRevocationReason.REMOVED);
+        assertThat(resourceGrantRepository.revoke(member.workspaceId(), member.userId(), chosen.id(), GrantRevocationReason.REMOVED))
+                .as("forgetting it again changes nothing").isEmpty();
+        assertThat(resourceGrantRepository.findOpen(member.workspaceId(), member.userId(), connectionId)).isEmpty();
+
+        try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+            api.setAutoCommit(false);
+            actAs(api, member.userId());
+            assertThat(api.prepareStatement("UPDATE connector_resource_grant SET revoked_at = NULL, revoked_reason = NULL"
+                    + " WHERE id = " + chosen.id()).executeUpdate())
+                    .as("a forgotten choice is never opened again").isZero();
+            api.rollback();
+        }
+        assertThat(text("SELECT revoked_reason FROM connector_resource_grant WHERE id = ?", chosen.id())).isEqualTo("REMOVED");
+        // Choosing the same file again is a new choice, not the old one reopened.
+        ResourceGrant again = resourceGrantRepository.grant(
+                member.workspaceId(), member.userId(), connectionId, ResourceGrantType.DRIVE_FILE, "fileChosen1", "Minutes");
+        assertThat(again.id()).isNotEqualTo(chosen.id());
+        assertThat(again.revokedAt()).isNull();
+    }
 
     private Map<String, String> startConsent(Member member, String access, String returnTo) throws Exception {
         MvcResult result = mockMvc.perform(MockMvcRequestBuilders.post(connectionsPath(member) + "/google")

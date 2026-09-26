@@ -155,6 +155,59 @@ describe('YourDataView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
+  it('says what choosing Drive files keeps and reads only where Drive is offered or was used', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: ['CALENDAR_EVENTS'],
+    })
+    let text = (await mountPage()).text().replace(/\s+/g, ' ')
+    expect(text).not.toContain('Google Drive')
+
+    document.body.innerHTML = ''
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: ['CALENDAR_EVENTS', 'DRIVE_FILES'],
+    })
+    text = (await mountPage()).text().replace(/\s+/g, ' ')
+    expect(text).toContain(
+      "If you choose files in Google Drive: which files they are, each one's name as Google Drive gives it, and since when Brownie may read it.",
+    )
+    expect(text).toContain('After you take a file off your list, or disconnect, Brownie no longer reads it or shows it, but keeps that record')
+    expect(text).toContain('deleted as soon as you disconnect Google, and every file you chose in Google Drive is taken off your list.')
+    expect(text).toContain('and which files you chose, stays with your workspace until the workspace is deleted')
+    expect(text).toContain("what each file you choose in Google Drive is, and a file's content only when you copy it")
+
+    // A Drive connection made while Drive was offered is still described after it stops being offered.
+    document.body.innerHTML = ''
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 1,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: [],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: [],
+    })
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 5, provider: 'GOOGLE', access: 'DRIVE_FILES', state: 'ACTIVE', accountEmail: 'me@example.org', grantedScopes: [],
+        reconnectReason: null, connectedAt: '2026-09-20T10:00:00Z', tokenIssuedAt: '2026-09-20T10:00:00Z', disconnectedAt: null,
+        providerRevocation: null, grants: [],
+      },
+    ])
+    text = (await mountPage()).text().replace(/\s+/g, ' ')
+    expect(text).toContain('If you choose files in Google Drive')
+  })
+
   it('leaves Google out where this Brownie has none set up, or its server is from before connections', async () => {
     // The default capabilities here have no googleConnectorAccess at all, as an older server sends them.
     expect((await mountPage()).text()).not.toContain('Google')

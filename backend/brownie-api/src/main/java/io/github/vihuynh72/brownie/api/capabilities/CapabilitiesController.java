@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.capabilities;
 
+import io.github.vihuynh72.brownie.api.connector.DriveOffer;
 import io.github.vihuynh72.brownie.api.connector.GoogleConnectorSetup;
 import io.github.vihuynh72.brownie.core.artifact.SupportedMediaType;
 import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
@@ -22,8 +23,10 @@ import java.util.List;
  *
  * <p>{@code googleConnectorAccess} is what a person can connect a Google
  * account for here and then use: empty when this deployment has no Google
- * registration, so the interface does not offer it. A Drive connection can be
- * made but nothing reads files through it yet, so only Calendar is offered.
+ * registration, so the interface does not offer it. Calendar is offered
+ * whenever Google is set up; Drive only when it is switched on and a reader
+ * that can open Drive files is plugged in, so it is never offered before it
+ * can work.
  */
 @RestController
 @RequestMapping("/api/v1/capabilities")
@@ -31,7 +34,6 @@ class CapabilitiesController {
 
     private static final List<SupportedMediaType> ASSIST_SOURCE_MEDIA_TYPES = List.of(SupportedMediaType.PLAIN_TEXT);
     private static final List<SupportedMediaType> TEMPLATE_MEDIA_TYPES = List.of(SupportedMediaType.DOCX);
-    private static final List<ConnectorAccess> GOOGLE_ACCESS_IN_USE = List.of(ConnectorAccess.CALENDAR_EVENTS);
 
     private final long maxUploadBytes;
     private final int trashRetentionDays;
@@ -40,12 +42,14 @@ class CapabilitiesController {
     CapabilitiesController(
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes,
             DeletionService deletionService,
-            GoogleConnectorSetup googleConnectorSetup) {
+            GoogleConnectorSetup googleConnectorSetup,
+            DriveOffer driveOffer) {
         this.maxUploadBytes = maxUploadBytes;
         this.trashRetentionDays = deletionService.trashRetentionDays();
-        this.googleConnectorAccess = googleConnectorSetup.configured()
-                ? GOOGLE_ACCESS_IN_USE.stream().map(ConnectorAccess::name).toList()
-                : List.of();
+        this.googleConnectorAccess = Arrays.stream(ConnectorAccess.values())
+                .filter(access -> googleConnectorSetup.configured() && (access != ConnectorAccess.DRIVE_FILES || driveOffer.offered()))
+                .map(ConnectorAccess::name)
+                .toList();
     }
 
     @GetMapping

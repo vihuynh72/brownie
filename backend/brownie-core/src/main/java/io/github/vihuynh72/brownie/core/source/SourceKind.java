@@ -12,5 +12,7 @@ public enum SourceKind {
     /** A file the person uploaded. */
     ARTIFACT,
     /** An event on the person's own Google calendar, written out as text when it was copied. */
-    GOOGLE_CALENDAR
+    GOOGLE_CALENDAR,
+    /** A file the person picked in their Google Drive: a Google Doc as its text, or a plain-text file as it is. */
+    GOOGLE_DRIVE
 }

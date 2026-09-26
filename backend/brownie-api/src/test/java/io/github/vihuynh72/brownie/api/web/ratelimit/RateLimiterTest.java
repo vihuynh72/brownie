@@ -95,6 +95,9 @@ class RateLimiterTest {
         assertThat(classOf("POST", "/api/v1/workspaces/0x7/connections/google/disconnect")).isEqualTo(RateLimitClass.CONNECTOR);
         assertThat(classOf("GET", "/api/v1/workspaces/7/connections/google/calendar/events")).isEqualTo(RateLimitClass.CONNECTOR);
         assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/calendar/imports")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/drive/picks")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/drive/imports")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/connections/google/drive/files/12/forget")).isEqualTo(RateLimitClass.CONNECTOR);
         // Listing what is connected only reads Brownie's own records.
         assertThat(classOf("GET", "/api/v1/workspaces/7/connections")).isEqualTo(RateLimitClass.READ);
     }

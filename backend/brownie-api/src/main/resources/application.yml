@@ -216,6 +216,10 @@ brownie:
       # /api/v1/connectors/google/callback, and must be registered exactly so.
       client-id: ${BROWNIE_GOOGLE_CLIENT_ID:}
       client-secret: ${BROWNIE_GOOGLE_CLIENT_SECRET:}
+      # Whether people may pick files in their Google Drive and copy them into
+      # documents. Off unless switched on, and offered only while a reader
+      # that can open Drive files is plugged in as well.
+      drive-offered: ${BROWNIE_GOOGLE_DRIVE_OFFERED:false}
 
 logging:
   structured:
@@ -324,6 +328,7 @@ brownie:
     google:
       client-id: ""
       client-secret: ""
+      drive-offered: false
   storage:
     # A syntactically valid but unreachable target (port 65535, the same
     # convention the fake OIDC endpoints above use) -- BlobServiceClient

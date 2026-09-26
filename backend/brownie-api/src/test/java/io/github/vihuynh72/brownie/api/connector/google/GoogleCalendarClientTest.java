@@ -6,6 +6,7 @@ import io.github.vihuynh72.brownie.core.connector.CalendarEvent;
 import io.github.vihuynh72.brownie.core.connector.CalendarEventStatus;
 import io.github.vihuynh72.brownie.core.connector.CalendarWindow;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceTooLargeException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceUnavailableException;
 import io.github.vihuynh72.brownie.core.connector.ProviderMisconfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ProviderTokenRejectedException;
@@ -158,6 +159,9 @@ class GoogleCalendarClientTest {
         assertThatThrownBy(() -> client.readEvent(ACCESS_TOKEN, "deleted1"))
                 .isInstanceOf(ConnectorResourceUnavailableException.class)
                 .extracting(e -> ((ConnectorResourceUnavailableException) e).reason()).isEqualTo(ConnectorResourceUnavailableException.Reason.GONE);
+        assertThatThrownBy(() -> client.readEvent(ACCESS_TOKEN, "deleted1"))
+                .as("said as an event, not a file")
+                .extracting(e -> ((ConnectorResourceUnavailableException) e).access()).isEqualTo(ConnectorAccess.CALENDAR_EVENTS);
         assertThatThrownBy(() -> client.readEvent(ACCESS_TOKEN, "deleted2"))
                 .extracting(e -> ((ConnectorResourceUnavailableException) e).reason()).isEqualTo(ConnectorResourceUnavailableException.Reason.GONE);
         assertThatThrownBy(() -> client.readEvent(ACCESS_TOKEN, "called-off"))

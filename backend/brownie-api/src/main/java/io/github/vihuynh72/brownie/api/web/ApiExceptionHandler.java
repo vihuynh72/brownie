@@ -22,10 +22,12 @@ import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionAccountMismatchException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionReconnectRequiredException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorBlockedByOrganizationException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorConsentIncompleteException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorPermissionNotGrantedException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceRefusedException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceTooLargeException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceUnavailableException;
@@ -795,14 +797,23 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return connectorProblem(ex, HttpStatus.CONFLICT, code, ex.getMessage(), request);
     }
 
-    /** The event the person chose is not there any more, or was called off; {@code reason} says which, and nothing was copied. */
+    /** What the person chose cannot be read now; {@code reason} says why, and nothing was copied. */
     @ExceptionHandler(ConnectorResourceUnavailableException.class)
     public ResponseEntity<Object> handleConnectorResourceUnavailable(ConnectorResourceUnavailableException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
         problem.setTitle("Conflict");
+        boolean file = ex.access() == ConnectorAccess.DRIVE_FILES;
         problem.setDetail(switch (ex.reason()) {
-            case GONE -> "Google no longer has this event. Nothing was copied.";
+            case GONE -> file
+                    ? "Google Drive no longer has this file, or no longer lets you open it, so it was taken off your list. Nothing was copied."
+                    : "Google no longer has this event. Nothing was copied.";
             case CANCELLED -> "This event was cancelled in the calendar. Nothing was copied.";
+            case ACCESS_LOST -> "Brownie may no longer open this file, so it was taken off your list. Choose it again in Google Drive to copy it."
+                    + " Nothing was copied.";
+            case DOWNLOAD_RESTRICTED -> "Downloading and copying this file are turned off for you in Google Drive, so Brownie cannot copy it."
+                    + " Nothing was copied.";
+            case TRASHED -> "This file is in the trash in Google Drive. Take it out of the trash to copy it. Nothing was copied.";
+            case CHANGED_DURING_COPY -> "This file changed in Google Drive while Brownie was copying it. Nothing was copied; try again.";
         });
         enrich(problem, "CONNECTOR_RESOURCE_UNAVAILABLE");
         problem.setProperty("reason", ex.reason().name());
@@ -820,16 +831,41 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
-    /** Something Brownie does not copy, such as a whole repeating series; the detail says what to choose instead. */
+    /**
+     * Something Brownie does not copy. For a calendar, such as a whole
+     * repeating series, the detail says what to choose instead; for a Drive
+     * file, {@code reason} says why, in one of Brownie's own sentences.
+     */
     @ExceptionHandler(ConnectorResourceUnsupportedException.class)
     public ResponseEntity<Object> handleConnectorResourceUnsupported(ConnectorResourceUnsupportedException ex, WebRequest request) {
-        return connectorProblem(ex, HttpStatus.UNPROCESSABLE_CONTENT, "CONNECTOR_RESOURCE_UNSUPPORTED", ex.getMessage(), request);
+        if (ex.reason() == null) {
+            return connectorProblem(ex, HttpStatus.UNPROCESSABLE_CONTENT, "CONNECTOR_RESOURCE_UNSUPPORTED", ex.getMessage(), request);
+        }
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Content");
+        problem.setDetail(switch (ex.reason()) {
+            case TYPE -> "Brownie copies only Google Docs and plain-text (.txt) files from Google Drive. Nothing was copied.";
+            case NOT_UTF8 -> "This text file is not saved as UTF-8, the only text encoding Brownie reads. Nothing was copied.";
+        });
+        enrich(problem, "CONNECTOR_RESOURCE_UNSUPPORTED");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** A Drive file the person has not picked, has taken back, or picked through a connection that has since ended. */
+    @ExceptionHandler(ConnectorResourceNotFoundException.class)
+    public ResponseEntity<Object> handleConnectorResourceNotFound(ConnectorResourceNotFoundException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.NOT_FOUND, "CONNECTOR_RESOURCE_NOT_FOUND",
+                "This file is not on your list of files Brownie may read. Choose it again in Google Drive.", request);
     }
 
     @ExceptionHandler(ConnectorResourceTooLargeException.class)
     public ResponseEntity<Object> handleConnectorResourceTooLarge(ConnectorResourceTooLargeException ex, WebRequest request) {
         return connectorProblem(ex, HttpStatus.CONTENT_TOO_LARGE, "CONNECTOR_RESOURCE_TOO_LARGE",
-                "Google's answer was larger than Brownie reads. For a listing, choose a shorter window.", request);
+                ex.access() == ConnectorAccess.DRIVE_FILES
+                        ? "This file is larger than Brownie accepts as a source. Nothing was copied."
+                        : "Google's answer was larger than Brownie reads. For a listing, choose a shorter window.",
+                request);
     }
 
     /** The organization that manages the Google account does not allow this app: only its administrator can change that. */

@@ -16,6 +16,14 @@ import java.util.regex.Pattern;
  * can be completed only by the browser that started it and cannot collide
  * with a sign-in going on in another tab. It is taken out of the session
  * before it is checked, so it can be used once at most.
+ *
+ * <p>{@code pick} says whether the person is choosing Drive files with
+ * Google's picker rather than connecting an account. It was added after
+ * consents were already being kept in sessions, and it is a plain boolean so
+ * that both directions keep working: one stored before it existed reads back
+ * as {@code false}, a connection, which is what every consent then was; and
+ * a build from before it simply ignores it, where a type of Brownie's own
+ * would make that build unable to read the session at all.
  */
 record PendingConsent(
         String state,
@@ -24,7 +32,8 @@ record PendingConsent(
         long userId,
         ConnectorAccess access,
         String returnTo,
-        long createdAtEpochSecond) implements Serializable {
+        long createdAtEpochSecond,
+        boolean pick) implements Serializable {
 
     static final String SESSION_ATTRIBUTE = "brownie.connector.pendingConsent";
 
@@ -59,6 +68,6 @@ record PendingConsent(
     /** Neither secret. */
     @Override
     public String toString() {
-        return "PendingConsent[workspaceId=" + workspaceId + ", access=" + access + ", returnTo=" + returnTo + "]";
+        return "PendingConsent[workspaceId=" + workspaceId + ", access=" + access + ", returnTo=" + returnTo + ", pick=" + pick + "]";
     }
 }
