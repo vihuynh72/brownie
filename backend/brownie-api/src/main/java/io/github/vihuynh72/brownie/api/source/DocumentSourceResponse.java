@@ -45,7 +45,7 @@ public record DocumentSourceResponse(
         static OriginResponse from(SourceSnapshot snapshot) {
             SourceOrigin origin = snapshot.origin();
             String provider = switch (snapshot.kind()) {
-                case GOOGLE_CALENDAR -> "GOOGLE";
+                case GOOGLE_CALENDAR, GOOGLE_DRIVE -> "GOOGLE";
                 case ARTIFACT -> throw new IllegalArgumentException("An upload has no origin elsewhere.");
             };
             return new OriginResponse(
