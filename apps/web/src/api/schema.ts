@@ -1049,6 +1049,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/connections/google/drive/picks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts a pick on Google's own file picker and answers with its address, which the page navigates to. It is a Drive consent with the picker turned on (Google allows only the drive.file permission on it), so it also connects Drive the way connecting again does, and it needs no Drive connection first. Google sends the person back to the consent callback with the chosen files' ids, and the callback records the Google Docs and plain-text files among them, at most ten, as the files Brownie may read. Checked against the session's CSRF token; the answer is not cached. */
+        post: operations["startDrivePick"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google/drive/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Copies one file the caller picked in Google Drive into a document as a text source: a Google Doc as the plain text Google's own export of it produces, a plain-text file as it is. The file is named by the id of the caller's choice (a grant from the connections list), never by Drive's own id. Drive is asked what the file is before anything is read and again after, so the copy is the version it names; the text goes through the same checks as an upload; and the source says where it came from. The same version, or a later version whose text is unchanged, links the copy already made (newCopy false); a changed file is a new copy, and the old one stays. The copy is linked to the document in the same step. */
+        post: operations["importDriveFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/connections/google/drive/files/{grantId}/forget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stops Brownie reading one file the caller picked. Copies already made from it stay with the documents that use them. Answers with every connection as it now stands, as disconnecting does. Never refused for Drive being switched off, and asks Google nothing. */
+        post: operations["forgetDriveFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/connections/google/disconnect": {
         parameters: {
             query?: never;
@@ -1107,7 +1158,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Where Google sends a person back after its consent page. It is a page a browser is sent to, not a request the web app makes: it always answers with a redirect to the page the consent was started from, carrying google=connected and access, or google=failed with access (when a consent was pending) and one of these reason codes: no_pending_request, state_mismatch, expired, not_allowed, not_configured, issuer_mismatch, no_code, permission_not_granted, no_refresh_token, different_account, blocked_by_organization, consent_expired, google_unavailable, provider_error, Google's own error code when it is a plain lowercase word (such as access_denied), or signed_out when the Brownie session has ended. no_pending_request and signed_out always return to /connections. */
+        /** Where Google sends a person back after its consent page. It is a page a browser is sent to, not a request the web app makes: it always answers with a redirect to the page the consent was started from, carrying google=connected and access, or google=failed with access (when a consent was pending) and one of these reason codes: no_pending_request, state_mismatch, expired, not_allowed, not_configured, issuer_mismatch, no_code, permission_not_granted, no_refresh_token, different_account, blocked_by_organization, consent_expired, google_unavailable, not_connected, provider_error, Google's own error code when it is a plain lowercase word (such as access_denied), or signed_out when the Brownie session has ended. no_pending_request and signed_out always return to /connections. A consent started as a Drive pick that completes carries google=picked and access=drive_files instead, with five counts: added (files picked that are now on the caller's list, one already there included), unsupported (not a Google Doc or a plain-text file), unavailable (Drive would not describe it), unchecked (not reached) and over_limit (past the ten a pick adds); and, when the pick stopped before every file was checked for a reason other than Drive not answering, stopped=token_refused (the connection must be made again), blocked_by_organization or not_configured. Drive is connected by then, and anything added before a stop stays on the list. A pick with nothing chosen still connects Drive, and says added=0. */
         get: operations["googleConsentCallback"];
         put?: never;
         post?: never;
@@ -1325,7 +1376,7 @@ export interface components {
              * @enum {string}
              */
             limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
-            /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED; with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets. */
+            /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED for an event, and GONE, ACCESS_LOST, TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY for a Drive file; with CONNECTOR_RESOURCE_UNSUPPORTED, TYPE or NOT_UTF8 for a Drive file (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets. */
             reason?: string;
             /**
              * @description Present only when code is CONNECTION_RECONNECT_REQUIRED, naming the connection that must be made again.
@@ -1514,13 +1565,27 @@ export interface components {
              * @description How Brownie changed its form on the way in.
              * @enum {string|null}
              */
-            conversion?: "CALENDAR_EVENT_AS_TEXT" | null;
+            conversion?: "CALENDAR_EVENT_AS_TEXT" | "GOOGLE_DOC_AS_TEXT" | null;
         };
         ImportCalendarEventRequest: {
             /** Format: int64 */
             documentId: number;
             /** @description The event's id as the listing gave it, including one occurrence of a repeating event. */
             eventId: string;
+        };
+        ImportDriveFileRequest: {
+            /** Format: int64 */
+            documentId: number;
+            /**
+             * Format: int64
+             * @description The id of one of the caller's open Drive choices, as the connections list gives it.
+             */
+            grantId: number;
+        };
+        DriveImportResponse: {
+            source: components["schemas"]["DocumentSourceResponse"];
+            /** @description False when this version of the file had already been copied, or its text is the same as the latest copy's, and this import linked that copy. */
+            newCopy: boolean;
         };
         CalendarImportResponse: {
             source: components["schemas"]["DocumentSourceResponse"];
@@ -1566,7 +1631,7 @@ export interface components {
             templateMediaTypes: string[];
             /** @description How many days something stays in the trash before it is deleted for good. */
             trashRetentionDays: number;
-            /** @description What a person can connect a Google account for here and then use. Empty when this deployment has no Google registration, so the interface does not offer it. A server from before connections existed leaves it out. */
+            /** @description What a person can connect a Google account for here and then use. Empty when this deployment has no Google registration, so the interface does not offer it. DRIVE_FILES is present only when something that can read Drive files is plugged in and Drive is switched on. A server from before connections existed leaves it out. */
             googleConnectorAccess?: ("CALENDAR_EVENTS" | "DRIVE_FILES")[];
         };
         AssistTextRequest: {
@@ -1752,8 +1817,8 @@ export interface components {
              * @enum {string|null}
              */
             dateFormatStyle?: "LONG" | "SHORT" | "ISO" | null;
-            /** @description ALLOWED_SOURCE_KINDS only -- ARTIFACT is an uploaded file; GOOGLE_CALENDAR is an event copied from the person's own Google calendar. */
-            allowedSourceKinds?: ("ARTIFACT" | "GOOGLE_CALENDAR")[] | null;
+            /** @description ALLOWED_SOURCE_KINDS only -- ARTIFACT is an uploaded file; GOOGLE_CALENDAR is an event copied from the person's own Google calendar; GOOGLE_DRIVE is a file the person picked in Google Drive. */
+            allowedSourceKinds?: ("ARTIFACT" | "GOOGLE_CALENDAR" | "GOOGLE_DRIVE")[] | null;
             /**
              * @description MISSING_VALUE_BEHAVIOR or REPEATABLE_REGION_EMPTY_BEHAVIOR only.
              * @enum {string|null}
@@ -4146,6 +4211,184 @@ export interface operations {
             };
         };
     };
+    startDrivePick: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description /connections (the default) or a document's own address. */
+                    returnTo?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Where to send the person. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentStartResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Drive is not offered here: Google is not set up, nothing that can read Drive files is plugged in, or it is switched off (code CONNECTOR_NOT_CONFIGURED). Nothing is sent to Google. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    importDriveFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportDriveFileRequest"];
+            };
+        };
+        responses: {
+            /** @description The document's source for the file. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriveImportResponse"];
+                };
+            };
+            /** @description A missing or non-positive document or grant id (code MALFORMED_REQUEST). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The caller may not manage connections or sources in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such document for the caller, or it is in the trash (code NOT_FOUND); or the grant is not an open Drive choice of the caller's (code CONNECTOR_RESOURCE_NOT_FOUND); or the caller has no Drive connection (code CONNECTION_NOT_FOUND). For a document that is missing or in the trash, and a grant that was not open when the request arrived, Google is not asked anything. A grant taken back or disconnected while the copy was being made, or one made through a connection since replaced, is found only after Google was asked; it also answers CONNECTOR_RESOURCE_NOT_FOUND, and nothing new is kept or linked. In the moment between Google taking a disconnected token back and Brownie recording the disconnect, the answer can instead be CONNECTION_RECONNECT_REQUIRED. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file cannot be read now (code CONNECTOR_RESOURCE_UNAVAILABLE, with reason GONE or ACCESS_LOST, both of which also take it off the caller's list, or TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY), the connection must be made again (code CONNECTION_RECONNECT_REQUIRED), Drive is not offered here (code CONNECTOR_NOT_CONFIGURED), or the organization managing the account does not allow the app (code CONNECTOR_BLOCKED_BY_ORGANIZATION). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file is larger than Brownie accepts as a source (code CONNECTOR_RESOURCE_TOO_LARGE). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Brownie's checks refused the copy (code CONNECTOR_RESOURCE_REFUSED, with the artifact's rejection reason), or the file is not one Brownie copies (code CONNECTOR_RESOURCE_UNSUPPORTED, with reason TYPE for anything but a Google Doc or a plain-text file, or NOT_UTF8 for text not saved as UTF-8). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Google could not answer now (code CONNECTOR_PROVIDER_UNAVAILABLE, with Retry-After), refused Brownie's own setup (code CONNECTOR_MISCONFIGURED), or the malware scanner or file storage could not be reached (code SCANNER_UNAVAILABLE or STORAGE_UNAVAILABLE). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    forgetDriveFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                grantId: components["parameters"]["GrantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's connections after forgetting the file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionResponse"][];
+                };
+            };
+            /** @description The caller may not manage connections in this workspace (code FORBIDDEN). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The grant is not an open Drive choice of the caller's (code CONNECTOR_RESOURCE_NOT_FOUND). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     disconnectGoogle: {
         parameters: {
             query?: never;
@@ -4354,6 +4597,8 @@ export interface operations {
                 state?: string;
                 error?: string;
                 iss?: string;
+                /** @description Google's picker only. The chosen files' ids, comma separated. Read only on the answer to a pick this session started, after every check has passed, and only ids Drive then describes become the caller's choices. */
+                picked_file_ids?: string;
             };
             header?: never;
             path?: never;
