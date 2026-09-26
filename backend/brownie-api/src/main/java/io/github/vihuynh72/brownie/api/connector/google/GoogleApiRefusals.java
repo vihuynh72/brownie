@@ -76,9 +76,11 @@ final class GoogleApiRefusals {
      * The reasons a Google API gave for a refusal, in both of the forms it
      * uses: the older {@code error.errors[].reason} and {@code error.status},
      * and the newer {@code error.details[].reason}. Only plain words are
-     * kept; Google's message is not, since it is free text.
+     * kept, at most eight; Google's message is not, since it is free text.
+     * Usable by the other readers in this package, which may need to tell a
+     * refusal about one file apart from the refusals sorted here.
      */
-    private static List<String> reasonsOf(GoogleHttp http, GoogleHttp.Answer answer) {
+    static List<String> reasonsOf(GoogleHttp http, GoogleHttp.Answer answer) {
         JsonNode error;
         try {
             error = http.json(answer).path("error");
