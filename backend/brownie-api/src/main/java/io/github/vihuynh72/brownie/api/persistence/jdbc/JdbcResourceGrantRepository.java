@@ -96,6 +96,47 @@ class JdbcResourceGrantRepository implements ResourceGrantRepository {
                 connectionId);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<ResourceGrant> find(long workspaceId, long userId, long grantId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate
+                .query("SELECT " + COLUMNS + " FROM connector_resource_grant WHERE workspace_id = ? AND id = ?",
+                        this::mapGrant, workspaceId, grantId)
+                .stream()
+                .findFirst();
+    }
+
+    @Override
+    @Transactional
+    public Optional<ResourceGrant> revoke(long workspaceId, long userId, long grantId, GrantRevocationReason reason) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        // The connection first, then the grant: the order recording a grant, recording a copy, disconnecting and
+        // deleting the workspace all take, so none of them can wait on this while this waits on it.
+        boolean mine = !jdbcTemplate
+                .queryForList(
+                        "SELECT c.id FROM connector_connection c JOIN connector_resource_grant g"
+                                + " ON g.workspace_id = c.workspace_id AND g.connection_id = c.id"
+                                + " WHERE g.workspace_id = ? AND g.id = ? FOR SHARE OF c",
+                        Long.class,
+                        workspaceId,
+                        grantId)
+                .isEmpty();
+        if (!mine) {
+            return Optional.empty();
+        }
+        return jdbcTemplate
+                .query(
+                        "UPDATE connector_resource_grant SET revoked_at = now(), revoked_reason = ?"
+                                + " WHERE workspace_id = ? AND id = ? AND revoked_at IS NULL RETURNING " + COLUMNS,
+                        this::mapGrant,
+                        reason.name(),
+                        workspaceId,
+                        grantId)
+                .stream()
+                .findFirst();
+    }
+
     private ResourceGrant mapGrant(ResultSet rs, int rowNum) throws SQLException {
         String reason = rs.getString("revoked_reason");
         return new ResourceGrant(
