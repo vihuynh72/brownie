@@ -44,6 +44,21 @@ export const PERMISSION_WORDS: Record<ConnectorAccess, { google: string; alsoAsk
   },
 }
 
+/**
+ * What Brownie does with Drive once this Brownie offers it. Until then the
+ * sentence above stays true, even for someone who connected Drive earlier.
+ */
+export const DRIVE_WORDS_WHEN_OFFERED =
+  "When you pick files in Google's own file picker, Brownie asks Google Drive what each one is and keeps its name. It " +
+  'reads a file\'s content only when you copy that file into a document, reads nothing you did not pick, and never ' +
+  'changes, moves or deletes anything in your Drive. Google has no read-only form of this permission: reading only ' +
+  "what you pick is Brownie's own rule, kept by its database, not a limit Google puts on the permission."
+
+/** Brownie's side of the Drive permission, as it is on this Brownie now. */
+export function driveBrownieWords(driveOffered: boolean): string {
+  return driveOffered ? DRIVE_WORDS_WHEN_OFFERED : PERMISSION_WORDS.DRIVE_FILES.brownie
+}
+
 /** What this deployment offers to connect, or null when the server did not say (one from before connections existed). */
 export function offeredAccess(capabilities: CapabilitiesResponse | null): ConnectorAccess[] | null {
   const offered = capabilities?.googleConnectorAccess
@@ -151,18 +166,42 @@ const CONSENT_FAILURES: Record<string, string> = {
     'The organization that manages that Google account does not allow Brownie to read it, so nothing was connected. Its administrator can change that.',
   consent_expired: "Google stopped accepting Brownie's access moments after you agreed, so nothing was connected. Try again.",
   google_unavailable: 'Google could not be reached, so nothing was connected. Try again in a minute.',
+  not_connected: 'Google Drive was disconnected while your files were being added, so none was added. Choose them again.',
   signed_out:
     'Your Brownie session had ended by the time Google sent you back, so nothing was connected. Connect again from here.',
   access_denied: "You chose not to allow access on Google's page, so nothing was connected.",
 }
 
+/** The parameters Google's answer puts in a page's address, which the page takes out once it has said what they meant. */
+export const CONSENT_QUERY_KEYS = [
+  'google',
+  'access',
+  'reason',
+  'added',
+  'unsupported',
+  'unavailable',
+  'unchecked',
+  'over_limit',
+  'stopped',
+]
+
 /**
  * What to tell the person when Google has just sent them back here, read
  * from the address the server redirected to; null when this visit is not
  * such a return. A reason code the page has no words for is not shown raw.
+ * {@code added} is how many files a pick put on the person's list, and is
+ * present only for a pick.
  */
-export function consentOutcome(query: LocationQuery): { tone: 'success' | 'failure'; access: ConnectorAccess | null; text: string } | null {
+export function consentOutcome(
+  query: LocationQuery,
+): { tone: 'success' | 'failure'; access: ConnectorAccess | null; text: string; added?: number } | null {
   const google = query.google
+  if (google === 'picked') {
+    const added = countOf(query.added)
+    // A pick that stopped partway is said as a problem, with what it did add, since Drive is connected by then.
+    const tone = typeof query.stopped === 'string' && query.stopped !== '' ? 'failure' : 'success'
+    return { tone, access: 'DRIVE_FILES', text: pickOutcomeSentence(query), added }
+  }
   if (google !== 'connected' && google !== 'failed') {
     return null
   }
@@ -173,9 +212,9 @@ export function consentOutcome(query: LocationQuery): { tone: 'success' | 'failu
       tone: 'success',
       access,
       text:
-        access === 'CALENDAR_EVENTS'
+        (access === 'CALENDAR_EVENTS'
           ? `${name} is connected. Brownie lists the days you ask for and copies only the event you choose.`
-          : `${name} is connected.`,
+          : `${name} is connected.`),
     }
   }
   const reason = typeof query.reason === 'string' ? query.reason : ''
@@ -186,22 +225,90 @@ export function consentOutcome(query: LocationQuery): { tone: 'success' | 'failu
   }
 }
 
+/** A count from the address, or 0 for anything that is not a small whole number. */
+function countOf(value: LocationQuery[string]): number {
+  return typeof value === 'string' && /^\d{1,4}$/.test(value) ? Number(value) : 0
+}
+
+function files(count: number): string {
+  return `${count} ${count === 1 ? 'file' : 'files'}`
+}
+
+/** Why a pick stopped before every file was checked, as the rest of a sentence about the files left unchecked. */
+const PICK_STOPS: Record<string, string> = {
+  token_refused:
+    "Google stopped accepting Brownie's access while your files were being added, so Google Drive needs connecting again. " +
+    'Choose them again to connect it again.',
+  blocked_by_organization: 'the organization that manages this Google account does not allow Brownie to read its Drive files.',
+  not_configured: "Brownie's connection to Google Drive is not set up correctly. Whoever runs this Brownie has to fix it.",
+}
+
+/**
+ * What a pick did, from its counts: how many of the files picked are on the
+ * person's list now, and in a sentence each, why any others are not. A pick
+ * with nothing chosen still connected Google Drive, and says so; so does one
+ * that stopped partway, which also says why.
+ */
+function pickOutcomeSentence(query: LocationQuery): string {
+  const added = countOf(query.added)
+  const unsupported = countOf(query.unsupported)
+  const unavailable = countOf(query.unavailable)
+  const unchecked = countOf(query.unchecked)
+  const overLimit = countOf(query.over_limit)
+  const stopped = typeof query.stopped === 'string' ? query.stopped : ''
+  if (added + unsupported + unavailable + unchecked + overLimit === 0) {
+    return "Google Drive is connected. Nothing was chosen in Google's file picker, so no file was added."
+  }
+  const sentences = [
+    added === 0
+      ? 'None of the files you chose was put on your list of files Brownie may read.'
+      : `${files(added)} you chose ${added === 1 ? 'is' : 'are'} now on your list of files Brownie may read. ` +
+        "Brownie reads a file's content only when you copy it into a document.",
+  ]
+  if (unsupported > 0) {
+    sentences.push(`${files(unsupported)} ${unsupported === 1 ? 'was' : 'were'} not added: Brownie reads only Google Docs and plain-text (.txt) files.`)
+  }
+  if (unavailable > 0) {
+    sentences.push(`${files(unavailable)} could not be opened in Google Drive, so ${unavailable === 1 ? 'it was' : 'they were'} not added.`)
+  }
+  if (unchecked > 0) {
+    const stop = PICK_STOPS[stopped]
+    if (stopped === 'token_refused') {
+      sentences.push(`${files(unchecked)} ${unchecked === 1 ? 'was' : 'were'} not checked. ${stop}`)
+    } else if (stop !== undefined) {
+      sentences.push(`${files(unchecked)} ${unchecked === 1 ? 'was' : 'were'} not checked: ${stop}`)
+    } else if (stopped !== '') {
+      sentences.push(`${files(unchecked)} ${unchecked === 1 ? 'was' : 'were'} not checked. Choose ${unchecked === 1 ? 'it' : 'them'} again.`)
+    } else {
+      sentences.push(`${files(unchecked)} could not be checked because Google Drive did not answer. Choose ${unchecked === 1 ? 'it' : 'them'} again.`)
+    }
+  }
+  if (overLimit > 0) {
+    sentences.push(`${files(overLimit)} ${overLimit === 1 ? 'was' : 'were'} not added: one pick adds at most 10 files. Choose the rest in another pick.`)
+  }
+  return sentences.join(' ')
+}
+
 /**
  * The sentence for a failed connection request. Brownie's connector codes
  * come first, because some of them arrive as a 503 or 409 whose generic
  * reading would be wrong (waiting does not fix a setup problem); everything
  * else falls through to the shared wording.
  */
-export function describeConnectorFailure(error: unknown, what: string): string | null {
+export function describeConnectorFailure(error: unknown, what: string, access: ConnectorAccess = 'CALENDAR_EVENTS'): string | null {
   if (error instanceof ApiRequestError && !error.routeMissing) {
     const code = error.problem?.code
     switch (code) {
       case 'CONNECTOR_NOT_CONFIGURED':
-        return 'Connecting a Google account is not set up on this Brownie.'
+        return access === 'DRIVE_FILES'
+          ? 'Copying files from Google Drive is not offered on this Brownie at the moment.'
+          : 'Connecting a Google account is not set up on this Brownie.'
       case 'CONNECTOR_MISCONFIGURED':
         return "Brownie's connection to Google is not set up correctly. Whoever runs this Brownie has to fix it."
       case 'CONNECTION_NOT_FOUND':
-        return 'Google Calendar is not connected. Connect it first.'
+        return `${ACCESS_NAMES[access]} is not connected. ${access === 'DRIVE_FILES' ? 'Choose files in Google Drive first.' : 'Connect it first.'}`
+      case 'CONNECTOR_RESOURCE_NOT_FOUND':
+        return 'That file is no longer on your list of files Brownie may read. Choose it again in Google Drive.'
       case 'CONNECTION_RECONNECT_REQUIRED': {
         const why = error.problem?.reason ? RECONNECT_REASONS[error.problem.reason] : undefined
         return why ?? "Brownie can no longer use this Google connection. Connect again to carry on."
@@ -211,7 +318,9 @@ export function describeConnectorFailure(error: unknown, what: string): string |
       case 'CONNECTOR_PROVIDER_UNAVAILABLE':
         return 'Google could not be reached. Nothing was changed; try again in a minute.'
       case 'CONNECTOR_RESOURCE_TOO_LARGE':
-        return "Google's answer was larger than Brownie reads. Choose fewer days."
+        return access === 'DRIVE_FILES'
+          ? 'That file is larger than Brownie accepts as a source.'
+          : "Google's answer was larger than Brownie reads. Choose fewer days."
       case 'FORBIDDEN':
         return 'Your account may not connect Google accounts in this workspace.'
       default:
@@ -221,17 +330,75 @@ export function describeConnectorFailure(error: unknown, what: string): string |
   return describeCommonFailure(error, what)
 }
 
+/**
+ * A picked file as a sentence names it: its name in quotes, or "that file"
+ * when Drive gave it none, so a placeholder is never quoted as if it were a
+ * name. {@code atStart} capitalises it for the start of a sentence.
+ */
+export function mentionFile(displayName: string | null | undefined, atStart = false): string {
+  if (typeof displayName === 'string' && displayName.trim() !== '') {
+    return `"${displayName}"`
+  }
+  return atStart ? 'That file' : 'that file'
+}
+
+/**
+ * Why one Drive file was not copied, named as its list names it. Each
+ * reason gets Brownie's own sentence rather than the server's, so the words
+ * match the button the person pressed.
+ */
+export function describeDriveCopyFailure(error: unknown, displayName: string | null | undefined): string {
+  const quoted = mentionFile(displayName)
+  const Quoted = mentionFile(displayName, true)
+  if (error instanceof ApiRequestError && !error.routeMissing) {
+    const reason = error.problem?.reason
+    switch (error.problem?.code) {
+      case 'CONNECTOR_RESOURCE_UNAVAILABLE':
+        switch (reason) {
+          case 'GONE':
+            return `Google Drive no longer has ${quoted}, or no longer lets you open it, so it was taken off your list. Nothing was copied.`
+          case 'ACCESS_LOST':
+            return `Brownie may no longer open ${quoted}, so it was taken off your list. Choose it again in Google Drive to copy it.`
+          case 'TRASHED':
+            return `${Quoted} is in the trash in Google Drive. Take it out of the trash to copy it.`
+          case 'DOWNLOAD_RESTRICTED':
+            return `Downloading and copying ${quoted} are turned off for you in Google Drive, so Brownie cannot copy it.`
+          case 'CHANGED_DURING_COPY':
+            return `${Quoted} changed in Google Drive while Brownie was copying it, so nothing was kept. Try again.`
+          default:
+            return `${Quoted} cannot be copied from Google Drive now. Nothing was copied.`
+        }
+      case 'CONNECTOR_RESOURCE_UNSUPPORTED':
+        return reason === 'NOT_UTF8'
+          ? `${Quoted} is not saved as UTF-8, the only text encoding Brownie reads, so it was not copied.`
+          : `Brownie copies only Google Docs and plain-text (.txt) files, so ${quoted} was not copied.`
+      case 'CONNECTOR_RESOURCE_REFUSED':
+        return `${Quoted} was not copied: Brownie's checks refused it.`
+      case 'CONNECTOR_RESOURCE_TOO_LARGE':
+        return `${Quoted} is larger than Brownie accepts as a source, so it was not copied.`
+      case 'CONNECTOR_RESOURCE_NOT_FOUND':
+        return `${Quoted} is no longer on your list of files Brownie may read. Choose it again in Google Drive.`
+      case 'NOT_FOUND':
+        return 'This document is no longer available, so nothing was copied.'
+      default:
+        break
+    }
+  }
+  return `${Quoted} was not copied. ${describeConnectorFailure(error, 'a way to copy files from Google Drive', 'DRIVE_FILES') ?? 'Try again.'}`
+}
+
 /** A copied source's origin in a few words, or null for an upload (or a server that does not say). */
 export function originSentence(source: DocumentSourceResponse): string | null {
   const origin = source.origin ?? null
   if (origin === null || origin.provider !== 'GOOGLE') {
     return null
   }
-  const where = source.kind === 'GOOGLE_CALENDAR' ? 'Google Calendar' : 'Google'
+  const where = source.kind === 'GOOGLE_CALENDAR' ? 'Google Calendar' : source.kind === 'GOOGLE_DRIVE' ? 'Google Drive' : 'Google'
+  const asText = origin.conversion === 'CALENDAR_EVENT_AS_TEXT' || origin.conversion === 'GOOGLE_DOC_AS_TEXT'
   const copied = day(source.fetchedAt)
   const changed = day(origin.modifiedAt)
-  // The copy is never refreshed, so when the event was changed is said as of the copy, not as if it were still true.
-  return `Copied from ${where}${origin.conversion === 'CALENDAR_EVENT_AS_TEXT' ? ' as text' : ''}${copied ? ` on ${copied}` : ''}${
+  // The copy is never refreshed, so when the thing was changed is said as of the copy, not as if it were still true.
+  return `Copied from ${where}${asText ? ' as text' : ''}${copied ? ` on ${copied}` : ''}${
     changed ? `, when it had last been changed there on ${changed}` : ''
   }.`
 }
@@ -240,4 +407,9 @@ export function originSentence(source: DocumentSourceResponse): string | null {
 export function originLink(source: DocumentSourceResponse): string | null {
   const link = source.origin?.link
   return typeof link === 'string' && link.startsWith('https://') ? link : null
+}
+
+/** What the link to a copied source's page at the provider says. */
+export function originLinkLabel(source: DocumentSourceResponse): string {
+  return source.kind === 'GOOGLE_CALENDAR' ? 'Open in Google Calendar' : source.kind === 'GOOGLE_DRIVE' ? 'Open in Google Drive' : 'Open in Google'
 }
