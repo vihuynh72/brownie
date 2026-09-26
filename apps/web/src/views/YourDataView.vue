@@ -43,6 +43,7 @@ const practices = ref<DataPracticesResponse | null>(null)
 const capabilities = ref<CapabilitiesResponse | null>(null)
 const capabilitiesFailed = ref(false)
 const hasConnections = ref(false)
+const hasDriveConnection = ref(false)
 const usage = ref<UsageResponse | null>(null)
 const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 const loadError = ref<string | null>(null)
@@ -88,6 +89,10 @@ const googleOffered = computed(() => (offeredAccess(capabilities.value)?.length 
  * has no Google set up and the person never connected, or is from before connections existed.
  */
 const mentionsGoogle = computed(() => capabilitiesFailed.value || googleOffered.value || hasConnections.value)
+/** The same, for choosing files in Google Drive: where it is offered, where the person has a Drive connection, or when unknown. */
+const mentionsDrive = computed(
+  () => capabilitiesFailed.value || (offeredAccess(capabilities.value)?.includes('DRIVE_FILES') ?? false) || hasDriveConnection.value,
+)
 
 const money = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 })
 
@@ -145,12 +150,14 @@ async function loadConnections(workspaceId: number | undefined): Promise<void> {
     const connections = await listConnections(workspaceId)
     if (session.personalWorkspaceId === workspaceId) {
       hasConnections.value = connections.length > 0
+      hasDriveConnection.value = connections.some((connection) => connection.access === 'DRIVE_FILES')
     }
   } catch (error) {
     // A server from before connections has no such route and so nothing kept; any other failure leaves it unknown,
     // and the sentences about Google, all worded "if you connect", are said rather than left out.
     if (!(error instanceof ApiRequestError && error.routeMissing) && session.personalWorkspaceId === workspaceId) {
       hasConnections.value = true
+      hasDriveConnection.value = true
     }
   }
 }
@@ -271,6 +278,12 @@ watch(
         Brownie, kept encrypted. A calendar event you copy into a document is kept as text, like a file you attach, and
         says where it came from.
       </li>
+      <li v-if="mentionsDrive">
+        If you choose files in Google Drive: which files they are, each one's name as Google Drive gives it, and since when
+        Brownie may read it. After you take a file off your list, or disconnect, Brownie no longer reads it or shows it,
+        but keeps that record with your workspace, as it does which account was connected. A file you copy into a document
+        is kept as text, like a file you attach, and says where it came from.
+      </li>
     </ul>
 
     <h2 class="privacy__heading">How long</h2>
@@ -295,8 +308,11 @@ watch(
       <li v-if="auditRecordPeriod">The record of actions is kept for {{ auditRecordPeriod }}.</li>
       <li v-else>The record of actions is kept for a set period, then removed.</li>
       <li v-if="mentionsGoogle">
-        The access Google gives Brownie is deleted as soon as you disconnect Google. Which account was connected, and
-        when, stays with your workspace; copies already made stay with their documents.
+        The access Google gives Brownie is deleted as soon as you disconnect Google<template v-if="mentionsDrive">, and
+        every file you chose in Google Drive is taken off your list</template>. Which account was connected, and when<template
+          v-if="mentionsDrive"
+        >, and which files you chose</template>, stays with your workspace until the workspace is deleted; copies already
+        made stay with their documents.
       </li>
       <li>
         When something is deleted for good, what remains is a note that a deletion happened: numbers, dates and
@@ -318,7 +334,8 @@ watch(
       <li>Every file you upload is scanned for viruses on Brownie's own server before anything reads it.</li>
       <li v-if="mentionsGoogle">
         If you connect a Google account, Brownie reads from Google only what you ask for (the days of your calendar you
-        list, and the event you copy) and never changes anything there. See or remove it on the
+        list, and the event you copy<template v-if="mentionsDrive">; what each file you choose in Google Drive is, and a
+        file's content only when you copy it</template>) and never changes anything there. See or remove it on the
         <RouterLink to="/connections">Connections</RouterLink> page.
       </li>
     </ul>
