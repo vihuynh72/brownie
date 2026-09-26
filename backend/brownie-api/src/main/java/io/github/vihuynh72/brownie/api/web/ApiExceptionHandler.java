@@ -27,6 +27,7 @@ import io.github.vihuynh72.brownie.core.connector.ConnectorBlockedByOrganization
 import io.github.vihuynh72.brownie.core.connector.ConnectorConsentIncompleteException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorPermissionNotGrantedException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorResourceNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceRefusedException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceTooLargeException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorResourceUnavailableException;
@@ -830,16 +831,41 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
-    /** Something Brownie does not copy, such as a whole repeating series; the detail says what to choose instead. */
+    /**
+     * Something Brownie does not copy. For a calendar, such as a whole
+     * repeating series, the detail says what to choose instead; for a Drive
+     * file, {@code reason} says why, in one of Brownie's own sentences.
+     */
     @ExceptionHandler(ConnectorResourceUnsupportedException.class)
     public ResponseEntity<Object> handleConnectorResourceUnsupported(ConnectorResourceUnsupportedException ex, WebRequest request) {
-        return connectorProblem(ex, HttpStatus.UNPROCESSABLE_CONTENT, "CONNECTOR_RESOURCE_UNSUPPORTED", ex.getMessage(), request);
+        if (ex.reason() == null) {
+            return connectorProblem(ex, HttpStatus.UNPROCESSABLE_CONTENT, "CONNECTOR_RESOURCE_UNSUPPORTED", ex.getMessage(), request);
+        }
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Content");
+        problem.setDetail(switch (ex.reason()) {
+            case TYPE -> "Brownie copies only Google Docs and plain-text (.txt) files from Google Drive. Nothing was copied.";
+            case NOT_UTF8 -> "This text file is not saved as UTF-8, the only text encoding Brownie reads. Nothing was copied.";
+        });
+        enrich(problem, "CONNECTOR_RESOURCE_UNSUPPORTED");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** A Drive file the person has not picked, has taken back, or picked through a connection that has since ended. */
+    @ExceptionHandler(ConnectorResourceNotFoundException.class)
+    public ResponseEntity<Object> handleConnectorResourceNotFound(ConnectorResourceNotFoundException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.NOT_FOUND, "CONNECTOR_RESOURCE_NOT_FOUND",
+                "This file is not on your list of files Brownie may read. Choose it again in Google Drive.", request);
     }
 
     @ExceptionHandler(ConnectorResourceTooLargeException.class)
     public ResponseEntity<Object> handleConnectorResourceTooLarge(ConnectorResourceTooLargeException ex, WebRequest request) {
         return connectorProblem(ex, HttpStatus.CONTENT_TOO_LARGE, "CONNECTOR_RESOURCE_TOO_LARGE",
-                "Google's answer was larger than Brownie reads. For a listing, choose a shorter window.", request);
+                ex.access() == ConnectorAccess.DRIVE_FILES
+                        ? "This file is larger than Brownie accepts as a source. Nothing was copied."
+                        : "Google's answer was larger than Brownie reads. For a listing, choose a shorter window.",
+                request);
     }
 
     /** The organization that manages the Google account does not allow this app: only its administrator can change that. */

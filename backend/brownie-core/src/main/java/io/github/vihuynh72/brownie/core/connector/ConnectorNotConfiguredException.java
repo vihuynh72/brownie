@@ -6,4 +6,9 @@ public class ConnectorNotConfiguredException extends RuntimeException {
     public ConnectorNotConfiguredException() {
         super("Connecting a Google account is not set up on this Brownie.");
     }
+
+    /** For something narrower than the whole connection, such as one kind of access this deployment does not offer. */
+    public ConnectorNotConfiguredException(String message) {
+        super(message);
+    }
 }
