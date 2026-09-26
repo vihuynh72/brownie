@@ -26,6 +26,11 @@ import java.util.Map;
  * else. {@code access_type=offline} with {@code prompt=consent} is what makes
  * Google hand back a refresh token every time, including when the person has
  * agreed before and is connecting again.
+ *
+ * <p>The same address, with Google's picker turned on, is how a person
+ * chooses Drive files: Google shows its own file picker after the consent and
+ * sends the chosen files' ids back with the code. Google allows only the
+ * {@code drive.file} permission on it, which is all a Drive consent asks for.
  */
 public final class GoogleConsentRequests {
 
@@ -35,23 +40,48 @@ public final class GoogleConsentRequests {
     private GoogleConsentRequests() {
     }
 
+    /** The documents that can be imported: Google Docs and plain-text files. The picker shows only these. */
+    private static final String PICKABLE_TYPES = "application/vnd.google-apps.document,text/plain";
+
     public static URI authorizationUri(GoogleClientSettings settings, ConnectorAccess access, String state, String codeChallenge) {
+        return build(settings, access, state, codeChallenge, true, false);
+    }
+
+    /**
+     * Google's file picker for Drive. {@code offline} asks for a refresh token
+     * too, as connecting does; without it Google may send only a short-lived
+     * access token with the chosen ids.
+     */
+    public static URI drivePickUri(GoogleClientSettings settings, String state, String codeChallenge, boolean offline) {
+        return build(settings, ConnectorAccess.DRIVE_FILES, state, codeChallenge, offline, true);
+    }
+
+    private static URI build(
+            GoogleClientSettings settings, ConnectorAccess access, String state, String codeChallenge, boolean offline, boolean pick) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("client_id", settings.clientId());
         values.put("redirect_uri", settings.redirectUri().toString());
         values.put("scope", String.join(" ", GoogleScopes.requested(access)));
         values.put("state", state);
         values.put("code_challenge", codeChallenge);
+        values.put("mimetypes", PICKABLE_TYPES);
         UriComponentsBuilder builder = UriComponentsBuilder.fromUri(settings.authorizationUri())
                 .queryParam("client_id", "{client_id}")
                 .queryParam("redirect_uri", "{redirect_uri}")
                 .queryParam("response_type", "code")
-                .queryParam("scope", "{scope}")
-                .queryParam("access_type", "offline")
-                .queryParam("prompt", "consent")
+                .queryParam("scope", "{scope}");
+        if (offline) {
+            builder.queryParam("access_type", "offline");
+        }
+        builder.queryParam("prompt", "consent")
                 .queryParam("state", "{state}")
                 .queryParam("code_challenge", "{code_challenge}")
                 .queryParam("code_challenge_method", "S256");
+        if (pick) {
+            builder.queryParam("trigger_onepick", "true")
+                    .queryParam("allow_multiple", "true")
+                    .queryParam("mimetypes", "{mimetypes}");
+        }
         // Encoding the template before expanding it encodes each value strictly, reserved characters included.
         return builder.encode().buildAndExpand(values).toUri();
     }
