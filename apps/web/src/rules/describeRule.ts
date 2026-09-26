@@ -24,6 +24,7 @@ const OVERFLOW_LABELS: Record<string, string> = {
 const SOURCE_KIND_LABELS: Record<string, string> = {
   ARTIFACT: 'uploaded files',
   GOOGLE_CALENDAR: 'events copied from Google Calendar',
+  GOOGLE_DRIVE: 'files copied from Google Drive',
 }
 
 /**
