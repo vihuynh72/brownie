@@ -22,6 +22,7 @@ import io.github.vihuynh72.brownie.core.compile.CompilationNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionAccountMismatchException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionNotFoundException;
 import io.github.vihuynh72.brownie.core.connector.ConnectionReconnectRequiredException;
+import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorBlockedByOrganizationException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorConsentIncompleteException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorNotConfiguredException;
@@ -795,14 +796,23 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return connectorProblem(ex, HttpStatus.CONFLICT, code, ex.getMessage(), request);
     }
 
-    /** The event the person chose is not there any more, or was called off; {@code reason} says which, and nothing was copied. */
+    /** What the person chose cannot be read now; {@code reason} says why, and nothing was copied. */
     @ExceptionHandler(ConnectorResourceUnavailableException.class)
     public ResponseEntity<Object> handleConnectorResourceUnavailable(ConnectorResourceUnavailableException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
         problem.setTitle("Conflict");
+        boolean file = ex.access() == ConnectorAccess.DRIVE_FILES;
         problem.setDetail(switch (ex.reason()) {
-            case GONE -> "Google no longer has this event. Nothing was copied.";
+            case GONE -> file
+                    ? "Google Drive no longer has this file, or no longer lets you open it, so it was taken off your list. Nothing was copied."
+                    : "Google no longer has this event. Nothing was copied.";
             case CANCELLED -> "This event was cancelled in the calendar. Nothing was copied.";
+            case ACCESS_LOST -> "Brownie may no longer open this file, so it was taken off your list. Choose it again in Google Drive to copy it."
+                    + " Nothing was copied.";
+            case DOWNLOAD_RESTRICTED -> "Downloading and copying this file are turned off for you in Google Drive, so Brownie cannot copy it."
+                    + " Nothing was copied.";
+            case TRASHED -> "This file is in the trash in Google Drive. Take it out of the trash to copy it. Nothing was copied.";
+            case CHANGED_DURING_COPY -> "This file changed in Google Drive while Brownie was copying it. Nothing was copied; try again.";
         });
         enrich(problem, "CONNECTOR_RESOURCE_UNAVAILABLE");
         problem.setProperty("reason", ex.reason().name());

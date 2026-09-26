@@ -125,7 +125,7 @@ public class CalendarImportService {
         CalendarEvent event = read(calendar, () -> calendarReader.readEvent(calendar.accessToken(), eventId));
         Instant readAt = Instant.now();
         if (event.status() == CalendarEventStatus.CANCELLED) {
-            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED);
+            throw new ConnectorResourceUnavailableException(ConnectorResourceUnavailableException.Reason.CANCELLED, ConnectorAccess.CALENDAR_EVENTS);
         }
         if (event.series()) {
             throw new ConnectorResourceUnsupportedException("This is a repeating series; choose one of its occurrences instead.");
