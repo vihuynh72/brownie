@@ -113,7 +113,7 @@ describe('what a pick says when Google sends the person back', () => {
 
   it('names every parameter the answer puts in the address, so a page can take them all out', () => {
     expect(CONSENT_QUERY_KEYS).toEqual(
-      expect.arrayContaining(['google', 'access', 'reason', 'added', 'unsupported', 'unavailable', 'unchecked', 'over_limit', 'stopped']),
+      expect.arrayContaining(['google', 'access', 'reason', 'picked', 'added', 'unsupported', 'unavailable', 'unchecked', 'over_limit', 'stopped']),
     )
   })
 
@@ -123,6 +123,9 @@ describe('what a pick says when Google sends the person back', () => {
     )
   })
 
+  it('still reads the answer of an older server, which only counted what its picker test returned', () => {
+    expect(consentOutcome({ google: 'connected', access: 'drive_files', picked: '3' })?.text).toContain('Google sent back 3 chosen files')
+  })
 })
 
 describe('why a Drive file was not copied', () => {

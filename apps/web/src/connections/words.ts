@@ -177,6 +177,7 @@ export const CONSENT_QUERY_KEYS = [
   'google',
   'access',
   'reason',
+  'picked',
   'added',
   'unsupported',
   'unavailable',
@@ -205,6 +206,7 @@ export function consentOutcome(
   if (google !== 'connected' && google !== 'failed') {
     return null
   }
+  const picked = pickedSentence(query.picked)
   const access = query.access === 'calendar_events' ? 'CALENDAR_EVENTS' : query.access === 'drive_files' ? 'DRIVE_FILES' : null
   if (google === 'connected') {
     const name = access ? ACCESS_NAMES[access] : 'Your Google account'
@@ -214,14 +216,14 @@ export function consentOutcome(
       text:
         (access === 'CALENDAR_EVENTS'
           ? `${name} is connected. Brownie lists the days you ask for and copies only the event you choose.`
-          : `${name} is connected.`),
+          : `${name} is connected.`) + picked,
     }
   }
   const reason = typeof query.reason === 'string' ? query.reason : ''
   return {
     tone: 'failure',
     access,
-    text: CONSENT_FAILURES[reason] ?? 'Google did not complete the connection, so nothing was connected. Try again.',
+    text: (CONSENT_FAILURES[reason] ?? 'Google did not complete the connection, so nothing was connected. Try again.') + picked,
   }
 }
 
@@ -287,6 +289,17 @@ function pickOutcomeSentence(query: LocationQuery): string {
     sentences.push(`${files(overLimit)} ${overLimit === 1 ? 'was' : 'were'} not added: one pick adds at most 10 files. Choose the rest in another pick.`)
   }
   return sentences.join(' ')
+}
+
+/** What a return from the development-only file picker test adds: how many files came back. Nothing is read from them. */
+function pickedSentence(value: LocationQuery[string]): string {
+  if (typeof value !== 'string' || !/^\d{1,4}$/.test(value)) {
+    return ''
+  }
+  const count = Number(value)
+  return ` Google sent back ${count} chosen ${count === 1 ? 'file' : 'files'}. Brownie did not open ${
+    count === 1 ? 'it' : 'them'
+  }; this was a test of Google's file picker.`
 }
 
 /**

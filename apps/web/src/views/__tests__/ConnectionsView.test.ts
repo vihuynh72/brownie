@@ -417,6 +417,70 @@ describe('ConnectionsView', () => {
     wrapper.unmount()
   })
 
+  it("offers Google's file picker as a test in development builds, only where Google is set up", async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true' })
+    const wrapper = await mountAt()
+
+    expect(import.meta.env.DEV).toBe(true)
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+    expect(startDrivePick).toHaveBeenCalledWith(7, '/connections')
+    expect(navigateTo).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?trigger_onepick=true')
+    wrapper.unmount()
+
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities([]))
+    resetCapabilitiesCache()
+    const without = await mountAt()
+    expect(without.find('#connections-try-picker').exists()).toBe(false)
+    without.unmount()
+  })
+
+  it("says plainly when the server has no picker test", async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockRejectedValue(new ApiRequestError(404, problem(404, 'No endpoint POST /api/v1/workspaces/7/connections/google/drive/picks.', 'NOT_FOUND')))
+    const wrapper = await mountAt()
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toBe('The Brownie server that answered does not have the file picker test.')
+    wrapper.unmount()
+  })
+
+  it('says why a server that records picked files refuses the picker test, rather than that Google is not set up', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    vi.mocked(startDrivePick).mockRejectedValue(
+      new ApiRequestError(409, problem(409, 'Choosing and copying Google Drive files is not offered on this Brownie at the moment.', 'CONNECTOR_NOT_CONFIGURED')),
+    )
+    const wrapper = await mountAt()
+    await wrapper.find('#connections-try-picker').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toBe(
+      'This Brownie server records the files you pick, so it refuses this test until Google Drive is offered here.',
+    )
+    wrapper.unmount()
+  })
+
+  it('says how many files Google sent back from its picker, and takes it out of the address', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountAt('/connections?google=connected&access=drive_files&picked=2')
+
+    expect(wrapper.find('[role="status"]').text()).toBe(
+      "Google Drive is connected. Google sent back 2 chosen files. Brownie did not open them; this was a test of Google's file picker.",
+    )
+    expect(router.currentRoute.value.query).toEqual({})
+    wrapper.unmount()
+
+    const cancelled = await mountAt('/connections?google=failed&access=drive_files&reason=access_denied&picked=0')
+    expect(cancelled.find('[role="alert"]').text()).toContain("Google sent back 0 chosen files.")
+    cancelled.unmount()
+
+    const odd = await mountAt('/connections?google=connected&access=drive_files&picked=<b>')
+    expect(odd.find('[role="status"]').text()).toBe('Google Drive is connected.')
+    odd.unmount()
+  })
+
   describe('once this Brownie offers Google Drive', () => {
     function driveConnection(overrides: Partial<ConnectionResponse> = {}): ConnectionResponse {
       return connection({
@@ -435,7 +499,7 @@ describe('ConnectionsView', () => {
       vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS', 'DRIVE_FILES']))
     })
 
-    it('says what Brownie does with Drive and lists the files it may read, each with a way to stop reading it', async () => {
+    it('says what Brownie does with Drive, lists the files it may read, and replaces the development test', async () => {
       vi.mocked(listConnections).mockResolvedValue([driveConnection()])
       const wrapper = await mountAt()
 
@@ -447,6 +511,7 @@ describe('ConnectionsView', () => {
       expect(section.text()).toContain('Copies already made from a file stay in your documents when you stop reading it.')
       expect(buttonNamed(wrapper, 'Stop reading this file Minutes').exists()).toBe(true)
       expect(buttonNamed(wrapper, 'Choose more files in Google Drive').exists()).toBe(true)
+      expect(wrapper.find('#connections-try-picker').exists()).toBe(false)
       expect(text(wrapper)).toContain('Every file you chose in Google Drive is taken off your list too.')
       expect(await axe(wrapper.element)).toHaveNoViolations()
       wrapper.unmount()

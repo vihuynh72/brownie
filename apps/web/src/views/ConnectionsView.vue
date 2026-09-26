@@ -209,6 +209,39 @@ async function forgetFile(file: ResourceGrantResponse): Promise<void> {
   }
 }
 
+/**
+ * Development builds only, and only until this Brownie offers Google Drive: a way to find out, on this Brownie's own
+ * Google registration, how Google's file picker answers. It works against the earlier test build of the server, which
+ * only counts the files that come back; a server that records picked files refuses picks until Drive is offered.
+ */
+const pickerTestVisible = computed(() => import.meta.env.DEV && (offered.value?.length ?? 0) > 0 && !driveOffered.value)
+
+async function tryPicker(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || busy.value !== null) {
+    return
+  }
+  busy.value = 'connect'
+  actionError.value = null
+  try {
+    const started = await startDrivePick(workspaceId, '/connections')
+    navigateTo(started.authorizationUrl)
+    releaseIfStillHere(() => {
+      busy.value = null
+    })
+  } catch (error) {
+    actionError.value =
+      error instanceof ApiRequestError && error.routeMissing
+        ? 'The Brownie server that answered does not have the file picker test.'
+        : error instanceof ApiRequestError && error.problem?.code === 'CONNECTOR_NOT_CONFIGURED'
+          ? 'This Brownie server records the files you pick, so it refuses this test until Google Drive is offered here.'
+          : `Could not open Google's file picker. ${
+              describeConnectorFailure(error, "a way to open Google's file picker", 'DRIVE_FILES') ?? 'Try again.'
+            }`
+    busy.value = null
+  }
+}
+
 async function askToDisconnect(): Promise<void> {
   confirmingDisconnect.value = true
   actionError.value = null
@@ -371,6 +404,24 @@ async function disconnect(): Promise<void> {
                 ? 'Choose more files in Google Drive'
                 : 'Choose files in Google Drive'
           }}
+        </button>
+      </section>
+
+      <section v-if="pickerTestVisible" class="connections__account" aria-labelledby="connections-picker-test">
+        <h2 id="connections-picker-test" class="connections__heading">Google's file picker (test)</h2>
+        <p class="field-hint">
+          Only in development builds, and only with the earlier test build of the Brownie server, which counts the files
+          Google's own file picker sends back and opens none of them. Google treats it as connecting Google Drive again. A
+          Brownie server that records the files you pick refuses this test until Google Drive is offered here.
+        </p>
+        <button
+          id="connections-try-picker"
+          type="button"
+          class="button button--secondary"
+          :disabled="busy !== null"
+          @click="tryPicker"
+        >
+          Try Google's file picker (test)
         </button>
       </section>
 
