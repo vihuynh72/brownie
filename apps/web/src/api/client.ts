@@ -53,6 +53,7 @@ export type ConsentStartResponse = components['schemas']['ConsentStartResponse']
 export type CalendarEventsResponse = components['schemas']['CalendarEventsResponse']
 export type CalendarEventResponse = components['schemas']['CalendarEventResponse']
 export type CalendarImportResponse = components['schemas']['CalendarImportResponse']
+export type DriveImportResponse = components['schemas']['DriveImportResponse']
 export type SourceOriginResponse = components['schemas']['SourceOriginResponse']
 export type ApiError = components['schemas']['Error']
 
@@ -230,6 +231,14 @@ export function startGoogleConsent(workspaceId: number, access: ConnectorAccess,
   return request(`/api/v1/workspaces/${workspaceId}/connections/google`, { method: 'POST', body: { access, returnTo } })
 }
 
+/**
+ * Starts a pick on Google's own file picker; like a consent, the page then goes to the address it answers with.
+ * Google sends the person back to {@code returnTo}, where the address says how many files were added to their list.
+ */
+export function startDrivePick(workspaceId: number, returnTo: string): Promise<ConsentStartResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/drive/picks`, { method: 'POST', body: { returnTo } })
+}
+
 /** Disconnects every Google connection the caller has here; asking again changes nothing. */
 export function disconnectGoogle(workspaceId: number): Promise<ConnectionResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/connections/google/disconnect`, { method: 'POST' })
@@ -239,6 +248,19 @@ export function disconnectGoogle(workspaceId: number): Promise<ConnectionRespons
 export function listCalendarEvents(workspaceId: number, from: string, to: string): Promise<CalendarEventsResponse> {
   const query = new URLSearchParams({ from, to })
   return request(`/api/v1/workspaces/${workspaceId}/connections/google/calendar/events?${query.toString()}`)
+}
+
+/** Copies one picked Drive file into the document as a source, named by its grant, never by Drive's own id. */
+export function importDriveFile(workspaceId: number, documentId: number, grantId: number): Promise<DriveImportResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/drive/imports`, {
+    method: 'POST',
+    body: { documentId, grantId },
+  })
+}
+
+/** Stops Brownie reading one picked file; copies already made stay. Answers with every connection as it now stands. */
+export function forgetDriveFile(workspaceId: number, grantId: number): Promise<ConnectionResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/connections/google/drive/files/${grantId}/forget`, { method: 'POST' })
 }
 
 /** Copies one event into the document as a source, already linked and read; there is nothing to attach afterwards. */
