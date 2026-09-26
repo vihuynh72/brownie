@@ -11,6 +11,8 @@ import io.github.vihuynh72.brownie.core.connector.ConnectionRepository;
 import io.github.vihuynh72.brownie.core.connector.ConnectorOAuthClient;
 import io.github.vihuynh72.brownie.core.connector.ConnectorService;
 import io.github.vihuynh72.brownie.core.connector.ConnectorTokenCipher;
+import io.github.vihuynh72.brownie.core.connector.DriveFileReader;
+import io.github.vihuynh72.brownie.core.connector.DriveImportService;
 import io.github.vihuynh72.brownie.core.connector.ResourceGrantRepository;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.source.DocumentSourceRepository;
@@ -156,6 +158,54 @@ class ConnectorConfig {
         }
         GoogleClientSettings settings = setup.settings();
         return new GoogleCalendarClient(settings, GoogleHttp.create(settings.connectTimeout(), settings.readTimeout(), objectMapper));
+    }
+
+    /**
+     * Nothing reads from Google Drive yet, whether or not Google is set up:
+     * every read is refused until a Drive reader is plugged in here.
+     */
+    @Bean
+    DriveFileReader driveFileReader() {
+        return new NotConfiguredDrive();
+    }
+
+    /**
+     * Drive is offered only when all three hold: Google is set up, a reader
+     * that can open Drive files is plugged in, and it has been switched on.
+     * The switch is off by default, so a deployment offers Drive only once
+     * someone has decided it should, whatever else is in place.
+     */
+    @Bean
+    DriveOffer driveOffer(
+            GoogleConnectorSetup setup,
+            DriveFileReader driveFileReader,
+            @Value("${brownie.connectors.google.drive-offered:false}") boolean driveOffered) {
+        return new DriveOffer(setup.configured() && !(driveFileReader instanceof NotConfiguredDrive) && driveOffered);
+    }
+
+    @Bean
+    DriveImportService driveImportService(
+            ConnectorService connectorService,
+            ResourceGrantRepository resourceGrantRepository,
+            DriveFileReader driveFileReader,
+            ArtifactService artifactService,
+            SourceService sourceService,
+            SourceSnapshotRepository sourceSnapshotRepository,
+            DocumentSourceService documentSourceService,
+            DocumentSourceRepository documentSourceRepository,
+            RevisionService revisionService,
+            @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes) {
+        return new DriveImportService(
+                connectorService,
+                resourceGrantRepository,
+                driveFileReader,
+                artifactService,
+                sourceService,
+                sourceSnapshotRepository,
+                documentSourceService,
+                documentSourceRepository,
+                revisionService,
+                maxUploadBytes);
     }
 
     @Bean
