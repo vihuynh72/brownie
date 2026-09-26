@@ -7,11 +7,15 @@ import { loadCapabilities } from '@/capabilities'
 import { navigateTo, releaseIfStillHere } from '@/navigation'
 import { describeCommonFailure } from '@/api/failures'
 import {
+  ApiRequestError,
   disconnectGoogle,
+  forgetDriveFile,
   listConnections,
+  startDrivePick,
   startGoogleConsent,
   type ConnectionResponse,
   type ConnectorAccess,
+  type ResourceGrantResponse,
 } from '@/api/client'
 import {
   ACCESS_NAMES,
@@ -19,7 +23,9 @@ import {
   consentOutcome,
   describeConnectorFailure,
   disconnectSentence,
+  driveBrownieWords,
   latestConnection,
+  mentionFile,
   offeredAccess,
   stateSentence,
 } from '@/connections/words'
@@ -44,7 +50,7 @@ const offered = ref<ConnectorAccess[] | null>(null)
 
 const outcome = ref<{ tone: 'success' | 'failure'; text: string } | null>(null)
 const outcomeElement = ref<HTMLElement | null>(null)
-const busy = ref<'connect' | 'disconnect' | null>(null)
+const busy = ref<'connect' | 'disconnect' | 'forget' | null>(null)
 const actionError = ref<string | null>(null)
 const confirmingDisconnect = ref(false)
 
@@ -53,7 +59,12 @@ const drive = computed(() => latestConnection(connections.value, 'DRIVE_FILES'))
 const anyOpen = computed(() => connections.value.some((connection) => connection.state !== 'DISCONNECTED'))
 /** Drive is shown only where it exists, or once this deployment offers it: until then there is nothing to use it for. */
 const calendarOffered = computed(() => offered.value?.includes('CALENDAR_EVENTS') ?? false)
-const showDrive = computed(() => drive.value !== null || (offered.value?.includes('DRIVE_FILES') ?? false))
+const driveOffered = computed(() => offered.value?.includes('DRIVE_FILES') ?? false)
+const showDrive = computed(() => drive.value !== null || driveOffered.value)
+/** The files Brownie may read, from the open Drive connection only: disconnecting forgets them all. */
+const pickedFiles = computed<ResourceGrantResponse[]>(() =>
+  drive.value !== null && drive.value.state !== 'DISCONNECTED' ? (drive.value.grants ?? []).filter((grant) => grant.type === 'DRIVE_FILE') : [],
+)
 const nothingOffered = computed(() => offered.value !== null && offered.value.length === 0 && connections.value.length === 0)
 
 const dayFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
@@ -137,6 +148,64 @@ async function connect(access: ConnectorAccess): Promise<void> {
       describeConnectorFailure(error, 'a way to connect Google accounts') ?? 'Try again.'
     }`
     busy.value = null
+  }
+}
+
+/**
+ * Picking files in Google's own file picker; it also connects Google Drive, or connects it again, the way connecting
+ * does. Google sends the person back here, and what was added is said at the top of the page.
+ */
+async function pickFiles(): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || busy.value !== null) {
+    return
+  }
+  busy.value = 'connect'
+  actionError.value = null
+  try {
+    const started = await startDrivePick(workspaceId, '/connections')
+    navigateTo(started.authorizationUrl)
+    releaseIfStillHere(() => {
+      busy.value = null
+    })
+  } catch (error) {
+    actionError.value = `Could not open Google's file picker. ${
+      describeConnectorFailure(error, "a way to open Google's file picker", 'DRIVE_FILES') ?? 'Try again.'
+    }`
+    busy.value = null
+  }
+}
+
+async function forgetFile(file: ResourceGrantResponse): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || busy.value !== null) {
+    return
+  }
+  busy.value = 'forget'
+  actionError.value = null
+  const named = mentionFile(file.displayName)
+  const Named = mentionFile(file.displayName, true)
+  try {
+    connections.value = await forgetDriveFile(workspaceId, file.id)
+    outcome.value = { tone: 'success', text: `Brownie will no longer read ${named}. Copies already made from it stay where they are.` }
+    busy.value = null
+    await nextTick()
+    outcomeElement.value?.focus()
+  } catch (error) {
+    busy.value = null
+    if (error instanceof ApiRequestError && !error.routeMissing && error.problem?.code === 'CONNECTOR_RESOURCE_NOT_FOUND') {
+      // Already off the list (taken back in another tab, or by Google): what was asked is done. Read the list again to show it.
+      outcome.value = { tone: 'success', text: `${Named} was already off your list, so Brownie no longer reads it.` }
+      await load()
+      await nextTick()
+      outcomeElement.value?.focus()
+      return
+    }
+    actionError.value = `${Named} is still on your list. ${
+      describeConnectorFailure(error, 'a way to take a file off your list', 'DRIVE_FILES') ?? 'Try again.'
+    }`
+    await nextTick()
+    document.getElementById(`connections-forget-${file.id}`)?.focus()
   }
 }
 
@@ -261,16 +330,47 @@ async function disconnect(): Promise<void> {
           <dt>What Google asks you to allow</dt>
           <dd>"{{ PERMISSION_WORDS.DRIVE_FILES.google }}"</dd>
           <dt>What Brownie does with it</dt>
-          <dd>{{ PERMISSION_WORDS.DRIVE_FILES.brownie }}</dd>
+          <dd>{{ driveBrownieWords(driveOffered) }}</dd>
+          <template v-if="driveOffered || pickedFiles.length > 0">
+            <dt>What Brownie may read</dt>
+            <dd v-if="pickedFiles.length > 0">
+              <ul class="connections__grants">
+                <li v-for="file in pickedFiles" :key="file.id" class="connections__file">
+                  <span>{{ file.displayName ?? 'A file from Google Drive' }}, since {{ day(file.grantedAt) }}</span>
+                  <button
+                    :id="`connections-forget-${file.id}`"
+                    type="button"
+                    class="button button--secondary"
+                    :disabled="busy !== null"
+                    @click="forgetFile(file)"
+                  >
+                    <span>Stop reading this file <span class="visually-hidden">{{ file.displayName ?? 'from Google Drive' }}</span></span>
+                  </button>
+                </li>
+              </ul>
+              <span class="connections__also">Copies already made from a file stay in your documents when you stop reading it.</span>
+            </dd>
+            <dd v-else>Nothing yet. Files you choose in Google's file picker are listed here.</dd>
+          </template>
         </dl>
+        <p v-if="drive?.state === 'ACTIVE' && driveOffered && pickedFiles.length > 0" class="field-hint">
+          To copy a file, open a document and use "Copy a file from Google Drive" on its Sources tab.
+        </p>
         <button
-          v-if="canConnect('DRIVE_FILES', drive)"
+          v-if="driveOffered"
+          id="connections-pick-drive"
           type="button"
           class="button button--primary"
           :disabled="busy !== null"
-          @click="connect('DRIVE_FILES')"
+          @click="pickFiles"
         >
-          {{ drive?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive again' : 'Connect Google Drive' }}
+          {{
+            drive?.state === 'RECONNECT_REQUIRED'
+              ? 'Connect Google Drive again and choose files'
+              : pickedFiles.length > 0
+                ? 'Choose more files in Google Drive'
+                : 'Choose files in Google Drive'
+          }}
         </button>
       </section>
 
@@ -279,9 +379,9 @@ async function disconnect(): Promise<void> {
         <p>
           Brownie asks Google to take back the access it still holds, and deletes that access whatever Google answers.
           A connection waiting to be connected again holds none Brownie can use, so for that one Brownie cannot ask
-          Google; remove Brownie in your Google account instead. Copies already brought into your documents stay with
-          those documents, and each still says where it came from; they are never updated again. To remove a copy,
-          delete every document it was copied into.
+          Google; remove Brownie in your Google account instead. Every file you chose in Google Drive is taken off your
+          list too. Copies already brought into your documents stay with those documents, and each still says where it
+          came from; they are never updated again. To remove a copy, delete every document it was copied into.
         </p>
         <button
           v-if="!confirmingDisconnect"
@@ -402,6 +502,14 @@ async function disconnect(): Promise<void> {
 .connections__grants {
   margin: 0;
   padding-inline-start: var(--space-5);
+}
+
+.connections__file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-end: var(--space-1);
 }
 
 .connections__confirm {
