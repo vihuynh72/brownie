@@ -67,7 +67,7 @@ class ConnectionController {
     List<ConnectionResponse> list(@PathVariable("workspaceId") long workspaceId, @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_CONNECTIONS);
-        return responses(workspaceId, userId, connectorService.connections(workspaceId, userId));
+        return responses(resourceGrantRepository, workspaceId, userId, connectorService.connections(workspaceId, userId));
     }
 
     @PostMapping("/google")
@@ -88,7 +88,7 @@ class ConnectionController {
         }
         String state = GoogleConsentRequests.newState();
         String codeVerifier = GoogleConsentRequests.newCodeVerifier();
-        new PendingConsent(state, codeVerifier, workspaceId, userId, access, returnTo, Instant.now().getEpochSecond())
+        new PendingConsent(state, codeVerifier, workspaceId, userId, access, returnTo, Instant.now().getEpochSecond(), false)
                 .storeIn(httpRequest.getSession());
         String authorizationUrl = GoogleConsentRequests
                 .authorizationUri(googleConnectorSetup.settings(), access, state, GoogleConsentRequests.challengeFor(codeVerifier))
@@ -107,11 +107,12 @@ class ConnectionController {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_CONNECTIONS);
         connectorService.disconnectAll(workspaceId, userId);
-        return responses(workspaceId, userId, connectorService.connections(workspaceId, userId));
+        return responses(resourceGrantRepository, workspaceId, userId, connectorService.connections(workspaceId, userId));
     }
 
     /** A disconnected connection has had every choice revoked, so only an open one is asked for what it may read. */
-    private List<ConnectionResponse> responses(long workspaceId, long userId, List<Connection> connections) {
+    static List<ConnectionResponse> responses(
+            ResourceGrantRepository resourceGrantRepository, long workspaceId, long userId, List<Connection> connections) {
         return connections.stream()
                 .map(connection -> ConnectionResponse.from(connection, connection.isOpen()
                         ? resourceGrantRepository.findOpen(workspaceId, userId, connection.id())
