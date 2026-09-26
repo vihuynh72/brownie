@@ -89,6 +89,7 @@ jobs:
           INVITED_ADDRESSES: ${{ vars.BROWNIE_INVITED_ADDRESSES }}
           CERTIFICATE_CONTACT: ${{ vars.BROWNIE_CERTIFICATE_CONTACT }}
           GOOGLE_CLIENT_ID: ${{ vars.BROWNIE_GOOGLE_CLIENT_ID }}
+          GOOGLE_DRIVE_OFFERED: ${{ vars.BROWNIE_GOOGLE_DRIVE_OFFERED }}
         run: |
           set -euo pipefail
           # The single quotes below are a heredoc delimiter and shell-quoted
@@ -123,6 +124,7 @@ jobs:
             printf 'export BROWNIE_INVITED_ADDRESSES=%q\n' "$INVITED_ADDRESSES"
             printf 'export BROWNIE_CERTIFICATE_CONTACT=%q\n' "$CERTIFICATE_CONTACT"
             printf 'export BROWNIE_GOOGLE_CLIENT_ID=%q\n' "$GOOGLE_CLIENT_ID"
+            printf 'export BROWNIE_GOOGLE_DRIVE_OFFERED=%q\n' "$GOOGLE_DRIVE_OFFERED"
             printf 'export BROWNIE_COMPOSE_B64=%q\n' "$(base64 -w0 infra/azure/host/compose.yaml)"
             printf 'bash /tmp/brownie-deploy.sh\n'
             printf 'rc=$?\n'

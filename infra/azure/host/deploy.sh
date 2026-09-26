@@ -25,6 +25,10 @@
 #   BROWNIE_GOOGLE_CLIENT_ID         optional; lets people connect a Google
 #                                    account, and then two more secrets are
 #                                    read from the vault
+#   BROWNIE_GOOGLE_DRIVE_OFFERED     optional, true or false (the default);
+#                                    lets people pick Google Drive files, once
+#                                    the API can read them, and only with a
+#                                    Google client id
 #
 # The order matters and is the point of the script: migrate first with the new
 # image and stop if that fails, so a failed migration leaves the running
@@ -83,6 +87,12 @@ openai_api_key="$(secret openai-api-key)"
 # names the one without the others stops here, before anything changes, rather
 # than starting an API that would refuse to start.
 google_settings=()
+# Anything but true or false would stop the API from starting after the
+# database had already been migrated, so it is refused here, before that.
+case "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" in
+  ''|true|false) ;;
+  *) fail "BROWNIE_GOOGLE_DRIVE_OFFERED must be true or false." ;;
+esac
 if [ -n "${BROWNIE_GOOGLE_CLIENT_ID:-}" ]; then
   log "Reading the two secrets Google connections need."
   google_client_secret="$(secret google-client-secret)"
@@ -91,6 +101,11 @@ if [ -n "${BROWNIE_GOOGLE_CLIENT_ID:-}" ]; then
     "BROWNIE_GOOGLE_CLIENT_ID=${BROWNIE_GOOGLE_CLIENT_ID}"
     "BROWNIE_GOOGLE_CLIENT_SECRET=${google_client_secret}"
     "BROWNIE_CONNECTOR_TOKEN_KEY=${connector_token_key}")
+  if [ -n "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" ]; then
+    google_settings+=("BROWNIE_GOOGLE_DRIVE_OFFERED=${BROWNIE_GOOGLE_DRIVE_OFFERED}")
+  fi
+elif [ "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" = true ]; then
+  log "BROWNIE_GOOGLE_DRIVE_OFFERED is set but Google is not; Drive stays off."
 fi
 
 log "Pulling images."
