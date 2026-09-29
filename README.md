@@ -186,6 +186,75 @@ While a Google Cloud project is in "Testing" status, Google makes the tokens it
 issues for these permissions stop working seven days after the person agreed.
 Publish the app in the Google Cloud console for connections that last.
 
+## Changes in a Google account, on approval
+
+With `BROWNIE_GOOGLE_ACTIONS_OFFERED=true` (off by default), Brownie can save a
+document's latest export to the person's Google Drive (the exported Word or PDF
+file exactly as it is, or a Google Doc that Google converts the Word file into),
+add the document's text to the end of a Google Doc it saved, and add an event to
+their main Google calendar. Saving and adding to a Doc share one connection, and
+adding events has another. Each is asked for the first time someone uses it, so
+a person who only reads from Drive or Calendar never grants it: saving asks for
+`drive.file` again, and adding events for `calendar.events.owned` with the
+sign-in pair.
+
+Nothing is changed by being proposed. `POST .../actions/drive-saves` (or
+`.../actions/calendar-events`) records exactly what would happen, as a canonical
+payload with its SHA-256; the page shows that payload, and `POST
+.../actions/{id}/approve` with the same hash is the only route through which
+Brownie changes anything in a person's account. For a save, the stored file is
+read and checked against the approved checksum, and those very bytes are what is
+sent; every fact the approval depended on (the connection, the document's
+revision, the export) is checked again under lock, and then the change is sent.
+It is sent again only when the person asks and Google has certainly not made it:
+a refusal that changed nothing, or, for a file saved as it is and for text added
+to a Google Doc, an unknown outcome Google later shows never happened. The new
+file goes at the top of My Drive, shared with no one, and is read back: an
+exact file must match the approved size and checksum; for a Google Doc, Brownie
+reports how many of the filled-in values it finds in the converted text, never
+that the layout survived.
+
+When Google's answer is lost, the action says its outcome is unknown and is
+never sent again by itself. `POST .../actions/{id}/reconcile` asks Google what
+became of it: an exact file is looked up by the id Brownie reserved before
+sending; a conversion can only be followed when its answer named the new Doc.
+The person can also say they checked for themselves. Every step is in the audit
+record (approved, sent, finished), without the file's name or content.
+
+An event is added with no guests and `sendUpdates=none`, so nobody is told about
+it; it does not repeat, has no video call, is private, shows as busy and keeps
+the calendar's usual reminders, all stated in what the person approves. Its time
+is two local times in a named time zone: a time the clocks skip that day is
+refused, and one they repeat is taken the first time, which the preview says.
+Brownie chooses the event's id before sending, so Google refuses a second copy,
+and asks for that id afterwards. An event whose answer was lost is never sent
+again: Google stops knowing a deleted event after a while, so its not knowing
+the id cannot prove the event was never made. Asking settles it when Google
+holds the event or says it was deleted since, or when an earlier answer from
+Google named the event and, several minutes after it was sent, Google no longer
+knows it: it was made, and deleted since. A file saved as it is is settled the
+same way once an answer named it.
+
+A Google Doc that one of the person's saves made can later take the text of the
+document's current version, as its latest export holds it, added at the end
+(`POST .../actions/doc-appends`). The Doc is read when the addition is prepared,
+and the addition names the Doc's revision at that moment: Google applies it only
+while the Doc is still at that revision, whole or not at all. Just before
+sending, the Doc is looked at again, since that revision covers its text but not
+who can see it: one that was shared differently, put in the trash or edited
+since the approval ends the action with nothing sent. The revision is also what
+makes a lost answer safe to settle: a Doc still at that revision several minutes
+after the last request was not changed, so the addition may be sent again; one
+that moved on counts as added only when everything that was there before is
+unchanged and exactly the added text follows it, and otherwise stays unknown. A
+plain refusal is read again to tell a Doc that changed since the approval from a
+request Google would not take, or from an earlier request of the same addition
+that landed late. Only the Google account that saved the Doc may add to it.
+
+The Google Docs API has to be enabled in the Google Cloud project for the
+converted-Doc check and additions to work, and `calendar.events.owned` added to
+the project's consent screen for adding events.
+
 ## Trash, deletion, and file housekeeping
 
 A document's row on the home page has a "Move to the trash" action. A
@@ -277,7 +346,8 @@ the ledger did not reserve first.
 **The audit record.** `audit_event` holds the actions someone may later
 need to account for: a document trashed, restored, or deleted for good; a
 workspace deleted; a document exported; a job started again by hand; a
-support grant given or revoked. A row is ids, an action, a time, the
+support grant given or revoked; a change in a connected Google account
+approved, sent, and finished. A row is ids, an action, a time, the
 request's correlation id and a few counts or codes, never a title, a
 filename or a field value, and it is written in the same transaction as
 the action it describes. Neither application login can change or remove a
@@ -461,7 +531,9 @@ caller address from what it observed rather than from what the caller claimed.
    is off unless the repository variable `BROWNIE_GOOGLE_DRIVE_OFFERED` is
    `true`, and even then it is offered only once this Brownie can read Drive
    files; any value other than `true` or `false` stops the deployment before
-   it changes anything.
+   it changes anything. Changes in people's Google accounts
+   (`BROWNIE_GOOGLE_ACTIONS_OFFERED`) are not passed to this deployment, so
+   they stay off here.
 
 **Releasing.** Run *Publish images*, note the revision it reports, then run
 *Deploy to the pilot host* with that revision. The deployment migrates the

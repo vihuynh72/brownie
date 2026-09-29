@@ -220,6 +220,11 @@ brownie:
       # documents. Off unless switched on, and offered only while a reader
       # that can open Drive files is plugged in as well.
       drive-offered: ${BROWNIE_GOOGLE_DRIVE_OFFERED:false}
+      # Whether Brownie may make changes in people's Google accounts at all:
+      # save a file to Drive, add an event to a calendar, add text to a Google
+      # Doc it saved. Each change happens only when its person approves that
+      # exact change. Off unless switched on.
+      actions-offered: ${BROWNIE_GOOGLE_ACTIONS_OFFERED:false}
 
 logging:
   structured:
@@ -329,6 +334,7 @@ brownie:
       client-id: ""
       client-secret: ""
       drive-offered: false
+      actions-offered: false
   storage:
     # A syntactically valid but unreachable target (port 65535, the same
     # convention the fake OIDC endpoints above use) -- BlobServiceClient

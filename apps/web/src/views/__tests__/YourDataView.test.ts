@@ -155,6 +155,83 @@ describe('YourDataView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
+  it('says what saving to Google Drive keeps and sends, and that a change needs approval, where saving is offered or was used', async () => {
+    const offering = (googleConnectorAccess: ('CALENDAR_EVENTS' | 'DRIVE_FILES' | 'DRIVE_SAVING')[]) => ({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess,
+    })
+    vi.mocked(getCapabilities).mockResolvedValue(offering(['CALENDAR_EVENTS', 'DRIVE_SAVING']))
+    let wrapper = await mountPage()
+    let text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain('If you save a document to Google Drive: each save you prepare')
+    expect(text).toContain('deleting anything here does not delete it there')
+    expect(text).toContain('approving a save to Google Drive or an addition to a Google Doc and sending it')
+    expect(text).toContain('Preparing to add text to a Google Doc Brownie saved reads that Doc in full')
+    expect(text).toContain('and changes nothing there that you have not approved.')
+    expect(text).toContain('is sent to Google only once you approve that save')
+    expect(text).not.toContain('add an event to Google Calendar')
+    expect(text).not.toContain('never changes anything there')
+    expect(text).toContain('Files you saved to Google Drive stay in your Google Drive.')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    // Switched off since, but connected before: what was kept is still said.
+    document.body.innerHTML = ''
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue(offering(['CALENDAR_EVENTS']))
+    vi.mocked(listConnections).mockResolvedValue([
+      {
+        id: 8,
+        provider: 'GOOGLE',
+        access: 'DRIVE_SAVING',
+        state: 'DISCONNECTED',
+        accountEmail: null,
+        grantedScopes: [],
+        reconnectReason: null,
+        connectedAt: '2026-09-20T10:00:00Z',
+        tokenIssuedAt: null,
+        disconnectedAt: '2026-09-21T10:00:00Z',
+        providerRevocation: 'REVOKED',
+        grants: [],
+      },
+    ])
+    wrapper = await mountPage()
+    text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain('If you save a document to Google Drive')
+
+    document.body.innerHTML = ''
+    resetCapabilitiesCache()
+    vi.mocked(listConnections).mockResolvedValue([])
+    text = (await mountPage()).text().replace(/\s+/g, ' ')
+    expect(text).not.toContain('save a document to Google Drive')
+    expect(text).toContain('never changes anything there')
+  })
+
+  it('says what adding calendar events keeps and sends, and that nobody is told, where adding events is offered', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: ['CALENDAR_EVENTS', 'CALENDAR_EVENT_CREATION'],
+    })
+    const wrapper = await mountPage()
+    const text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain('If you add an event to Google Calendar: each event you prepare')
+    expect(text).toContain('approving an event for Google Calendar and sending it')
+    expect(text).toContain('and changes nothing there that you have not approved.')
+    expect(text).toContain('it has no guests, so Google tells nobody about it')
+    expect(text).toContain('After a change you approve, it reads back only what that change made or added to, to check it.')
+    expect(text).toContain('Events you added to Google Calendar stay in your calendar.')
+    expect(text).not.toContain('save a document to Google Drive')
+    expect(text).not.toContain('never changes anything there')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
   it('says what choosing Drive files keeps and reads only where Drive is offered or was used', async () => {
     vi.mocked(getCapabilities).mockResolvedValue({
       maxUploadBytes: 10 * 1024 * 1024,

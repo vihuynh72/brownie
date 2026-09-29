@@ -1,9 +1,15 @@
 package io.github.vihuynh72.brownie.api.connector;
 
 import io.github.vihuynh72.brownie.api.connector.google.GoogleCalendarClient;
+import io.github.vihuynh72.brownie.api.connector.google.GoogleCalendarWriter;
+import io.github.vihuynh72.brownie.api.connector.google.GoogleDocsClient;
+import io.github.vihuynh72.brownie.api.connector.google.GoogleDriveWriter;
 import io.github.vihuynh72.brownie.api.connector.google.GoogleClientSettings;
 import io.github.vihuynh72.brownie.api.connector.google.GoogleHttp;
 import io.github.vihuynh72.brownie.api.connector.google.GoogleOAuthClient;
+import io.github.vihuynh72.brownie.core.action.CalendarEventWriter;
+import io.github.vihuynh72.brownie.core.action.DriveFileWriter;
+import io.github.vihuynh72.brownie.core.action.GoogleDocs;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.connector.CalendarEventReader;
 import io.github.vihuynh72.brownie.core.connector.CalendarImportService;
@@ -63,6 +69,7 @@ class ConnectorConfig {
             "revocation-uri", "https://oauth2.googleapis.com/revoke",
             "user-info-uri", "https://openidconnect.googleapis.com/v1/userinfo",
             "api-base-uri", "https://www.googleapis.com",
+            "docs-api-base-uri", "https://docs.googleapis.com",
             "issuer", "https://accounts.google.com");
 
     @Bean
@@ -102,6 +109,7 @@ class ConnectorConfig {
                 address(environment, "revocation-uri", hosted),
                 address(environment, "user-info-uri", hosted),
                 address(environment, "api-base-uri", hosted),
+                address(environment, "docs-api-base-uri", hosted),
                 address(environment, "issuer", hosted).toString(),
                 connectTimeout,
                 readTimeout);
@@ -158,6 +166,45 @@ class ConnectorConfig {
         }
         GoogleClientSettings settings = setup.settings();
         return new GoogleCalendarClient(settings, GoogleHttp.create(settings.connectTimeout(), settings.readTimeout(), objectMapper));
+    }
+
+    /**
+     * Saving to Drive: reads (reserving an id, describing a saved file) with
+     * the ordinary deadlines, and the one upload with a deadline of its own,
+     * because the whole upload and Drive's answer must fit inside it.
+     */
+    @Bean
+    DriveFileWriter driveFileWriter(
+            GoogleConnectorSetup setup,
+            ObjectMapper objectMapper,
+            @Value("${brownie.connectors.google.upload-timeout:PT60S}") Duration uploadTimeout) {
+        if (!setup.configured()) {
+            return new NotConfiguredDriveWriter();
+        }
+        GoogleClientSettings settings = setup.settings();
+        return new GoogleDriveWriter(
+                settings,
+                GoogleHttp.create(settings.connectTimeout(), settings.readTimeout(), objectMapper),
+                GoogleHttp.create(settings.connectTimeout(), uploadTimeout, objectMapper));
+    }
+
+    /** Adding an event is one small request, so it keeps the ordinary deadlines. */
+    @Bean
+    CalendarEventWriter calendarEventWriter(GoogleConnectorSetup setup, ObjectMapper objectMapper) {
+        if (!setup.configured()) {
+            return new NotConfiguredCalendarWriter();
+        }
+        GoogleClientSettings settings = setup.settings();
+        return new GoogleCalendarWriter(settings, GoogleHttp.create(settings.connectTimeout(), settings.readTimeout(), objectMapper));
+    }
+
+    @Bean
+    GoogleDocs googleDocs(GoogleConnectorSetup setup, ObjectMapper objectMapper) {
+        if (!setup.configured()) {
+            return new NotConfiguredDocs();
+        }
+        GoogleClientSettings settings = setup.settings();
+        return new GoogleDocsClient(settings, GoogleHttp.create(settings.connectTimeout(), settings.readTimeout(), objectMapper));
     }
 
     /**

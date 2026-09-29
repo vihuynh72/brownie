@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.connector;
 
+import io.github.vihuynh72.brownie.api.action.ConfiguredActionOffer;
 import io.github.vihuynh72.brownie.api.connector.google.GoogleConsentRequests;
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -48,18 +50,21 @@ class ConnectionController {
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
     private final ResourceGrantRepository resourceGrantRepository;
+    private final ConfiguredActionOffer actionOffer;
 
     ConnectionController(
             ConnectorService connectorService,
             GoogleConnectorSetup googleConnectorSetup,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository,
-            ResourceGrantRepository resourceGrantRepository) {
+            ResourceGrantRepository resourceGrantRepository,
+            ConfiguredActionOffer actionOffer) {
         this.connectorService = connectorService;
         this.googleConnectorSetup = googleConnectorSetup;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
         this.resourceGrantRepository = resourceGrantRepository;
+        this.actionOffer = actionOffer;
     }
 
     /** Every connection this person has made here, disconnected ones included, newest first. */
@@ -85,6 +90,10 @@ class ConnectionController {
         }
         if (!googleConnectorSetup.configured()) {
             throw new ConnectorNotConfiguredException();
+        }
+        // A connection that only writes is agreed to only where some change made through it is offered.
+        if (access != ConnectorAccess.DRIVE_FILES && access != ConnectorAccess.CALENDAR_EVENTS && !actionOffer.uses(access)) {
+            throw new ConnectionAccessNotOfferedException(access);
         }
         String state = GoogleConsentRequests.newState();
         String codeVerifier = GoogleConsentRequests.newCodeVerifier();
@@ -128,7 +137,7 @@ class ConnectionController {
                 }
             }
         }
-        throw new ConnectionRequestValidationException("access must be DRIVE_FILES or CALENDAR_EVENTS.");
+        throw new ConnectionRequestValidationException("access must be one of " + Arrays.toString(ConnectorAccess.values()) + ".");
     }
 
     private long currentUserId(OidcUser principal) {

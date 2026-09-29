@@ -79,14 +79,16 @@ public class GoogleOAuthClient implements ConnectorOAuthClient {
     }
 
     /**
-     * For Calendar, the sign-in scopes it asks for make Google's user-info
-     * endpoint answer. For Drive, the file picker allows no scope but {@code
-     * drive.file}, so the account is whoever Drive says the token belongs to.
+     * For Calendar, whether reading or adding events, the sign-in scopes it
+     * asks for make Google's user-info endpoint answer. For Drive, the file
+     * picker allows no scope but {@code
+     * drive.file}, so the account is whoever Drive says the token belongs to;
+     * saving to Drive asks for the same one scope, and is answered the same way.
      */
     @Override
     public ProviderAccount describeAccount(ConnectorAccess access, String accessToken) {
         return switch (access) {
-            case DRIVE_FILES -> {
+            case DRIVE_FILES, DRIVE_SAVING -> {
                 URI about = UriComponentsBuilder.fromUri(settings.apiBaseUri())
                         .path("/drive/v3/about")
                         .queryParam("fields", "user(permissionId,emailAddress)")
@@ -96,7 +98,7 @@ public class GoogleOAuthClient implements ConnectorOAuthClient {
                 JsonNode user = http.json(getWithToken(access, about, accessToken, "Drive account")).path("user");
                 yield account(GoogleHttp.text(user, "permissionId"), GoogleHttp.text(user, "emailAddress"));
             }
-            case CALENDAR_EVENTS -> {
+            case CALENDAR_EVENTS, CALENDAR_EVENT_CREATION -> {
                 JsonNode info = http.json(getWithToken(access, settings.userInfoUri(), accessToken, "account"));
                 yield account(GoogleHttp.text(info, "sub"), GoogleHttp.text(info, "email"));
             }

@@ -44,6 +44,8 @@ const capabilities = ref<CapabilitiesResponse | null>(null)
 const capabilitiesFailed = ref(false)
 const hasConnections = ref(false)
 const hasDriveConnection = ref(false)
+const hasSavingConnection = ref(false)
+const hasAddingConnection = ref(false)
 const usage = ref<UsageResponse | null>(null)
 const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 const loadError = ref<string | null>(null)
@@ -93,6 +95,19 @@ const mentionsGoogle = computed(() => capabilitiesFailed.value || googleOffered.
 const mentionsDrive = computed(
   () => capabilitiesFailed.value || (offeredAccess(capabilities.value)?.includes('DRIVE_FILES') ?? false) || hasDriveConnection.value,
 )
+/** The same, for saving to Google Drive on approval. */
+const mentionsSaving = computed(
+  () => capabilitiesFailed.value || (offeredAccess(capabilities.value)?.includes('DRIVE_SAVING') ?? false) || hasSavingConnection.value,
+)
+/** The same, for adding events to Google Calendar on approval. */
+const mentionsAdding = computed(
+  () =>
+    capabilitiesFailed.value ||
+    (offeredAccess(capabilities.value)?.includes('CALENDAR_EVENT_CREATION') ?? false) ||
+    hasAddingConnection.value,
+)
+/** Whether Brownie may change anything in a Google account here, each change only on approval. */
+const mentionsChanges = computed(() => mentionsSaving.value || mentionsAdding.value)
 
 const money = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 })
 
@@ -151,6 +166,8 @@ async function loadConnections(workspaceId: number | undefined): Promise<void> {
     if (session.personalWorkspaceId === workspaceId) {
       hasConnections.value = connections.length > 0
       hasDriveConnection.value = connections.some((connection) => connection.access === 'DRIVE_FILES')
+      hasSavingConnection.value = connections.some((connection) => connection.access === 'DRIVE_SAVING')
+      hasAddingConnection.value = connections.some((connection) => connection.access === 'CALENDAR_EVENT_CREATION')
     }
   } catch (error) {
     // A server from before connections has no such route and so nothing kept; any other failure leaves it unknown,
@@ -158,6 +175,8 @@ async function loadConnections(workspaceId: number | undefined): Promise<void> {
     if (!(error instanceof ApiRequestError && error.routeMissing) && session.personalWorkspaceId === workspaceId) {
       hasConnections.value = true
       hasDriveConnection.value = true
+      hasSavingConnection.value = true
+      hasAddingConnection.value = true
     }
   }
 }
@@ -271,7 +290,10 @@ watch(
       <li>A record of each run: when it started, how it ended, and what it cost. Not what it said.</li>
       <li>
         A record of a few actions someone may need to account for afterwards (moving a document to the trash, deleting,
-        exporting, starting a run again). It holds who and when, never a title or anything you wrote.
+        exporting, starting a run again<template v-if="mentionsSaving"
+          >, approving a save to Google Drive or an addition to a Google Doc and sending it</template
+        ><template v-if="mentionsAdding">, approving an event for Google Calendar and sending it</template>).
+        It holds who and when, never a title or anything you wrote.
       </li>
       <li v-if="mentionsGoogle">
         If you connect a Google account: which account, what Google allowed and when, and the access Google gives
@@ -283,6 +305,18 @@ watch(
         Brownie may read it. After you take a file off your list, or disconnect, Brownie no longer reads it or shows it,
         but keeps that record with your workspace, as it does which account was connected. A file you copy into a document
         is kept as text, like a file you attach, and says where it came from.
+      </li>
+      <li v-if="mentionsSaving">
+        If you save a document to Google Drive: each save you prepare, with the file's name, the Google account, the size
+        and fingerprints the saved file is checked against, and for a Google Doc the filled-in values Brownie looks for in
+        it; then what Google answered, and a link to the saved file. Adding a version's text to a Google Doc it saved keeps
+        that text, the Doc's title, and a fingerprint of what the Doc held before. All of it is deleted together with its
+        document. The file itself is yours, in your Google Drive: deleting anything here does not delete it there.
+      </li>
+      <li v-if="mentionsAdding">
+        If you add an event to Google Calendar: each event you prepare, with its title, description, place and time and the
+        Google account; then what Google answered, and a link to the event. It is deleted together with its document. The
+        event itself is yours, in your calendar: deleting anything here does not delete it there.
       </li>
     </ul>
 
@@ -335,7 +369,21 @@ watch(
       <li v-if="mentionsGoogle">
         If you connect a Google account, Brownie reads from Google only what you ask for (the days of your calendar you
         list, and the event you copy<template v-if="mentionsDrive">; what each file you choose in Google Drive is, and a
-        file's content only when you copy it</template>) and never changes anything there. See or remove it on the
+        file's content only when you copy it</template>)<template v-if="mentionsChanges"
+          >, and changes nothing there that you have not approved</template
+        ><template v-else> and never changes anything there</template>.<template v-if="mentionsChanges">
+          After a change you approve, it reads back only what that change made or added to, to check it.</template
+        ><template v-if="mentionsSaving">
+          Preparing to add text to a Google Doc Brownie saved reads that Doc in full, and whether it is shared or in the
+          trash.</template
+        ><template v-if="mentionsSaving">
+          A document you save to Google Drive is sent to Google only once you approve that save, and Google converts it if
+          you asked for a Google Doc; text you add to a Google Doc is sent only once you approve that addition.</template
+        ><template v-if="mentionsAdding">
+          An event you add to Google Calendar is sent to Google only once you approve it, and it has no guests, so Google
+          tells nobody about it.</template
+        >
+        See or remove it on the
         <RouterLink to="/connections">Connections</RouterLink> page.
       </li>
     </ul>
@@ -370,6 +418,8 @@ watch(
       <template v-if="googleOffered">
         Brownie also asks Google to take back the access it still holds to any Google account you connected.
       </template>
+      <template v-if="mentionsSaving">Files you saved to Google Drive stay in your Google Drive.</template>
+      <template v-if="mentionsAdding">Events you added to Google Calendar stay in your calendar.</template>
     </p>
     <button
       v-if="!confirming"

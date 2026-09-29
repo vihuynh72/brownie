@@ -5,7 +5,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Brownie's own registration with Google, and where Google is. The addresses
+ * Brownie's own registration with Google, and where Google is (Google Docs
+ * answers at an address of its own, apart from the other APIs). The addresses
  * default to Google's own and are settings only so that tests can point them
  * at a stand-in; a hosted deployment refuses to start with anything else.
  * {@code redirectUri} is the one address Google sends a person back to, which
@@ -20,6 +21,7 @@ public record GoogleClientSettings(
         URI revocationUri,
         URI userInfoUri,
         URI apiBaseUri,
+        URI docsApiBaseUri,
         String issuer,
         Duration connectTimeout,
         Duration readTimeout) {
@@ -33,6 +35,7 @@ public record GoogleClientSettings(
         Objects.requireNonNull(revocationUri, "revocationUri");
         Objects.requireNonNull(userInfoUri, "userInfoUri");
         Objects.requireNonNull(apiBaseUri, "apiBaseUri");
+        Objects.requireNonNull(docsApiBaseUri, "docsApiBaseUri");
         Objects.requireNonNull(issuer, "issuer");
         Objects.requireNonNull(connectTimeout, "connectTimeout");
         Objects.requireNonNull(readTimeout, "readTimeout");

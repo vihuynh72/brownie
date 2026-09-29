@@ -11,5 +11,12 @@ public enum WorkspaceCapability {
      * work on a workspace's documents is not being allowed to reach into
      * someone's account elsewhere.
      */
-    MANAGE_CONNECTIONS
+    MANAGE_CONNECTIONS,
+    /**
+     * Approving a change in a connected account: a file saved to someone's
+     * Drive, an event added to their calendar. Separate from connecting,
+     * because being allowed to link an account for reading is not being
+     * allowed to change what is in it.
+     */
+    ACT_ON_CONNECTED_ACCOUNTS
 }

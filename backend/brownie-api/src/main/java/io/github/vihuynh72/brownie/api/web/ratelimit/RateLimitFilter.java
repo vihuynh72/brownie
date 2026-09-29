@@ -55,6 +55,12 @@ public class RateLimitFilter extends OncePerRequestFilter {
     /** Every route that makes Brownie call Google, whatever its method: the consent callback and everything under a Google connection. */
     private static final Pattern CONNECTOR = Pattern.compile(
             "^/api/v1/(?:connectors/google/callback|workspaces/" + ID + "/connections/google(?:/.*)?)$");
+    /**
+     * Proposing, approving and asking about a change in a person's account can
+     * each call Google, so every change under actions counts as Google work.
+     * Reading one does not call Google and is an ordinary read.
+     */
+    private static final Pattern ACTIONS = Pattern.compile("^/api/v1/workspaces/" + ID + "/actions(?:/.*)?$");
 
     private final RateLimiter rateLimiter;
 
@@ -101,6 +107,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
         if ("GET".equals(method) || "HEAD".equals(method)) {
             return RateLimitClass.READ;
+        }
+        if (ACTIONS.matcher(path).matches()) {
+            return RateLimitClass.CONNECTOR;
         }
         if (MODEL.matcher(path).matches()) {
             return RateLimitClass.MODEL;

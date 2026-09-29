@@ -1,10 +1,12 @@
 package io.github.vihuynh72.brownie.api.connector.google;
 
 import io.github.vihuynh72.brownie.core.connector.ProviderUnavailableException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -13,8 +15,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.ConnectException;
+import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
+import java.nio.channels.UnresolvedAddressException;
 import java.time.Duration;
+import java.util.TreeMap;
 
 /**
  * The one way this package talks to Google: every call has a connection and a
@@ -23,6 +31,10 @@ import java.time.Duration;
  * wandering or enormous answer cannot hold a request thread or fill the heap.
  * The status and the bytes come back as they are; what they mean is for the
  * caller to decide. Nothing here logs a request or an answer.
+ *
+ * <p>A change in a person's account goes only through {@link #write}, which
+ * sends only the requests {@link GoogleWrite} lists, and which tells a
+ * request that never left apart from one whose answer was lost.
  */
 public final class GoogleHttp {
 
@@ -88,6 +100,70 @@ public final class GoogleHttp {
         }
     }
 
+    /**
+     * What became of a write. An answer came back; or the request certainly
+     * never left (no connection could be made, so Google cannot have seen
+     * it); or it may have left and whatever Google answered was lost. The
+     * last is never read as "not done": a change Google received may have
+     * happened whether or not its answer arrived.
+     */
+    sealed interface WriteExchange permits Answered, NotSent, Lost {
+    }
+
+    record Answered(Answer answer) implements WriteExchange {
+    }
+
+    record NotSent() implements WriteExchange {
+    }
+
+    record Lost() implements WriteExchange {
+    }
+
+    /**
+     * Sends one of the writes {@link GoogleWrite} lists, to the address it
+     * names (with {@code pathValue} as its one identifier, if it has one) and
+     * with only its own query parameters. The body and its type are the
+     * caller's; everything else about the request is fixed here.
+     */
+    WriteExchange write(
+            GoogleClientSettings settings, GoogleWrite write, String pathValue, String accessToken,
+            MediaType contentType, byte[] body, int maxAnswerBytes) {
+        URI base = write.api() == GoogleWrite.Api.GOOGLE_DOCS ? settings.docsApiBaseUri() : settings.apiBaseUri();
+        UriComponentsBuilder builder = UriComponentsBuilder.fromUri(base).path(write.pathTemplate());
+        new TreeMap<>(write.query()).forEach(builder::queryParam);
+        URI uri = pathValue == null ? builder.encode().build().toUri() : builder.encode().buildAndExpand(pathValue).toUri();
+        try {
+            return new Answered(restClient.post()
+                    .uri(uri)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .contentType(contentType)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .exchange((ignoredRequest, response) -> new Answer(
+                            response.getStatusCode().value(),
+                            response.getHeaders().getContentType(),
+                            readAtMost(response.getBody(), maxAnswerBytes))));
+        } catch (AnswerTooLargeException e) {
+            return new Lost();
+        } catch (RestClientException | UncheckedIOException e) {
+            return neverLeft(e) ? new NotSent() : new Lost();
+        }
+    }
+
+    /** No connection could be made at all, so nothing reached Google. Anything else (a timeout, a reset) may have come after the request left. */
+    private static boolean neverLeft(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ConnectException || cause instanceof HttpConnectTimeoutException
+                    || cause instanceof UnknownHostException || cause instanceof UnresolvedAddressException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
+    }
+
     /** The answer as JSON; an answer that is not is Google failing, not a verdict on anything. */
     JsonNode json(Answer answer) {
         try {
@@ -95,6 +171,11 @@ public final class GoogleHttp {
         } catch (JacksonException e) {
             throw new ProviderUnavailableException("Google answered with something that is not JSON.");
         }
+    }
+
+    /** A value written as JSON, for a request body. */
+    byte[] jsonBytes(Object value) {
+        return objectMapper.writeValueAsBytes(value);
     }
 
     /** A string field, or null when it is absent or not a string. */
