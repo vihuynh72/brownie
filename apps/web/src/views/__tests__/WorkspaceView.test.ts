@@ -52,6 +52,7 @@ vi.mock('@/api/client', async () => {
     listCalendarEvents: vi.fn(),
     importCalendarEvent: vi.fn(),
     importDriveFile: vi.fn(),
+    listActions: vi.fn(),
   }
 })
 
@@ -67,6 +68,7 @@ import {
   acceptPatchProposal,
   importCalendarEvent,
   importDriveFile,
+  listActions,
   listCalendarEvents,
   listConnections,
   allocateUpload,
@@ -3417,6 +3419,104 @@ describe('WorkspaceView sources copied from Google Calendar', () => {
       expect(items[0]!.text()).toContain('Copied from Google Drive as text')
       expect(items[0]!.find('a').text()).toBe('Open in Google Drive (opens in a new tab)')
       expect(await axe(wrapper.element)).toHaveNoViolations()
+    })
+  })
+
+  describe('with saving to Google Drive offered', () => {
+    const SAVING_CAPABILITIES = {
+      ...CALENDAR_CAPABILITIES,
+      googleConnectorAccess: ['CALENDAR_EVENTS' as const, 'DRIVE_SAVING' as const],
+      googleActions: ['DRIVE_SAVE_FILE' as const, 'DRIVE_SAVE_AS_GOOGLE_DOC' as const],
+    }
+
+    beforeEach(() => {
+      vi.mocked(getCapabilities).mockResolvedValue(SAVING_CAPABILITIES)
+      vi.mocked(listActions).mockReset().mockResolvedValue([])
+      vi.mocked(getLatestValidation).mockReset().mockResolvedValue(validationManifestResponse())
+      vi.mocked(getLatestExportApproval).mockReset().mockResolvedValue(exportApprovalResponse())
+      vi.mocked(getLatestExportReceipt).mockReset().mockResolvedValue(exportReceiptResponse())
+    })
+
+    it('comes back from connecting for saving pointing to the Checks tab, and leaves the calendar control closed', async () => {
+      const wrapper = await mountAt('/documents/1?google=connected&access=drive_saving')
+      mountedWrappers.push(wrapper)
+
+      expect(router.currentRoute.value.query).toEqual({})
+      expect(wrapper.find('.workspace-topbar ~ [role="status"]').text().replace(/\s+/g, ' ')).toBe(
+        'Google Drive for saving is connected. Brownie saves a file, or adds text to a Google Doc it saved, only once you approve it. ' +
+          'Save the exported document from the Checks tab.',
+      )
+      expect(wrapper.find('.calendar-picker button[aria-expanded="false"]').exists(), 'the calendar control stays closed').toBe(true)
+    })
+
+    it('offers to save the latest export from the Checks tab, and to connect for it first', async () => {
+      const wrapper = await mountAt('/documents/1')
+      mountedWrappers.push(wrapper)
+      expect(listActions).not.toHaveBeenCalled()
+
+      await openTab(wrapper, 'Checks')
+      await flushPromises()
+
+      expect(wrapper.find('#drive-save-heading').text()).toBe('Save to Google Drive')
+      expect(listActions).toHaveBeenCalledWith(7, 1)
+      expect(wrapper.find('#drive-save-connect').text()).toBe('Connect Google Drive for saving')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    })
+
+    it('comes back from connecting for adding events pointing to the Checks tab, with the calendar picker closed', async () => {
+      const wrapper = await mountAt('/documents/1?google=connected&access=calendar_event_creation')
+      mountedWrappers.push(wrapper)
+
+      expect(wrapper.find('.workspace-topbar ~ [role="status"]').text().replace(/\s+/g, ' ')).toBe(
+        'Google Calendar for adding events is connected. Brownie adds only an event you approve, once you approve it. ' +
+          'Add the event from the Checks tab.',
+      )
+      expect(wrapper.find('.calendar-picker button[aria-expanded="false"]').exists(), 'the calendar control stays closed').toBe(true)
+    })
+
+    it('keeps earlier saves on the Checks tab when this version has not been exported', async () => {
+      vi.mocked(getLatestValidation).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+      vi.mocked(getLatestExportReceipt).mockReset().mockRejectedValue(new ApiRequestError(404, undefined))
+      vi.mocked(listActions).mockResolvedValue([
+        {
+          id: 31,
+          type: 'DRIVE_SAVE_FILE',
+          documentId: 1,
+          state: 'OUTCOME_UNKNOWN',
+          payload: {},
+          payloadHash: 'c'.repeat(64),
+          createdAt: '2026-09-28T10:00:00Z',
+          expiresAt: '2026-09-28T10:30:00Z',
+          approvedAt: '2026-09-28T10:01:00Z',
+          approvalExpiresAt: '2026-09-28T10:16:00Z',
+          sent: true,
+          outcomeAcknowledged: false,
+        },
+      ])
+      vi.mocked(listConnections).mockResolvedValue([
+        {
+          id: 8,
+          provider: 'GOOGLE',
+          access: 'DRIVE_SAVING',
+          state: 'ACTIVE',
+          accountEmail: 'me@example.org',
+          grantedScopes: ['https://www.googleapis.com/auth/drive.file'],
+          reconnectReason: null,
+          connectedAt: '2026-09-20T10:00:00Z',
+          tokenIssuedAt: '2026-09-20T10:00:00Z',
+          disconnectedAt: null,
+          providerRevocation: null,
+          grants: [],
+        },
+      ])
+      const wrapper = await mountAt('/documents/1')
+      mountedWrappers.push(wrapper)
+
+      await openTab(wrapper, 'Checks')
+      await flushPromises()
+
+      expect(wrapper.find('#drive-save-31').text()).toContain('Brownie cannot tell yet whether this file was saved')
+      expect(wrapper.text()).toContain('Validate, approve and export this version of the document to save it to Google Drive.')
     })
   })
 })

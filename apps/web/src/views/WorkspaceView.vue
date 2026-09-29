@@ -74,6 +74,8 @@ import { describePayload, describeScope } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, originLink, originLinkLabel, originSentence } from '@/connections/words'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
+import DriveSavePanel from '@/components/DriveSavePanel.vue'
+import CalendarEventPanel from '@/components/CalendarEventPanel.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 
 const props = defineProps<{ documentId: number }>()
@@ -347,7 +349,12 @@ const route = useRoute()
 const router = useRouter()
 const calendarConsent = ref(readCalendarConsent())
 /** The control Google's answer was for opens by itself, on this first visit to the tab only. */
-const calendarPickerStartsOpen = ref(calendarConsent.value !== null && calendarConsent.value.access !== 'DRIVE_FILES')
+const calendarPickerStartsOpen = ref(
+  calendarConsent.value !== null &&
+    calendarConsent.value.access !== 'DRIVE_FILES' &&
+    calendarConsent.value.access !== 'DRIVE_SAVING' &&
+    calendarConsent.value.access !== 'CALENDAR_EVENT_CREATION',
+)
 const drivePickerStartsOpen = ref(calendarConsent.value?.access === 'DRIVE_FILES')
 const calendarConsentElement = ref<HTMLElement | null>(null)
 watch(calendarConsentElement, (element) => element?.focus())
@@ -365,7 +372,11 @@ function readCalendarConsent(): { tone: 'success' | 'failure'; text: string; acc
         ? (outcome.added ?? 0) > 0
           ? 'Copy a file from the Sources tab.'
           : null
-        : 'Copy an event from the Sources tab.'
+        : outcome.access === 'DRIVE_SAVING'
+          ? 'Save the exported document from the Checks tab.'
+          : outcome.access === 'CALENDAR_EVENT_CREATION'
+            ? 'Add the event from the Checks tab.'
+            : 'Copy an event from the Sources tab.'
   return { tone: outcome.tone, text: outcome.text, access: outcome.access, hint }
 }
 
@@ -664,6 +675,15 @@ function fieldDisplayValue(field: DocumentRevisionResponse['fields'][string] | u
 // field (409) rather than letting either side's work silently vanish.
 
 const fieldDefinitions = ref<FieldDefinitionResponse[]>([])
+/** The first date the document holds, offered as the day of an event added to the calendar from it. */
+const suggestedEventDate = computed(() => {
+  const fields = document.value?.currentRevision.fields ?? {}
+  for (const definition of fieldDefinitions.value) {
+    const value = definition.type === 'DATE' && definition.cardinality === 'SCALAR' ? fields[definition.fieldId]?.value : null
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  }
+  return null
+})
 const definitionsLoadedForVersionId = ref<number | null>(null)
 
 /**
@@ -2768,6 +2788,23 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
                   </ul>
                 </div>
               </template>
+
+              <!-- Outside the checks above: a save made from an earlier export stays reachable after the document changes. -->
+              <DriveSavePanel
+                v-if="session.personalWorkspaceId !== undefined"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :receipt="exportReceipt"
+                :unsaved-work="hasUnsavedWork()"
+              />
+              <CalendarEventPanel
+                v-if="session.personalWorkspaceId !== undefined && document"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :document-title="document.title"
+                :suggested-date="suggestedEventDate"
+                :unsaved-work="hasUnsavedWork()"
+              />
             </div>
 
             <div v-else-if="activeTab === 'history'">
