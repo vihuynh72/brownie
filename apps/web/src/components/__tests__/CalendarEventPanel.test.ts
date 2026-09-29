@@ -331,9 +331,19 @@ describe('where adding events is offered', () => {
   })
 
   it('has no accessibility violations with an event shown', async () => {
-    vi.mocked(listActions).mockResolvedValue([action(), action({ id: 40, state: 'OUTCOME_UNKNOWN', sent: true })])
-    const wrapper = await mountPanel()
-    expect(await axe(wrapper.element)).toHaveNoViolations()
+    // The time zone list is every zone the browser knows, some four hundred options that axe checks one by one; a
+    // few make the same list, labelled the same way, and keep the scan well inside the test's time on a slow runner.
+    const zones = vi
+      .spyOn(Intl as unknown as { supportedValuesOf: (key: string) => string[] }, 'supportedValuesOf')
+      .mockReturnValue(['UTC', 'Europe/Paris', 'America/Los_Angeles'])
+    try {
+      vi.mocked(listActions).mockResolvedValue([action(), action({ id: 40, state: 'OUTCOME_UNKNOWN', sent: true })])
+      const wrapper = await mountPanel()
+      expect(wrapper.findAll('#calendar-event-zone option').length).toBeGreaterThanOrEqual(3)
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    } finally {
+      zones.mockRestore()
+    }
   })
 })
 
