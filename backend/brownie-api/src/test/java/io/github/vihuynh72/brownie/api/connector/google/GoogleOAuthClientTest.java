@@ -323,6 +323,7 @@ class GoogleOAuthClientTest {
                 URI.create(base + "/revoke"),
                 URI.create(base + "/userinfo"),
                 URI.create(base),
+                URI.create(base),
                 "https://accounts.google.com",
                 Duration.ofSeconds(2),
                 Duration.ofSeconds(5));
