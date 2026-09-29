@@ -12,7 +12,16 @@ import io.github.vihuynh72.brownie.api.generation.GenerationResultNotFoundExcept
 import io.github.vihuynh72.brownie.api.retention.DeletionRequestValidationException;
 import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
 import io.github.vihuynh72.brownie.api.support.SupportGrantRequestValidationException;
+import io.github.vihuynh72.brownie.api.connector.ConnectionAccessNotOfferedException;
 import io.github.vihuynh72.brownie.api.connector.ConnectionRequestValidationException;
+import io.github.vihuynh72.brownie.api.action.ActionRequestValidationException;
+import io.github.vihuynh72.brownie.core.action.ActionConnectionUnusableException;
+import io.github.vihuynh72.brownie.core.action.ActionNotFoundException;
+import io.github.vihuynh72.brownie.core.action.ActionNotOfferedException;
+import io.github.vihuynh72.brownie.core.action.ActionNotProposableException;
+import io.github.vihuynh72.brownie.core.action.ActionNotPermittedException;
+import io.github.vihuynh72.brownie.core.action.ActionPayloadMismatchException;
+import io.github.vihuynh72.brownie.core.action.ActionSiblingUnresolvedException;
 import io.github.vihuynh72.brownie.core.generation.SourceNotExtractableException;
 import io.github.vihuynh72.brownie.api.validation.ValidationRequestValidationException;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactNotFoundException;
@@ -512,7 +521,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             GenerationRequestValidationException.class, QuestionRequestValidationException.class,
             DocumentSourceRequestValidationException.class, AssistRequestValidationException.class,
             DeletionRequestValidationException.class, SupportGrantRequestValidationException.class,
-            ConnectionRequestValidationException.class, InvalidCalendarRequestException.class})
+            ConnectionRequestValidationException.class, InvalidCalendarRequestException.class,
+            ActionRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
@@ -734,6 +744,77 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "SCANNER_UNAVAILABLE");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
+    /** Connecting for a change this Brownie does not make: nothing to agree to, so Google is not asked. */
+    @ExceptionHandler(ConnectionAccessNotOfferedException.class)
+    public ResponseEntity<Object> handleConnectionAccessNotOffered(ConnectionAccessNotOfferedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This Brownie does not make changes that need this connection, so there is nothing to connect it for.");
+        enrich(problem, "CONNECTION_ACCESS_NOT_OFFERED");
+        problem.setProperty("access", ex.access().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The change cannot be proposed as asked; {@code reason} says why, and nothing was recorded or sent. */
+    @ExceptionHandler(ActionNotProposableException.class)
+    public ResponseEntity<Object> handleActionNotProposable(ActionNotProposableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(switch (ex.reason()) {
+            case NO_EXPORT -> "This document has not been exported yet. Approve it for export and export it first.";
+            case EXPORT_STALE -> "The document changed after it was last exported. Export it again first.";
+            case FORMAT_NOT_EXPORTED -> "The latest export did not include this format. Approve and export that format first.";
+            case FILE_TOO_LARGE -> "The exported file is larger than Brownie saves to Google Drive.";
+            case HIDDEN_CHARACTERS -> "Some of this text holds characters that reorder it or cannot be seen, so it is not sent. Remove them first.";
+            case TIME_SKIPPED, INVALID -> ex.getMessage();
+        });
+        enrich(problem, "ACTION_NOT_PROPOSABLE");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(ActionNotFoundException.class)
+    public ResponseEntity<Object> handleActionNotFound(ActionNotFoundException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.NOT_FOUND, "NOT_FOUND", "There is no such proposed change.", request);
+    }
+
+    /** What the page approved is not what this action would do, so nothing was approved and nothing was sent. */
+    @ExceptionHandler(ActionPayloadMismatchException.class)
+    public ResponseEntity<Object> handleActionPayloadMismatch(ActionPayloadMismatchException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONFLICT, "ACTION_PAYLOAD_MISMATCH",
+                "What was approved is not what this change would do, so nothing was approved or sent. Look at the change again.", request);
+    }
+
+    @ExceptionHandler(ActionNotOfferedException.class)
+    public ResponseEntity<Object> handleActionNotOffered(ActionNotOfferedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This Brownie does not make this kind of change in Google accounts. Nothing was sent.");
+        enrich(problem, "ACTION_NOT_OFFERED");
+        // Not "type": that member is the problem's own kind in every problem answer, and a second one would clash with it.
+        problem.setProperty("actionType", ex.type().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(ActionNotPermittedException.class)
+    public ResponseEntity<Object> handleActionNotPermitted(ActionNotPermittedException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.FORBIDDEN, "FORBIDDEN", "Your role here does not allow changes in connected accounts.", request);
+    }
+
+    /** Sending the same change again could make it twice; the earlier one has to be checked first. */
+    @ExceptionHandler(ActionSiblingUnresolvedException.class)
+    public ResponseEntity<Object> handleActionSiblingUnresolved(ActionSiblingUnresolvedException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONFLICT, "ACTION_SIBLING_UNRESOLVED",
+                "The same change is already being made, or an earlier try may already have made it. Check that one first. Nothing was sent.",
+                request);
+    }
+
+    @ExceptionHandler(ActionConnectionUnusableException.class)
+    public ResponseEntity<Object> handleActionConnectionUnusable(ActionConnectionUnusableException ex, WebRequest request) {
+        return connectorProblem(ex, HttpStatus.CONFLICT, "ACTION_CONNECTION_UNUSABLE",
+                "Brownie can only check this with the Google account that made it. Connect that account again to check.", request);
     }
 
     /** This deployment has no Google connection set up, so there is nothing to connect or read through. */
