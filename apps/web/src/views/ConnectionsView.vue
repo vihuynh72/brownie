@@ -31,12 +31,13 @@ import {
 } from '@/connections/words'
 
 /**
- * The accounts outside Brownie a person lets it read from: for each, where
- * it stands, the permission in Google's own words beside what Brownie itself
- * does with it, what Brownie may read through it, and the way to connect,
- * reconnect or disconnect. Google sends the person back here after its
- * consent page, and what it said is shown once and then taken out of the
- * address, so reloading or sharing the address does not repeat it.
+ * The accounts outside Brownie a person lets it read from, or add to on
+ * their approval: for each, where it stands, the permission in Google's own
+ * words beside what Brownie itself does with it, what Brownie may read
+ * through it, and the way to connect, reconnect or disconnect. Google sends
+ * the person back here after its consent page, and what it said is shown
+ * once and then taken out of the address, so reloading or sharing the
+ * address does not repeat it.
  */
 const session = useSessionStore()
 const route = useRoute()
@@ -56,11 +57,20 @@ const confirmingDisconnect = ref(false)
 
 const calendar = computed(() => latestConnection(connections.value, 'CALENDAR_EVENTS'))
 const drive = computed(() => latestConnection(connections.value, 'DRIVE_FILES'))
+const saving = computed(() => latestConnection(connections.value, 'DRIVE_SAVING'))
+const adding = computed(() => latestConnection(connections.value, 'CALENDAR_EVENT_CREATION'))
 const anyOpen = computed(() => connections.value.some((connection) => connection.state !== 'DISCONNECTED'))
 /** Drive is shown only where it exists, or once this deployment offers it: until then there is nothing to use it for. */
 const calendarOffered = computed(() => offered.value?.includes('CALENDAR_EVENTS') ?? false)
 const driveOffered = computed(() => offered.value?.includes('DRIVE_FILES') ?? false)
 const showDrive = computed(() => drive.value !== null || driveOffered.value)
+const savingOffered = computed(() => offered.value?.includes('DRIVE_SAVING') ?? false)
+/** Saving is its own connection, shown where it exists or is offered; the page then says Brownie may change something, on approval. */
+const showSaving = computed(() => saving.value !== null || savingOffered.value)
+const addingOffered = computed(() => offered.value?.includes('CALENDAR_EVENT_CREATION') ?? false)
+const showAdding = computed(() => adding.value !== null || addingOffered.value)
+/** Whether any connection here can change something, on approval; the page's introduction then says so. */
+const showWrites = computed(() => showSaving.value || showAdding.value)
 /** The files Brownie may read, from the open Drive connection only: disconnecting forgets them all. */
 const pickedFiles = computed<ResourceGrantResponse[]>(() =>
   drive.value !== null && drive.value.state !== 'DISCONNECTED' ? (drive.value.grants ?? []).filter((grant) => grant.type === 'DRIVE_FILE') : [],
@@ -291,7 +301,11 @@ async function disconnect(): Promise<void> {
   <section v-else class="connections" aria-labelledby="connections-heading">
     <span class="connections__mark" aria-hidden="true"><AppIcon name="link" :size="28" /></span>
     <h1 id="connections-heading" class="connections__title">Connections</h1>
-    <p>
+    <p v-if="showWrites">
+      Accounts outside Brownie that you let it read from, or add to. Brownie reads only what you ask for, keeps a copy of
+      only what you choose to bring into a document, and makes a change in them only when you approve that exact change.
+    </p>
+    <p v-else>
       Accounts outside Brownie that you let it read from. Brownie reads only what you ask for, keeps a copy of only what
       you choose to bring into a document, and never changes anything in them.
     </p>
@@ -407,6 +421,75 @@ async function disconnect(): Promise<void> {
         </button>
       </section>
 
+      <section v-if="showSaving" class="connections__account" aria-labelledby="connections-saving">
+        <h2 id="connections-saving" class="connections__heading">{{ ACCESS_NAMES.DRIVE_SAVING }}</h2>
+        <p>{{ saving ? stateSentence(saving) : 'Not connected.' }}</p>
+        <dl class="connections__facts">
+          <dt>What Google asks you to allow</dt>
+          <dd>"{{ PERMISSION_WORDS.DRIVE_SAVING.google }}"</dd>
+          <dt>What Brownie does with it</dt>
+          <dd>{{ PERMISSION_WORDS.DRIVE_SAVING.brownie }}</dd>
+          <dt>What Brownie may read</dt>
+          <dd>
+            Which account this is, through Google Drive; a file it saved for you, to check it afterwards; and a Google Doc it
+            saved, in full, when you prepare adding text to it and again afterwards.
+          </dd>
+        </dl>
+        <p v-if="saving?.state === 'ACTIVE' && savingOffered" class="field-hint">
+          To save a document, export it, then use "Save to Google Drive" on its Checks tab.
+        </p>
+        <p v-else-if="saving?.state === 'ACTIVE'" class="field-hint">
+          Saving to Google Drive is not offered on this Brownie at the moment. The connection stays until you disconnect it.
+        </p>
+        <button
+          v-if="canConnect('DRIVE_SAVING', saving)"
+          id="connections-connect-saving"
+          type="button"
+          class="button button--primary"
+          :disabled="busy !== null"
+          @click="connect('DRIVE_SAVING')"
+        >
+          {{ saving?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive for saving again' : 'Connect Google Drive for saving' }}
+        </button>
+      </section>
+
+      <section v-if="showAdding" class="connections__account" aria-labelledby="connections-adding">
+        <h2 id="connections-adding" class="connections__heading">{{ ACCESS_NAMES.CALENDAR_EVENT_CREATION }}</h2>
+        <p>{{ adding ? stateSentence(adding) : 'Not connected.' }}</p>
+        <dl class="connections__facts">
+          <dt>What Google asks you to allow</dt>
+          <dd>
+            "{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.google }}"
+            <span class="connections__also">{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.alsoAsked }}</span>
+          </dd>
+          <dt>What Brownie does with it</dt>
+          <dd>{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.brownie }}</dd>
+          <dt>What Brownie may read</dt>
+          <dd>Which account this is, and an event it added for you, to check it after adding it.</dd>
+        </dl>
+        <p v-if="adding?.state === 'ACTIVE' && addingOffered" class="field-hint">
+          To add an event, open a document and use "Add an event to Google Calendar" on its Checks tab.
+        </p>
+        <p v-else-if="adding?.state === 'ACTIVE'" class="field-hint">
+          Adding events to Google Calendar is not offered on this Brownie at the moment. The connection stays until you
+          disconnect it.
+        </p>
+        <button
+          v-if="canConnect('CALENDAR_EVENT_CREATION', adding)"
+          id="connections-connect-adding"
+          type="button"
+          class="button button--primary"
+          :disabled="busy !== null"
+          @click="connect('CALENDAR_EVENT_CREATION')"
+        >
+          {{
+            adding?.state === 'RECONNECT_REQUIRED'
+              ? 'Connect Google Calendar for adding events again'
+              : 'Connect Google Calendar for adding events'
+          }}
+        </button>
+      </section>
+
       <section v-if="pickerTestVisible" class="connections__account" aria-labelledby="connections-picker-test">
         <h2 id="connections-picker-test" class="connections__heading">Google's file picker (test)</h2>
         <p class="field-hint">
@@ -433,6 +516,11 @@ async function disconnect(): Promise<void> {
           Google; remove Brownie in your Google account instead. Every file you chose in Google Drive is taken off your
           list too. Copies already brought into your documents stay with those documents, and each still says where it
           came from; they are never updated again. To remove a copy, delete every document it was copied into.
+          <template v-if="showWrites">
+            A change waiting for your approval can no longer be made, and one whose outcome is unknown can be asked about only
+            once the same Google account is connected again. Files Brownie saved, text it added and events it added stay in
+            your Google account.</template
+          >
         </p>
         <button
           v-if="!confirmingDisconnect"

@@ -67,7 +67,9 @@ function problem(status: number, detail: string, code = 'X', extra: Record<strin
   return { status, title: 't', code, detail, correlationId: 'c', fields: [], recoveryActions: [], ...extra }
 }
 
-function capabilities(googleConnectorAccess?: ('CALENDAR_EVENTS' | 'DRIVE_FILES')[]): CapabilitiesResponse {
+function capabilities(
+  googleConnectorAccess?: ('CALENDAR_EVENTS' | 'DRIVE_FILES' | 'DRIVE_SAVING' | 'CALENDAR_EVENT_CREATION')[],
+): CapabilitiesResponse {
   return {
     maxUploadBytes: 10485760,
     uploadMediaTypes: [],
@@ -131,7 +133,7 @@ describe('ConnectionsView', () => {
     expect(listConnections).toHaveBeenCalledWith(7)
     expect(wrapper.find('section[aria-labelledby="connections-calendar"] p').text()).toBe('Not connected.')
     expect(text(wrapper)).toContain('"See the events on Google calendars you own."')
-    expect(text(wrapper)).toContain('It never creates, changes or deletes an event')
+    expect(text(wrapper)).toContain('Through this connection it never creates, changes or deletes an event')
     expect(wrapper.find('#connections-drive').exists()).toBe(false)
     expect(buttonNamed(wrapper, 'Connect Google Calendar').exists()).toBe(true)
     expect(await axe(wrapper.element)).toHaveNoViolations()
@@ -634,6 +636,90 @@ describe('ConnectionsView', () => {
     expect(section.text()).toContain('Brownie cannot read files from Drive yet')
     expect(section.text()).not.toContain('Choose files in Google Drive')
     expect(buttonNamed(wrapper, 'Stop reading this file Minutes').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps saying Brownie never changes anything where saving is neither offered nor connected', async () => {
+    const wrapper = await mountAt()
+
+    expect(text(wrapper)).toContain('Accounts outside Brownie that you let it read from. ')
+    expect(wrapper.find('#connections-adding').exists()).toBe(false)
+    expect(text(wrapper)).toContain('never changes anything in them')
+    expect(wrapper.find('#connections-saving').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows saving as a connection of its own where it is offered, and says a change needs approval', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS', 'DRIVE_SAVING']))
+    vi.mocked(startGoogleConsent).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' })
+    const wrapper = await mountAt()
+
+    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
+    expect(text(wrapper)).not.toContain('never changes anything in them')
+    const section = wrapper.find('section[aria-labelledby="connections-saving"]')
+    expect(section.find('h2').text()).toBe('Google Drive for saving')
+    expect(section.text()).toContain('"See, edit, create, and delete only the specific Google Drive files you use with this app."')
+    expect(section.text()).toContain('used only for saving a file you approve')
+    expect(section.text()).toContain('Which account this is, through Google Drive; a file it saved for you, to check it afterwards')
+    expect(section.text()).toContain('a Google Doc it saved, in full, when you prepare adding text to it')
+
+    await buttonNamed(wrapper, 'Connect Google Drive for saving').trigger('click')
+    await flushPromises()
+    expect(startGoogleConsent).toHaveBeenCalledWith(7, 'DRIVE_SAVING', '/connections')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  it('keeps a saving connection on show once saving is switched off, and says it is not offered', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection({ id: 8, access: 'DRIVE_SAVING' })])
+    const wrapper = await mountAt()
+
+    const section = wrapper.find('section[aria-labelledby="connections-saving"]')
+    expect(section.text()).toContain('Connected as me@example.org')
+    expect(section.text()).toContain('Saving to Google Drive is not offered on this Brownie at the moment.')
+    expect(section.find('button').exists()).toBe(false)
+    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
+    wrapper.unmount()
+  })
+
+  it('shows adding calendar events as a connection of its own where it is offered, quoting Google beside Brownie', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS', 'CALENDAR_EVENT_CREATION']))
+    vi.mocked(startGoogleConsent).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=2' })
+    const wrapper = await mountAt()
+
+    expect(text(wrapper)).toContain('Accounts outside Brownie that you let it read from, or add to.')
+    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
+    const section = wrapper.find('section[aria-labelledby="connections-adding"]')
+    expect(section.find('h2').text()).toBe('Google Calendar for adding events')
+    expect(section.text()).toContain('"See, create, change, and delete events on Google calendars you own."')
+    expect(section.text()).toContain('used only for adding an event you approve')
+    expect(section.text()).toContain('never changes or deletes any event')
+    expect(wrapper.find('section[aria-labelledby="connections-calendar"]').text()).toContain(
+      'Through this connection it never creates, changes or deletes an event',
+    )
+
+    await buttonNamed(wrapper, 'Connect Google Calendar for adding events').trigger('click')
+    await flushPromises()
+    expect(startGoogleConsent).toHaveBeenCalledWith(7, 'CALENDAR_EVENT_CREATION', '/connections')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  it('says what connecting for adding events did when Google sends the person back', async () => {
+    const wrapper = await mountAt('/connections?google=connected&access=calendar_event_creation')
+
+    expect(wrapper.find('[role="status"]').text()).toBe(
+      'Google Calendar for adding events is connected. Brownie adds only an event you approve, once you approve it.',
+    )
+    wrapper.unmount()
+  })
+
+  it('says what connecting for saving did when Google sends the person back', async () => {
+    const wrapper = await mountAt('/connections?google=connected&access=drive_saving')
+
+    expect(wrapper.find('[role="status"]').text()).toBe(
+      'Google Drive for saving is connected. Brownie saves a file, or adds text to a Google Doc it saved, only once you approve it.',
+    )
     wrapper.unmount()
   })
 

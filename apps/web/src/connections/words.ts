@@ -17,6 +17,8 @@ import { describeCommonFailure } from '@/api/failures'
 export const ACCESS_NAMES: Record<ConnectorAccess, string> = {
   CALENDAR_EVENTS: 'Google Calendar',
   DRIVE_FILES: 'Google Drive',
+  DRIVE_SAVING: 'Google Drive for saving',
+  CALENDAR_EVENT_CREATION: 'Google Calendar for adding events',
 }
 
 /**
@@ -32,7 +34,8 @@ export const PERMISSION_WORDS: Record<ConnectorAccess, { google: string; alsoAsk
     alsoAsked: 'Google also asks to let Brownie see your email address, so this page can show which account is connected.',
     brownie:
       'Brownie reads only your main calendar, only the days you ask it to list, and copies only the event you choose, ' +
-      'as text, into the document you are working on. It never creates, changes or deletes an event, and never reads who was invited.',
+      'as text, into the document you are working on. Through this connection it never creates, changes or deletes an event, and ' +
+      'never reads who was invited.',
   },
   DRIVE_FILES: {
     google: 'See, edit, create, and delete only the specific Google Drive files you use with this app.',
@@ -42,6 +45,27 @@ export const PERMISSION_WORDS: Record<ConnectorAccess, { google: string; alsoAsk
       "Brownie's own rule, kept by its database, not a limit Google puts on the permission. Brownie cannot read files " +
       'from Drive yet, so this connection is not used.',
   },
+  DRIVE_SAVING: {
+    google: 'See, edit, create, and delete only the specific Google Drive files you use with this app.',
+    alsoAsked: null,
+    brownie:
+      'A connection of its own, used only for saving a file you approve, and for adding text you approve to the end of a Google ' +
+      'Doc it saved for you. Preparing a save of a file as it is asks Google Drive for the id the new file will have; preparing ' +
+      'an addition reads that Google Doc in full, and whether it is shared or in the trash. Either way you see exactly what ' +
+      'approving would do. A save goes as a new file at the top of your My Drive, shared with no one. Brownie then reads back ' +
+      'only what it saved or added to, to check it is what you approved, and never opens, changes, moves or deletes any other ' +
+      "file. Google has no narrower form of this permission: doing only what you approve is Brownie's own rule, kept by its " +
+      'database, not a limit Google puts on the permission.',
+  },
+  CALENDAR_EVENT_CREATION: {
+    google: 'See, create, change, and delete events on Google calendars you own.',
+    alsoAsked: 'Google also asks to let Brownie see your email address, so this page can show which account is connected.',
+    brownie:
+      'A connection of its own, used only for adding an event you approve to your main calendar. Each event is shown to you ' +
+      'first, exactly as it will be: with no guests, telling nobody, not repeating, private. Brownie then reads back only that ' +
+      'event, to check it is what you approved, and never changes or deletes any event. Google has no narrower permission for ' +
+      "adding events: adding only what you approve is Brownie's own rule, kept by its database, not a limit Google puts on the permission.",
+  },
 }
 
 /**
@@ -50,8 +74,8 @@ export const PERMISSION_WORDS: Record<ConnectorAccess, { google: string; alsoAsk
  */
 export const DRIVE_WORDS_WHEN_OFFERED =
   "When you pick files in Google's own file picker, Brownie asks Google Drive what each one is and keeps its name. It " +
-  'reads a file\'s content only when you copy that file into a document, reads nothing you did not pick, and never ' +
-  'changes, moves or deletes anything in your Drive. Google has no read-only form of this permission: reading only ' +
+  'reads a file\'s content only when you copy that file into a document, reads nothing you did not pick, and through this ' +
+  'connection never changes, moves or deletes anything in your Drive. Google has no read-only form of this permission: reading only ' +
   "what you pick is Brownie's own rule, kept by its database, not a limit Google puts on the permission."
 
 /** Brownie's side of the Drive permission, as it is on this Brownie now. */
@@ -163,7 +187,7 @@ const CONSENT_FAILURES: Record<string, string> = {
   different_account:
     'That is a different Google account from the one already connected for this, so nothing was changed. Disconnect first to use another account.',
   blocked_by_organization:
-    'The organization that manages that Google account does not allow Brownie to read it, so nothing was connected. Its administrator can change that.',
+    'The organization that manages that Google account does not allow Brownie to use it, so nothing was connected. Its administrator can change that.',
   consent_expired: "Google stopped accepting Brownie's access moments after you agreed, so nothing was connected. Try again.",
   google_unavailable: 'Google could not be reached, so nothing was connected. Try again in a minute.',
   not_connected: 'Google Drive was disconnected while your files were being added, so none was added. Choose them again.',
@@ -171,6 +195,14 @@ const CONSENT_FAILURES: Record<string, string> = {
     'Your Brownie session had ended by the time Google sent you back, so nothing was connected. Connect again from here.',
   access_denied: "You chose not to allow access on Google's page, so nothing was connected.",
 }
+
+/** How the address Google's answer comes back to names each kind of access. */
+const ACCESS_WORDS = new Map<string, ConnectorAccess>([
+  ['calendar_events', 'CALENDAR_EVENTS'],
+  ['drive_files', 'DRIVE_FILES'],
+  ['drive_saving', 'DRIVE_SAVING'],
+  ['calendar_event_creation', 'CALENDAR_EVENT_CREATION'],
+])
 
 /** The parameters Google's answer puts in a page's address, which the page takes out once it has said what they meant. */
 export const CONSENT_QUERY_KEYS = [
@@ -207,7 +239,7 @@ export function consentOutcome(
     return null
   }
   const picked = pickedSentence(query.picked)
-  const access = query.access === 'calendar_events' ? 'CALENDAR_EVENTS' : query.access === 'drive_files' ? 'DRIVE_FILES' : null
+  const access = (typeof query.access === 'string' ? ACCESS_WORDS.get(query.access) : undefined) ?? null
   if (google === 'connected') {
     const name = access ? ACCESS_NAMES[access] : 'Your Google account'
     return {
@@ -216,7 +248,11 @@ export function consentOutcome(
       text:
         (access === 'CALENDAR_EVENTS'
           ? `${name} is connected. Brownie lists the days you ask for and copies only the event you choose.`
-          : `${name} is connected.`) + picked,
+          : access === 'DRIVE_SAVING'
+            ? `${name} is connected. Brownie saves a file, or adds text to a Google Doc it saved, only once you approve it.`
+            : access === 'CALENDAR_EVENT_CREATION'
+              ? `${name} is connected. Brownie adds only an event you approve, once you approve it.`
+              : `${name} is connected.`) + picked,
     }
   }
   const reason = typeof query.reason === 'string' ? query.reason : ''
@@ -315,7 +351,11 @@ export function describeConnectorFailure(error: unknown, what: string, access: C
       case 'CONNECTOR_NOT_CONFIGURED':
         return access === 'DRIVE_FILES'
           ? 'Copying files from Google Drive is not offered on this Brownie at the moment.'
-          : 'Connecting a Google account is not set up on this Brownie.'
+          : access === 'DRIVE_SAVING'
+            ? 'Saving to Google Drive is not offered on this Brownie at the moment.'
+            : access === 'CALENDAR_EVENT_CREATION'
+              ? 'Adding events to Google Calendar is not offered on this Brownie at the moment.'
+              : 'Connecting a Google account is not set up on this Brownie.'
       case 'CONNECTOR_MISCONFIGURED':
         return "Brownie's connection to Google is not set up correctly. Whoever runs this Brownie has to fix it."
       case 'CONNECTION_NOT_FOUND':
@@ -327,7 +367,9 @@ export function describeConnectorFailure(error: unknown, what: string, access: C
         return why ?? "Brownie can no longer use this Google connection. Connect again to carry on."
       }
       case 'CONNECTOR_BLOCKED_BY_ORGANIZATION':
-        return 'The organization that manages this Google account does not allow Brownie to read it. Its administrator can change that.'
+        return `The organization that manages this Google account does not allow Brownie to ${
+          access === 'DRIVE_SAVING' ? 'save to it' : access === 'CALENDAR_EVENT_CREATION' ? 'add events to it' : 'read it'
+        }. Its administrator can change that.`
       case 'CONNECTOR_PROVIDER_UNAVAILABLE':
         return 'Google could not be reached. Nothing was changed; try again in a minute.'
       case 'CONNECTOR_RESOURCE_TOO_LARGE':
