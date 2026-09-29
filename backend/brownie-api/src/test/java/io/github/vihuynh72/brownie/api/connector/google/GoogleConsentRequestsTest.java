@@ -23,6 +23,7 @@ class GoogleConsentRequestsTest {
             URI.create("https://oauth2.googleapis.com/revoke"),
             URI.create("https://openidconnect.googleapis.com/v1/userinfo"),
             URI.create("https://www.googleapis.com"),
+            URI.create("https://docs.googleapis.com"),
             "https://accounts.google.com",
             Duration.ofSeconds(5),
             Duration.ofSeconds(15));

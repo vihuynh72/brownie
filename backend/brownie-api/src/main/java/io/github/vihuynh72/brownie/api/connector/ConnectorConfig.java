@@ -63,6 +63,7 @@ class ConnectorConfig {
             "revocation-uri", "https://oauth2.googleapis.com/revoke",
             "user-info-uri", "https://openidconnect.googleapis.com/v1/userinfo",
             "api-base-uri", "https://www.googleapis.com",
+            "docs-api-base-uri", "https://docs.googleapis.com",
             "issuer", "https://accounts.google.com");
 
     @Bean
@@ -102,6 +103,7 @@ class ConnectorConfig {
                 address(environment, "revocation-uri", hosted),
                 address(environment, "user-info-uri", hosted),
                 address(environment, "api-base-uri", hosted),
+                address(environment, "docs-api-base-uri", hosted),
                 address(environment, "issuer", hosted).toString(),
                 connectTimeout,
                 readTimeout);
