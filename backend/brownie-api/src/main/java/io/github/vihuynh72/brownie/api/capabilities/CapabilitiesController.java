@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.capabilities;
 
+import io.github.vihuynh72.brownie.api.action.ConfiguredActionOffer;
 import io.github.vihuynh72.brownie.api.connector.DriveOffer;
 import io.github.vihuynh72.brownie.api.connector.GoogleConnectorSetup;
 import io.github.vihuynh72.brownie.core.artifact.SupportedMediaType;
@@ -27,6 +28,10 @@ import java.util.List;
  * whenever Google is set up; Drive only when it is switched on and a reader
  * that can open Drive files is plugged in, so it is never offered before it
  * can work.
+ *
+ * <p>{@code googleActions} is which changes in a person's Google account this
+ * deployment makes (each only on that person's approval of the exact change):
+ * empty unless Google is set up and such changes are switched on.
  */
 @RestController
 @RequestMapping("/api/v1/capabilities")
@@ -38,18 +43,26 @@ class CapabilitiesController {
     private final long maxUploadBytes;
     private final int trashRetentionDays;
     private final List<String> googleConnectorAccess;
+    private final List<String> googleActions;
 
     CapabilitiesController(
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes,
             DeletionService deletionService,
             GoogleConnectorSetup googleConnectorSetup,
-            DriveOffer driveOffer) {
+            DriveOffer driveOffer,
+            ConfiguredActionOffer actionOffer) {
         this.maxUploadBytes = maxUploadBytes;
         this.trashRetentionDays = deletionService.trashRetentionDays();
         this.googleConnectorAccess = Arrays.stream(ConnectorAccess.values())
-                .filter(access -> googleConnectorSetup.configured() && (access != ConnectorAccess.DRIVE_FILES || driveOffer.offered()))
+                .filter(access -> googleConnectorSetup.configured() && switch (access) {
+                    case DRIVE_FILES -> driveOffer.offered();
+                    case CALENDAR_EVENTS -> true;
+                    // A connection that only writes is offered exactly when some change made through it is.
+                    default -> actionOffer.uses(access);
+                })
                 .map(ConnectorAccess::name)
                 .toList();
+        this.googleActions = actionOffer.names();
     }
 
     @GetMapping
@@ -60,7 +73,8 @@ class CapabilitiesController {
                 ASSIST_SOURCE_MEDIA_TYPES.stream().map(SupportedMediaType::mimeType).toList(),
                 TEMPLATE_MEDIA_TYPES.stream().map(SupportedMediaType::mimeType).toList(),
                 trashRetentionDays,
-                googleConnectorAccess);
+                googleConnectorAccess,
+                googleActions);
     }
 
     record MediaTypeResponse(String mediaType, String extension) {
@@ -75,6 +89,7 @@ class CapabilitiesController {
             List<String> assistSourceMediaTypes,
             List<String> templateMediaTypes,
             int trashRetentionDays,
-            List<String> googleConnectorAccess) {
+            List<String> googleConnectorAccess,
+            List<String> googleActions) {
     }
 }
