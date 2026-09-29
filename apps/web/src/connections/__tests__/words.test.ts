@@ -237,3 +237,45 @@ describe("what Brownie says it does with Drive", () => {
     expect(driveBrownieWords(true)).not.toContain('cannot read files')
   })
 })
+
+describe('saving to Google Drive, a connection of its own', () => {
+  it('reads the return from its consent, and says nothing is saved without approval', () => {
+    const outcome = consentOutcome({ google: 'connected', access: 'drive_saving' })
+    expect(outcome?.access).toBe('DRIVE_SAVING')
+    expect(outcome?.text).toBe(
+      'Google Drive for saving is connected. Brownie saves a file, or adds text to a Google Doc it saved, only once you approve it.',
+    )
+  })
+
+  it('never takes an access from the address that is not one of its own names', () => {
+    for (const access of ['constructor', '__proto__', 'toString', 'DRIVE_SAVING', '']) {
+      expect(consentOutcome({ google: 'connected', access })?.access).toBeNull()
+    }
+  })
+
+  it("quotes Google's permission beside Brownie's rule, which is Brownie's and not Google's", () => {
+    expect(PERMISSION_WORDS.DRIVE_SAVING.google).toBe(PERMISSION_WORDS.DRIVE_FILES.google)
+    expect(PERMISSION_WORDS.DRIVE_SAVING.brownie).toContain('used only for saving a file you approve')
+    expect(PERMISSION_WORDS.DRIVE_SAVING.brownie).toContain('shared with no one')
+    expect(PERMISSION_WORDS.DRIVE_SAVING.brownie).toContain("Brownie's own rule")
+  })
+
+  it('says the reading connection changes nothing through itself, which stays true once saving is offered', () => {
+    expect(driveBrownieWords(true)).toContain('through this connection never changes, moves or deletes anything in your Drive')
+  })
+
+  it('names saving in its failures', () => {
+    expect(describeConnectorFailure(failure(404, 'CONNECTION_NOT_FOUND'), 'x', 'DRIVE_SAVING')).toBe(
+      'Google Drive for saving is not connected. Connect it first.',
+    )
+    expect(describeConnectorFailure(failure(409, 'CONNECTOR_NOT_CONFIGURED'), 'x', 'DRIVE_SAVING')).toBe(
+      'Saving to Google Drive is not offered on this Brownie at the moment.',
+    )
+    expect(describeConnectorFailure(failure(409, 'CONNECTOR_BLOCKED_BY_ORGANIZATION'), 'x', 'DRIVE_SAVING')).toBe(
+      'The organization that manages this Google account does not allow Brownie to save to it. Its administrator can change that.',
+    )
+    expect(describeConnectorFailure(failure(409, 'CONNECTOR_BLOCKED_BY_ORGANIZATION'), 'x')).toBe(
+      'The organization that manages this Google account does not allow Brownie to read it. Its administrator can change that.',
+    )
+  })
+})
