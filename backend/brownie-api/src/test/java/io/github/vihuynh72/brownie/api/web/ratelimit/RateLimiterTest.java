@@ -102,6 +102,17 @@ class RateLimiterTest {
         assertThat(classOf("GET", "/api/v1/workspaces/7/connections")).isEqualTo(RateLimitClass.READ);
     }
 
+    /** Proposing, approving and asking about a change in someone's account can each call Google; reading one does not. */
+    @Test
+    void everyChangeToAnActionIsCountedAsGoogleWorkButReadingOneIsARead() {
+        assertThat(classOf("POST", "/api/v1/workspaces/7/actions")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/actions/12/approve")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/0x7/actions/+12/reconcile")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/actions/12/cancel")).isEqualTo(RateLimitClass.CONNECTOR);
+        assertThat(classOf("GET", "/api/v1/workspaces/7/actions/12")).isEqualTo(RateLimitClass.READ);
+        assertThat(classOf("GET", "/api/v1/workspaces/7/actions")).isEqualTo(RateLimitClass.READ);
+    }
+
     /**
      * The application reads {@code +3}, {@code 0x3} and a number followed by a space as the same document as
      * {@code 3}. A pattern that asked for digits would let each of them through to the expensive handler while
