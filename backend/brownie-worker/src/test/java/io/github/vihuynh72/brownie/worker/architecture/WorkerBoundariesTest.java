@@ -49,6 +49,19 @@ class WorkerBoundariesTest {
                 .check(production);
     }
 
+    /**
+     * The worker runs unattended, so it never holds a person's connection to
+     * an outside account and never takes part in a change there: both happen
+     * only during a request that person made.
+     */
+    @Test
+    void theWorkerNeverReachesAConnectionOrAnAction() {
+        noClasses().that().resideInAPackage("io.github.vihuynh72.brownie.worker..")
+                .should().transitivelyDependOnClassesThat().resideInAnyPackage(
+                        "io.github.vihuynh72.brownie.core.action..", "io.github.vihuynh72.brownie.core.connector..")
+                .check(production);
+    }
+
     /** The worker reaches the model provider and blob storage through the same two adapters the API does, and reads no uploaded file itself. */
     @Test
     void theWorkerUsesNoVendorSdkOrFileParsingLibraryDirectly() {
