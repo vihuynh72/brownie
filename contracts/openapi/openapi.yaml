@@ -1782,7 +1782,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: This deployment has no Google connection set up (code CONNECTOR_NOT_CONFIGURED).
+          description: >
+            This deployment has no Google connection set up (code CONNECTOR_NOT_CONFIGURED), or nothing here
+            would use the access asked for (code CONNECTION_ACCESS_NOT_OFFERED).
           content:
             application/problem+json:
               schema:
@@ -2215,8 +2217,449 @@ paths:
         "302":
           description: Back to the page the consent was started from, with its outcome.
 
+  /api/v1/workspaces/{workspaceId}/actions:
+    get:
+      operationId: listActions
+      summary: >
+        The changes the caller proposed for one document in their connected accounts, newest first,
+        each with where it stands. Reading asks Google nothing.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: documentId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: The document's proposed changes. Not to be kept by a shared cache.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActionResponse"
+        "400":
+          description: documentId is missing (code MALFORMED_REQUEST).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/drive-saves:
+    post:
+      operationId: proposeDriveSave
+      summary: >
+        Proposes saving the document's latest export to the caller's Google Drive: the exact Word or PDF file,
+        or a Google Doc that Google converts the Word file into. The export must be of the document as it is
+        now and must include the format asked for. Nothing is saved until the answer's payload is approved;
+        for an exact file, Google is asked only for the id the file will have.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DriveSaveRequest"
+      responses:
+        "201":
+          description: The proposal, awaiting approval. Not to be kept by a shared cache.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "400":
+          description: documentId or kind is missing or not one of the kinds (code MALFORMED_REQUEST).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No such document of the caller's (code NOT_FOUND), or no connection that saves to Google Drive
+            (code CONNECTION_NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Nothing was proposed. ACTION_NOT_PROPOSABLE, with reason NO_EXPORT, EXPORT_STALE, FORMAT_NOT_EXPORTED,
+            FILE_TOO_LARGE, HIDDEN_CHARACTERS or INVALID. ACTION_NOT_OFFERED: this deployment does not save to
+            Google Drive. CONNECTION_RECONNECT_REQUIRED: the connection must be made again first.
+            CONNECTOR_BLOCKED_BY_ORGANIZATION: the organization managing the account does not allow the app.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            Nothing was proposed. Google could not be reached (code CONNECTOR_PROVIDER_UNAVAILABLE), Google refused
+            Brownie's own setup (code CONNECTOR_MISCONFIGURED), or the exported file could not be read from storage
+            (code STORAGE_UNAVAILABLE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/calendar-events:
+    post:
+      operationId: proposeCalendarEvent
+      summary: >
+        Proposes adding one event to the caller's main Google calendar: not repeating, with no guests, telling
+        nobody. A timed event is two local times in a named time zone; a local time the clocks skip that day is
+        refused (reason TIME_SKIPPED), and one they repeat is taken the first time, which the payload says. An
+        all-day event is its first and last day. Nothing is added until the answer's payload is approved.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CalendarEventRequest"
+      responses:
+        "201":
+          description: The proposal, awaiting approval. Not to be kept by a shared cache.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "400":
+          description: documentId, allDay, title, start or end is missing (code MALFORMED_REQUEST).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No such document of the caller's (code NOT_FOUND), or no connection that adds calendar events
+            (code CONNECTION_NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Nothing was proposed. ACTION_NOT_PROPOSABLE, with reason INVALID (the detail says what), TIME_SKIPPED or
+            HIDDEN_CHARACTERS. ACTION_NOT_OFFERED: this deployment does not add calendar events.
+            CONNECTION_RECONNECT_REQUIRED: the connection must be made again first.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            Nothing was proposed. Google could not be reached (code CONNECTOR_PROVIDER_UNAVAILABLE), or refused
+            Brownie's own setup (code CONNECTOR_MISCONFIGURED).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/doc-appends:
+    post:
+      operationId: proposeDocAppend
+      summary: >
+        Proposes adding the text of the document's current version, as its latest export holds it, to the end
+        of a Google Doc that one of the caller's saves made (targetActionId names that save). The Doc is read
+        now; the addition is approved against the revision it is at, and Google applies it only while the Doc
+        is still at that revision. Nothing is added until the answer's payload is approved.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocAppendRequest"
+      responses:
+        "201":
+          description: The proposal, awaiting approval. Not to be kept by a shared cache.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "400":
+          description: documentId or targetActionId is missing (code MALFORMED_REQUEST).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No such document of the caller's (code NOT_FOUND), or no connection that saves to Google Drive
+            (code CONNECTION_NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Nothing was proposed. ACTION_NOT_PROPOSABLE, with reason NO_EXPORT, EXPORT_STALE, HIDDEN_CHARACTERS or
+            INVALID (the detail says what: not a Doc a save of the caller's made, another Google account, in the
+            trash, no longer editable, no text, too long). ACTION_NOT_OFFERED: this deployment does not add to
+            Google Docs. CONNECTION_RECONNECT_REQUIRED: the connection must be made again first.
+            CONNECTOR_BLOCKED_BY_ORGANIZATION: the organization managing the account does not allow the app.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            Nothing was proposed. Google could not be reached (code CONNECTOR_PROVIDER_UNAVAILABLE), Google refused
+            Brownie's own setup, such as the Google Docs API not being enabled for it (code CONNECTOR_MISCONFIGURED),
+            or the document's template could not be read from storage (code STORAGE_UNAVAILABLE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/{actionId}:
+    get:
+      operationId: getAction
+      summary: One proposed change and where it stands. Reading asks Google nothing.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ActionId"
+      responses:
+        "200":
+          description: The change. Not to be kept by a shared cache.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such change of the caller's (code NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/{actionId}/approve:
+    post:
+      operationId: approveAction
+      summary: >
+        Approves exactly the payload whose hash is sent, and makes the change during this request: the
+        only route through which Brownie changes anything in a person's account. Every fact the approval
+        depended on is checked again first; one that changed ends the action (state FAILED with its
+        failure) and nothing is sent. Answers with the action as it then stands: SUCCEEDED once the change
+        was made and read back, OUTCOME_UNKNOWN when it may or may not have happened, APPROVED when it
+        certainly did not happen and approving again with the same hash will try once more. Approving an
+        action in any other state sends nothing and answers it as it is.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ActionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveActionRequest"
+      responses:
+        "200":
+          description: The action after the attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "400":
+          description: payloadHash is missing or not a hash (code MALFORMED_REQUEST).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No such change of the caller's (code NOT_FOUND), or something it needs is no longer there, such as the
+            exported file (code NOT_FOUND, with the change still as it was); or no connection of the kind it needs
+            (code CONNECTION_NOT_FOUND). Nothing was sent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Nothing was approved or sent. ACTION_PAYLOAD_MISMATCH: the hash is not the hash of this action's
+            payload. ACTION_NOT_OFFERED: this deployment does not make this kind of change. ACTION_SIBLING_UNRESOLVED:
+            the same change is under way, or may already have happened, through another action.
+            CONNECTION_RECONNECT_REQUIRED: the connection must be made again first. CONNECTOR_NOT_CONFIGURED: Google
+            is not set up on this deployment. CONNECTOR_BLOCKED_BY_ORGANIZATION: the organization managing the
+            account does not allow the app.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            Nothing was sent; the action is as it was. Google could not be reached (code
+            CONNECTOR_PROVIDER_UNAVAILABLE), Google refused Brownie's own setup (code CONNECTOR_MISCONFIGURED), or
+            the exported file could not be read from storage (code STORAGE_UNAVAILABLE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/{actionId}/reconcile:
+    post:
+      operationId: reconcileAction
+      summary: >
+        Asks Google what became of an action whose outcome is unknown, or whose attempt stopped without
+        finishing, and records the answer. Only reads. Works through any usable connection of the caller's
+        to the same Google account, and whether or not changes are offered now. Any other action is answered
+        as it is.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ActionId"
+      responses:
+        "200":
+          description: The action after asking.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            No such change of the caller's (code NOT_FOUND), or no connection of the kind it needs (code
+            CONNECTION_NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            ACTION_CONNECTION_UNUSABLE: the connection open now is for another Google account.
+            ACTION_SIBLING_UNRESOLVED: the same change was proposed again and is under way.
+            CONNECTION_RECONNECT_REQUIRED: the connection must be made again first. CONNECTOR_NOT_CONFIGURED: Google is
+            not set up on this deployment any more.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            Google could not be reached to use the connection (code CONNECTOR_PROVIDER_UNAVAILABLE), or refused
+            Brownie's own setup (code CONNECTOR_MISCONFIGURED); nothing was asked and the action is as it was.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/{actionId}/cancel:
+    post:
+      operationId: cancelAction
+      summary: >
+        Withdraws a change that has not happened: one awaiting approval, or one approved whose every attempt
+        certainly did not make it. Any other is answered as it is.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ActionId"
+      responses:
+        "200":
+          description: The action as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such change of the caller's (code NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/actions/{actionId}/acknowledge:
+    post:
+      operationId: acknowledgeAction
+      summary: >
+        The caller says they have checked for themselves an outcome Brownie cannot know. The action stays
+        OUTCOME_UNKNOWN; the same change may then be proposed and made again. An attempt that stopped without
+        finishing and whose hold has run out is closed as unknown and acknowledged the same way, so a change
+        that can no longer be asked about does not hold up the same change for good.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ActionId"
+      responses:
+        "200":
+          description: The action as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResponse"
+        "403":
+          description: The caller may not act in connected accounts in this workspace (code FORBIDDEN).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such change of the caller's (code NOT_FOUND).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   parameters:
+    ActionId:
+      name: actionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     GrantId:
       name: grantId
       in: path
@@ -2744,6 +3187,162 @@ components:
           items:
             $ref: "#/components/schemas/EventResponse"
 
+    ApproveActionRequest:
+      type: object
+      additionalProperties: false
+      required: [payloadHash]
+      properties:
+        payloadHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: The hash of the payload the person was shown, exactly as the action carried it.
+
+    DriveSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [documentId, kind]
+      properties:
+        documentId:
+          type: integer
+          format: int64
+          minimum: 1
+        kind:
+          type: string
+          enum: [WORD_FILE, PDF_FILE, GOOGLE_DOC]
+          description: >
+            WORD_FILE and PDF_FILE save the exported file exactly as it is. GOOGLE_DOC asks Google to convert
+            the exported Word file into a Google Doc, which may not look the same.
+
+    DocAppendRequest:
+      type: object
+      additionalProperties: false
+      required: [documentId, targetActionId]
+      properties:
+        documentId:
+          type: integer
+          format: int64
+          minimum: 1
+        targetActionId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The save that made the Google Doc, which must have succeeded.
+
+    CalendarEventRequest:
+      type: object
+      additionalProperties: false
+      required: [documentId, title, allDay, start, end]
+      properties:
+        documentId:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+          maxLength: 300
+        description:
+          type: [string, "null"]
+          maxLength: 4000
+          description: May run over several lines; may not contain "<", which Google Calendar reads as formatting.
+        location:
+          type: [string, "null"]
+          maxLength: 300
+        allDay:
+          type: boolean
+        timeZone:
+          type: [string, "null"]
+          description: A time zone's own name, such as Europe/Paris; required unless allDay.
+        start:
+          type: string
+          description: The local start, such as 2026-10-05T09:00, or for an all-day event its first day, such as 2026-10-05.
+        end:
+          type: string
+          description: The local end, or for an all-day event its last day (included).
+
+    ActionResponse:
+      type: object
+      required: [id, type, documentId, state, payload, payloadHash, createdAt, expiresAt, sent, outcomeAcknowledged]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [DRIVE_SAVE_FILE, DRIVE_SAVE_AS_GOOGLE_DOC, CALENDAR_CREATE_EVENT, GOOGLE_DOC_APPEND]
+        documentId:
+          type: integer
+          format: int64
+        state:
+          type: string
+          enum: [AWAITING_APPROVAL, APPROVED, EXECUTING, SUCCEEDED, FAILED, OUTCOME_UNKNOWN, RECONCILING, CANCELLED, EXPIRED]
+          description: >
+            Where the change stands now. A proposal or approval whose time ran out reads as EXPIRED even before
+            anything records it.
+        payload:
+          type: object
+          additionalProperties: true
+          description: >
+            Exactly what approving makes happen, in its canonical form; its shape depends on type. It never
+            holds the id of anything at Google; an addition to a Google Doc holds the Doc's revision it was
+            prepared against.
+        payloadHash:
+          type: string
+          description: SHA-256 of the payload's canonical text; approving must send it back.
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: Until when the proposal can be approved.
+        approvedAt:
+          type: [string, "null"]
+          format: date-time
+        approvalExpiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: Until when an approved change that certainly did not happen may be tried again.
+        sent:
+          type: boolean
+          description: Whether any attempt ever sent the change to Google.
+        verification:
+          type: [string, "null"]
+          enum: [MATCHED, CONVERSION_CHECKED, CONVERSION_DIFFERS, CONVERSION_UNCHECKED, REMOVED_AFTERWARDS, MISMATCHED, null]
+          description: What reading the change back found.
+        conversionCheck:
+          type: [object, "null"]
+          required: [total, found]
+          description: >
+            For a conversion into a Google Doc that was read back: of the filled-in values Brownie looked for
+            in the converted text, how many it found.
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            found:
+              type: integer
+              minimum: 0
+        failure:
+          type: [string, "null"]
+          enum: [CONNECTION_CHANGED, DOCUMENT_GONE, DOCUMENT_CHANGED, EXPORT_CHANGED, TARGET_CHANGED, CONTENT_CHANGED,
+                 PROVIDER_REFUSED, STORAGE_FULL, BLOCKED_BY_ORGANIZATION, PERMISSION_REFUSED, TARGET_UNAVAILABLE,
+                 LIMIT_REACHED, READBACK_MISMATCH, null]
+          description: Why a FAILED change did not happen, or why what happened is not what was approved.
+        outcomeAcknowledged:
+          type: boolean
+          description: The person said they checked an outcome Brownie cannot know.
+        externalLink:
+          type: [string, "null"]
+          description: The page at Google that opens what was made. Always https.
+        finishedAt:
+          type: [string, "null"]
+          format: date-time
+        attemptStopped:
+          type: boolean
+          description: >
+            An attempt stopped without finishing and no longer holds the change (state EXECUTING or RECONCILING):
+            asking Google what happened, or acknowledging, is what is left. Absent from servers from before it.
+
     Error:
       description: >
         The shape of every error response in this API, regardless of
@@ -2796,11 +3395,19 @@ components:
             (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED,
             TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with
             CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the
-            same checks an upload meets.
+            same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT,
+            EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE,
+            HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID.
         access:
           type: string
-          enum: [DRIVE_FILES, CALENDAR_EVENTS]
-          description: Present only when code is CONNECTION_RECONNECT_REQUIRED, naming the connection that must be made again.
+          enum: [DRIVE_FILES, CALENDAR_EVENTS, DRIVE_SAVING, CALENDAR_EVENT_CREATION]
+          description: >
+            Present only when code is CONNECTION_RECONNECT_REQUIRED, naming the connection that must be made
+            again, or CONNECTION_ACCESS_NOT_OFFERED, naming the connection nothing here would use.
+        actionType:
+          type: string
+          enum: [DRIVE_SAVE_FILE, DRIVE_SAVE_AS_GOOGLE_DOC, CALENDAR_CREATE_EVENT, GOOGLE_DOC_APPEND]
+          description: Present only when code is ACTION_NOT_OFFERED, naming the kind of change not made here.
         problems:
           type: array
           description: >
@@ -3292,12 +3899,22 @@ components:
           type: array
           items:
             type: string
-            enum: [CALENDAR_EVENTS, DRIVE_FILES]
+            enum: [CALENDAR_EVENTS, DRIVE_FILES, DRIVE_SAVING, CALENDAR_EVENT_CREATION]
           description: >
             What a person can connect a Google account for here and then use. Empty when this
             deployment has no Google registration, so the interface does not offer it. DRIVE_FILES
             is present only when something that can read Drive files is plugged in and Drive is
-            switched on. A server from before connections existed leaves it out.
+            switched on; DRIVE_SAVING only when saving to Drive is offered, and CALENDAR_EVENT_CREATION
+            only when adding calendar events is. A server from before connections existed leaves it out.
+        googleActions:
+          type: array
+          items:
+            type: string
+            enum: [CALENDAR_CREATE_EVENT, DRIVE_SAVE_AS_GOOGLE_DOC, DRIVE_SAVE_FILE, GOOGLE_DOC_APPEND]
+          description: >
+            Which changes in a person's Google account this deployment makes, each only when its person
+            approves that exact change. Empty unless Google is set up and such changes are switched on. A server
+            from before such changes existed leaves it out.
 
     AssistTextRequest:
       type: object
@@ -4079,7 +4696,7 @@ components:
       properties:
         access:
           type: string
-          enum: [DRIVE_FILES, CALENDAR_EVENTS]
+          enum: [DRIVE_FILES, CALENDAR_EVENTS, DRIVE_SAVING, CALENDAR_EVENT_CREATION]
         returnTo:
           type: string
           description: The page to come back to, /connections (the default) or a document's own address.
@@ -4101,7 +4718,7 @@ components:
           enum: [GOOGLE]
         access:
           type: string
-          enum: [DRIVE_FILES, CALENDAR_EVENTS]
+          enum: [DRIVE_FILES, CALENDAR_EVENTS, DRIVE_SAVING, CALENDAR_EVENT_CREATION]
         state:
           type: string
           enum: [ACTIVE, RECONNECT_REQUIRED, DISCONNECTED]
