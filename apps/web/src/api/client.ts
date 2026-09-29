@@ -55,6 +55,9 @@ export type CalendarEventResponse = components['schemas']['CalendarEventResponse
 export type CalendarImportResponse = components['schemas']['CalendarImportResponse']
 export type DriveImportResponse = components['schemas']['DriveImportResponse']
 export type SourceOriginResponse = components['schemas']['SourceOriginResponse']
+export type ActionResponse = components['schemas']['ActionResponse']
+export type DriveSaveKind = components['schemas']['DriveSaveRequest']['kind']
+export type CalendarEventRequest = components['schemas']['CalendarEventRequest']
 export type ApiError = components['schemas']['Error']
 
 /**
@@ -269,6 +272,54 @@ export function importCalendarEvent(workspaceId: number, documentId: number, eve
     method: 'POST',
     body: { documentId, eventId },
   })
+}
+
+/** The changes the caller proposed for one document in their connected accounts, newest first. Asks Google nothing. */
+export function listActions(workspaceId: number, documentId: number): Promise<ActionResponse[]> {
+  const query = new URLSearchParams({ documentId: String(documentId) })
+  return request(`/api/v1/workspaces/${workspaceId}/actions?${query.toString()}`)
+}
+
+export function getAction(workspaceId: number, actionId: number): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}`)
+}
+
+/** Proposes saving the document's latest export to Google Drive. Nothing is saved until the answer is approved. */
+export function proposeDriveSave(workspaceId: number, documentId: number, kind: DriveSaveKind): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/drive-saves`, { method: 'POST', body: { documentId, kind } })
+}
+
+/** Proposes adding the text of the document's current version to the end of a Google Doc one of the person's saves made. */
+export function proposeDocAppend(workspaceId: number, documentId: number, targetActionId: number): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/doc-appends`, { method: 'POST', body: { documentId, targetActionId } })
+}
+
+/** Proposes adding one event to the person's main calendar, with no guests and telling nobody. Nothing is added until the answer is approved. */
+export function proposeCalendarEvent(workspaceId: number, event: CalendarEventRequest): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/calendar-events`, { method: 'POST', body: event })
+}
+
+/**
+ * Approves exactly the payload the person was shown, by its hash, and makes the change during the request. The answer
+ * is the action as it then stands, which may be that the outcome is unknown; that is never an error to retry.
+ */
+export function approveAction(workspaceId: number, actionId: number, payloadHash: string): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}/approve`, { method: 'POST', body: { payloadHash } })
+}
+
+/** Asks Google what became of a change whose outcome is unknown. Only reads. */
+export function reconcileAction(workspaceId: number, actionId: number): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}/reconcile`, { method: 'POST' })
+}
+
+/** Withdraws a change nothing has been sent for yet. */
+export function cancelAction(workspaceId: number, actionId: number): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}/cancel`, { method: 'POST' })
+}
+
+/** The person says they checked for themselves an outcome Brownie cannot know. */
+export function acknowledgeAction(workspaceId: number, actionId: number): Promise<ActionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}/acknowledge`, { method: 'POST' })
 }
 
 export function getDataPractices(): Promise<DataPracticesResponse> {
