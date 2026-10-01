@@ -276,7 +276,7 @@ class ExtractionServiceTest {
     }
 
     private static UsageBudget freshBudget() {
-        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"));
     }
 
     private static CancellationSignal neverCancelled() {
