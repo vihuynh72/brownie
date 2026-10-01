@@ -70,10 +70,10 @@ public class AssistService {
     private static final int MAX_FIELD_TEXT_LENGTH = 4000;
 
     static final List<String> HELP = List.of(
-            "Draft from these sources: fill the template's fields from an attached source.",
-            "Change <field> to <value>: propose a typed value for one field, for example \"change meeting title to Spring Planning\".",
-            "Shorten <field> or rewrite <field> to <how>: propose a shorter or reworded version of a text field you already filled.",
-            "Explain this finding: explain a validation finding in plain language after you validate.");
+            "Fill this in from my notes: I read the source you attached and propose a value for each field.",
+            "Change <field> to <value>: I propose that value for one field, for example \"change meeting title to Spring Planning\".",
+            "Shorten <field> or rewrite <field> to <how>: I propose a shorter or reworded version of a text field that already has a value.",
+            "Explain this finding: I explain, in plain words, a problem that Export's check found.");
 
     private static final String REWRITE_POLICY = """
             You are Brownie's editing assistant for one field of a document.
@@ -110,6 +110,7 @@ public class AssistService {
     private final MemberUsageRepository usageRepository;
     private final UsageLimits directRequestLimits;
     private final MonthlyUsageLimits monthlyUsageLimits;
+    private final ModelPricing modelPricing;
     private final String modelName;
 
     public AssistService(
@@ -121,6 +122,7 @@ public class AssistService {
             MemberUsageRepository usageRepository,
             UsageLimits directRequestLimits,
             MonthlyUsageLimits monthlyUsageLimits,
+            ModelPricing modelPricing,
             @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
@@ -130,6 +132,7 @@ public class AssistService {
         this.usageRepository = usageRepository;
         this.directRequestLimits = directRequestLimits;
         this.monthlyUsageLimits = monthlyUsageLimits;
+        this.modelPricing = modelPricing;
         this.modelName = modelName;
     }
 
@@ -213,7 +216,7 @@ public class AssistService {
             case AssistCommand.RewriteField rewrite -> interpretRewrite(context, rewrite);
             case AssistCommand.ExplainFinding explain -> interpretExplain(context, explain);
             case AssistCommand.Unrecognized ignored -> new Interpretation(
-                    Kind.NONE, "Brownie did not recognise that as something it can do. Here is what it can do:", null, false, false, HELP);
+                    Kind.NONE, "I did not understand that, or it names a fill spot this document does not have. Here is what I can do:", null, false, false, HELP);
         };
     }
 
@@ -223,7 +226,7 @@ public class AssistService {
         Scope scope = new Scope(field.fieldId(), label, context.currentText(field.fieldId()), null);
         if (field.cardinality() == FieldCardinality.REPEATED) {
             return new Interpretation(Kind.CHANGE_FIELD,
-                    label + " is a repeated field; add or edit its rows in the Content pane instead.", scope, false, false, List.of());
+                    label + " is a repeated field; add or edit its rows on the page instead.", scope, false, false, List.of());
         }
         if (change.value().isBlank()) {
             return new Interpretation(Kind.CHANGE_FIELD, "Say what " + label + " should become.", scope, false, false, List.of());
@@ -259,12 +262,12 @@ public class AssistService {
     private Interpretation interpretExplain(Context context, AssistCommand.ExplainFinding explain) {
         if (context.latestManifest().isEmpty()) {
             return new Interpretation(Kind.EXPLAIN_FINDING,
-                    "Validate this revision first (Checks tab); then Assist can explain any finding it reports.", null, false, false, List.of());
+                    "Open Export to check this version first; then I can explain anything the check finds.", null, false, false, List.of());
         }
         Optional<ValidationFinding> finding = context.findingFor(explain.fieldId());
         if (finding.isEmpty()) {
-            String where = explain.fieldId() == null ? "this revision" : AssistCommandParser.labelFor(explain.fieldId());
-            return new Interpretation(Kind.EXPLAIN_FINDING, "The latest validation has no finding on " + where + ".", null, false, false, List.of());
+            String where = explain.fieldId() == null ? "this version" : AssistCommandParser.labelFor(explain.fieldId());
+            return new Interpretation(Kind.EXPLAIN_FINDING, "The latest check found nothing about " + where + ".", null, false, false, List.of());
         }
         ValidationFinding found = finding.get();
         String label = found.fieldId() == null ? null : AssistCommandParser.labelFor(found.fieldId());
@@ -314,12 +317,11 @@ public class AssistService {
      * failure and is reported as what it is.
      */
     private String completeBounded(long workspaceId, long userId, ModelRequest request) {
-        ModelPricing pricing = ModelPricing.gpt5Mini();
         UsageBudget budget = new UsageBudget(
                 directRequestLimits,
-                pricing,
+                modelPricing,
                 new MemberUsageLedger(
-                        usageRepository, workspaceId, userId, modelName, pricing, directRequestLimits, monthlyUsageLimits));
+                        usageRepository, workspaceId, userId, modelName, modelPricing, directRequestLimits, monthlyUsageLimits));
         ModelCompletion completion;
         try {
             budget.reserveForCall(UsageBudget.estimateInputTokens(request), request.maxOutputTokens(), request.promptVersion());

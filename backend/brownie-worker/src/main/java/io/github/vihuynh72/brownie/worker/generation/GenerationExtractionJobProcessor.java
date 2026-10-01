@@ -108,6 +108,7 @@ class GenerationExtractionJobProcessor {
     private final Duration leaseDuration;
     private final ObjectMapper objectMapper;
     private final JdbcWorkerUsageRepository usageRepository;
+    private final ModelPricing modelPricing;
     private final String modelName;
     private final UsageLimits durableRunLimits;
     private final UsageLimits attemptLimits;
@@ -121,6 +122,7 @@ class GenerationExtractionJobProcessor {
             JobLeaseRepository jobLeaseRepository,
             JobOutputPublisher jobOutputPublisher,
             JdbcWorkerUsageRepository usageRepository,
+            ModelPricing modelPricing,
             @Value("${brownie.worker.generation.lease-duration:PT2M}") Duration leaseDuration,
             @Value("${brownie.ai.openai.model}") String modelName,
             @Value("${brownie.usage.run-max-requests:6}") int runMaxRequests,
@@ -128,6 +130,7 @@ class GenerationExtractionJobProcessor {
             @Value("${brownie.usage.workspace-monthly-limit-usd:2.00}") BigDecimal workspaceMonthlyLimitUsd,
             @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd) {
         this.usageRepository = usageRepository;
+        this.modelPricing = modelPricing;
         this.modelName = modelName;
         // What the ledger holds a whole run to, counted across every attempt
         // and resume of the job. A run that stops to ask a question makes its
@@ -409,12 +412,11 @@ class GenerationExtractionJobProcessor {
     }
 
     private UsageBudget budgetFor(LeasedJob leasedJob) {
-        ModelPricing pricing = ModelPricing.gpt5Mini();
         return new UsageBudget(
                 attemptLimits,
-                pricing,
+                modelPricing,
                 new LeasedJobUsageLedger(
-                        usageRepository, leasedJob.leaseToken(), modelName, pricing, durableRunLimits, monthlyUsageLimits));
+                        usageRepository, leasedJob.leaseToken(), modelName, modelPricing, durableRunLimits, monthlyUsageLimits));
     }
 
     /**
