@@ -8,6 +8,7 @@ import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
 import { navigateTo } from '@/navigation'
 import { ApiRequestError, createDocument, trashTemplate, type TemplateResponse } from '@/api/client'
 import { describeCommonFailure } from '@/api/failures'
+import { FORM_FILE_ACCEPT, learnFormAsTemplate, learnStepWords, type LearnStep, type StepDetail } from '@/upload/learnAndStart'
 
 /**
  * The application's own navigation: where you are, what you have taught
@@ -25,10 +26,11 @@ import { describeCommonFailure } from '@/api/failures'
  * the document is made, it is offered as a link instead of pulling them
  * back. Its "More" button, a right-click, or Shift+F10 on the row opens a
  * menu for the template itself, which is where it is moved to the Trash
- * Bin.
+ * Bin. The + beside the heading adds a form to the list from a file, the
+ * way Home's upload does, without starting a document from it.
  */
 const props = defineProps<{ open: boolean; docked: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; open: [] }>()
 
 const session = useSessionStore()
 const templates = useTemplatesStore()
@@ -53,16 +55,27 @@ const busy = ref<{ templateId: number; action: 'start' | 'trash' } | null>(null)
 const templatesError = ref<string | null>(null)
 /**
  * What the last thing a template row was asked to do came to, said once near the rows: the template just moved
- * to the Trash Bin, or the document started from one after the person had moved on to another page.
+ * to the Trash Bin, the document started from one after the person had moved on to another page, or the form
+ * just added from a file, with a way to start a document from it.
  */
-const notice = ref<{ kind: 'trashed'; name: string } | { kind: 'started'; title: string; documentId: number } | null>(null)
+const notice = ref<
+  | { kind: 'trashed'; name: string }
+  | { kind: 'started'; title: string; documentId: number }
+  | { kind: 'added'; template: TemplateToStart; leftOutNote: string | null }
+  | null
+>(null)
 /** Not a live region beside the page's own: it takes focus from the row it is about when that row had it, and otherwise waits to be read. */
 const noticeRef = ref<HTMLElement | null>(null)
 /**
  * What a screen reader is told when the notice appears without taking focus: the sidebar's own status
- * line, always in the page so what is put into it is read, and empty the rest of the time.
+ * line, always in the page so what is put into it is read, and empty the rest of the time. It is kept
+ * outside the panel, so that it is still heard while the panel is closed: a closed panel is inert, and
+ * a form being added from a file may finish after the person closed it.
  */
 const spokenNotice = ref('')
+
+/** What starting a document needs to know about a template; a template just added may not be in the list yet. */
+type TemplateToStart = Pick<TemplateResponse, 'id' | 'displayName' | 'currentActiveVersionId'>
 
 /** The open menu: whose it is, where it opens, and where focus goes back to when it closes. */
 const menu = ref<{
@@ -215,7 +228,7 @@ function moreId(templateId: number): string {
   return `template-more-${templateId}`
 }
 
-function menuIsOpenFor(template: TemplateResponse): boolean {
+function menuIsOpenFor(template: TemplateToStart): boolean {
   return menu.value?.template.id === template.id
 }
 
@@ -228,7 +241,7 @@ function isStarting(template: TemplateResponse): boolean {
 }
 
 /** Whether focus is on the template's row, or in the menu opened for it. */
-function focusIsOnRow(template: TemplateResponse): boolean {
+function focusIsOnRow(template: TemplateToStart): boolean {
   const active = document.activeElement
   if (!active) return false
   const row = document.getElementById(startId(template.id))?.closest('li')
@@ -242,7 +255,7 @@ function focusIsOnRow(template: TemplateResponse): boolean {
  * to the one above when it was the last, or to the + when no rows are
  * left, so a keyboard user is never dropped at the top of the page.
  */
-async function removeRow(template: TemplateResponse): Promise<void> {
+async function removeRow(template: TemplateToStart): Promise<void> {
   const hadFocus = focusIsOnRow(template)
   const usable = templates.usable
   const index = usable.findIndex((candidate) => candidate.id === template.id)
@@ -264,7 +277,7 @@ async function removeRow(template: TemplateResponse): Promise<void> {
  * the meantime. Opening the document then would pull them back from where
  * they chose to go, so the notice offers a link to it instead.
  */
-async function startDocument(template: TemplateResponse): Promise<void> {
+async function startDocument(template: TemplateToStart): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const versionId = template.currentActiveVersionId
   if (workspaceId === undefined || versionId == null || busy.value !== null) return
@@ -310,6 +323,137 @@ async function startDocument(template: TemplateResponse): Promise<void> {
     busy.value = null
   }
   if (trashedElsewhere) await removeRow(template)
+}
+
+// ---- The list of templates, where it scrolls -------------------------------------------------------
+//
+// A long list scrolls in its own box between the + and the Trash Bin. Its edges fade where there are
+// more rows past them, so it is plain that it scrolls, and a template just added is scrolled into view
+// and lit for a moment, so the person sees where it went.
+
+const listRef = ref<HTMLElement | null>(null)
+const listMore = ref<{ above: boolean; below: boolean }>({ above: false, below: false })
+/** The template just added from a file, lit in the list for a moment. */
+const justAddedId = ref<number | null>(null)
+let justAddedTimer: ReturnType<typeof setTimeout> | undefined
+
+/** More than the list's own padding: a row scrolled into view at an edge leaves only that padding past it. */
+const PAST_THE_PADDING = 8
+
+function measureList(): void {
+  const list = listRef.value
+  const above = list !== null && list.scrollTop > PAST_THE_PADDING
+  const below = list !== null && list.scrollHeight - list.scrollTop - list.clientHeight > PAST_THE_PADDING
+  // Set only when it changes, so measuring never redraws the list for nothing.
+  if (above !== listMore.value.above || below !== listMore.value.below) listMore.value = { above, below }
+}
+
+let listObserver: ResizeObserver | null = null
+watch(
+  listRef,
+  (list) => {
+    listObserver?.disconnect()
+    listObserver = null
+    measureList()
+    if (!list || typeof ResizeObserver === 'undefined') return
+    // The box changes with the window and the notice above it; the rows inside it with the templates.
+    listObserver = new ResizeObserver(() => measureList())
+    listObserver.observe(list)
+  },
+  { flush: 'post' },
+)
+watch(
+  () => templates.usable.length,
+  () => void nextTick(measureList),
+)
+
+/** Scrolls the template's row into the list's view and lights it for a moment. */
+function showAddedRow(templateId: number): void {
+  const row = document.getElementById(startId(templateId))?.closest('li')
+  if (!row) return
+  const still = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  row.scrollIntoView?.({ block: 'nearest', behavior: still ? 'auto' : 'smooth' })
+  clearTimeout(justAddedTimer)
+  justAddedId.value = templateId
+  justAddedTimer = setTimeout(() => (justAddedId.value = null), 3000)
+}
+
+function onRowAnimationEnd(template: TemplateResponse): void {
+  if (justAddedId.value === template.id) justAddedId.value = null
+}
+
+onBeforeUnmount(() => {
+  listObserver?.disconnect()
+  clearTimeout(justAddedTimer)
+})
+
+// ---- Adding a form from a file ------------------------------------------------------------------
+//
+// The + opens the file chooser of a hidden input, as Home's upload button does, and the form chosen is
+// learned the same way and refused in the same words; it stops once the template is in the list. The
+// step under way is shown under the heading and said through the sidebar's status line. A press while
+// a form is being added does nothing.
+
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const addButtonRef = ref<HTMLButtonElement | null>(null)
+/** The words for the step adding a form is on; null when none is under way. */
+const adding = ref<string | null>(null)
+
+function chooseFormFile(): void {
+  if (adding.value !== null) return
+  fileInputRef.value?.click()
+}
+
+async function onFormFileChosen(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Cleared at once, so choosing the same file again after a refusal is still a change.
+  input.value = ''
+  const workspaceId = session.personalWorkspaceId
+  if (!file || workspaceId === undefined || adding.value !== null) return
+  templatesError.value = null
+  notice.value = null
+  const say = (step: LearnStep, detail: StepDetail) => {
+    adding.value = learnStepWords(step, detail)
+    spokenNotice.value = adding.value
+  }
+  say('uploading', { mediaType: null, waiting: false })
+  const outcome = await learnFormAsTemplate(workspaceId, file, say)
+  // Focus left on the + (or dropped with the file chooser) goes to what it came to; focus taken elsewhere stays.
+  const active = document.activeElement
+  const focusWasHere = active === null || active === document.body || active === addButtonRef.value
+  adding.value = null
+  spokenNotice.value = ''
+  if (!outcome.ok) {
+    templatesError.value = outcome.message
+    if (!props.open) {
+      // Closed while the form was being added: the refusal is said, and the panel opens again to show it.
+      spokenNotice.value = outcome.message
+      emit('open')
+    } else if (focusWasHere) addButtonRef.value?.focus()
+    return
+  }
+  notice.value = {
+    kind: 'added',
+    template: { id: outcome.templateId, displayName: outcome.name, currentActiveVersionId: outcome.versionId },
+    leftOutNote: outcome.leftOutNote,
+  }
+  await nextTick()
+  // A closed panel cannot take focus: the status line says it, and the notice waits in the panel.
+  if (focusWasHere && props.open) noticeRef.value?.focus()
+  else spokenNotice.value = `Added "${outcome.name}" to My Templates.`
+  showAddedRow(outcome.templateId)
+}
+
+/**
+ * The notice's "Start a document": the template just added, as its row in the list would start it. The
+ * notice goes as the document starts, so focus moves first to the template's own row, which says so.
+ */
+async function startFromAdded(): Promise<void> {
+  if (notice.value?.kind !== 'added' || busy.value !== null) return
+  const template = notice.value.template
+  document.getElementById(startId(template.id))?.focus()
+  await startDocument(template)
 }
 
 let menuOpenings = 0
@@ -473,17 +617,56 @@ async function moveToTrash(): Promise<void> {
       <section class="sidebar__section" aria-labelledby="sidebar-templates-heading">
         <div class="sidebar__section-head">
           <h2 id="sidebar-templates-heading" class="sidebar__section-title">My Templates</h2>
-          <RouterLink id="sidebar-add-template" class="icon-button" to="/templates/new" @click="closeIfDrawer">
+          <!-- Not disabled while a form is being added: that would drop the focus it holds. A press is ignored instead. -->
+          <button
+            v-if="session.status === 'authenticated'"
+            id="sidebar-add-template"
+            ref="addButtonRef"
+            type="button"
+            class="icon-button"
+            :aria-disabled="adding !== null ? 'true' : undefined"
+            @click="chooseFormFile"
+          >
             <AppIcon name="plus" :size="24" />
-            <span class="visually-hidden">Teach a template</span>
-          </RouterLink>
+            <span class="visually-hidden">{{ adding !== null ? 'Adding a template from a file…' : 'Add a template from a file' }}</span>
+          </button>
+          <input
+            v-if="session.status === 'authenticated'"
+            ref="fileInputRef"
+            class="visually-hidden"
+            type="file"
+            :accept="FORM_FILE_ACCEPT"
+            tabindex="-1"
+            aria-hidden="true"
+            @change="onFormFileChosen"
+          />
         </div>
 
-        <p class="visually-hidden" role="status">{{ spokenNotice }}</p>
-        <p v-if="notice" ref="noticeRef" class="sidebar__notice" tabindex="-1">
+        <!-- Seen, not heard: the status line below says each step as it starts. -->
+        <p v-if="adding !== null" class="sidebar__progress" aria-hidden="true">
+          <span class="activity-indicator"></span>
+          <span>{{ adding }}</span>
+        </p>
+
+        <Teleport to="body">
+          <p class="visually-hidden sidebar__spoken" role="status">{{ spokenNotice }}</p>
+        </Teleport>
+        <p v-if="notice" ref="noticeRef" class="sidebar__notice" :class="{ 'sidebar__notice--added': notice.kind === 'added' }" tabindex="-1">
           <template v-if="notice.kind === 'started'">
             Started "{{ notice.title }}".
             <RouterLink :to="`/documents/${notice.documentId}`" @click="closeIfDrawer">Open it</RouterLink>
+          </template>
+          <template v-else-if="notice.kind === 'added'">
+            <!-- A long name is cut short on one line, so the notice stays small; the list below lights it in full. -->
+            Added "<span class="sidebar__notice-name" :title="notice.template.displayName">{{ notice.template.displayName }}</span>"<span
+              class="visually-hidden"
+            >
+              to My Templates</span
+            >.
+            <template v-if="notice.leftOutNote">{{ ' ' }}{{ notice.leftOutNote }}</template>
+            {{ ' ' }}<button type="button" class="sidebar__notice-action" :aria-disabled="busy !== null ? 'true' : undefined" @click="startFromAdded"
+              >Start a document<span class="visually-hidden"> from {{ notice.template.displayName }}</span></button
+            >
           </template>
           <template v-else-if="onTrashPage">Moved "{{ notice.name }}" to the Trash Bin.</template>
           <template v-else>
@@ -497,14 +680,22 @@ async function moveToTrash(): Promise<void> {
         <p v-else-if="session.status !== 'authenticated' || templates.status === 'loading'" class="sidebar__note">Loading…</p>
         <p v-else-if="templates.status === 'error'" class="sidebar__note">Your templates could not be loaded.</p>
         <p v-else-if="templates.usable.length === 0" class="sidebar__note">You have no templates.</p>
-        <ul v-else class="sidebar__templates">
+        <ul
+          v-else
+          ref="listRef"
+          class="sidebar__templates"
+          :class="{ 'sidebar__templates--more-above': listMore.above, 'sidebar__templates--more-below': listMore.below }"
+          @scroll.passive="measureList"
+        >
           <li
             v-for="template in templates.usable"
             :key="template.id"
             class="template-row"
+            :class="{ 'template-row--added': justAddedId === template.id }"
             :aria-busy="rowIsBusy(template) ? 'true' : undefined"
             @keydown="onRowKeydown(template, $event)"
             @contextmenu="onRowContextMenu(template, $event)"
+            @animationend="onRowAnimationEnd(template)"
           >
             <!-- Not disabled while busy: that would drop the focus the button holds. A second press is ignored instead. -->
             <button
@@ -800,9 +991,67 @@ async function moveToTrash(): Promise<void> {
   color: var(--color-text);
 }
 
+/*
+ * A form just added: its name on one line, cut short when long, and the way to start a document on the
+ * next, so the list under it keeps most of its height. It sits under the My Templates heading, so the
+ * words "to My Templates" are left to assistive technology.
+ */
+.sidebar__notice--added {
+  padding: var(--space-1) var(--space-2);
+  line-height: 1.4;
+}
+
+.sidebar__notice-name {
+  display: inline-block;
+  max-inline-size: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.sidebar__notice--added .sidebar__notice-action {
+  display: block;
+}
+
 /* The default link blue falls just under 4.5:1 on the wash; the text colour clears it easily, and the underline still says "link". */
 .sidebar__notice a {
   color: var(--color-text);
+}
+
+/* An action inside the notice, worded and underlined like the link beside it there can be. */
+.sidebar__notice-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.sidebar__notice-action[aria-disabled='true'] {
+  cursor: progress;
+}
+
+/* While a form is being added, the + says it is busy, as the upload button on Home does. */
+#sidebar-add-template[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* While a form is being added: the step in the text colour, with a turning ring that says it is still going. */
+.sidebar__progress {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 var(--space-2);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+.sidebar__progress .activity-indicator {
+  margin-block-start: 0.3em;
 }
 
 /*
@@ -811,12 +1060,52 @@ async function moveToTrash(): Promise<void> {
  * by its own scroll box, while the rows themselves stay where they were.
  */
 .sidebar__section > .sidebar__templates {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
   flex: 0 1 auto;
   min-block-size: 0;
   list-style: none;
-  margin: calc(-1 * var(--space-1));
+  /* Clear of the Trash Bin below it, so a row cut by the box never runs into the foot. */
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) var(--space-2);
   padding: var(--space-1);
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+  /* Where there are more rows past an edge, the rows fade out into it, so it is plain the list scrolls. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%);
+}
+
+.sidebar__section > .sidebar__templates--more-above {
+  --fade-top: 1.25rem;
+}
+
+.sidebar__section > .sidebar__templates--more-below {
+  --fade-bottom: 2rem;
+}
+
+/* A template just added is lit for a moment, then fades back to the list's quiet rows. */
+.template-row--added {
+  border-radius: var(--radius);
+  animation: template-row-added 3s var(--motion-ease) forwards;
+}
+
+@keyframes template-row-added {
+  0%,
+  40% {
+    background: var(--color-cocoa-wash);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+/* Without motion it is lit without fading, and goes when the moment is over. */
+@media (prefers-reduced-motion: reduce) {
+  .template-row--added {
+    animation: none;
+    background: var(--color-cocoa-wash);
+  }
 }
 
 /*
