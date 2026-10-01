@@ -39,7 +39,7 @@ describe('router', () => {
    * so following one while signed out lands on the sign-in page rather
    * than on a screen whose first request comes back 401.
    */
-  it.each(['/documents/new', '/documents/12', '/templates/new', '/trash', '/your-data', '/chat', '/connections'])(
+  it.each(['/documents/12', '/templates/new', '/trash', '/your-data', '/chat', '/connections'])(
     'sends a signed-out visitor from %s to the sign-in page, carrying where they were going',
     async (path) => {
       useSessionStore().status = 'anonymous'
@@ -50,6 +50,25 @@ describe('router', () => {
       expect(router.currentRoute.value.query.next).toBe(path)
     },
   )
+
+  /**
+   * Documents start from Home or from a template in the sidebar; the page that used to create them is
+   * gone, and a bookmark to it, with or without the template it carried, must not land on a document
+   * numbered "new" or on the not-found page.
+   */
+  it.each(['/documents/new', '/documents/new?templateId=3'])('sends %s home, signed in or not', async (path) => {
+    const session = useSessionStore()
+    for (const signedIn of [false, true]) {
+      session.status = signedIn ? 'authenticated' : 'anonymous'
+      session.identity = signedIn ? IDENTITY : null
+      await router.push('/trash')
+
+      await router.push(path)
+
+      expect(router.currentRoute.value.name).toBe('home')
+      expect(router.currentRoute.value.fullPath).toBe('/')
+    }
+  })
 
   it('leaves the home page and the sign-in page open to a signed-out visitor', async () => {
     useSessionStore().status = 'anonymous'
