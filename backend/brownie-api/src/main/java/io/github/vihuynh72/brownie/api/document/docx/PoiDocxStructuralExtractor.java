@@ -60,9 +60,11 @@ public final class PoiDocxStructuralExtractor implements DocxStructuralExtractor
      * depends on. Bumping either half is a deliberate, versioned change:
      * either one changing what this extractor observes must produce a new
      * {@code ExtractionVersion} rather than silently reinterpreting
-     * evidence built against the old behavior.
+     * evidence built against the old behavior. v2 reads a toggle written
+     * as {@code w:val="on"} as on (see {@code StyleResolver#isOn}); a v1
+     * graph of the same bytes says such a run is not bold or not italic.
      */
-    static final String PARSER_VERSION = "brownie-docx-graph-v1+poi-5.5.1";
+    static final String PARSER_VERSION = "brownie-docx-graph-v2+poi-5.5.1";
 
     private static final String RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 

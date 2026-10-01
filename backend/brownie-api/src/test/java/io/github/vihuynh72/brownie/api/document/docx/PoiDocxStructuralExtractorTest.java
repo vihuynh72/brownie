@@ -16,6 +16,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -256,6 +257,58 @@ class PoiDocxStructuralExtractorTest {
         assertEquals(firstRun.style(), secondRun.style());
     }
 
+    /**
+     * POI hands back {@code on} and {@code off} as the words themselves but
+     * the other four as Booleans, and throws for a value outside the
+     * schema. Every spelling must resolve by what it means, and one outside
+     * the schema must read as off, the way the renderer draws it, rather
+     * than fail the whole extraction.
+     */
+    @Test
+    void everyOnOffSpellingOfBoldAndItalicResolvesByWhatItMeans() throws IOException {
+        String[] values = {"on", "off", "1", "0", "true", "false", null, "On", "yes", ""};
+        Boolean[] expected = {true, false, true, false, true, false, true, true, false, false};
+        StringBuilder body = new StringBuilder();
+        for (String value : values) {
+            String attribute = value == null ? "" : " w:val=\"" + value + "\"";
+            body.append("<w:p><w:r><w:rPr><w:b").append(attribute).append("/><w:i").append(attribute)
+                    .append("/></w:rPr><w:t>x</w:t></w:r></w:p>");
+        }
+        body.append("<w:p><w:r><w:t>plain</w:t></w:r></w:p>");
+
+        StructuralNode root = partOfKind(supported(minimalDocx(body.toString())).parts(), DocumentPartKind.MAIN_DOCUMENT).root();
+
+        for (int i = 0; i < values.length; i++) {
+            StructuralNode run = root.children().get(i).children().getFirst();
+            String described = values[i] == null ? "no w:val" : "w:val=\"" + values[i] + "\"";
+            assertEquals(expected[i], run.style().bold(), "bold with " + described);
+            assertEquals(expected[i], run.style().italic(), "italic with " + described);
+        }
+        StructuralNode plain = root.children().get(values.length).children().getFirst();
+        assertNull(plain.style().bold());
+        assertNull(plain.style().italic());
+    }
+
+    /** The built-in templates write every heading and label as {@code <w:b w:val="on"/>}, and leave the fill spots' own runs unset. */
+    @Test
+    void theBuiltInTemplatesHeadingsAndLabelsAreBoldAndTheirPlaceholdersAreNot() throws IOException {
+        byte[] flowing;
+        try (var in = new org.springframework.core.io.ClassPathResource("builtin-templates/flowing-meeting-minutes.docx").getInputStream()) {
+            flowing = in.readAllBytes();
+        }
+        StructuralNode root = partOfKind(supported(flowing).parts(), DocumentPartKind.MAIN_DOCUMENT).root();
+
+        StructuralNode title = root.children().get(1).children().getFirst();
+        assertEquals("Meeting Minutes", title.text());
+        assertEquals(Boolean.TRUE, title.style().bold());
+        StructuralNode label = root.children().get(2).children().get(0);
+        assertEquals("Title: ", label.text());
+        assertEquals(Boolean.TRUE, label.style().bold());
+        StructuralNode placeholder = root.children().get(2).children().get(1).children().getFirst();
+        assertEquals("[meeting title]", placeholder.text());
+        assertNull(placeholder.style().bold());
+    }
+
     @Test
     void corruptPackageThrowsDocxParseException() {
         assertThrows(DocxParseException.class, () -> extractor.extract(new ByteArrayInputStream(DocxFixtures.corruptPackage())));
@@ -279,6 +332,33 @@ class PoiDocxStructuralExtractorTest {
 
     private DocxExtractionOutcome extract(byte[] bytes) throws IOException {
         return extractor.extract(new ByteArrayInputStream(bytes));
+    }
+
+    /** The smallest package a reader accepts: a main document holding {@code bodyXml}, and no styles or settings part. */
+    private static byte[] minimalDocx(String bodyXml) throws IOException {
+        String document = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>" + bodyXml
+                + "</w:body></w:document>";
+        String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+                + "</Types>";
+        String relationships = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                + " Target=\"word/document.xml\"/></Relationships>";
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(bytes)) {
+            for (String[] part : new String[][] {
+                    {"[Content_Types].xml", contentTypes}, {"_rels/.rels", relationships}, {"word/document.xml", document}}) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(part[0]));
+                zip.write(part[1].getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
+        return bytes.toByteArray();
     }
 
     private static DocumentPart partOfKind(List<DocumentPart> parts, DocumentPartKind kind) {

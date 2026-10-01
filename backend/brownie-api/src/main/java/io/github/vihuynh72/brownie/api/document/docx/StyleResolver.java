@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.core.document.ResolvedStyle;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFStyle;
 import org.apache.poi.xwpf.usermodel.XWPFStyles;
+import org.apache.xmlbeans.XmlCursor;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTDocDefaults;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTJc;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTOnOff;
@@ -14,10 +15,12 @@ import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRPr;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRPrDefault;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTStyle;
 
+import javax.xml.namespace.QName;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -130,13 +133,6 @@ final class StyleResolver {
         return pPrDefault.isSetPPr() ? pPrDefault.getPPr() : null;
     }
 
-    /**
-     * A bare toggle element (for example {@code <w:b/>}) with no {@code
-     * w:val} means "on" -- {@code CTOnOff.getVal()} returns null in that
-     * exact case, distinct from an explicit {@code w:val="false"}, which
-     * returns {@code Boolean.FALSE}. Confirmed empirically against real
-     * generated and reparsed XML, not assumed from the schema alone.
-     */
     private interface ToggleCount<T> {
         int sizeOf(T rPr);
     }
@@ -148,11 +144,44 @@ final class StyleResolver {
     private static Boolean firstToggle(List<CTRPr> chain, ToggleCount<CTRPr> count, ToggleArray<CTRPr> array) {
         for (CTRPr rPr : chain) {
             if (count.sizeOf(rPr) > 0) {
-                CTOnOff toggle = array.get(rPr, 0);
-                return !toggle.isSetVal() || Boolean.TRUE.equals(toggle.getVal());
+                return isOn(array.get(rPr, 0));
             }
         }
         return null;
+    }
+
+    private static final QName TOGGLE_VALUE = new QName("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "val");
+
+    /**
+     * A toggle element such as {@code <w:b/>} with no {@code w:val} means
+     * on. OOXML allows six values: {@code on}, {@code true} and {@code 1}
+     * turn it on, {@code off}, {@code false} and {@code 0} turn it off.
+     * The value is read as the attribute's own text rather than through
+     * {@code CTOnOff.getVal()}: in POI 5.5.1 that returns a Boolean for
+     * {@code true}/{@code 1}/{@code false}/{@code 0} but the String itself
+     * for {@code on}/{@code off}, and it throws for any value outside the
+     * schema. Testing its result for {@code Boolean.TRUE} therefore read
+     * every {@code w:val="on"}, which the built-in templates use for every
+     * heading and label, as not bold.
+     *
+     * <p>Case is ignored, which only matters for a file no conforming writer
+     * produces. A value that is none of the six is read as off, which is what
+     * the LibreOffice build that renders Brownie's PDFs does with one
+     * (checked by rendering {@code "yes"} and an empty value), so the page
+     * shows what the exported file shows.
+     */
+    static boolean isOn(CTOnOff toggle) {
+        String value;
+        try (XmlCursor cursor = toggle.newCursor()) {
+            value = cursor.getAttributeText(TOGGLE_VALUE);
+        }
+        if (value == null) {
+            return true;
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "on", "true", "1" -> true;
+            default -> false;
+        };
     }
 
     private static Boolean firstUnderline(List<CTRPr> chain) {
