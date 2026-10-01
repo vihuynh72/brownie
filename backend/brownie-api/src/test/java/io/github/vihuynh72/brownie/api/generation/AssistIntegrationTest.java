@@ -100,6 +100,9 @@ class AssistIntegrationTest {
                     case AssistService.REWRITE_PROMPT_VERSION -> "{\"value\":\"Spring planning\"}";
                     case AssistService.EXPLAIN_PROMPT_VERSION ->
                             "{\"explanation\":\"The meeting date is required and is still empty; type the date in the Meeting date field.\"}";
+                    // A line the model was never offered: the answer must be refused, not used.
+                    case AssistService.PLACE_PROMPT_VERSION ->
+                            "{\"lineId\":\"L999\",\"placement\":\"END_OF_LINE\",\"text\":null,\"label\":\"Company\",\"type\":\"TEXT\"}";
                     default -> throw new AssertionError("Unexpected prompt version " + request.promptVersion());
                 };
                 return new ModelCompletion.Success(reply, new ModelUsage(40, 12));
@@ -142,7 +145,7 @@ class AssistIntegrationTest {
         JsonNode none = interpret(session, workspaceId, documentId, "write me a poem about the club");
         assertThat(none.get("kind").asText()).isEqualTo("NONE");
         assertThat(none.get("executable").asBoolean()).isFalse();
-        assertThat(none.get("help")).hasSize(4);
+        assertThat(none.get("help")).hasSize(7);
         mockMvc.perform(post(assistPath(workspaceId, documentId) + "/execute").cookie(session).with(csrf())
                         .contentType("application/json")
                         .content("{\"text\":\"write me a poem about the club\",\"expectedRevisionId\":" + revisionId + "}"))
@@ -225,6 +228,70 @@ class AssistIntegrationTest {
         mockMvc.perform(post(assistPath(intruderWorkspaceId, documentId) + "/interpret").cookie(intruderSession).with(csrf())
                         .contentType("application/json").content("{\"text\":\"change meeting title to Mine\"}"))
                 .andExpect(status().isNotFound());
+    }
+
+    /**
+     * Renaming and taking away a spot are applied at once, and the answer
+     * says what Undo restores; adding one where the words cannot be found,
+     * or "here" with nothing selected, is refused before anything runs; a
+     * model answer naming a line it was not offered changes nothing.
+     */
+    @Test
+    void fillSpotRequestsAreAppliedAtOnceOrRefusedInWords() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-assist-spots");
+        long workspaceId = ensureWorkspace("subject-assist-spots").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-spots").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode flowing = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long firstVersionId = flowing.get("currentActiveVersionId").asLong();
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), firstVersionId);
+        long revisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode rename = interpret(session, workspaceId, documentId, "rename the meeting location to Venue");
+        assertThat(rename.get("kind").asText()).isEqualTo("RENAME_FILL_SPOT");
+        assertThat(rename.get("executable").asBoolean()).isTrue();
+        assertThat(rename.get("usesModel").asBoolean()).isFalse();
+        JsonNode renamed = execute(session, workspaceId, documentId, "rename the meeting location to Venue", revisionId);
+        // The chat words a change as the page does after the same change.
+        assertThat(renamed.get("summary").asText())
+                .isEqualTo("Renamed the fill spot Meeting location to Venue. New documents from this form will use the new name too.");
+        JsonNode renameChange = renamed.get("spotChange");
+        assertThat(renameChange.get("fieldId").asText()).isEqualTo("meeting.location");
+        assertThat(renameChange.get("label").asText()).isEqualTo("Venue");
+        assertThat(renameChange.get("previousRevisionId").asLong()).isEqualTo(revisionId);
+        assertThat(renameChange.get("templateVersionId").asLong()).isNotEqualTo(firstVersionId);
+        long renamedRevisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode removed = execute(session, workspaceId, documentId, "remove the fill spot for venue", renamedRevisionId);
+        assertThat(removed.get("kind").asText()).isEqualTo("REMOVE_FILL_SPOT");
+        assertThat(removed.get("summary").asText()).isEqualTo(
+                "Removed the fill spot Venue. Its value stays in the version history. New documents from this form will not have it.");
+        assertThat(removed.get("spotChange").get("fieldId").asText()).isEqualTo("meeting.location");
+        assertThat(removed.get("spotChange").get("previousRevisionId").asLong()).isEqualTo(renamedRevisionId);
+        long removedRevisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode here = interpret(session, workspaceId, documentId, "add a fill spot for Company here");
+        assertThat(here.get("kind").asText()).isEqualTo("ADD_FILL_SPOT");
+        assertThat(here.get("executable").asBoolean()).isFalse();
+        assertThat(here.get("summary").asText()).contains("Select the place on the page first");
+        JsonNode nowhere = interpret(session, workspaceId, documentId, "add a fill spot for Company after \"words that are not in this form\"");
+        assertThat(nowhere.get("executable").asBoolean()).isFalse();
+        assertThat(nowhere.get("summary").asText()).contains("I could not find");
+
+        int callsBefore = MODEL_CALLS.get();
+        JsonNode byWords = interpret(session, workspaceId, documentId, "add a fill spot for Company after the organization");
+        assertThat(byWords.get("executable").asBoolean()).isTrue();
+        assertThat(byWords.get("usesModel").asBoolean()).isTrue();
+        assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore);
+        JsonNode notPlaced = execute(session, workspaceId, documentId, "add a fill spot for Company after the organization", removedRevisionId);
+        assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore + 1);
+        assertThat(notPlaced.get("summary").asText()).startsWith("I could not tell where that goes.");
+        assertThat(notPlaced.get("spotChange").isNull()).isTrue();
+        assertThat(currentRevisionId(session, workspaceId, documentId)).isEqualTo(removedRevisionId);
     }
 
     private JsonNode interpret(Cookie session, long workspaceId, long documentId, String text) throws Exception {
