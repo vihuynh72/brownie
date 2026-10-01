@@ -3,14 +3,17 @@ package io.github.vihuynh72.brownie.core.revision;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStatus;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -51,6 +54,11 @@ public class RevisionService {
             return existing.get();
         }
         TemplateVersion templateVersion = requireActiveTemplateVersion(workspaceId, userId, templateId, templateVersionId);
+        // Only starting a document is refused: a document already made from a trashed template keeps reading and
+        // editing against its version, which is why every other caller of the check above does not look at this.
+        if (templateRepository.find(workspaceId, userId, templateId).map(template -> template.trashedAt() != null).orElse(false)) {
+            throw new TemplateTrashedException();
+        }
         DocumentContentValidator.validate(initialContent, templateVersion.fieldDefinitions());
         DocumentContentValidator.validateEvidence(initialContent, initialEvidence);
         Map<FieldItemRef, FieldState> initialFieldStates = computeFieldStates(
@@ -325,6 +333,129 @@ public class RevisionService {
         return documentRepository.appendRevisionIdempotently(
                 workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
                 target.content(), target.evidence(), target.fieldStates(), editReason);
+    }
+
+    /**
+     * Appends a new revision whose content is an earlier revision's, except
+     * for what a person has locked since: a field whose value is {@link
+     * LockState#EXPLICITLY_LOCKED} now keeps its current value, evidence and
+     * state, and is named in the result. Every other field takes the earlier
+     * revision's value, evidence and state, and a field the earlier revision
+     * did not have is left without one. Repeated fields are one group whose
+     * lists line up item by item, so a lock on any item of any of them keeps
+     * the whole group as it is now rather than mixing current and earlier
+     * rows. History is never rewritten: both revisions stay as they were.
+     *
+     * <p>{@code editReason} null or blank records "Restored version N.". A
+     * replay of the same request recomputes the kept fields from the same two
+     * immutable revisions, so it answers exactly as the first request did.
+     */
+    public RevisionRestoreResult restoreRevision(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long expectedRevisionId,
+            long targetRevisionId,
+            String editReason) {
+        Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
+                workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
+        if (existing.isPresent()) {
+            DocumentRevision restored = existing.get().revision();
+            long replacedRevisionId = restored.parentRevisionId() == null ? expectedRevisionId : restored.parentRevisionId();
+            DocumentRevision replaced = documentRepository.findRevision(workspaceId, userId, documentId, replacedRevisionId)
+                    .orElseThrow(() -> new DocumentNotFoundException(documentId));
+            DocumentRevision target = documentRepository.findRevision(workspaceId, userId, documentId, targetRevisionId)
+                    .orElseThrow(() -> new DocumentNotFoundException(documentId));
+            return new RevisionRestoreResult(existing.get(), RestorePlan.between(replaced, target).keptLockedFieldIds());
+        }
+        documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
+        if (current.id() != expectedRevisionId) {
+            throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
+        }
+        DocumentRevision target = documentRepository.findRevision(workspaceId, userId, documentId, targetRevisionId)
+                .orElseThrow(() -> new DocumentNotFoundException(documentId));
+        RestorePlan plan = RestorePlan.between(current, target);
+        String reason = editReason == null || editReason.isBlank() ? "Restored version " + target.revisionNumber() + "." : editReason;
+        DocumentMutationResult mutation = documentRepository.appendRevisionIdempotently(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                plan.content(), plan.evidence(), plan.fieldStates(), reason);
+        return new RevisionRestoreResult(mutation, plan.keptLockedFieldIds());
+    }
+
+    /** The content, evidence and states a restore appends, worked out from the current revision and the one being restored. */
+    private record RestorePlan(
+            DocumentContent content,
+            Map<String, List<Long>> evidence,
+            Map<FieldItemRef, FieldState> fieldStates,
+            List<String> keptLockedFieldIds) {
+
+        static RestorePlan between(DocumentRevision current, DocumentRevision target) {
+            Set<String> fieldIds = new TreeSet<>(current.content().fields().keySet());
+            fieldIds.addAll(target.content().fields().keySet());
+            boolean repeatedGroupLocked = fieldIds.stream()
+                    .anyMatch(fieldId -> isRepeated(current, fieldId) && isExplicitlyLocked(current, fieldId));
+
+            Map<String, FieldValue> content = new LinkedHashMap<>();
+            Map<String, List<Long>> evidence = new LinkedHashMap<>();
+            Map<FieldItemRef, FieldState> fieldStates = new LinkedHashMap<>();
+            List<String> kept = new ArrayList<>();
+            for (String fieldId : fieldIds) {
+                boolean repeated = isRepeated(current, fieldId) || isRepeated(target, fieldId);
+                boolean keep = repeated ? repeatedGroupLocked : isExplicitlyLocked(current, fieldId);
+                if (keep) {
+                    kept.add(fieldId);
+                }
+                copyField(keep ? current : target, fieldId, content, evidence, fieldStates);
+            }
+            return new RestorePlan(new DocumentContent(content), evidence, fieldStates, List.copyOf(kept));
+        }
+
+        private static boolean isRepeated(DocumentRevision revision, String fieldId) {
+            FieldValue value = revision.content().fields().get(fieldId);
+            return value instanceof FieldValue.RepeatedTextValue || value instanceof FieldValue.RepeatedDateValue;
+        }
+
+        /** The same test a direct edit is refused by: the field, or any item of it, is explicitly locked. */
+        private static boolean isExplicitlyLocked(DocumentRevision revision, String fieldId) {
+            FieldValue value = revision.content().fields().get(fieldId);
+            if (value == null) {
+                return false;
+            }
+            return FieldItemRef.allFor(fieldId, value).stream().anyMatch(ref -> {
+                FieldState state = revision.fieldStates().get(ref);
+                return state != null && state.lock() == LockState.EXPLICITLY_LOCKED;
+            });
+        }
+
+        /**
+         * A revision written before field states existed may lack one for an
+         * item; that item gets the same state any field this codebase has
+         * never recorded a state for gets.
+         */
+        private static void copyField(
+                DocumentRevision source,
+                String fieldId,
+                Map<String, FieldValue> content,
+                Map<String, List<Long>> evidence,
+                Map<FieldItemRef, FieldState> fieldStates) {
+            FieldValue value = source.content().fields().get(fieldId);
+            if (value == null) {
+                return;
+            }
+            content.put(fieldId, value);
+            List<Long> spanIds = source.evidence().get(fieldId);
+            boolean hasEvidence = spanIds != null && !spanIds.isEmpty();
+            if (hasEvidence) {
+                evidence.put(fieldId, spanIds);
+            }
+            for (FieldItemRef ref : FieldItemRef.allFor(fieldId, value)) {
+                FieldState state = source.fieldStates().get(ref);
+                fieldStates.put(ref, state != null ? state : FieldState.freshlyUserAuthored(hasEvidence));
+            }
+        }
     }
 
     private DocumentMutationResult applyFieldStateChange(

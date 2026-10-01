@@ -10,6 +10,7 @@ import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateStatus;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStatus;
@@ -438,6 +439,63 @@ class RevisionServiceTest {
     }
 
     @Test
+    void aTemplateInTheTrashBinStartsNoNewDocumentUntilItIsRestored() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        ActiveTemplateRepository templates = new ActiveTemplateRepository();
+        RevisionService service = new RevisionService(documents, templates, new FakePatchProposalRepository());
+        templates.trash(WORKSPACE_ID, USER_ID, TEMPLATE_ID);
+
+        assertThrows(
+                TemplateTrashedException.class,
+                () -> service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-trashed"), hash("create-trashed"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft"));
+
+        // The same request again, once restored: the refusal recorded nothing a replay could answer with instead.
+        templates.restore(WORKSPACE_ID, USER_ID, TEMPLATE_ID);
+        Document document = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-trashed"), hash("create-trashed"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .document();
+
+        assertEquals(TEMPLATE_ID, document.templateId());
+        assertEquals(1, service.findHistory(WORKSPACE_ID, USER_ID, document.id()).size());
+    }
+
+    /**
+     * Trashing a template only stops new documents: one already made from it
+     * is edited and patched against its version exactly as before, and a
+     * replay of the request that created it still answers with it.
+     */
+    @Test
+    void aDocumentMadeBeforeItsTemplateWentToTheTrashBinKeepsWorking() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        ActiveTemplateRepository templates = new ActiveTemplateRepository();
+        RevisionService service = new RevisionService(documents, templates, new FakePatchProposalRepository());
+        Document document = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-before-trash"), hash("create-before-trash"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .document();
+        templates.trash(WORKSPACE_ID, USER_ID, TEMPLATE_ID);
+
+        DocumentRevision edited = service.applyUserEdits(
+                WORKSPACE_ID, USER_ID, key("edit-after-trash"), hash("edit-after-trash"), document.id(), document.currentRevisionId(),
+                List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Still editable"))),
+                Map.of(), "edited after the template was trashed").revision();
+        PatchProposal proposal = service.proposePatch(
+                WORKSPACE_ID, USER_ID, document.id(), edited.id(),
+                Map.of("meeting.title", new FieldValue.TextValue("Still patchable")), Map.of());
+        Document replayed = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-before-trash"), hash("create-before-trash"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .document();
+
+        assertEquals(2, edited.revisionNumber());
+        assertEquals(PatchProposalStatus.PROPOSED, proposal.status());
+        assertEquals(document.id(), replayed.id());
+    }
+
+    @Test
     void proposePatchValidatesAPartialFieldSetAgainstTheTemplate() {
         FakeDocumentRepository documents = new FakeDocumentRepository();
         RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
@@ -712,6 +770,179 @@ class RevisionServiceTest {
                         .value());
     }
 
+    @Test
+    void restoreBringsBackAnEarlierRevisionsValuesEvidenceAndStatesButKeepsALockedFieldAsItIsNow() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-restore"), hash("create-for-restore"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of("meeting.title", List.of(501L)), "initial draft")
+                .revision();
+        DocumentRevision reviewed = service.recordReviewDecision(
+                        WORKSPACE_ID, USER_ID, key("accept-title-for-restore"), hash("accept-title-for-restore"), initial.documentId(),
+                        initial.id(), FieldItemRef.scalar("meeting.title"), ReviewState.ACCEPTED, "accepted the original title")
+                .revision();
+        DocumentRevision edited = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("edit-both-for-restore"), hash("edit-both-for-restore"), initial.documentId(),
+                        reviewed.id(),
+                        List.of(
+                                new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("A newer title")),
+                                new DocumentFieldEdit.SetValue("meeting.date", new FieldValue.DateValue(LocalDate.of(2026, 10, 1)))),
+                        Map.of(), "changed both fields")
+                .revision();
+        DocumentRevision locked = service.setFieldLock(
+                        WORKSPACE_ID, USER_ID, key("lock-date-for-restore"), hash("lock-date-for-restore"), initial.documentId(),
+                        edited.id(), FieldItemRef.scalar("meeting.date"), LockState.EXPLICITLY_LOCKED, "the date is final")
+                .revision();
+
+        RevisionRestoreResult result = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("restore-reviewed"), hash("restore-reviewed"), initial.documentId(), locked.id(),
+                reviewed.id(), null);
+        DocumentRevision restored = result.mutation().revision();
+
+        assertEquals(List.of("meeting.date"), result.keptLockedFieldIds());
+        assertEquals(locked.id(), restored.parentRevisionId());
+        assertEquals("Restored version 2.", restored.editReason());
+        assertEquals(new FieldValue.TextValue("September minutes"), restored.content().fields().get("meeting.title"));
+        assertEquals(List.of(501L), restored.evidence().get("meeting.title"));
+        assertEquals(reviewed.fieldStates().get(FieldItemRef.scalar("meeting.title")), restored.fieldStates().get(FieldItemRef.scalar("meeting.title")));
+        assertEquals(ReviewState.ACCEPTED, restored.fieldStates().get(FieldItemRef.scalar("meeting.title")).review());
+        assertEquals(new FieldValue.DateValue(LocalDate.of(2026, 10, 1)), restored.content().fields().get("meeting.date"));
+        assertEquals(locked.fieldStates().get(FieldItemRef.scalar("meeting.date")), restored.fieldStates().get(FieldItemRef.scalar("meeting.date")));
+        assertEquals(reviewed.content().fields().get("meeting.title"), restored.content().fields().get("meeting.title"));
+        assertEquals(5, service.findHistory(WORKSPACE_ID, USER_ID, initial.documentId()).size());
+        // History is never rewritten: the revision restored away from is still there, unchanged.
+        assertEquals(
+                new FieldValue.TextValue("A newer title"),
+                service.findRevision(WORKSPACE_ID, USER_ID, initial.documentId(), locked.id()).orElseThrow().content().fields().get("meeting.title"));
+    }
+
+    @Test
+    void aLockOnAnyItemOfAnyRepeatedFieldKeepsTheWholeRepeatedGroupWhileScalarsAreStillRestored() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-group"), hash("create-for-group"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        DocumentRevision twoRows = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("two-rows"), hash("two-rows"), initial.documentId(), initial.id(),
+                        List.of(
+                                new DocumentFieldEdit.SetValue("action.tasks", new FieldValue.RepeatedTextValue(List.of("Order seedlings", "Book the hall"))),
+                                new DocumentFieldEdit.SetValue("action.item.owner", new FieldValue.RepeatedTextValue(List.of("Maria", "Sam")))),
+                        Map.of(), "two action items")
+                .revision();
+        DocumentRevision oneRow = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("one-row"), hash("one-row"), initial.documentId(), twoRows.id(),
+                        List.of(
+                                new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Renamed")),
+                                new DocumentFieldEdit.SetValue("action.tasks", new FieldValue.RepeatedTextValue(List.of("Water the beds"))),
+                                new DocumentFieldEdit.SetValue("action.item.owner", new FieldValue.RepeatedTextValue(List.of("Lee")))),
+                        Map.of(), "replaced the action items and renamed")
+                .revision();
+        DocumentRevision ownerLocked = service.setFieldLock(
+                        WORKSPACE_ID, USER_ID, key("lock-owner-row"), hash("lock-owner-row"), initial.documentId(), oneRow.id(),
+                        FieldItemRef.item("action.item.owner", 0), LockState.EXPLICITLY_LOCKED, "the owner is agreed")
+                .revision();
+
+        RevisionRestoreResult result = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("restore-two-rows"), hash("restore-two-rows"), initial.documentId(), ownerLocked.id(),
+                twoRows.id(), "Back to the two items.");
+        DocumentRevision restored = result.mutation().revision();
+
+        // action.tasks has no lock of its own, but its rows line up with the locked owner's, so it stays too.
+        assertEquals(List.of("action.item.owner", "action.tasks"), result.keptLockedFieldIds());
+        assertEquals(new FieldValue.RepeatedTextValue(List.of("Water the beds")), restored.content().fields().get("action.tasks"));
+        assertEquals(new FieldValue.RepeatedTextValue(List.of("Lee")), restored.content().fields().get("action.item.owner"));
+        assertEquals(LockState.EXPLICITLY_LOCKED, restored.fieldStates().get(FieldItemRef.item("action.item.owner", 0)).lock());
+        assertFalse(restored.fieldStates().containsKey(FieldItemRef.item("action.tasks", 1)));
+        assertEquals(new FieldValue.TextValue("September minutes"), restored.content().fields().get("meeting.title"));
+        assertEquals("Back to the two items.", restored.editReason());
+    }
+
+    @Test
+    void aFieldTheRestoredRevisionDidNotHaveIsRemovedWithItsEvidenceAndStates() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-absent"), hash("create-for-absent"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID,
+                        new DocumentContent(Map.of("meeting.title", new FieldValue.TextValue("September minutes"))),
+                        Map.of(), "initial draft")
+                .revision();
+        DocumentRevision added = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("add-fields"), hash("add-fields"), initial.documentId(), initial.id(),
+                        List.of(
+                                new DocumentFieldEdit.SetValue("meeting.date", new FieldValue.DateValue(LocalDate.of(2026, 9, 3))),
+                                new DocumentFieldEdit.SetValue("action.tasks", new FieldValue.RepeatedTextValue(List.of("Send agenda"))),
+                                new DocumentFieldEdit.SetValue("action.item.owner", new FieldValue.RepeatedTextValue(List.of("Ana")))),
+                        Map.of("meeting.date", List.of(77L)), "added a date and an item")
+                .revision();
+
+        RevisionRestoreResult result = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("restore-initial"), hash("restore-initial"), initial.documentId(), added.id(),
+                initial.id(), "  ");
+        DocumentRevision restored = result.mutation().revision();
+
+        assertTrue(result.keptLockedFieldIds().isEmpty());
+        assertEquals(initial.content(), restored.content());
+        assertEquals(initial.contentHash(), restored.contentHash());
+        assertTrue(restored.evidence().isEmpty());
+        assertEquals(initial.fieldStates(), restored.fieldStates());
+        assertEquals("Restored version 1.", restored.editReason());
+    }
+
+    @Test
+    void restoreIsRefusedWhenStaleOrAimedAtAnotherDocumentAndAReplayAnswersExactlyAsTheFirstRequestDid() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-replay"), hash("create-for-replay"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        DocumentRevision other = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-other"), hash("create-other"), "Other minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        DocumentRevision edited = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("edit-for-replay"), hash("edit-for-replay"), initial.documentId(), initial.id(),
+                        List.of(new DocumentFieldEdit.SetValue("meeting.title", new FieldValue.TextValue("Edited"))),
+                        Map.of(), "an edit")
+                .revision();
+        DocumentRevision locked = service.setFieldLock(
+                        WORKSPACE_ID, USER_ID, key("lock-for-replay"), hash("lock-for-replay"), initial.documentId(), edited.id(),
+                        FieldItemRef.scalar("meeting.title"), LockState.EXPLICITLY_LOCKED, "locked")
+                .revision();
+
+        DocumentRevisionConflictException stale = assertThrows(
+                DocumentRevisionConflictException.class,
+                () -> service.restoreRevision(
+                        WORKSPACE_ID, USER_ID, key("restore-stale"), hash("restore-stale"), initial.documentId(), edited.id(),
+                        initial.id(), null));
+        assertEquals(locked.id(), stale.currentRevisionId());
+        assertThrows(
+                DocumentNotFoundException.class,
+                () -> service.restoreRevision(
+                        WORKSPACE_ID, USER_ID, key("restore-foreign"), hash("restore-foreign"), initial.documentId(), locked.id(),
+                        other.id(), null));
+        assertEquals(3, service.findHistory(WORKSPACE_ID, USER_ID, initial.documentId()).size());
+
+        RevisionRestoreResult first = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("restore-once"), hash("restore-once"), initial.documentId(), locked.id(), initial.id(), null);
+        RevisionRestoreResult replay = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("restore-once"), hash("restore-once"), initial.documentId(), locked.id(), initial.id(), null);
+
+        assertEquals(List.of("meeting.title"), first.keptLockedFieldIds());
+        assertEquals(first.mutation().revision().id(), replay.mutation().revision().id());
+        assertEquals(first.keptLockedFieldIds(), replay.keptLockedFieldIds());
+        assertEquals(4, service.findHistory(WORKSPACE_ID, USER_ID, initial.documentId()).size());
+        assertThrows(
+                DocumentIdempotencyConflictException.class,
+                () -> service.restoreRevision(
+                        WORKSPACE_ID, USER_ID, key("restore-once"), hash("restore-once-different"), initial.documentId(),
+                        locked.id(), initial.id(), null));
+    }
+
     // --- Adversarial sweep: simultaneous edits, edited owner/date values, locked sections,
     // --- unsupported user assertions, and targeted rewrites, each proven against a real, named scenario
     // --- rather than assumed correct from the individual pieces' own unit tests above.
@@ -911,16 +1142,38 @@ class RevisionServiceTest {
             throw new UnsupportedOperationException();
         }
 
+        private OffsetDateTime trashedAt;
+
         @Override
         public Optional<Template> find(long workspaceId, long userId, long templateId) {
             return templateId == TEMPLATE_ID
-                    ? Optional.of(new Template(TEMPLATE_ID, WORKSPACE_ID, "Minutes", TemplateStatus.ACTIVE, version.id(), OffsetDateTime.now()))
+                    ? Optional.of(new Template(
+                            TEMPLATE_ID, WORKSPACE_ID, "Minutes", TemplateStatus.ACTIVE, version.id(), OffsetDateTime.now(), trashedAt))
                     : Optional.empty();
         }
 
         @Override
         public List<Template> findAll(long workspaceId, long userId) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            if (trashedAt == null) {
+                trashedAt = OffsetDateTime.now();
+            }
+            return find(workspaceId, userId, templateId).orElseThrow();
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
+            trashedAt = null;
+            return find(workspaceId, userId, templateId).orElseThrow();
         }
 
         @Override

@@ -17,6 +17,7 @@ import io.github.vihuynh72.brownie.core.revision.FieldState;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.LockState;
 import io.github.vihuynh72.brownie.core.revision.ReviewState;
+import io.github.vihuynh72.brownie.core.revision.RevisionRestoreResult;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.http.HttpStatus;
@@ -207,6 +208,36 @@ class DocumentController {
         return DocumentRevisionResponse.from(mutation.revision());
     }
 
+    /**
+     * Undo: a new revision with an earlier revision's content, except that
+     * every field a person has locked keeps its current value -- see {@code
+     * RevisionService#restoreRevision}. Refused with 412 unless {@code
+     * expectedRevisionId} is still current, so a restore never lands on top
+     * of a change its caller has not seen.
+     */
+    @PostMapping("/{documentId}/revisions/{revisionId}/restore")
+    RestoreRevisionResponse restoreRevision(
+            @PathVariable long workspaceId,
+            @PathVariable long documentId,
+            @PathVariable long revisionId,
+            @RequestBody RestoreRevisionRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        requireAccess(userId, workspaceId);
+        RevisionRestoreResult result = revisionService.restoreRevision(
+                workspaceId,
+                userId,
+                requireIdempotencyKey(idempotencyKey),
+                canonicalRequestHasher.hash(new RestoreRevisionHashInput(
+                        "document.restore-revision", workspaceId, documentId, revisionId, request)),
+                documentId,
+                request.requireExpectedRevisionId(),
+                positive(revisionId, "revisionId"),
+                optionalReason(request.editReason()));
+        return new RestoreRevisionResponse(DocumentRevisionResponse.from(result.mutation().revision()), result.keptLockedFieldIds());
+    }
+
     private DocumentResponse documentResponse(long workspaceId, long userId, Document document) {
         DocumentRevision current = revisionService.findRevision(
                         workspaceId, userId, document.id(), document.currentRevisionId())
@@ -254,6 +285,20 @@ class DocumentController {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
+    /** The longest reason a person can give for a restore; the history shows it in full. */
+    private static final int MAX_EDIT_REASON_LENGTH = 500;
+
+    /** Null for a blank reason, so the service records its own default. */
+    private static String optionalReason(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        if (value.length() > MAX_EDIT_REASON_LENGTH) {
+            throw new DocumentRequestValidationException("editReason must be at most " + MAX_EDIT_REASON_LENGTH + " characters.");
+        }
+        return value;
+    }
+
     private static IdempotencyKey requireIdempotencyKey(String value) {
         if (value == null || value.isBlank() || value.length() > 200) {
             throw new DocumentRequestValidationException(
@@ -276,6 +321,24 @@ class DocumentController {
     }
 
     private record SetFieldLockHashInput(String operation, long workspaceId, long documentId, SetFieldLockRequest request) {
+    }
+
+    private record RestoreRevisionHashInput(
+            String operation, long workspaceId, long documentId, long revisionId, RestoreRevisionRequest request) {
+    }
+
+    /** {@code expectedRevisionId} is boxed so that leaving it out is answered as the malformed request it is, not as unreadable JSON. */
+    record RestoreRevisionRequest(Long expectedRevisionId, String editReason) {
+
+        long requireExpectedRevisionId() {
+            if (expectedRevisionId == null) {
+                throw new DocumentRequestValidationException("expectedRevisionId is required.");
+            }
+            return positive(expectedRevisionId, "expectedRevisionId");
+        }
+    }
+
+    record RestoreRevisionResponse(DocumentRevisionResponse revision, List<String> keptLockedFieldIds) {
     }
 
     record RecordReviewDecisionRequest(long expectedRevisionId, String fieldId, Integer itemIndex, String decision, String editReason) {
