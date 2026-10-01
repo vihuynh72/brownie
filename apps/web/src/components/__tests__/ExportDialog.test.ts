@@ -131,6 +131,7 @@ interface MountOptions {
   reloadDocument?: () => Promise<boolean>
   editable?: string[]
   realPanels?: boolean
+  pdfOnly?: boolean
 }
 
 async function mountDialog(options: MountOptions = {}) {
@@ -163,6 +164,7 @@ async function mountDialog(options: MountOptions = {}) {
       fieldLabel: (fieldId: string) => LABELS[fieldId] ?? fieldId,
       editableFieldIds: new Set(options.editable ?? ['meeting.title']),
       suggestedEventDate: '2026-10-05',
+      pdfOnly: options.pdfOnly ?? false,
     },
     attachTo: document.body,
     global: {
@@ -246,6 +248,38 @@ describe('opening', () => {
     expect(getLatestValidation).not.toHaveBeenCalled()
   })
 
+  it('keeps its foot in view under a body that scrolls, and says there is more below while there is', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    const body = wrapper.get('.export-dialog__body')
+    const more = wrapper.get('.export-dialog__more')
+    // The foot is outside the part that scrolls, after it.
+    expect(wrapper.get('.export-dialog__footer').element.previousElementSibling).toBe(body.element)
+    expect(more.attributes('aria-hidden')).toBe('true')
+
+    const sizes = { scrollHeight: 900, clientHeight: 500, scrollTop: 0 }
+    for (const [key, value] of Object.entries(sizes)) Object.defineProperty(body.element, key, { value, configurable: true, writable: true })
+    await body.trigger('scroll')
+    expect(body.classes()).toContain('export-dialog__body--more-below')
+    expect(more.classes()).toContain('export-dialog__more--shown')
+
+    // "More below" scrolls the body on.
+    const scrollBy = vi.fn()
+    ;(body.element as HTMLElement).scrollBy = scrollBy
+    await more.trigger('click')
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: 400 }))
+
+    Object.defineProperty(body.element, 'scrollTop', { value: 400, configurable: true })
+    await body.trigger('scroll')
+    expect(body.classes()).not.toContain('export-dialog__body--more-below')
+    expect(more.classes()).not.toContain('export-dialog__more--shown')
+
+    // "Done", so only the button at the top is named Close.
+    expect(wrapper.findAll('button').filter((button) => button.text() === 'Close')).toHaveLength(1)
+    await buttonNamed(wrapper, 'Done')!.trigger('click')
+    expect(wrapper.emitted('closed')).toHaveLength(1)
+  })
+
   it('saves unsaved edits first, then checks the revision that save made', async () => {
     const saving = deferred<boolean>()
     const saveBeforeExport = vi.fn(() => saving.promise)
@@ -300,6 +334,15 @@ describe('opening', () => {
     expect(checkedFormat(wrapper)).toBe('DOCX')
     expect(linkNamed(wrapper, 'Download Word file (.docx)')?.attributes('href')).toBe(artifactDownloadUrl(7, 13))
     expect(wrapper.findComponent(DriveStub).props('receipt')).toMatchObject({ id: 5 })
+  })
+
+  it('offers only the PDF for a PDF form, whose export has no Word file', async () => {
+    onRecord(receipt({ format: 'PDF', docxArtifactId: null, docxSha256: null, isCompletePair: false }))
+    const { wrapper } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    expect(linkNamed(wrapper, 'Download PDF')?.attributes('href')).toBe(artifactDownloadUrl(7, 14))
+    expect(linkNamed(wrapper, 'Download Word file (.docx)')).toBeUndefined()
   })
 
   it('ignores an approval of another check and an export of another approval', async () => {
@@ -433,6 +476,8 @@ describe('approving and exporting', () => {
     const exporting = deferred<ExportReceiptResponse>()
     vi.mocked(exportDocument).mockReturnValue(exporting.promise)
     const button = buttonNamed(wrapper, 'Approve and export')!
+    // Before the export it is the main button.
+    expect(button.classes()).toContain('button--primary')
     await button.trigger('click')
     await flushPromises()
 
@@ -452,6 +497,10 @@ describe('approving and exporting', () => {
     expect(linkNamed(wrapper, 'Download PDF')?.attributes('href')).toBe(artifactDownloadUrl(7, 14))
     expect(linkNamed(wrapper, 'Download PDF')?.attributes('download')).toBe('')
     expect(linkNamed(wrapper, 'Download Word file (.docx)')).toBeUndefined()
+    // The download is what comes next now, so it is the main button, and exporting again steps back.
+    expect(linkNamed(wrapper, 'Download PDF')?.classes()).toContain('button--primary')
+    expect(button.classes()).toContain('button--secondary')
+    expect(button.classes()).not.toContain('button--primary')
     // Said once, in the live region, so it is read once and a search for it finds one line.
     expect(wrapper.find('[aria-live="polite"]').text()).toBe('PDF exported.')
     expect(wrapper.findAll('p').filter((line) => line.text().includes('exported'))).toHaveLength(1)
@@ -597,6 +646,37 @@ describe('approving and exporting', () => {
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').text()).toContain('does not have exports yet')
+  })
+})
+
+describe('a PDF form', () => {
+  it('offers only a PDF, says why, and approves and exports that', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest())
+    const { wrapper } = await mountDialog({ pdfOnly: true })
+    await openDialog(wrapper)
+
+    expect(text(wrapper)).toContain('Format: PDF')
+    expect(text(wrapper)).toContain('This is a PDF form, so Brownie fills it and exports it as a PDF. It does not turn it into a Word file.')
+    expect(wrapper.findAll('input[name="export-format"]')).toHaveLength(0)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    vi.mocked(approveExport).mockResolvedValue(approval({ format: 'PDF' }))
+    vi.mocked(exportDocument).mockResolvedValue(receipt({ format: 'PDF', docxArtifactId: null, docxSha256: null, isCompletePair: false }))
+    await buttonNamed(wrapper, 'Approve and export')!.trigger('click')
+    await flushPromises()
+
+    expect(approveExport).toHaveBeenCalledWith(7, 42, 3, 'PDF')
+    expect(wrapper.findAll('.export-dialog__links a').map((link) => link.text().trim())).toEqual(['Download PDF'])
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('keeps offering the three formats for a Word form', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest())
+    const { wrapper } = await mountDialog({ pdfOnly: false })
+    await openDialog(wrapper)
+
+    expect(wrapper.findAll<HTMLInputElement>('input[name="export-format"]').map((input) => input.element.value)).toEqual(['DOCX', 'PDF', 'BOTH'])
+    expect(text(wrapper)).not.toContain('This is a PDF form')
   })
 })
 

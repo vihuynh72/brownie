@@ -12,7 +12,13 @@ vi.mock('@/api/client', async () => {
   return { ...actual, listTemplates: vi.fn(), logout: vi.fn(), createDocument: vi.fn(), trashTemplate: vi.fn() }
 })
 
+vi.mock('@/upload/learnAndStart', async () => {
+  const actual = await vi.importActual<typeof import('@/upload/learnAndStart')>('@/upload/learnAndStart')
+  return { ...actual, learnFormAsTemplate: vi.fn() }
+})
+
 import { ApiRequestError, createDocument, listTemplates, trashTemplate, type DocumentResponse, type TemplateResponse } from '@/api/client'
+import { learnFormAsTemplate, type LearnTemplateOutcome } from '@/upload/learnAndStart'
 
 const stub = { template: '<div />' }
 
@@ -26,7 +32,6 @@ function makeRouter(): Router {
       { path: '/trash', name: 'trash', component: stub },
       { path: '/your-data', name: 'your-data', component: stub },
       { path: '/connections', name: 'connections', component: stub },
-      { path: '/templates/new', name: 'new-template', component: stub },
       { path: '/documents/:documentId', name: 'workspace', component: stub },
     ],
   })
@@ -84,6 +89,11 @@ async function mountWithTemplates(list: TemplateResponse[], props = { open: true
   return wrapper
 }
 
+/** The sidebar's status line, kept outside the panel so it is heard while the panel is closed. */
+function spokenLine(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('body > [role="status"].sidebar__spoken')
+}
+
 function startButton(id: number): HTMLElement {
   const button = document.getElementById(`template-start-${id}`)
   if (!button) throw new Error(`No start button for template ${id}`)
@@ -135,6 +145,7 @@ describe('AppSidebar', () => {
     vi.mocked(listTemplates).mockReset().mockResolvedValue([])
     vi.mocked(createDocument).mockReset()
     vi.mocked(trashTemplate).mockReset()
+    vi.mocked(learnFormAsTemplate).mockReset()
     document.body.innerHTML = ''
     useSessionStore().status = 'anonymous'
   })
@@ -333,7 +344,7 @@ describe('AppSidebar', () => {
     expect(document.activeElement).toBe(elsewhere)
     expect(startButton(1).closest('li')!.hasAttribute('aria-busy')).toBe(false)
     // The sidebar's own status line tells a screen reader, since nothing took focus.
-    expect(wrapper.find('[role="status"]').text()).toBe(`Started "Club minutes, ${today}". It can be opened from the sidebar.`)
+    expect(spokenLine()?.textContent).toBe(`Started "Club minutes, ${today}". It can be opened from the sidebar.`)
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -348,7 +359,7 @@ describe('AppSidebar', () => {
 
     expect(router.currentRoute.value.fullPath).toBe('/')
     expect(noticeElement()!.querySelector('a')!.getAttribute('href')).toBe('/documents/59')
-    expect(wrapper.find('[role="status"]').text()).toContain('It can be opened from the sidebar.')
+    expect(spokenLine()?.textContent).toContain('It can be opened from the sidebar.')
   })
 
   it('says in words that a row is starting a document, and keeps its menu shut until the answer comes', async () => {
@@ -684,6 +695,246 @@ describe('AppSidebar', () => {
 
     expect(tab.defaultPrevented).toBe(false)
     expect(document.activeElement).toBe(outside)
+  })
+
+  describe('adding a template from a file', () => {
+    const FILE = new File(['doc bytes'], 'Garden form.doc', { type: 'application/msword' })
+
+    function addButton(): HTMLButtonElement {
+      const button = document.getElementById('sidebar-add-template')
+      if (!(button instanceof HTMLButtonElement)) throw new Error('No + button')
+      return button
+    }
+
+    function fileInput(): HTMLInputElement {
+      const input = document.querySelector<HTMLInputElement>('#app-sidebar input[type="file"]')
+      if (!input) throw new Error('No file input')
+      return input
+    }
+
+    /** The file chooser answered with `file`, as a browser reports it. */
+    function choose(file: File): void {
+      Object.defineProperty(fileInput(), 'files', { value: [file], configurable: true })
+      fileInput().dispatchEvent(new Event('change'))
+    }
+
+    /** Learning answers when `finish` is called; until then it is on the step it said last. */
+    function learningWaits(): { finish: (outcome: LearnTemplateOutcome) => void } {
+      let finish: (outcome: LearnTemplateOutcome) => void = () => {}
+      vi.mocked(learnFormAsTemplate).mockImplementation((_workspaceId, _file, onStep = () => {}) => {
+        onStep('preparing-copy', { mediaType: 'DOC', waiting: false })
+        return new Promise((resolve) => (finish = resolve))
+      })
+      return { finish: (outcome) => finish(outcome) }
+    }
+
+    const ADDED: LearnTemplateOutcome = { ok: true, templateId: 9, versionId: 90, name: 'Garden form', leftOutNote: null }
+
+    it('opens the file chooser from the +, a button named for what it does', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+      const opened = vi.fn()
+      fileInput().addEventListener('click', opened)
+
+      addButton().click()
+
+      expect(addButton().textContent).toContain('Add a template from a file')
+      expect(opened).toHaveBeenCalledTimes(1)
+      // Never a Tab stop of its own: the + is the way to it.
+      expect(fileInput().tabIndex).toBe(-1)
+    })
+
+    it('is not offered while nobody is signed in', async () => {
+      wrapper = await mountSidebar({ open: true, docked: true })
+
+      expect(document.getElementById('sidebar-add-template')).toBeNull()
+    })
+
+    it('says each step as Home does, then that the form was added, with a way to start a document and no document made', async () => {
+      const learning = learningWaits()
+      wrapper = await mountWithTemplates([CLUB])
+      addButton().focus()
+      choose(FILE)
+      await flushPromises()
+
+      expect(learnFormAsTemplate).toHaveBeenCalledWith(7, FILE, expect.any(Function))
+      const progress = document.querySelector('.sidebar__progress')
+      expect(progress?.textContent).toContain('Opening your Word 97-2003 file and finding where the values go…')
+      expect(progress?.querySelector('.activity-indicator')).not.toBeNull()
+      expect(spokenLine()?.textContent).toBe(
+        'Opening your Word 97-2003 file and finding where the values go…',
+      )
+      expect(addButton().getAttribute('aria-disabled')).toBe('true')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+
+      // A second press while it runs opens nothing.
+      const opened = vi.fn()
+      fileInput().addEventListener('click', opened)
+      addButton().click()
+      expect(opened).not.toHaveBeenCalled()
+
+      vi.mocked(listTemplates).mockResolvedValue([CLUB, template(9, 'Garden form', { currentActiveVersionId: 90 })])
+      await useTemplatesStore().refresh(7)
+      learning.finish(ADDED)
+      await flushPromises()
+
+      expect(document.querySelector('.sidebar__progress')).toBeNull()
+      expect(noticeElement()?.textContent).toContain('Added "Garden form" to My Templates.')
+      // Focus was on the +, so it moves to the sentence, whose button is the next Tab stop.
+      expect(document.activeElement).toBe(noticeElement())
+      expect(startButton(9).textContent).toContain('Garden form')
+      expect(createDocument).not.toHaveBeenCalled()
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    })
+
+    it('starts a document from the template just added, from the notice', async () => {
+      vi.mocked(learnFormAsTemplate).mockResolvedValue(ADDED)
+      vi.mocked(createDocument).mockResolvedValue(created(55))
+      wrapper = await mountWithTemplates([CLUB])
+      choose(FILE)
+      await flushPromises()
+
+      const start = [...noticeElement()!.querySelectorAll('button')].find((button) => button.textContent?.includes('Start a document'))
+      expect(start?.textContent).toBe('Start a document from Garden form')
+      start!.click()
+      await flushPromises()
+
+      expect(createDocument).toHaveBeenCalledWith(
+        7,
+        expect.any(String),
+        expect.objectContaining({ templateId: 9, templateVersionId: 90, fields: {} }),
+      )
+      expect(router.currentRoute.value.fullPath).toBe('/documents/55')
+    })
+
+    it('says the places it had to leave out with the notice', async () => {
+      vi.mocked(learnFormAsTemplate).mockResolvedValue({ ...ADDED, leftOutNote: 'Brownie left out "Footer note": it is outside the main text.' })
+      wrapper = await mountWithTemplates([CLUB])
+      choose(FILE)
+      await flushPromises()
+
+      expect(noticeElement()?.textContent).toContain('Brownie left out "Footer note": it is outside the main text.')
+    })
+
+    it('refuses a file in the words Home uses, and gives focus back to the +', async () => {
+      const sentence = 'This is a spreadsheet, not a document. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.'
+      vi.mocked(learnFormAsTemplate).mockResolvedValue({ ok: false, message: sentence })
+      wrapper = await mountWithTemplates([CLUB])
+      addButton().focus()
+      choose(new File(['x'], 'Budget.xlsx'))
+      await flushPromises()
+
+      expect(document.querySelector('#app-sidebar [role="alert"]')?.textContent).toBe(sentence)
+      expect(noticeElement()).toBeNull()
+      expect(document.activeElement).toBe(addButton())
+      expect(addButton().hasAttribute('aria-disabled')).toBe(false)
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    })
+
+    it('is still heard when the panel is closed while the form is added, and opens again to show a refusal', async () => {
+      const learning = learningWaits()
+      wrapper = await mountWithTemplates([CLUB], { open: true, docked: false })
+      addButton().focus()
+      choose(FILE)
+      await flushPromises()
+      await wrapper.setProps({ open: false })
+      expect(document.getElementById('app-sidebar')?.hasAttribute('inert')).toBe(true)
+      expect(spokenLine()?.closest('[inert]')).toBeNull()
+      expect(spokenLine()?.textContent).toBe('Opening your Word 97-2003 file and finding where the values go\u2026')
+
+      const sentence = 'Brownie could not open this file. It may be damaged.'
+      learning.finish({ ok: false, message: sentence })
+      await flushPromises()
+
+      expect(spokenLine()?.textContent).toBe(sentence)
+      expect(wrapper.emitted('open')).toHaveLength(1)
+      expect(document.querySelector('#app-sidebar [role="alert"]')?.textContent).toBe(sentence)
+    })
+
+    it('says a form was added while the panel was closed, without reaching into the closed panel', async () => {
+      const learning = learningWaits()
+      wrapper = await mountWithTemplates([CLUB], { open: true, docked: false })
+      addButton().focus()
+      choose(FILE)
+      await flushPromises()
+      await wrapper.setProps({ open: false })
+      document.body.focus()
+
+      learning.finish(ADDED)
+      await flushPromises()
+
+      expect(spokenLine()?.textContent).toBe('Added "Garden form" to My Templates.')
+      expect(noticeElement()?.textContent).toContain('Added "Garden form" to My Templates.')
+      expect(document.activeElement).not.toBe(noticeElement())
+      expect(wrapper.emitted('open')).toBeUndefined()
+    })
+
+    it('leaves focus where the person took it, and says it was added through the status line instead', async () => {
+      const learning = learningWaits()
+      wrapper = await mountWithTemplates([CLUB])
+      choose(FILE)
+      await flushPromises()
+      startButton(1).focus()
+
+      learning.finish(ADDED)
+      await flushPromises()
+
+      expect(document.activeElement).toBe(startButton(1))
+      expect(spokenLine()?.textContent).toBe('Added "Garden form" to My Templates.')
+    })
+    it('scrolls the template just added into view in the list, lights it for a moment, and keeps the notice to its name and the way to start', async () => {
+      const LONG = 'Reference letter for the garden committee, autumn 2026'
+      const scrolled = vi.fn()
+      Element.prototype.scrollIntoView = scrolled
+      vi.mocked(learnFormAsTemplate).mockImplementation(async () => {
+        vi.mocked(listTemplates).mockResolvedValue([CLUB, GRANT, INVOICE, template(9, LONG, { currentActiveVersionId: 90 })])
+        await useTemplatesStore().refresh(7)
+        return { ...ADDED, name: LONG }
+      })
+      try {
+        wrapper = await mountWithTemplates([CLUB, GRANT, INVOICE])
+        addButton().focus()
+        choose(FILE)
+        await flushPromises()
+
+        const row = startButton(9).closest('li')!
+        expect(scrolled).toHaveBeenCalledTimes(1)
+        expect(scrolled.mock.contexts[0]).toBe(row)
+        expect(scrolled.mock.calls[0]![0]).toMatchObject({ block: 'nearest' })
+        expect(row.classList).toContain('template-row--added')
+        // Lit only for a moment: the light goes when its fade ends.
+        row.dispatchEvent(new Event('animationend'))
+        await flushPromises()
+        expect(row.classList).not.toContain('template-row--added')
+
+        // The full name is said and kept as the cut-short name's title; the notice is otherwise unchanged in words.
+        const name = noticeElement()!.querySelector<HTMLElement>('.sidebar__notice-name')!
+        expect(name.textContent).toBe(LONG)
+        expect(name.title).toBe(LONG)
+        expect(noticeElement()!.textContent!.replace(/\s+/g, ' ')).toContain(`Added "${LONG}" to My Templates. Start a document from ${LONG}`)
+        expect(await axe(wrapper.element)).toHaveNoViolations()
+      } finally {
+        Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+      }
+    })
+  })
+
+  it('fades the list at an edge with more rows past it, so it is plain that it scrolls', async () => {
+    wrapper = await mountWithTemplates([CLUB, GRANT, INVOICE])
+    const list = document.querySelector<HTMLElement>('.sidebar__templates')!
+    const sizes = { scrollHeight: 300, clientHeight: 140, scrollTop: 0 }
+    for (const [key, value] of Object.entries(sizes)) Object.defineProperty(list, key, { value, configurable: true, writable: true })
+
+    list.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(list.classList).toContain('sidebar__templates--more-below')
+    expect(list.classList).not.toContain('sidebar__templates--more-above')
+
+    // Scrolled to a row at the foot, all that is left past it is the list's own padding: no fade over that row.
+    Object.defineProperty(list, 'scrollTop', { value: 156, configurable: true })
+    list.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(list.classList).toContain('sidebar__templates--more-above')
+    expect(list.classList).not.toContain('sidebar__templates--more-below')
   })
 
   it('has no automatically-detectable accessibility violations signed in', async () => {
