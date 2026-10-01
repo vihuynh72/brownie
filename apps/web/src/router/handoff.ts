@@ -2,16 +2,18 @@ import type { HistoryState } from 'vue-router'
 import type { SnapshotResponse } from '@/api/client'
 
 /**
- * What the new-document screen hands to the workspace it navigates to:
- * the source it just attached (a workspace-level snapshot the workspace
- * screen has no other way to discover yet, since nothing links a source
- * to one document server-side), and a warning if that attachment failed.
- * Carried in the browser's history state for the pushed route -- so it
- * survives a reload of the workspace page and the warning is still there
- * to read -- rather than in a store that a reload would wipe.
+ * What a page that has just created a document hands to the workspace it
+ * navigates to: sources it attached along the way, shown at once while the
+ * workspace asks the server for its own list, and one sentence the person
+ * should read on arrival -- a source that could not be attached, or part
+ * of an uploaded form that Brownie did not learn. Carried in the browser's
+ * history state for the pushed route -- so it survives a reload of the
+ * workspace page and the sentence is still there to read -- rather than
+ * in a store that a reload would wipe.
  */
 export interface DocumentHandoff {
   attachedSources: SnapshotResponse[]
+  /** Shown on arrival as a warning, whatever it is about; the workspace reads it by this name. */
   sourceWarning: string | null
 }
 
