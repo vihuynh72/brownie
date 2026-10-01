@@ -9,6 +9,7 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
@@ -189,7 +190,8 @@ class RuleServiceTest {
         }
 
         @Override
-        public ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph) {
+        public ExtractionVersion saveComplete(
+                long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph, DocxFeatureReport keptAsIs) {
             throw new UnsupportedOperationException("not needed by RuleService");
         }
 
@@ -217,7 +219,14 @@ class RuleServiceTest {
         }
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException("not needed by RuleService");
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException("not needed by RuleService");
         }
 

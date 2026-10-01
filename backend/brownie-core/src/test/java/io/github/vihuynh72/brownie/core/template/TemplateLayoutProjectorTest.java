@@ -6,6 +6,7 @@ import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.ResolvedStyle;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
+import io.github.vihuynh72.brownie.core.prepare.DocxAnchor;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -45,14 +46,41 @@ class TemplateLayoutProjectorTest {
         assertEquals(4L, layout.versionId());
         assertEquals(PARSER_VERSION, layout.parserVersion());
         List<TemplateLayout.Inline> inlines = onlyParagraph(layout).inlines();
-        assertEquals(new TemplateLayout.Text("Title: ", style(true, 22)), inlines.get(0));
-        assertEquals(new TemplateLayout.FillSpot("meeting.title", "[meeting title]", style(null, 22)), inlines.get(1));
+        assertEquals(new TemplateLayout.Text("Title: ", style(true, 22), 0, null), inlines.get(0));
+        assertEquals(
+                new TemplateLayout.FillSpot("meeting.title", "[meeting title]", style(null, 22), "p0/sdt1", SpotOrigin.FORM, "Meeting title"),
+                inlines.get(1));
         assertEquals(2, inlines.size());
         assertTrue(layout.unplacedFieldIds().isEmpty());
     }
 
+    /** A form's line to write on is not a hint of what goes there, so the spot has no placeholder and is named by its field. */
     @Test
-    void aControlWhoseTagNoFieldNamesIsOrdinaryTemplateTextJoinedToItsNeighbours() {
+    void aPlaceholderThatIsOnlyALineToWriteOnIsNoPlaceholder() {
+        List<String> blanks = List.of("__________", ". . . . . .", "\u2026\u2026", "- - -", "_\t_\u00A0_", "   ");
+        for (String blank : blanks) {
+            DocxStructuralGraph graph = graphOf(main(
+                    paragraph("p0", null, run("p0/r0", "Name: ", LABEL), control("p0/sdt1", "client.name", run("p0/sdt1/r0", blank, BODY)))));
+
+            TemplateLayout layout = TemplateLayoutProjector.project(1L, 1L, graph, List.of(scalar("client.name")));
+
+            assertEquals(
+                    new TemplateLayout.FillSpot("client.name", null, style(null, 22), "p0/sdt1", SpotOrigin.FORM, "Client name"),
+                    onlyParagraph(layout).inlines().get(1), blank);
+        }
+        DocxStructuralGraph words = graphOf(main(
+                paragraph("p0", null, control("p0/sdt0", "client.name", run("p0/sdt0/r0", "Full name ______", BODY)))));
+        assertEquals(new TemplateLayout.FillSpot("client.name", "Full name ______", style(null, 22), "p0/sdt0", SpotOrigin.FORM, "Client name"),
+                onlyParagraph(TemplateLayoutProjector.project(1L, 1L, words, List.of(scalar("client.name")))).inlines().getFirst());
+    }
+
+    /**
+     * The control's text is shown as the template's own, but kept apart from
+     * the text around it: a place in it is the control itself, not an offset
+     * into the paragraph's own text.
+     */
+    @Test
+    void aControlWhoseTagNoFieldNamesIsOrdinaryTemplateTextKeptApartFromItsNeighbours() {
         DocxStructuralGraph graph = graphOf(main(
                 paragraph("p0", null,
                         run("p0/r0", "Status: ", BODY),
@@ -61,8 +89,25 @@ class TemplateLayoutProjectorTest {
 
         TemplateLayout layout = TemplateLayoutProjector.project(1L, 1L, graph, List.of(scalar("meeting.title")));
 
-        assertEquals(List.of(new TemplateLayout.Text("Status: Draft only", style(null, 22))), onlyParagraph(layout).inlines());
+        assertEquals(
+                List.of(
+                        new TemplateLayout.Text("Status: ", style(null, 22), 0, null),
+                        new TemplateLayout.Text("Draft", style(null, 22), null, "p0/sdt1"),
+                        new TemplateLayout.Text(" only", style(null, 22), 8, null)),
+                onlyParagraph(layout).inlines());
         assertEquals(List.of("meeting.title"), layout.unplacedFieldIds());
+    }
+
+    /** A field bound to a place on a PDF has no place in a Word page, so it is listed as unplaced rather than dropped. */
+    @Test
+    void aFieldBoundToAPlaceOnAPdfIsUnplacedOnAWordPage() {
+        DocxStructuralGraph graph = graphOf(main(paragraph("p0", null, run("p0/r0", "Status", BODY))));
+        FieldDefinition onPdf = new FieldDefinition("form.name", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.AcroFormField("fullName"));
+
+        TemplateLayout layout = TemplateLayoutProjector.project(1L, 1L, graph, List.of(onPdf));
+
+        assertEquals(List.of("form.name"), layout.unplacedFieldIds());
     }
 
     @Test
@@ -78,7 +123,9 @@ class TemplateLayoutProjectorTest {
         TemplateLayout layout = TemplateLayoutProjector.project(1L, 1L, graph, List.of());
 
         assertEquals(
-                List.of(new TemplateLayout.Text("  Hello world  ", style(null, 22)), new TemplateLayout.Text("Bold\ttail", style(true, 22))),
+                List.of(
+                        new TemplateLayout.Text("  Hello world  ", style(null, 22), 0, null),
+                        new TemplateLayout.Text("Bold\ttail", style(true, 22), 15, null)),
                 onlyParagraph(layout).inlines());
     }
 
@@ -107,7 +154,13 @@ class TemplateLayoutProjectorTest {
         assertTrue(first.rows().get(1).repeating());
         TemplateLayout.Paragraph ownerCell = assertInstanceOf(
                 TemplateLayout.Paragraph.class, first.rows().get(1).cells().get(1).blocks().getFirst());
-        assertEquals(List.of(new TemplateLayout.FillSpot("action.item.owner", "[owner]", style(null, 22))), ownerCell.inlines());
+        assertEquals(
+                List.of(new TemplateLayout.FillSpot(
+                        "action.item.owner", "[owner]", style(null, 22), "tbl1/row1/cell1/p0/sdt0", SpotOrigin.FORM, "Action item owner")),
+                ownerCell.inlines());
+        // Nothing can be added in the row that repeats per item, or it would repeat too.
+        assertFalse(ownerCell.anchorable());
+        assertTrue(((TemplateLayout.Paragraph) first.rows().get(0).cells().get(0).blocks().getFirst()).anchorable());
         TemplateLayout.Table second = assertInstanceOf(TemplateLayout.Table.class, blocks.get(2));
         assertFalse(second.rows().getFirst().repeating());
         assertFalse(((TemplateLayout.Paragraph) blocks.get(0)).repeating());
@@ -141,7 +194,11 @@ class TemplateLayoutProjectorTest {
         TemplateLayout.Paragraph another = (TemplateLayout.Paragraph) blocks.get(2);
         assertFalse(another.repeating());
         // A repeated field's control elsewhere still shows as a fill spot.
-        assertEquals(List.of(new TemplateLayout.FillSpot("action.item.task", "[again]", style(null, 22))), another.inlines());
+        assertEquals(
+                List.of(new TemplateLayout.FillSpot("action.item.task", "[again]", style(null, 22), "p2/sdt0", SpotOrigin.FORM, "Action item task")),
+                another.inlines());
+        assertFalse(((TemplateLayout.Paragraph) blocks.get(1)).anchorable());
+        assertTrue(another.anchorable());
     }
 
     @Test
@@ -171,7 +228,7 @@ class TemplateLayoutProjectorTest {
         assertEquals(List.of("meeting.location", "meeting.heading"), layout.unplacedFieldIds());
         // The node a structural binding names is still drawn, as the template's own text.
         assertEquals(
-                List.of(new TemplateLayout.Text("Meeting Minutes", style(true, 32))),
+                List.of(new TemplateLayout.Text("Meeting Minutes", style(true, 32), 0, null)),
                 ((TemplateLayout.Paragraph) layout.parts().getFirst().blocks().getFirst()).inlines());
     }
 
@@ -215,7 +272,7 @@ class TemplateLayoutProjectorTest {
         assertNull(blockLevelControl.alignment());
         assertNull(blockLevelControl.listLevel());
         assertEquals(
-                List.of(new TemplateLayout.Image(), new TemplateLayout.Text("caption", style(null, 22))),
+                List.of(new TemplateLayout.Image(), new TemplateLayout.Text("caption", style(null, 22), null, "p3/sdt0")),
                 ((TemplateLayout.Paragraph) blocks.get(3)).inlines());
     }
 
@@ -231,10 +288,89 @@ class TemplateLayoutProjectorTest {
 
         assertEquals(
                 List.of(
-                        new TemplateLayout.FillSpot("meeting.title", null, style(null, 22)),
-                        new TemplateLayout.FillSpot("meeting.location", "[where]", null),
-                        new TemplateLayout.FillSpot("meeting.date", null, null)),
+                        new TemplateLayout.FillSpot("meeting.title", null, style(null, 22), "p0/sdt0", SpotOrigin.FORM, "Meeting title"),
+                        new TemplateLayout.FillSpot("meeting.location", "[where]", null, "p0/sdt1", SpotOrigin.FORM, "Meeting location"),
+                        new TemplateLayout.FillSpot("meeting.date", null, null, "p0/sdt2", SpotOrigin.FORM, "Meeting date")),
                 onlyParagraph(layout).inlines());
+    }
+
+    /**
+     * A place is sent back as code points into the paragraph's own runs: a
+     * character outside the Basic Multilingual Plane counts once, a control's
+     * text is not counted, and the hash is of exactly that text.
+     */
+    @Test
+    void anAnchorableParagraphCountsItsOwnRunsInCodePointsAndCarriesTheHashOfItsAnchorText() {
+        String smile = new String(Character.toChars(0x1F600));
+        DocxStructuralGraph graph = graphOf(main(paragraph("p0", null,
+                run("p0/r0", smile + " Name: ", LABEL),
+                control("p0/sdt1", "unbound", run("p0/sdt1/r0", "[x]", BODY)),
+                run("p0/r2", "____", BODY),
+                image("p0/r3"),
+                run("p0/r4", " end", BODY))));
+
+        TemplateLayout.Paragraph paragraph = onlyParagraph(TemplateLayoutProjector.project(1L, 1L, graph, List.of()));
+
+        assertEquals("p0", paragraph.nodeId());
+        assertTrue(paragraph.anchorable());
+        assertEquals(DocxAnchor.hashOf(smile + " Name: ____ end"), paragraph.anchorTextHash());
+        assertEquals(
+                List.of(
+                        new TemplateLayout.Text(smile + " Name: ", style(true, 22), 0, null),
+                        new TemplateLayout.Text("[x]", style(null, 22), null, "p0/sdt1"),
+                        new TemplateLayout.Text("____", style(null, 22), 8, null),
+                        new TemplateLayout.Image(),
+                        new TemplateLayout.Text(" end", style(null, 22), 12, null)),
+                paragraph.inlines());
+    }
+
+    @Test
+    void headersFootersAndControlsAroundWholeParagraphsAreNotAnchorable() {
+        DocumentPart header = new DocumentPart("word/header1.xml", DocumentPartKind.HEADER, body(
+                paragraph("p0", null, run("p0/r0", "Company letterhead", BODY))));
+        DocumentPart main = main(
+                paragraph("p0", null, run("p0/r0", "Body", BODY)),
+                new StructuralNode("body1", StructuralNodeKind.PARAGRAPH, null, null, null, null, List.of()),
+                table("tbl2", row("tbl2/row0", cell("tbl2/row0/cell0", paragraph("tbl2/row0/cell0/p0", null, run("tbl2/row0/cell0/p0/r0", "Cell", BODY))))));
+        DocxStructuralGraph graph = new DocxStructuralGraph(PARSER_VERSION, List.of(header, main));
+
+        TemplateLayout layout = TemplateLayoutProjector.project(1L, 1L, graph, List.of());
+
+        List<TemplateLayout.Block> body = layout.parts().getFirst().blocks();
+        TemplateLayout.Paragraph bodyParagraph = (TemplateLayout.Paragraph) body.get(0);
+        assertTrue(bodyParagraph.anchorable());
+        assertEquals(DocxAnchor.hashOf("Body"), bodyParagraph.anchorTextHash());
+        TemplateLayout.Paragraph blockControl = (TemplateLayout.Paragraph) body.get(1);
+        assertFalse(blockControl.anchorable());
+        assertNull(blockControl.anchorTextHash());
+        TemplateLayout.Paragraph cellParagraph =
+                (TemplateLayout.Paragraph) ((TemplateLayout.Table) body.get(2)).rows().getFirst().cells().getFirst().blocks().getFirst();
+        assertTrue(cellParagraph.anchorable());
+        assertEquals("tbl2/row0/cell0/p0", cellParagraph.nodeId());
+        TemplateLayout.Paragraph headerParagraph = (TemplateLayout.Paragraph) layout.parts().get(1).blocks().getFirst();
+        assertFalse(headerParagraph.anchorable());
+        assertNull(headerParagraph.anchorTextHash());
+        assertEquals(List.of(new TemplateLayout.Text("Company letterhead", style(null, 22))), headerParagraph.inlines());
+    }
+
+    @Test
+    void aSpotCarriesWhoPlacedItAndTheLabelThePersonSees() {
+        DocxStructuralGraph graph = graphOf(main(paragraph("p0", null,
+                control("p0/sdt0", "company", run("p0/sdt0/r0", "____", BODY)),
+                control("p0/sdt1", "birth.date", run("p0/sdt1/r0", "", BODY)))));
+        FieldDefinition found = new FieldDefinition(
+                "company", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL, new FieldBindingTarget.ContentControlTag("company"),
+                "Company name", SpotOrigin.FOUND_BY_BROWNIE, DocxControlOrigin.INSERTED_BY_BROWNIE, "____");
+        FieldDefinition added = new FieldDefinition(
+                "birth.date", FieldType.DATE, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag("birth.date"), null, SpotOrigin.ADDED_BY_PERSON, null, null);
+
+        List<TemplateLayout.Inline> inlines = onlyParagraph(TemplateLayoutProjector.project(1L, 1L, graph, List.of(found, added))).inlines();
+
+        assertEquals(new TemplateLayout.FillSpot("company", null, style(null, 22), "p0/sdt0", SpotOrigin.FOUND_BY_BROWNIE, "Company name"),
+                inlines.get(0));
+        assertEquals(new TemplateLayout.FillSpot("birth.date", null, style(null, 22), "p0/sdt1", SpotOrigin.ADDED_BY_PERSON, "Birth date"),
+                inlines.get(1));
     }
 
     @Test
