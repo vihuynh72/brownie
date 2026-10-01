@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.capabilities;
 
+import io.github.vihuynh72.brownie.api.generation.FillSpotNamingSetting;
 import io.github.vihuynh72.brownie.core.retention.DeletionService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +20,11 @@ import java.time.Duration;
  * is whatever whoever runs this deployment published, and absent until
  * they have: a privacy page with an invented address would be worse than
  * one that says nobody has been named yet.
+ *
+ * <p>{@code formTextSentToModel} says whether an uploaded form's text goes to
+ * the model without a further request, so Brownie can find the places to
+ * fill in and name them. Nothing asks the person first, so the page has to
+ * say so instead of promising that nothing is sent until they ask.
  */
 @RestController
 @RequestMapping("/api/v1/data-practices")
@@ -33,7 +39,8 @@ class DataPracticesController {
             @Value("${brownie.retention.published.unused-file:PT24H}") Duration unusedFile,
             @Value("${brownie.retention.published.audit-record:P90D}") Duration auditRecord,
             @Value("${brownie.ai.openai.model}") String modelName,
-            @Value("${brownie.support.contact:}") String supportContact) {
+            @Value("${brownie.support.contact:}") String supportContact,
+            FillSpotNamingSetting fillSpotNamingSetting) {
         this.response = new DataPracticesResponse(
                 deletionService.trashRetentionDays(),
                 hoursRoundedUp(abandonedUpload),
@@ -42,7 +49,8 @@ class DataPracticesController {
                 daysRoundedUp(auditRecord),
                 "OpenAI",
                 modelName,
-                supportContact == null || supportContact.isBlank() ? null : supportContact.trim());
+                supportContact == null || supportContact.isBlank() ? null : supportContact.trim(),
+                fillSpotNamingSetting.usesModel());
     }
 
     @GetMapping
@@ -80,6 +88,7 @@ class DataPracticesController {
             int auditRecordDays,
             String modelProvider,
             String modelName,
-            String supportContact) {
+            String supportContact,
+            boolean formTextSentToModel) {
     }
 }
