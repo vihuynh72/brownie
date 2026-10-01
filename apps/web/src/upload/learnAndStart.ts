@@ -5,31 +5,48 @@ import {
   completeUpload,
   createDocument,
   createTemplateDraft,
-  extractArtifact,
-  getDraftCandidateBindings,
   getTemplateLayout,
   listTrashedTemplates,
+  makeFillableForm,
   replaceDraftBindings,
   uploadArtifactContent,
   type ArtifactResponse,
-  type ExtractionResponse,
   type FieldDefinitionRequest,
+  type FillableFormResponse,
+  type FillableFormSpot,
   type TemplateVersionResponse,
 } from '@/api/client'
 import { describeCommonFailure } from '@/api/failures'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
+import {
+  PAGES_PACKAGE_SENTENCE,
+  REFUSAL_SENTENCES,
+  convertedFormatName,
+  fillableFormRefusal,
+  formNoteSentences,
+  isPagesPackage,
+  refusalSentence,
+} from '@/upload/fillableCopyWords'
+import { FORM_FILE_ACCEPT as OFFERED_FORM_FILES, fileKind, loadFormFileTypes } from '@/upload/formFileTypes'
+import { fieldLabel } from '@/workspace/layout'
 
 /**
- * Uploading a form from Home: the Word file a person wants filled in
- * becomes a template and a document in one go, with no screen in between.
+ * Uploading a form: the file a person wants filled in -- a Word document,
+ * another word processor's file, or a PDF -- becomes a template, and from
+ * Home a document too, in one go, with no screen in between.
  *
- * It runs, in the browser, the same requests the template screen drives
- * one step at a time: upload and scan the file, read its structure, learn
- * a field from each of its content controls, activate the template, and
- * create a document from it. Where that screen lets a person review the
- * suggested fields first, this accepts every suggestion as the server made
- * it, optional, because the person asked to fill the form, not to teach it.
+ * It runs, in the browser, the requests that make that happen: upload and
+ * scan the file; ask the server to make it ready to fill (a clean Word copy,
+ * converted first where the file is not Word, or the PDF's own form read as
+ * it is, with the places to fill found and named either way); create a
+ * template with a field for each place, as the server found it, keeping
+ * what the server noticed about the file with it; activate the template;
+ * and, from Home, create a document from it. The + beside My Templates
+ * stops once the template is active. Every place is accepted as found,
+ * optional, because the person asked to fill the form; the places Brownie
+ * found itself stay marked on the page until the person says they are
+ * right.
  *
  * Nothing half-made is left where the person can see it. Every step up to
  * activation works on a draft, and drafts are never listed with the
@@ -38,7 +55,15 @@ import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
  */
 
 /** What is happening now, in the order it happens: the page says each one as it starts. */
-export type LearnStep = 'uploading' | 'checking' | 'learning' | 'preparing' | 'opening'
+export type LearnStep = 'uploading' | 'checking' | 'preparing-copy' | 'learning' | 'preparing' | 'opening'
+
+/** What the words for a step depend on besides the step itself. */
+export interface StepDetail {
+  /** What the file is, as the server found it in the bytes (DOCX, DOC, PAGES, PDF...), or a guess from its name until then; null when neither says. */
+  mediaType: string | null
+  /** The server was too busy to start, and the step waits a moment before asking again. */
+  waiting: boolean
+}
 
 export type LearnOutcome =
   | {
@@ -46,35 +71,60 @@ export type LearnOutcome =
       documentId: number
       /** What the template and the document are both called: the file's own name, without its extension. */
       name: string
-      /** Something the person should know about the form Brownie learned, shown when the document opens; null when there is nothing to say. */
-      note: string | null
+      /** What the person should know about the form Brownie made ready, one sentence each, shown when the document opens. */
+      notes: string[]
     }
   | { ok: false; message: string }
 
-const DOCX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+/** How adding a form to My Templates ended: the template, or the sentence that says why there is none. */
+export type LearnTemplateOutcome =
+  | {
+      ok: true
+      templateId: number
+      /** The version made active, which a document is started from. */
+      versionId: number
+      /** What the template is called: the file's own name, without its extension. */
+      name: string
+      /** Places Brownie had to leave out of the template, in one sentence; null when it kept them all. */
+      leftOutNote: string | null
+    }
+  | { ok: false; message: string }
+
+/** What the file chooser offers: every kind of form a person might have, each judged by the server once chosen. */
+export const FORM_FILE_ACCEPT = OFFERED_FORM_FILES
+
+/** The words the page shows while a step is under way; making the file ready says what kind of file it is opening. */
+export function learnStepWords(step: LearnStep, detail: StepDetail): string {
+  if (detail.waiting) return 'Waiting for a free moment…'
+  switch (step) {
+    case 'uploading':
+      return 'Uploading…'
+    case 'checking':
+      return 'Checking the file…'
+    case 'preparing-copy': {
+      if (detail.mediaType === 'PDF') return 'Reading your PDF and finding where the values go…'
+      const format = convertedFormatName(detail.mediaType)
+      return format ? `Opening your ${format} file and finding where the values go…` : 'Finding where the values go…'
+    }
+    case 'learning':
+      return 'Learning the form…'
+    case 'preparing':
+      return 'Getting the template ready…'
+    case 'opening':
+      return 'Opening your document…'
+  }
+}
+
+const INITIAL_REVISION_REASON = 'Created from a form uploaded on Home.'
 
 /**
- * What the file chooser offers. A PDF is offered on purpose: someone with
- * only a PDF of their form should be told plainly that Brownie cannot fill
- * it, rather than find the file greyed out with no reason given.
+ * Making a file ready runs in a sandbox with a few slots shared by every
+ * render. When all stay taken the server says so and when to ask again;
+ * the flow waits that long, but never more than this, and asks at most
+ * twice more before saying it is busy.
  */
-export const FORM_FILE_ACCEPT = `.docx,.pdf,${DOCX_MEDIA_TYPE},application/pdf`
-
-const PDF_REFUSAL = 'Brownie can fill Word (.docx) forms. It cannot fill a PDF.'
-const NOT_DOCX_REFUSAL = 'Brownie can fill Word (.docx) forms. Choose a .docx file.'
-/** A file whose name says Word but whose bytes do not: an older .doc renamed, or something else entirely. */
-const NOT_A_WORD_FILE = 'Brownie can fill Word (.docx) forms, and it could not open this file as one. Choose a .docx file saved from Word.'
-const NO_CONTENT_CONTROLS =
-  'Brownie found no content control with a tag in this Word file, and the tag is how Brownie knows which value goes where, ' +
-  "so Brownie cannot fill it. In Word's Developer tab, add a content control where each value goes and give each one a tag " +
-  'under Properties, then upload the file again.'
-const EVERY_TAG_SHARED =
-  'Every content control in this Word file shares its tag with another one, so Brownie cannot tell which one a value belongs in. ' +
-  "Give each content control a tag of its own in Word's Developer tab, then upload the file again."
-const NOTHING_IN_THE_BODY =
-  "Every content control in this Word file is outside the body of the form, such as in a header or footer, and Brownie writes values only in the body, so Brownie cannot fill it."
-
-const INITIAL_REVISION_REASON = 'Created from a Word form uploaded on Home.'
+const BUSY_RETRIES = 2
+const LONGEST_WAIT_SECONDS = 10
 
 /** A step failed and the sentence says why; nothing after it runs. */
 class Refusal extends Error {
@@ -91,30 +141,93 @@ class Refusal extends Error {
 export async function learnFormAndStartDocument(
   workspaceId: number,
   file: File,
-  onStep: (step: LearnStep) => void = () => {},
+  onStep: (step: LearnStep, detail: StepDetail) => void = () => {},
 ): Promise<LearnOutcome> {
   try {
     return { ok: true, ...(await learnAndStart(workspaceId, file, onStep)) }
   } catch (error) {
-    if (error instanceof Refusal) return { ok: false, message: error.sentence }
-    return { ok: false, message: `Could not upload "${file.name}". Try again.` }
+    return { ok: false, message: refusalWords(error, file) }
   }
+}
+
+/**
+ * Learns the form in `file` and adds it to My Templates, the same way as
+ * from Home and with the same words for a refusal, but starts no document
+ * from it. It never throws.
+ */
+export async function learnFormAsTemplate(
+  workspaceId: number,
+  file: File,
+  onStep: (step: LearnStep, detail: StepDetail) => void = () => {},
+): Promise<LearnTemplateOutcome> {
+  try {
+    const learned = await learnTemplate(workspaceId, file, onStep)
+    return { ok: true, templateId: learned.templateId, versionId: learned.versionId, name: learned.name, leftOutNote: leftOutNote(learned.leftOut) }
+  } catch (error) {
+    return { ok: false, message: refusalWords(error, file) }
+  }
+}
+
+function refusalWords(error: unknown, file: File): string {
+  return error instanceof Refusal ? error.sentence : `Could not upload "${file.name}". Try again.`
 }
 
 async function learnAndStart(
   workspaceId: number,
   file: File,
-  onStep: (step: LearnStep) => void,
-): Promise<{ documentId: number; name: string; note: string | null }> {
+  onStep: (step: LearnStep, detail: StepDetail) => void,
+): Promise<{ documentId: number; name: string; notes: string[] }> {
+  const { templateId, versionId, name, form, leftOut, mediaType } = await learnTemplate(workspaceId, file, onStep)
+
+  onStep('opening', { mediaType, waiting: false })
+  const document = await attempt(
+    () =>
+      createDocument(workspaceId, crypto.randomUUID(), {
+        title: documentTitleFor(name),
+        templateId,
+        templateVersionId: versionId,
+        fields: {},
+        initialRevisionReason: INITIAL_REVISION_REASON,
+      }),
+    (error) =>
+      `Brownie learned "${name}" and added it to My Templates, but could not start a document from it. ` +
+      `${reason(error, 'a way to create documents')} Choose it under My Templates to try again.`,
+  )
+  // The page says itself how many places Brownie found and how they are marked, so the notes do not say it again.
+  const foundShownOnPage = form.spots.some((spot) => spot.origin === 'FOUND_BY_BROWNIE')
+  const notes = [...formNoteSentences(form, { foundShownOnPage }), leftOutNote(leftOut)].filter((note): note is string => note !== null)
+  return { documentId: document.id, name, notes }
+}
+
+/** A form learned and its template active: what it is called, the server's reading of the file, and the places left out. */
+interface LearnedTemplate {
+  templateId: number
+  versionId: number
+  name: string
+  form: FillableFormResponse
+  /** The names of the places the filler could never write into, which the template leaves out. */
+  leftOut: string[]
+  /** What the file is, as the server found it in the bytes. */
+  mediaType: string | null
+}
+
+async function learnTemplate(
+  workspaceId: number,
+  file: File,
+  onStep: (step: LearnStep, detail: StepDetail) => void,
+): Promise<LearnedTemplate> {
   const fileName = file.name
-  const kind = fileKind(file)
-  if (kind === 'pdf') throw new Refusal(PDF_REFUSAL)
-  if (kind === 'other') throw new Refusal(NOT_DOCX_REFUSAL)
+  // A browser handed a Pages package (a folder on a Mac) sends an empty file, which no server could open.
+  if (isPagesPackage(file)) throw new Refusal(PAGES_PACKAGE_SENTENCE)
+  // The name is only a first guess at what the file is, for the words said while it is opened; every file goes to
+  // the server, which reads the bytes and decides. A name this page does not know is no reason to stop.
+  let mediaType: string | null = fileKind(file, await loadFormFileTypes()) === 'pdf' ? 'PDF' : null
+  const say = (step: LearnStep, waiting = false) => onStep(step, { mediaType, waiting })
   // Checked here as well as by the server, so a file that could never be accepted is not sent first.
   const limit = await uploadLimit()
   if (limit !== null && file.size > limit) throw new Refusal(tooLarge(limit))
 
-  onStep('uploading')
+  say('uploading')
   const couldNotUpload = `Could not upload "${fileName}".`
   const allocated = await attempt(
     () => allocateUpload(workspaceId, fileName),
@@ -124,87 +237,120 @@ async function learnAndStart(
     () => uploadArtifactContent(workspaceId, allocated.id, file),
     (error) => uploadRefusal(error, file, limit),
   )
-  // The server reads the bytes, not the name: a PDF saved with a .docx name is still a PDF.
-  if (uploaded.detectedMediaType === 'PDF') throw new Refusal(PDF_REFUSAL)
-  if (uploaded.detectedMediaType && uploaded.detectedMediaType !== 'DOCX') throw new Refusal(NOT_A_WORD_FILE)
+  mediaType = uploaded.detectedMediaType ?? mediaType
 
-  onStep('checking')
+  say('checking')
   const completed = await attempt(
     () => completeUpload(workspaceId, allocated.id),
     (error) => `Could not check "${fileName}". ${reason(error, 'a way to check uploaded files')}`,
   )
   if (completed.status !== 'READY') throw new Refusal(scanRefusal(completed, fileName))
-  const extraction = await attempt(
-    () => extractArtifact(workspaceId, allocated.id),
-    (error) => `Could not read "${fileName}". ${reason(error, 'a way to read Word files')}`,
-  )
-  if (extraction.status !== 'COMPLETE') throw new Refusal(extractionRefusal(extraction, fileName))
+  mediaType = completed.detectedMediaType ?? mediaType
 
-  onStep('learning')
-  // The server's own tidy form of the file's name, where it gave one: that is what it will show elsewhere.
-  // A form uploaded again beside one already learned gets a name of its own, so the two can be told apart.
-  // The names the person can see: My Templates and the Trash Bin. A draft left by a refused upload is seen nowhere.
+  say('preparing-copy')
+  const form = await makeReady(workspaceId, allocated.id, fileName, () => mediaType, say)
+
+  say('learning')
+  // The name of the file the person chose, not of Brownie's copy of it; the server's own tidy form of it where it
+  // gave one, since that is what it shows elsewhere. A form uploaded again beside one already learned gets a name of
+  // its own, so the two can be told apart. The names the person can see: My Templates and the Trash Bin. A draft
+  // left by a refused upload is seen nowhere.
   const templates = useTemplatesStore()
   await templates.refresh(workspaceId)
   const taken = [...templates.usable.map((template) => template.displayName), ...(await trashedNames(workspaceId))]
   const name = uniqueName(nameOf(allocated.displayFilename ?? fileName), taken)
-  const couldNotLearn = (error: unknown) => learningRefusal(error, fileName)
-  const draft = await attempt(() => createTemplateDraft(workspaceId, name, allocated.id), couldNotLearn)
+  const couldNotLearn = (error: unknown) => learningRefusal(error, fileName, mediaType)
+  // What the server noticed in making the file ready stays with the template, so any document made from it can say it again.
+  const draft = await attempt(() => createTemplateDraft(workspaceId, name, form.templateSourceArtifactId, form.notices), couldNotLearn)
   const templateId = draft.template.id
-  const report = await attempt(() => getDraftCandidateBindings(workspaceId, templateId), couldNotLearn)
-  if (report.candidates.length === 0) {
-    throw new Refusal(report.ambiguousContentControlTags.length > 0 ? EVERY_TAG_SHARED : NO_CONTENT_CONTROLS)
-  }
-  // The server's own suggestions, as the template screen fills them in before anyone changes them: a tag
-  // with the word "date" in it is a date, and a control in the one row under a first table's header is one
-  // of a repeated row's values.
-  let fields: FieldDefinitionRequest[] = report.candidates.map((candidate) => ({
-    fieldId: candidate.fieldId,
-    type: candidate.type,
-    cardinality: candidate.cardinality,
-    requiredness: 'OPTIONAL',
-    binding: { kind: 'CONTENT_CONTROL_TAG', tag: candidate.contentControlTag },
-  }))
-  let bound = await attempt(
-    () => replaceDraftBindings(workspaceId, templateId, draft.draftVersion.versionNumber, fields),
-    couldNotLearn,
-  )
-  // A control the filler never writes into (one in a header, say) would stop the whole form from activating,
-  // so it is left out, and the person is told which.
-  const unplaced = await fieldsWithNoPlace(workspaceId, templateId, bound)
-  if (unplaced.length > 0) {
-    const placed = fields.filter((field) => !unplaced.includes(field.fieldId))
-    if (placed.length === 0) throw new Refusal(NOTHING_IN_THE_BODY)
-    fields = placed
+  // Every place as the server found it and named it, with the marks that say who put it there.
+  let fields = form.spots.map(fieldFromSpot)
+  let bound: TemplateVersionResponse = draft.draftVersion
+  if (fields.length > 0) {
     const expected = bound.versionNumber
-    bound = await attempt(() => replaceDraftBindings(workspaceId, templateId, expected, placed), couldNotLearn)
+    const all = fields
+    bound = await attempt(() => replaceDraftBindings(workspaceId, templateId, expected, all), couldNotLearn)
+  }
+  // A place the filler never writes into (one in a Word header, say) would stop the whole form from activating, so
+  // it is left out, and the person is told which. A PDF's places are on its pages, and each is written where it is.
+  let leftOut: string[] = []
+  if (form.kind === 'DOCX' && fields.length > 0) {
+    const unplaced = await fieldsWithNoPlace(workspaceId, templateId, bound)
+    if (unplaced.length > 0) {
+      leftOut = fields.filter((field) => unplaced.includes(field.fieldId)).map((field) => fieldLabel(field))
+      const placed = fields.filter((field) => !unplaced.includes(field.fieldId))
+      fields = placed
+      const expected = bound.versionNumber
+      bound = await attempt(() => replaceDraftBindings(workspaceId, templateId, expected, placed), couldNotLearn)
+    }
   }
 
-  onStep('preparing')
+  say('preparing')
   const activated = await activate(workspaceId, templateId, bound, fields, fileName)
   // The template is complete now, so My Templates may show it; a failed refresh is the store's own quiet state.
   await useTemplatesStore().refresh(workspaceId)
+  return { templateId, versionId: activated.id, name, form, leftOut, mediaType }
+}
 
-  onStep('opening')
-  const document = await attempt(
-    () =>
-      createDocument(workspaceId, crypto.randomUUID(), {
-        title: documentTitleFor(name),
-        templateId,
-        templateVersionId: activated.id,
-        fields: {},
-        initialRevisionReason: INITIAL_REVISION_REASON,
-      }),
-    (error) =>
-      `Brownie learned "${name}" and added it to My Templates, but could not start a document from it. ` +
-      `${reason(error, 'a way to create documents')} Choose it under My Templates to try again.`,
-  )
-  const notes = [
-    sharedTagsNote(report.ambiguousContentControlTags),
-    outsideTheBodyNote(unplaced),
-    untaggedNote(report.untaggedContentControlCount ?? 0),
-  ].filter((note) => note !== null)
-  return { documentId: document.id, name, note: notes.length > 0 ? notes.join(' ') : null }
+/**
+ * Asks the server to make the upload ready to fill, waiting and asking
+ * again while it is too busy to start. `mediaType` is read when a refusal
+ * is worded, so it names the format the server found.
+ */
+async function makeReady(
+  workspaceId: number,
+  artifactId: number,
+  fileName: string,
+  mediaType: () => string | null,
+  say: (step: LearnStep, waiting?: boolean) => void,
+): Promise<FillableFormResponse> {
+  for (let tried = 0; ; tried++) {
+    try {
+      return await makeFillableForm(workspaceId, artifactId)
+    } catch (error) {
+      if (tried < BUSY_RETRIES && error instanceof ApiRequestError && error.problem?.code === 'RENDERER_BUSY') {
+        say('preparing-copy', true)
+        await pause(waitSeconds(error))
+        say('preparing-copy')
+        continue
+      }
+      throw new Refusal(
+        (error instanceof ApiRequestError ? fillableFormRefusal(error.problem, mediaType()) : null) ??
+          `Could not open "${fileName}". ${reason(error, 'a way to open forms')}`,
+      )
+    }
+  }
+}
+
+/** As long as the server asked, up to the longest this flow waits; the longest when it did not say. */
+function waitSeconds(error: ApiRequestError): number {
+  const asked = error.retryAfterSeconds ?? LONGEST_WAIT_SECONDS
+  return Math.min(Math.max(asked, 0), LONGEST_WAIT_SECONDS)
+}
+
+function pause(seconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+}
+
+/**
+ * A spot as a template field, in the shape the server sent it: what it
+ * holds, where it is, the name the form gives it, and who put it there.
+ * What only describes how it was found is not sent, and a mark that means
+ * "it came with the form" is left out, as the server stores it.
+ */
+function fieldFromSpot(spot: FillableFormSpot): FieldDefinitionRequest {
+  const field: FieldDefinitionRequest = {
+    fieldId: spot.fieldId,
+    type: spot.type,
+    cardinality: spot.cardinality,
+    requiredness: spot.requiredness,
+    binding: spot.binding,
+  }
+  if (spot.label) field.label = spot.label
+  if (spot.origin !== 'FORM') field.origin = spot.origin
+  if (spot.docxControl && spot.docxControl !== 'ORIGINAL') field.docxControl = spot.docxControl
+  if (spot.blankText) field.blankText = spot.blankText
+  return field
 }
 
 /** The names in the Trash Bin, or none where it cannot be read (an older server answers with every template, none trashed). */
@@ -241,11 +387,10 @@ async function fieldsWithNoPlace(workspaceId: number, templateId: number, versio
 
 /**
  * Activates the draft as bound; and once more with every field as a single
- * value when the server refuses a repeated row it cannot find. The server
- * suggests a repeated value for every control inside a table cell, but it
- * repeats only the last row of the first table, so a form laid out as a
- * table of labels and boxes is refused as suggested. Filled as single
- * values, the same boxes work, which is what such a form means anyway.
+ * value when the server refuses a repeated row it cannot fill. Filled as
+ * single values, the same places work, which is what a form laid out as a
+ * table of labels and boxes means anyway. A form with no places at all is
+ * activated as one, so it opens and the person can add them.
  */
 async function activate(
   workspaceId: number,
@@ -257,6 +402,9 @@ async function activate(
   const couldNotActivate = (error: unknown) =>
     `Brownie could not finish learning the form in "${fileName}", so nothing was added to My Templates. ` +
     reason(error, 'a way to learn forms')
+  if (fields.length === 0) {
+    return attempt(() => activateTemplateVersion(workspaceId, templateId, bound.versionNumber, { allowNoPlaces: true }), couldNotActivate)
+  }
   try {
     return await activateTemplateVersion(workspaceId, templateId, bound.versionNumber)
   } catch (error) {
@@ -298,14 +446,6 @@ function reason(error: unknown, what: string): string {
   return error.problem?.detail ?? 'Try again.'
 }
 
-/** Judged by name first, then by the type the browser reports, since either can be missing. */
-function fileKind(file: File): 'docx' | 'pdf' | 'other' {
-  const lower = file.name.toLowerCase()
-  if (lower.endsWith('.pdf') || file.type === 'application/pdf') return 'pdf'
-  if (lower.endsWith('.docx') || file.type === DOCX_MEDIA_TYPE) return 'docx'
-  return 'other'
-}
-
 /** The deployment's limit in bytes, or null when the server did not say (an older one) or could not be asked. */
 async function uploadLimit(): Promise<number | null> {
   try {
@@ -327,18 +467,21 @@ function uploadRefusal(error: unknown, file: File, limit: number | null): string
       ? `Could not upload "${file.name}". ${error.problem.detail}`
       : 'This file is larger than Brownie accepts, so it was not uploaded.'
   }
-  if (error instanceof ApiRequestError && error.status === 415) return NOT_A_WORD_FILE
+  // The server says why it refused the file; an older one does not, and is told the kinds of file Brownie fills.
+  if (error instanceof ApiRequestError && error.status === 415) return refusalSentence(error.problem?.reason) ?? REFUSAL_SENTENCES.NOT_A_DOCUMENT
   return `Could not upload "${file.name}". ${reason(error, 'a way to upload files')}`
 }
 
 /** The rejection reasons are the scanner's and the content inspector's own codes; a file still being checked has none. */
 function scanRefusal(artifact: ArtifactResponse, fileName: string): string {
   if (artifact.status !== 'REJECTED') return `Brownie could not finish checking "${fileName}". Try again in a minute.`
+  const refused = refusalSentence(artifact.rejectionReason)
+  if (refused) return refused
   switch (artifact.rejectionReason) {
     case 'MALWARE_DETECTED':
       return `Brownie did not accept "${fileName}": the malware scan flagged it.`
     case 'UNSUPPORTED_MEDIA_TYPE':
-      return NOT_A_WORD_FILE
+      return REFUSAL_SENTENCES.NOT_A_DOCUMENT
     case 'DECOMPRESSION_LIMIT_EXCEEDED':
       return `Brownie did not accept "${fileName}": it unpacks to far more than Brownie accepts.`
     case 'EXPIRED_ABANDONED_UPLOAD':
@@ -348,87 +491,19 @@ function scanRefusal(artifact: ArtifactResponse, fileName: string): string {
   }
 }
 
-/** What the reader reports it found in a Word file that a filled copy could not keep faithfully. */
-const UNSUPPORTED_FEATURE_WORDS: Record<string, string> = {
-  TRACKED_CHANGES: 'tracked changes',
-  UNRESOLVED_COMMENT: 'comments',
-  FLOATING_SHAPE: 'floating shapes',
-  NESTED_TABLE: 'a table inside another table',
-  LINKED_EXTERNAL_IMAGE: 'a picture linked from outside the file',
-  EMBEDDED_OBJECT: 'an embedded object',
-  UNSUPPORTED_FIELD: 'a kind of Word field Brownie cannot fill around',
-  PACKAGE_SIGNATURE: 'a digital signature',
+/** A PDF whose form cannot be filled is refused again when a template is made from it; the same words say why. */
+function learningRefusal(error: unknown, fileName: string, mediaType: string | null): string {
+  const refused = error instanceof ApiRequestError ? fillableFormRefusal(error.problem, mediaType) : null
+  return refused ?? `Brownie could not learn the form in "${fileName}". ${reason(error, 'a way to learn forms')}`
 }
 
-/**
- * The server's answer carries, for a Word file it would not read, the
- * features it found; the generated type does not model that list, so it is
- * read here with care and anything unrecognised is left out.
- */
-function extractionRefusal(extraction: ExtractionResponse, fileName: string): string {
-  if (extraction.status === 'UNSUPPORTED') {
-    const findings = (extraction as { unsupportedFeatures?: unknown }).unsupportedFeatures
-    const words = Array.isArray(findings)
-      ? [
-          ...new Set(
-            findings
-              .map((finding) => UNSUPPORTED_FEATURE_WORDS[String((finding as { feature?: unknown } | null)?.feature)])
-              .filter((word): word is string => word !== undefined),
-          ),
-        ]
-      : []
-    if (words.length === 0) return NOT_A_WORD_FILE
-    return `Brownie cannot fill "${fileName}" because it has ${listed(words)}. Remove ${words.length === 1 ? 'that' : 'those'} in Word, then upload the file again.`
-  }
-  return `Brownie could not read "${fileName}". The file may be damaged: open it in Word, save it again, and upload it again.`
-}
-
-function learningRefusal(error: unknown, fileName: string): string {
-  if (error instanceof ApiRequestError && error.problem?.code === 'SOURCE_NOT_EXTRACTABLE') return NOT_A_WORD_FILE
-  return `Brownie could not learn the form in "${fileName}". ${reason(error, 'a way to learn forms')}`
-}
-
-/**
- * A tag on more than one content control is never suggested, because a
- * value could not be told which one it belongs in; the rest of the form
- * still works, and the person is told which boxes will stay empty.
- */
-function sharedTagsNote(tags: string[]): string | null {
-  if (tags.length === 0) return null
-  const quoted = listed(tags.map((tag) => `"${tag}"`))
-  const which = tags.length === 1 ? 'That tag is' : 'Each of those tags is'
+/** Places the filler never writes into, such as those in a header or footer, are left out of the template. */
+function leftOutNote(labels: string[]): string | null {
+  if (labels.length === 0) return null
+  const quoted = listed(labels.map((label) => `"${label}"`))
   return (
-    `Brownie did not learn ${quoted}. ${which} on more than one content control in the form, so Brownie cannot tell which ` +
-    `one a value belongs in. To fill ${tags.length === 1 ? 'it' : 'them'}, give each content control a tag of its own in Word and upload the form again.`
-  )
-}
-
-/** Content controls the filler never writes into, such as those in a header or footer, are left out of the template. */
-function outsideTheBodyNote(tags: string[]): string | null {
-  if (tags.length === 0) return null
-  const quoted = listed(tags.map((tag) => `"${tag}"`))
-  return (
-    `Brownie did not learn ${quoted}: ${tags.length === 1 ? 'it is' : 'they are'} outside the body of the form, such as in a ` +
-    'header or footer, and Brownie writes values only in the body.'
-  )
-}
-
-/**
- * A content control with no tag has nothing to learn it by, so the filled
- * form keeps it as it was; the person is told how many, and how to have
- * Brownie fill them. A server from before the count says nothing here.
- */
-function untaggedNote(count: number): string | null {
-  if (count <= 0) return null
-  if (count === 1) {
-    return (
-      'Brownie did not learn 1 content control that has no tag; it stays as it is in the form. ' +
-      "To fill it, give it a tag under Properties in Word's Developer tab and upload the form again."
-    )
-  }
-  return (
-    `Brownie did not learn ${count} content controls that have no tag; they stay as they are in the form. ` +
-    "To fill them, give each one a tag under Properties in Word's Developer tab and upload the form again."
+    `Brownie left out ${quoted}: ${labels.length === 1 ? 'it is' : 'they are'} outside the main text of the form, such as in a ` +
+    'header or footer, and Brownie fills only the main text.'
   )
 }
 
