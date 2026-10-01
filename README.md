@@ -274,6 +274,15 @@ signing in again starts a new, empty workspace. In the web app that is the
 `delete my workspace` to be typed, deletes, and lands on the sign-in page
 with a line saying it worked.
 
+A template can be moved to the Trash Bin too, from the "..." button beside it
+under My Templates or by right-clicking it (`POST
+/api/v1/workspaces/{id}/templates/{t}/trash`, and `.../restore` to bring it
+back). It leaves the template list (`GET .../templates?trashed=true` lists
+the trashed ones) and starts no new document (409 `TEMPLATE_TRASHED`), but
+every document already made from it keeps working, which is also why nothing
+deletes a template from the Trash Bin by itself: it stays there until it is
+restored, and goes only with the whole workspace.
+
 **Your data** (in the sidebar) is where a person reads what Brownie keeps,
 for how long, and who else sees any of it: the model provider and model
 name, that sign-in is Microsoft's, that every upload is scanned. Every
@@ -356,8 +365,8 @@ row. The worker removes rows older than 90 days
 
 **Starting a run again.** `POST /api/v1/workspaces/{id}/jobs/{jobId}/retry`
 puts a job that ended `DEAD` or `FAILED` back in the queue with a fresh run
-of attempts and a new deadline; the Assist tab offers it as "Try this run
-again". It refuses a job whose document has changed or is in the trash
+of attempts and a new deadline; the chat beside a document offers it as "Try
+this reading again". It refuses a job whose document has changed or is in the trash
 since the job began (`409 JOB_TARGET_STALE`), because its result could
 never be accepted; start a new extraction instead.
 
@@ -734,9 +743,12 @@ exported (`manual-editing.spec.ts` reads the typed values back out of the
 downloaded DOCX), and `session-and-recovery.spec.ts`: real sign-out (the
 server must answer 401 afterwards, and the page continues to the identity
 provider's end-session URL, with that external hop stubbed), recovery from a
-failed identity request, and a failed optional source upload during document
-creation whose warning must survive navigation to the new document. The
-latter two inject server failures with `page.route`; none makes a model call.
+failed identity request, and a Word form whose upload fails, explained on
+Home where it was chosen with nothing made. The latter two inject server
+failures with `page.route`; none makes a model call. `upload-a-form.spec.ts`
+uploads a tagged Word form from Home and lands in its new document, and shows
+that a PDF and a Word file without content controls are refused in plain
+words with nothing added to My Templates.
 
 `trash-and-deletion.spec.ts` takes one document through its whole removal:
 off the home list into the Trash Bin, its own address answering 404, back
@@ -775,36 +787,67 @@ Content-control-tag detection during template teaching is deterministic DOCX
 structure parsing, so `template-teaching.spec.ts` can exercise that flow
 without a model call.
 
-A document's Content pane edits every field the template defines, including
-repeated rows, and saves a moment after typing stops (or on "Save now") as a
-new revision against the exact revision the page last loaded, with saving,
-saved, and conflict states and a warning before leaving with unsaved work;
-`manual-editing.spec.ts` drives that from an empty document to a downloaded
-export, and `document-validation-guard.spec.ts` covers the other half: an
-empty document's required fields block export and the UI does not offer
-approval. The Rules tab lists, read-only, the accepted rules of the
-document's template version; `GET /api/v1/capabilities` reports the upload
-limit and supported formats, which every upload control shows before a file
-is chosen.
+Home's "Upload your documents" takes the form to fill: a Word (.docx) file
+whose content controls mark where values go. The browser uploads it, has it
+scanned and read, lets Brownie learn it as a template from its own control
+tags (the same steps as teaching one by hand, every suggested field
+accepted), activates it, starts a document from it and opens that document;
+the template also joins My Templates. A PDF, another kind of file, or a Word
+file without content controls is refused on Home in words, and nothing
+half-made is left listed. Pressing a template under My Templates starts a new
+document from it at once, named after the template and the day, and opens it;
+the + beside My Templates is where a template is taught by hand.
 
-The Assist tab has a composer for a few bounded requests: draft from the
-attached sources, change a field to a value, shorten or rewrite a text
-field, explain a validation finding. `POST .../assist/interpret` reads the
-text into one command and reports its scope (the field and what it holds,
-or the finding) without doing anything; `POST .../assist/execute` then
-runs exactly that against the revision on screen. A change or a rewrite
-comes back as a patch proposal for the ordinary accept step, an
-explanation is text, and free text is answered with what Brownie can do.
-Only rewrite and explain call the model, one bounded call each.
+A document's page draws the template's own text with a highlighted fill spot
+wherever a value goes, read from the template file itself (`GET
+/api/v1/workspaces/{id}/templates/{t}/versions/{v}/layout`); every field the
+template defines is reachable there, repeated rows included, and a field the
+page cannot place is listed under it. A value typed into the page is saved a
+moment after typing stops (or on "Save now") as a new revision against the
+exact revision the page last loaded, with saving, saved, and conflict states
+beside Export and a warning before leaving with unsaved work. Undo restores
+the most recent earlier version whose values differ (`POST
+.../documents/{d}/revisions/{r}/restore`) and keeps any locked value as it
+is. A required spot carries a red asterisk and a value Brownie filled a
+double underline, each explained above the page. The bar about the selected
+spot holds its state, where its value came from, and its review, lock and row
+controls; Alt+Enter (Option+Return on a Mac) in a spot moves there, and
+Escape goes back. `manual-editing.spec.ts` drives that from an empty document
+to a downloaded export, and `document-validation-guard.spec.ts` covers the
+other half: an empty document's required fields block export and Export never
+offers approval. The Rules card shows the text style a value takes from the
+template (font, size, weight) and how dates read, and lists, read-only, the
+accepted rules of the document's template version; `GET /api/v1/capabilities`
+reports the upload limit and supported formats, which every upload control
+shows before a file is chosen.
 
-Beside the editor, a Preview pane draws the latest compiled PDF of the
-document with PDF.js (`pdfjs-dist`), page by page; it picks up whatever
-compilation already exists for the current content (validation compiles
-too), and "Generate preview" renders one on demand through the isolated
-renderer. A value Assist filled carries an Evidence marker that opens the
-cited passage from the attached source through the document's own
-evidence route; Brownie can show where a value came from, not yet where it
-lands on the page.
+Brownie's panel beside the page takes a few bounded requests in words: fill
+the document from the attached sources, change a field to a value, shorten
+or rewrite a text field, explain a validation finding. `POST
+.../assist/interpret` reads the text into one command and reports its scope
+(the field and what it holds, or the finding) without doing anything; `POST
+.../assist/execute` then runs exactly that against the revision on screen.
+Filling from sources runs the grounded extraction and asks its questions in
+the chat; a change or a rewrite comes back as a proposal; either way nothing
+changes until the person approves the proposal. An explanation is text, and
+free text is answered with what Brownie can do. Only reading a source,
+rewrite and explain call the model.
+
+The print preview draws the latest compiled PDF of the document with PDF.js
+(`pdfjs-dist`), page by page; it picks up whatever compilation already exists
+for the current content (the check before export compiles too), and
+"Generate preview" renders one on demand through the isolated renderer. A
+value Brownie filled carries the passages it came from, which the bar about
+a selected fill spot opens through the document's own evidence route;
+Brownie can show where a value came from, not where it lands in the exported
+file.
+
+Export opens a window rather than a page: it saves pending changes, checks
+the current version, lists anything that blocks it with a way back to the
+fill spot, and approves and exports in the chosen format (Word, PDF, or
+both) in one step, then offers the downloads, the device's own share sheet
+where the browser can share files, and saving to Google Drive or adding a
+calendar event where those are set up.
 
 ### Automated accessibility scans
 
@@ -832,3 +875,13 @@ CI builds that same image on every run before it runs the backend suite.
 Use `clean` rather than a bare `test`: the multi-module build does not
 reliably notice a dependency module's stale compiled classes, and an
 incremental run can fail on code that is actually correct.
+
+Each test JVM starts one Postgres, one Azurite and one ClamAV container and
+shares them: every test class gets a database of its own, copied from the
+migrated `brownie` template database in a few milliseconds, and an Azurite
+account of its own, so classes stay as isolated as when each started its own
+containers. A full `clean verify` takes about four minutes. For a quick check
+while working, `./mvnw -o -B test -DexcludedGroups=docker` runs every test
+that needs no Docker (about 840 of them, in well under a minute); a class
+that needs Docker says so with `@DockerTest`, and the full run, which CI
+does, still runs everything.
