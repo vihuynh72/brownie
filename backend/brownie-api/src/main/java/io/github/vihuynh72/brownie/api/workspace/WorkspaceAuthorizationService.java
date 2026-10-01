@@ -13,7 +13,9 @@ import org.springframework.stereotype.Service;
  * row-level security every other workspace query is), not a check against
  * whatever the caller merely claims. Denial is a thrown {@link
  * AccessDeniedException} rather than a boolean so a caller cannot forget
- * to check a return value.
+ * to check a return value. {@link #grants} answers instead, for the one
+ * kind of route that is allowed either way and only does less for a member
+ * without a right.
  */
 @Service
 public class WorkspaceAuthorizationService {
@@ -22,6 +24,11 @@ public class WorkspaceAuthorizationService {
 
     public WorkspaceAuthorizationService(WorkspaceRepository workspaceRepository) {
         this.workspaceRepository = workspaceRepository;
+    }
+
+    /** Whether the member's role grants {@code capability}; false for someone who is not a member. Never a check on its own. */
+    public boolean grants(long userId, long workspaceId, WorkspaceCapability capability) {
+        return workspaceRepository.findRole(workspaceId, userId).map(role -> WorkspaceCapabilities.grants(role, capability)).orElse(false);
     }
 
     public void requireCapability(long userId, long workspaceId, WorkspaceCapability capability) {
