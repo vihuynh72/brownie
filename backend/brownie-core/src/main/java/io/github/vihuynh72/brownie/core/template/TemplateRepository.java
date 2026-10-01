@@ -15,8 +15,26 @@ public interface TemplateRepository {
 
     Optional<Template> find(long workspaceId, long userId, long templateId);
 
-    /** Every template in the workspace, in creation order -- oldest first, matching a document's own history ordering. */
+    /**
+     * Every template in the workspace, those in the Trash Bin included, in
+     * creation order -- oldest first, matching a document's own history
+     * ordering.
+     */
     List<Template> findAll(long workspaceId, long userId);
+
+    /** Only the templates in the Trash Bin, the most recently trashed first. */
+    List<Template> findTrashed(long workspaceId, long userId);
+
+    /**
+     * Moves the template to the Trash Bin. A template already there is
+     * returned as it is, keeping the time it was first trashed. Throws
+     * {@link TemplateNotFoundException} when there is no such template in
+     * the workspace.
+     */
+    Template trash(long workspaceId, long userId, long templateId);
+
+    /** Takes the template back out of the Trash Bin; one that is not there is returned as it is. Throws {@link TemplateNotFoundException} the same way {@link #trash} does. */
+    Template restore(long workspaceId, long userId, long templateId);
 
     /** The template's current open draft, if it has one -- at most one exists per template at a time. */
     Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId);

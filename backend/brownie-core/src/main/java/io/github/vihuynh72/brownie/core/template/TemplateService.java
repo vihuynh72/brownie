@@ -79,8 +79,40 @@ public class TemplateService {
         return templateRepository.find(workspaceId, userId, templateId);
     }
 
+    /** Every template not in the Trash Bin, in creation order: the ones a new document can be started from. */
     public List<Template> findAll(long workspaceId, long userId) {
+        return templateRepository.findAll(workspaceId, userId).stream().filter(template -> template.trashedAt() == null).toList();
+    }
+
+    /**
+     * Every template, those in the Trash Bin included, for a caller that
+     * must know what the workspace ever had rather than what it offers now:
+     * built-in provisioning, which would otherwise take a trashed built-in
+     * for a missing one and create it again.
+     */
+    public List<Template> findAllIncludingTrashed(long workspaceId, long userId) {
         return templateRepository.findAll(workspaceId, userId);
+    }
+
+    /** The templates in the Trash Bin, the most recently trashed first. */
+    public List<Template> findTrashed(long workspaceId, long userId) {
+        return templateRepository.findTrashed(workspaceId, userId);
+    }
+
+    /**
+     * Moves a template to the Trash Bin, which stops new documents being
+     * started from it and changes nothing else: its versions, layouts and
+     * rules stay readable for every document already made from it, and
+     * nothing ever deletes it from there by itself, since those documents
+     * depend on it. Trashing it again changes nothing.
+     */
+    public Template trash(long workspaceId, long userId, long templateId) {
+        return templateRepository.trash(workspaceId, userId, templateId);
+    }
+
+    /** Takes a template back out of the Trash Bin, so documents can be started from it again. Restoring it again changes nothing. */
+    public Template restore(long workspaceId, long userId, long templateId) {
+        return templateRepository.restore(workspaceId, userId, templateId);
     }
 
     public Optional<TemplateVersion> findVersion(long workspaceId, long userId, long templateId, long versionId) {
