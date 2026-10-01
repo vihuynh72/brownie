@@ -20,6 +20,10 @@ export interface EditableField {
   type: 'TEXT' | 'DATE'
   cardinality: 'SCALAR' | 'REPEATED'
   requiredness: 'REQUIRED' | 'OPTIONAL' | null
+  /** The name the form gives the field ("Date of birth"); null or absent means it is worked out from the id. */
+  label?: string | null
+  /** Who placed the spot; null or absent means it came with the form. */
+  origin?: 'FORM' | 'FOUND_BY_BROWNIE' | 'ADDED_BY_PERSON' | null
 }
 
 /** A Vue style object. Every value is built from checked parts, so none can carry a second declaration or a URL. */
@@ -28,10 +32,20 @@ export type CssStyle = Record<string, string>
 /** Word's own default body size, 11 pt, which the page draws at 1rem. */
 export const DEFAULT_BASE_HALF_POINTS = 22
 
-/** A human label from a stable field id: "action.item.due" reads as "Action item due". */
+/** A human label from a stable field id: "action.item.due" reads as "Action item due". For a field whose definition is at hand, use fieldLabel. */
 export function labelFor(fieldId: string): string {
   const words = fieldId.replace(/[._-]+/g, ' ').trim()
   return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/**
+ * The name a person sees for a field: the label stored with it (the form's own words, in any language),
+ * or else the one worked out from its id. A server that predates stored labels sends none, and a field
+ * known only from a revision has none, so both read as they always did.
+ */
+export function fieldLabel(field: { fieldId: string; label?: string | null }): string {
+  const label = field.label?.trim()
+  return label ? label : labelFor(field.fieldId)
 }
 
 // ---- Styles ------------------------------------------------------------------------------------
@@ -59,11 +73,26 @@ function genericFamilyFor(family: string): 'serif' | 'sans-serif' | 'monospace' 
   return 'sans-serif'
 }
 
-/** A CSS font-family list for a template font name, quoted, with a generic fallback; null for a name that is not plain words. */
+/**
+ * The font names a template gives for some text, first choice first. A copy made from another format can name
+ * several, separated by semicolons ("Liberation Serif;Times New Roman"), the first being the one it uses.
+ */
+function fontNames(family: string | null | undefined): string[] {
+  return (family ?? '')
+    .split(';')
+    .map((name) => name.trim().replace(/\s+/g, ' '))
+    .filter((name) => name !== '')
+    .slice(0, 4)
+}
+
+/**
+ * A CSS font-family list for a template's font names, each quoted, with a generic fallback that suits the
+ * first; null when any of them is not plain words.
+ */
 export function cssFontFamily(family: string | null | undefined): string | null {
-  const name = family?.trim().replace(/\s+/g, ' ')
-  if (!name || name.length > 64 || !SAFE_FONT_FAMILY.test(name)) return null
-  return `"${name}", ${genericFamilyFor(name)}`
+  const names = fontNames(family)
+  if (names.length === 0 || names.some((name) => name.length > 64 || !SAFE_FONT_FAMILY.test(name))) return null
+  return `${names.map((name) => `"${name}"`).join(', ')}, ${genericFamilyFor(names[0]!)}`
 }
 
 function round(value: number): number {
@@ -106,7 +135,7 @@ export interface StyleChips {
 export function describeStyle(style: TemplateLayoutStyleResponse | null | undefined): StyleChips {
   const halfPoints = validHalfPoints(style?.fontSizeHalfPoints)
   return {
-    font: style?.fontFamily?.trim() || null,
+    font: fontNames(style?.fontFamily)[0] ?? null,
     size: halfPoints === null ? null : `${halfPoints / 2} pt`,
     weight: style?.bold === true ? 'Bold' : 'Regular',
     italic: style?.italic === true,
@@ -165,16 +194,34 @@ function styleKey(style: TemplateLayoutStyleResponse): string {
   ])
 }
 
+const PDF_FONT_NAMES = { SANS: 'Liberation Sans', SERIF: 'Liberation Serif', MONO: 'Liberation Mono' } as const
+
+/**
+ * A PDF form's boxes in the words of a Word style, for the Rules card: the font Brownie writes the box
+ * in, its size and weight. One of the PDF's own fields has no style here (the form sets its look).
+ */
+function pdfSpotStyles(layout: TemplateLayoutResponse | null | undefined): { fieldId: string; style: TemplateLayoutStyleResponse | null }[] {
+  return (layout?.pdf?.spots ?? []).map((spot) => ({
+    fieldId: spot.fieldId,
+    style: spot.style
+      ? { fontFamily: PDF_FONT_NAMES[spot.style.font] ?? PDF_FONT_NAMES.SANS, fontSizeHalfPoints: Math.round(spot.style.sizePt * 2), bold: spot.style.bold }
+      : null,
+  }))
+}
+
 /** The style most fill spots share: what the Rules card shows while no fill spot is selected. */
 export function dominantFillSpotStyle(layout: TemplateLayoutResponse | null | undefined): TemplateLayoutStyleResponse | null {
-  const styles = inlinesOfParts(partsOf(layout))
-    .filter((inline) => inline.kind === 'FILL_SPOT' && inline.style)
-    .map((inline) => inline.style!)
+  const styles = layout?.kind === 'PDF'
+    ? pdfSpotStyles(layout).flatMap((spot) => (spot.style ? [spot.style] : []))
+    : inlinesOfParts(partsOf(layout))
+        .filter((inline) => inline.kind === 'FILL_SPOT' && inline.style)
+        .map((inline) => inline.style!)
   return mostCommon(styles, styleKey)
 }
 
 /** The style a field's value takes when filled: its first fill spot's, in reading order. */
 export function fillSpotStyle(layout: TemplateLayoutResponse | null | undefined, fieldId: string): TemplateLayoutStyleResponse | null {
+  if (layout?.kind === 'PDF') return pdfSpotStyles(layout).find((spot) => spot.fieldId === fieldId)?.style ?? null
   const spot = inlinesOfParts(partsOf(layout)).find((inline) => inline.kind === 'FILL_SPOT' && inline.fieldId === fieldId)
   return spot?.style ?? null
 }
@@ -333,6 +380,10 @@ export interface PageText {
   key: string
   text: string
   style: TemplateLayoutStyleResponse | null
+  /** Where the text starts in its paragraph's anchor text, in code points; null for text a place cannot be chosen in. */
+  anchorStart: number | null
+  /** The control the text is shown from, when it comes from one no field names. */
+  controlNodeId: string | null
 }
 
 export interface PageImage {
@@ -351,6 +402,14 @@ export interface PageParagraph {
   inlines: PageInline[]
   /** Stands in for a repeating paragraph while there are no rows. */
   noRows: boolean
+  /** The paragraph's node id in the layout's graph; null from a server that predates choosing places. */
+  nodeId: string | null
+  /** Whether a fill spot can be added in it (the body, outside the part that repeats). */
+  anchorable: boolean
+  /** The hash of its anchor text, which a place chosen in it sends back; null when it is not anchorable. */
+  anchorTextHash: string | null
+  /** The paragraph is, or is drawn inside, the part the filler repeats for each row. */
+  repeats: boolean
 }
 
 export interface PageCell {
@@ -501,7 +560,10 @@ export function buildPageModel(layout: TemplateLayoutResponse, fields: readonly 
       const inlineKey = `${key}/i${index}`
       const style = inline.style ?? null
       if (inline.kind === 'TEXT') {
-        if (inline.text) result.push({ kind: 'text', key: inlineKey, text: inline.text, style })
+        if (inline.text) {
+          const anchorStart = typeof inline.anchorStart === 'number' && inline.anchorStart >= 0 ? inline.anchorStart : null
+          result.push({ kind: 'text', key: inlineKey, text: inline.text, style, anchorStart, controlNodeId: inline.controlNodeId ?? null })
+        }
       } else if (inline.kind === 'IMAGE') {
         result.push({ kind: 'image', key: inlineKey })
       } else if (inline.kind === 'FILL_SPOT') {
@@ -513,7 +575,7 @@ export function buildPageModel(layout: TemplateLayoutResponse, fields: readonly 
         } else if (field?.cardinality === 'REPEATED' && rowIndex !== null) {
           result.push(spot(inlineKey, field.fieldId, rowIndex, placeholder, style))
         } else if (placeholder) {
-          result.push({ kind: 'text', key: inlineKey, text: placeholder, style })
+          result.push({ kind: 'text', key: inlineKey, text: placeholder, style, anchorStart: null, controlNodeId: null })
         }
       }
     })
@@ -529,6 +591,8 @@ export function buildPageModel(layout: TemplateLayoutResponse, fields: readonly 
   }
 
   function paragraphFor(block: TemplateLayoutBlockResponse, key: string, rowIndex: number | null): PageParagraph {
+    const repeats = rowIndex !== null || block.repeating === true
+    const anchorable = block.anchorable === true && !repeats && typeof block.nodeId === 'string'
     return {
       kind: 'paragraph',
       key,
@@ -536,13 +600,30 @@ export function buildPageModel(layout: TemplateLayoutResponse, fields: readonly 
       listLevel: listLevelOf(block.listLevel),
       inlines: inlinesFor(block.inlines, key, rowIndex),
       noRows: false,
+      nodeId: block.nodeId ?? null,
+      anchorable,
+      anchorTextHash: anchorable ? (block.anchorTextHash ?? null) : null,
+      repeats,
     }
   }
 
   function repeatParagraph(block: TemplateLayoutBlockResponse, key: string): PageParagraph[] {
     markRepeatedPlaced([block])
     if (rows === 0) {
-      return [{ kind: 'paragraph', key, alignment: alignmentOf(block.alignment), listLevel: null, inlines: [], noRows: true }]
+      return [
+        {
+          kind: 'paragraph',
+          key,
+          alignment: alignmentOf(block.alignment),
+          listLevel: null,
+          inlines: [],
+          noRows: true,
+          nodeId: block.nodeId ?? null,
+          anchorable: false,
+          anchorTextHash: null,
+          repeats: true,
+        },
+      ]
     }
     return Array.from({ length: rows }, (_, row) => paragraphFor(block, `${key}@${row}`, row))
   }

@@ -68,6 +68,15 @@ import java.util.stream.Collectors;
  * filler, so no caller has to say which template it is filling. It is a
  * fixed line rather than a configurable rule because no {@code
  * RuleRevision} exists for a built-in template.
+ *
+ * <p>A scalar field with no value is written empty, unless its definition
+ * carries the form's own blank ({@link FieldDefinition#blankText()}, the
+ * "________" or "[Company]" a found spot was made from): then the blank
+ * goes back into the spot, in the spot's own formatting, so an unfilled
+ * form prints the way it did before Brownie touched it. The blank is not a
+ * value, so it is not in {@link FilledDocument#intendedText()} and nothing
+ * checks the output for it, and the control keeps whatever prompt state
+ * the form gave it.
  */
 public final class PoiTemplateFiller implements TemplateFiller {
 
@@ -93,7 +102,12 @@ public final class PoiTemplateFiller implements TemplateFiller {
                     .toList();
             for (FieldDefinition field : scalarFields) {
                 String text = scalarText(content, field);
-                setContentControlText(document, tagOf(field), text);
+                CTSdtRun control = controlTagged(document, tagOf(field));
+                if (text.isBlank() && field.blankText() != null) {
+                    writeControlText(control, field.blankText());
+                } else {
+                    setContentControlText(control, text);
+                }
                 intendedText.put(field.fieldId(), text.isBlank() ? List.of() : List.of(text));
             }
 
@@ -391,15 +405,22 @@ public final class PoiTemplateFiller implements TemplateFiller {
     }
 
     private String tagOf(FieldDefinition field) {
-        if (field.binding() instanceof FieldBindingTarget.ContentControlTag(String tag)) {
-            return tag;
-        }
-        throw new TemplateFillException(
-                TemplateFillProblemReason.UNREADABLE_TEMPLATE,
-                "Field " + field.fieldId() + " is not bound by a stable content-control tag.");
+        return switch (field.binding()) {
+            case FieldBindingTarget.ContentControlTag(String tag) -> tag;
+            case FieldBindingTarget.StructuralNode ignored -> throw new TemplateFillException(
+                    TemplateFillProblemReason.UNREADABLE_TEMPLATE,
+                    "Field " + field.fieldId() + " is not bound by a stable content-control tag.");
+            // A PDF template is filled by the PDF filler; a place on a PDF never reaches a Word file.
+            case FieldBindingTarget.AcroFormField ignored -> throw new TemplateFillException(
+                    TemplateFillProblemReason.BINDING_NOT_FOUND,
+                    "Field " + field.fieldId() + " is bound to a place on a PDF, which a Word file does not have.");
+            case FieldBindingTarget.PageBox ignored -> throw new TemplateFillException(
+                    TemplateFillProblemReason.BINDING_NOT_FOUND,
+                    "Field " + field.fieldId() + " is bound to a place on a PDF, which a Word file does not have.");
+        };
     }
 
-    private void setContentControlText(XWPFDocument document, String tag, String text) {
+    private CTSdtRun controlTagged(XWPFDocument document, String tag) {
         List<CTSdtRun> matches = new ArrayList<>();
         for (XWPFParagraph paragraph : allParagraphs(document)) {
             for (CTSdtRun sdt : paragraph.getCTP().getSdtArray()) {
@@ -414,10 +435,25 @@ public final class PoiTemplateFiller implements TemplateFiller {
         if (matches.size() > 1) {
             throw new TemplateFillException(TemplateFillProblemReason.AMBIGUOUS_BINDING, "More than one content control is tagged \"" + tag + "\".");
         }
-        setContentControlText(matches.getFirst(), text);
+        return matches.getFirst();
     }
 
     private void setContentControlText(CTSdtRun sdt, String text) {
+        CTR kept = writeControlText(sdt, text);
+        if (!text.isEmpty()) {
+            clearPlaceholderState(sdt, kept);
+        }
+    }
+
+    /**
+     * Replaces the control's text with {@code text} in its first run, keeping
+     * that run's formatting, and returns the run. A value that is not blank
+     * also takes the place of the run's tabs and breaks: a blank drawn as
+     * underlined tabs is replaced by the answer rather than printed before
+     * it. An empty value leaves them, so an unfilled blank still prints its
+     * line.
+     */
+    private static CTR writeControlText(CTSdtRun sdt, String text) {
         // A control can be saved with no content element at all; it gets one rather than stopping the fill.
         CTSdtContentRun sdtContent = sdt.isSetSdtContent() ? sdt.getSdtContent() : sdt.addNewSdtContent();
         CTR kept;
@@ -428,6 +464,9 @@ public final class PoiTemplateFiller implements TemplateFiller {
             while (kept.sizeOfTArray() > 0) {
                 kept.removeT(0);
             }
+            if (!text.isBlank()) {
+                removeBlankMarks(kept);
+            }
         }
         CTText t = kept.addNewT();
         t.setStringValue(text);
@@ -435,8 +474,31 @@ public final class PoiTemplateFiller implements TemplateFiller {
         for (int i = sdtContent.sizeOfRArray() - 1; i >= 1; i--) {
             sdtContent.removeR(i);
         }
-        if (!text.isEmpty()) {
-            clearPlaceholderState(sdt, kept);
+        return kept;
+    }
+
+    /** Takes out a run's tabs, breaks, hyphens and symbols: everything but its text that prints. */
+    private static void removeBlankMarks(CTR run) {
+        while (run.sizeOfTabArray() > 0) {
+            run.removeTab(0);
+        }
+        while (run.sizeOfPtabArray() > 0) {
+            run.removePtab(0);
+        }
+        while (run.sizeOfBrArray() > 0) {
+            run.removeBr(0);
+        }
+        while (run.sizeOfCrArray() > 0) {
+            run.removeCr(0);
+        }
+        while (run.sizeOfNoBreakHyphenArray() > 0) {
+            run.removeNoBreakHyphen(0);
+        }
+        while (run.sizeOfSoftHyphenArray() > 0) {
+            run.removeSoftHyphen(0);
+        }
+        while (run.sizeOfSymArray() > 0) {
+            run.removeSym(0);
         }
     }
 
