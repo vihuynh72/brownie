@@ -92,7 +92,8 @@ class DeletionIntegrationTest {
             "job_output_artifact", "document", "document_revision", "document_command_receipt",
             "document_revision_field_evidence", "document_compilation", "question", "document_revision_field_state",
             "document_patch_proposal", "document_patch_proposal_evidence", "validation_manifest", "export_approval",
-            "export_receipt", "document_source", "generation_run", "connector_connection", "connector_resource_grant");
+            "export_receipt", "document_source", "generation_run", "connector_connection", "connector_resource_grant",
+            "artifact_derivation", "fill_spot_review");
 
     static final TestDatabase DB = SharedContainers.newDatabase();
 
@@ -505,6 +506,34 @@ class DeletionIntegrationTest {
     }
 
     /**
+     * An upload made fillable is kept for as long as a template is built on
+     * the working copy made from it, even when a document also linked the
+     * upload as a source and that document is deleted for good.
+     */
+    @Test
+    void anUploadWhoseWorkingCopyATemplateIsBuiltOnSurvivesADocumentThatAlsoLinkedIt() throws Exception {
+        Owner owner = signIn("subject-kept-original");
+        long doomed = createDocument(owner, "Doomed minutes");
+        long original = uploadAndFinalize(owner, "The form as it was uploaded.");
+        long workingCopy = countAsOwner(
+                "SELECT source_artifact_id FROM template_version WHERE workspace_id = ? ORDER BY id LIMIT 1", owner.workspaceId());
+        recordAPreparedCopyAndAKeptSpotAsOwner(owner, original, workingCopy);
+        attachSource(owner, doomed, original);
+        String originalKey = stringAsOwner("SELECT blob_key FROM artifact WHERE id = ?", original);
+
+        long deletionId = trash(owner, doomed);
+        mockMvc.perform(post(deletionsPath(owner) + "/" + deletionId + "/purge").cookie(owner.session()).with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("PURGED"));
+
+        assertThat(countAsOwner("SELECT count(*) FROM artifact WHERE id = ?", original)).isEqualTo(1);
+        assertThat(countAsOwner("SELECT count(*) FROM artifact_derivation WHERE source_artifact_id = ?", original)).isEqualTo(1);
+        assertThat(stringsAsOwner("SELECT object_key FROM deletion_blob_task WHERE deletion_request_id = ?", deletionId))
+                .doesNotContain(originalKey);
+        assertThat(blobStore.sizeOf(originalKey)).isPresent();
+    }
+
+    /**
      * A source can be attached to the workspace and cited by a document's
      * evidence without ever being linked to that document. It is still that
      * document's source, and "delete forever" must not leave the person's
@@ -724,6 +753,7 @@ class DeletionIntegrationTest {
                         .content("{\"sourceArtifactId\":" + sourceArtifactId + "}"))
                 .andExpect(status().isAccepted());
         trash(owner, createDocument(owner, "Already in the trash"));
+        recordAPreparedCopyAndAKeptSpotAsOwner(owner, sourceArtifactId, uploadAndFinalize(owner, "A copy made from the notes."));
         List<String> everyKey = stringsAsOwner("SELECT blob_key FROM artifact WHERE workspace_id = ?", owner.workspaceId());
         assertThat(everyKey).hasSizeGreaterThan(2);
 
@@ -971,6 +1001,31 @@ class DeletionIntegrationTest {
             try (ResultSet rs = statement.executeQuery()) {
                 rs.next();
                 return rs.getLong(1);
+            }
+        }
+    }
+
+    /** A working copy made from an upload, and a kept spot on one of the workspace's templates, as the upload step and a review leave them. */
+    private static void recordAPreparedCopyAndAKeptSpotAsOwner(Owner owner, long sourceArtifactId, long outputArtifactId) throws SQLException {
+        try (Connection connection = ownerConnection()) {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO artifact_derivation (workspace_id, source_artifact_id, output_artifact_id, kind, recipe_version,
+                                                     source_format, spot_naming, created_by_user_id)
+                    VALUES (?, ?, ?, 'PREPARED', 'fillable-form-v1/fixture', 'DOCX', 'RULES', ?)
+                    """)) {
+                statement.setLong(1, owner.workspaceId());
+                statement.setLong(2, sourceArtifactId);
+                statement.setLong(3, outputArtifactId);
+                statement.setLong(4, owner.userId());
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO fill_spot_review (workspace_id, template_id, field_id, decision, reviewed_by_user_id)
+                    SELECT t.workspace_id, t.id, 'meeting.title', 'KEPT', ? FROM template t WHERE t.workspace_id = ? ORDER BY t.id LIMIT 1
+                    """)) {
+                statement.setLong(1, owner.userId());
+                statement.setLong(2, owner.workspaceId());
+                assertThat(statement.executeUpdate()).isEqualTo(1);
             }
         }
     }
