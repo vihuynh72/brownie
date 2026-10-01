@@ -273,11 +273,10 @@ async function activateVersion(): Promise<void> {
 
     <template v-else-if="stage === 'activated'">
       <p>"{{ displayName }}" is now active and ready to use.</p>
+      <!-- A template starts a document from its own place under My Templates, beside this page and every other one. -->
+      <p>To start a document from it, choose it under My Templates.</p>
       <div class="wizard-actions">
-        <RouterLink class="button button--primary" :to="{ path: '/documents/new', query: { templateId: templateId ?? undefined } }">
-          Create a document from it
-        </RouterLink>
-        <RouterLink class="button" to="/">Back to your documents</RouterLink>
+        <RouterLink class="button button--primary" to="/">Back to your documents</RouterLink>
       </div>
     </template>
   </section>

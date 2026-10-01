@@ -43,9 +43,9 @@ describe('SignInView', () => {
 
   /** Being interrupted on the way somewhere should say where, so the page does not read like an unprompted demand. */
   it('names what the sign-in is for when it interrupted something', async () => {
-    const wrapper = await mountAt('/signin?next=%2Fdocuments%2Fnew')
+    const wrapper = await mountAt('/signin?next=%2F')
 
-    expect(wrapper.text()).toContain('to upload your documents')
+    expect(wrapper.text()).toContain('You need to be signed in to upload your documents and start a new one.')
   })
 
   it('tells someone who just deleted their workspace that it worked, before anything else', async () => {

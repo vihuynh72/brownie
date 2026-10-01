@@ -15,7 +15,8 @@ const next = computed(() => (isInAppPath(route.query.next) ? route.query.next : 
  * general one rather than guessing at a description.
  */
 const PURPOSE: Record<string, string> = {
-  '/documents/new': 'to upload your documents and start a new one',
+  // Home's upload button sends a signed-out visitor here, and back to Home to choose the file.
+  '/': 'to upload your documents and start a new one',
   '/templates/new': 'to teach Brownie one of your templates',
   '/trash': 'to open your trash bin',
   '/your-data': 'to see what Brownie keeps and for how long',

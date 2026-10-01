@@ -46,7 +46,6 @@ async function mountWithRouter() {
     history: createWebHistory(),
     routes: [
       { path: '/', component: { template: '<div />' } },
-      { path: '/documents/new', component: { template: '<div />' } },
       { path: '/templates/new', component: NewTemplateView },
     ],
   })
@@ -275,6 +274,9 @@ describe('NewTemplateView', () => {
 
     expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
     expect(wrapper.text()).toContain('is now active and ready to use')
+    // Documents start from the template's own place in the sidebar; there is no separate page to send the person to.
+    expect(wrapper.text()).toContain('To start a document from it, choose it under My Templates.')
+    expect(wrapper.findAll('a').map((link) => link.attributes('href'))).toEqual(['/'])
   })
 
   it('shows the itemized validation problems when proposing a rule is rejected as RULE_VALIDATION_FAILED', async () => {
