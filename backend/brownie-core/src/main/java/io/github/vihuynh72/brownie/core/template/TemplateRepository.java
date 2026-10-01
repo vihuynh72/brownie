@@ -1,5 +1,7 @@
 package io.github.vihuynh72.brownie.core.template;
 
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -10,8 +12,28 @@ import java.util.Optional;
  */
 public interface TemplateRepository {
 
-    /** Creates the template and its first draft version (version 1, empty field definitions) together. */
-    Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId);
+    /**
+     * Creates the template and its first draft version (version 1, empty
+     * field definitions) together. {@code preparationNotices} is what the
+     * person was told when the file was made ready to fill, kept with the
+     * draft, or null when there is none to keep.
+     */
+    Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                         List<PreparationNotice> preparationNotices);
+
+    /** {@link #createDraft}, for a PDF template: its first draft is pinned to the PDF's form reading instead of a Word graph. */
+    Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                            List<PreparationNotice> preparationNotices);
+
+    /** {@link #createDraft} with no notices kept. */
+    default Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        return createDraft(workspaceId, userId, displayName, sourceArtifactId, extractionVersionId, null);
+    }
+
+    /** {@link #createPdfDraft} with no notices kept. */
+    default Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId) {
+        return createPdfDraft(workspaceId, userId, displayName, sourceArtifactId, pdfFormExtractionId, null);
+    }
 
     Optional<Template> find(long workspaceId, long userId, long templateId);
 
