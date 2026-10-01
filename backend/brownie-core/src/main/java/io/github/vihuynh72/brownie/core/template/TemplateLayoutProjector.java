@@ -6,6 +6,8 @@ import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.ResolvedStyle;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
+import io.github.vihuynh72.brownie.core.prepare.DocxAnchor;
+import io.github.vihuynh72.brownie.core.text.CodePoints;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -35,6 +37,14 @@ import java.util.regex.Pattern;
  * filler copies per item; otherwise it is the first top-level body paragraph
  * holding a control for the first repeated field.</li>
  * </ul>
+ *
+ * <p>The same rules say where a person can add a fill spot: a paragraph is
+ * anchorable only in the body the filler writes into, outside the repeating
+ * row or paragraph, and not when it is a content control around whole
+ * paragraphs ({@code body} ids), which the filler never reaches inside.
+ * Text in an anchorable paragraph carries its offset into the paragraph's
+ * anchor text ({@link ParagraphAnchorText}), and pieces of text are joined
+ * only when the joined text still maps to one run of offsets.
  */
 public final class TemplateLayoutProjector {
 
@@ -57,6 +67,7 @@ public final class TemplateLayoutProjector {
     private final long templateId;
     private final long versionId;
     private final Map<String, String> fieldIdByTag = new LinkedHashMap<>();
+    private final Map<String, FieldDefinition> fieldById = new LinkedHashMap<>();
     private final Set<String> placedFieldIds = new HashSet<>();
     private String repeatingRowNodeId;
     private String repeatingParagraphNodeId;
@@ -78,6 +89,7 @@ public final class TemplateLayoutProjector {
 
     private TemplateLayout run(DocxStructuralGraph graph, List<FieldDefinition> fieldDefinitions) {
         for (FieldDefinition field : fieldDefinitions) {
+            fieldById.putIfAbsent(field.fieldId(), field);
             if (field.binding() instanceof FieldBindingTarget.ContentControlTag(String tag)) {
                 // Two fields naming one tag would both be written into the same control; the page shows it once,
                 // for the first of them, and the other is reported as having no place of its own.
@@ -97,7 +109,7 @@ public final class TemplateLayoutProjector {
             // the second would be drawn as plain template text.
             boolean fillable = part.kind() == DocumentPartKind.MAIN_DOCUMENT && !mainSeen;
             mainSeen |= part.kind() == DocumentPartKind.MAIN_DOCUMENT;
-            parts.add(new TemplateLayout.Part(part.kind(), blocksOf(part.root().children(), fillable, true)));
+            parts.add(new TemplateLayout.Part(part.kind(), blocksOf(part.root().children(), fillable, true, false)));
         }
 
         List<String> unplaced = fieldDefinitions.stream()
@@ -148,12 +160,16 @@ public final class TemplateLayoutProjector {
                         child.kind() == StructuralNodeKind.CONTENT_CONTROL && tag.equals(child.contentControlTag()));
     }
 
-    /** {@code topLevel} is true only for a part's own body, where the filler looks for a repeated paragraph. */
-    private List<TemplateLayout.Block> blocksOf(List<StructuralNode> nodes, boolean fillable, boolean topLevel) {
+    /**
+     * {@code topLevel} is true only for a part's own body, where the filler
+     * looks for a repeated paragraph; {@code inRepeatingRow} is true inside
+     * the row the filler copies per item.
+     */
+    private List<TemplateLayout.Block> blocksOf(List<StructuralNode> nodes, boolean fillable, boolean topLevel, boolean inRepeatingRow) {
         List<TemplateLayout.Block> blocks = new ArrayList<>();
         for (StructuralNode node : nodes) {
             if (node.kind() == StructuralNodeKind.PARAGRAPH) {
-                blocks.add(paragraphOf(node, fillable, topLevel));
+                blocks.add(paragraphOf(node, fillable, topLevel, inRepeatingRow));
             } else if (node.kind() == StructuralNodeKind.TABLE) {
                 blocks.add(tableOf(node, fillable));
             }
@@ -164,21 +180,27 @@ public final class TemplateLayoutProjector {
     private TemplateLayout.Table tableOf(StructuralNode table, boolean fillable) {
         List<TemplateLayout.Row> rows = new ArrayList<>();
         for (StructuralNode row : table.children()) {
+            boolean repeating = fillable && row.nodeId().equals(repeatingRowNodeId);
             List<TemplateLayout.Cell> cells = new ArrayList<>();
             for (StructuralNode cell : row.children()) {
-                cells.add(new TemplateLayout.Cell(blocksOf(cell.children(), fillable, false)));
+                cells.add(new TemplateLayout.Cell(blocksOf(cell.children(), fillable, false, repeating)));
             }
-            boolean repeating = fillable && row.nodeId().equals(repeatingRowNodeId);
             rows.add(new TemplateLayout.Row(repeating, cells));
         }
         return new TemplateLayout.Table(rows);
     }
 
-    private TemplateLayout.Paragraph paragraphOf(StructuralNode paragraph, boolean fillable, boolean topLevel) {
+    private TemplateLayout.Paragraph paragraphOf(StructuralNode paragraph, boolean fillable, boolean topLevel, boolean inRepeatingRow) {
+        boolean repeating = fillable && topLevel && paragraph.nodeId().equals(repeatingParagraphNodeId);
+        boolean anchorable = fillable && !repeating && !inRepeatingRow && !paragraph.nodeId().startsWith("body");
         List<TemplateLayout.Inline> inlines = new ArrayList<>();
+        int anchorOffset = 0;
         for (StructuralNode child : paragraph.children()) {
             switch (child.kind()) {
-                case RUN -> appendText(inlines, child);
+                case RUN -> {
+                    appendText(inlines, child, anchorable ? anchorOffset : null, null);
+                    anchorOffset += child.text() == null ? 0 : CodePoints.length(child.text());
+                }
                 case IMAGE -> inlines.add(new TemplateLayout.Image());
                 case CONTENT_CONTROL -> {
                     String fieldId = fillable && child.contentControlTag() != null ? fieldIdByTag.get(child.contentControlTag()) : null;
@@ -189,7 +211,7 @@ public final class TemplateLayoutProjector {
                             if (inner.kind() == StructuralNodeKind.IMAGE) {
                                 inlines.add(new TemplateLayout.Image());
                             } else if (inner.kind() == StructuralNodeKind.RUN) {
-                                appendText(inlines, inner);
+                                appendText(inlines, inner, null, anchorable ? child.nodeId() : null);
                             }
                         }
                     }
@@ -200,8 +222,9 @@ public final class TemplateLayoutProjector {
             }
         }
         ResolvedStyle style = paragraph.style();
-        boolean repeating = fillable && topLevel && paragraph.nodeId().equals(repeatingParagraphNodeId);
-        return new TemplateLayout.Paragraph(alignmentOf(style), listLevelOf(style), repeating, inlines);
+        return new TemplateLayout.Paragraph(
+                alignmentOf(style), listLevelOf(style), repeating, inlines, paragraph.nodeId(), anchorable,
+                anchorable ? DocxAnchor.hashOf(ParagraphAnchorText.of(paragraph)) : null);
     }
 
     private TemplateLayout.FillSpot fillSpotOf(String fieldId, StructuralNode control) {
@@ -217,23 +240,51 @@ public final class TemplateLayoutProjector {
         StructuralNode first = control.children().isEmpty() ? null : control.children().getFirst();
         TemplateLayout.Style style = first != null && first.kind() == StructuralNodeKind.RUN ? styleOf(first.style()) : null;
         placedFieldIds.add(fieldId);
-        return new TemplateLayout.FillSpot(fieldId, trimmed.isEmpty() ? null : trimmed, style);
+        FieldDefinition field = fieldById.get(fieldId);
+        return new TemplateLayout.FillSpot(
+                fieldId, isOnlyABlank(trimmed) ? null : trimmed, style, control.nodeId(), field.effectiveOrigin(), field.displayLabel());
     }
 
-    /** Adjacent runs set in the same style read as one piece of text, so they are joined; a run with no text adds nothing. */
-    private void appendText(List<TemplateLayout.Inline> inlines, StructuralNode run) {
+    /**
+     * A placeholder drawn as a line to write on ({@code ______}, {@code
+     * ....}, dashes, spaces, tabs) says nothing about what goes there, so
+     * the spot is given none, and the page names the empty spot by its
+     * field instead.
+     */
+    static boolean isOnlyABlank(String placeholder) {
+        return placeholder.chars().allMatch(c -> c == '_' || c == '.' || c == '\u2026' || c == '-'
+                || Character.isWhitespace(c) || Character.isSpaceChar(c));
+    }
+
+    /**
+     * Adjacent runs set in the same style read as one piece of text, so they
+     * are joined; a run with no text adds nothing. Two pieces are joined only
+     * when the result can still be pointed into: both from the paragraph's
+     * own runs with the second starting where the first ends, or both from
+     * the same control, or both from a paragraph that cannot be pointed at.
+     */
+    private void appendText(List<TemplateLayout.Inline> inlines, StructuralNode run, Integer anchorStart, String controlNodeId) {
         String text = run.text();
         if (text == null || text.isEmpty()) {
             return;
         }
         countText(text.length());
         TemplateLayout.Style style = styleOf(run.style());
-        if (!inlines.isEmpty() && inlines.getLast() instanceof TemplateLayout.Text(String previousText, TemplateLayout.Style previousStyle)
-                && Objects.equals(previousStyle, style)) {
-            inlines.set(inlines.size() - 1, new TemplateLayout.Text(previousText + text, style));
+        if (!inlines.isEmpty() && inlines.getLast() instanceof TemplateLayout.Text previous
+                && Objects.equals(previous.style(), style)
+                && Objects.equals(previous.controlNodeId(), controlNodeId)
+                && contiguous(previous, anchorStart)) {
+            inlines.set(inlines.size() - 1, new TemplateLayout.Text(previous.text() + text, style, previous.anchorStart(), controlNodeId));
             return;
         }
-        inlines.add(new TemplateLayout.Text(text, style));
+        inlines.add(new TemplateLayout.Text(text, style, anchorStart, controlNodeId));
+    }
+
+    private static boolean contiguous(TemplateLayout.Text previous, Integer anchorStart) {
+        if (previous.anchorStart() == null || anchorStart == null) {
+            return previous.anchorStart() == null && anchorStart == null;
+        }
+        return previous.anchorStart() + CodePoints.length(previous.text()) == anchorStart;
     }
 
     private void countText(int characters) {
