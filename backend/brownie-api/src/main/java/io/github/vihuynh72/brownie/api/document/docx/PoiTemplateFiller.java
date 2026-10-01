@@ -6,6 +6,7 @@ import io.github.vihuynh72.brownie.core.compile.TemplateFillProblemReason;
 import io.github.vihuynh72.brownie.core.compile.TemplateFiller;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
+import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
@@ -18,6 +19,7 @@ import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.apache.xmlbeans.XmlCursor;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTP;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTR;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRPr;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRow;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtContentRun;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtRun;
@@ -35,6 +37,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Fills one template's original DOCX bytes using only its {@link
@@ -49,17 +53,34 @@ import java.util.Map;
  * proved, generalized here to however many repeated fields one template
  * version actually declares rather than a fixed three-column shape.
  *
- * <p>An entirely empty repeated group renders one explanatory line instead
- * of an empty region. This is the same fixed default the built-in
- * templates' own qualification artifacts were already generated and
- * checked against (see {@code BuiltInMinutesTemplateRegistry}); it is not
- * yet a configurable rule because no {@code RuleRevision} exists for a
- * built-in template today. A future missing/empty-value rule replaces this
- * constant, not the structural cloning logic around it.
+ * <p>An entirely empty repeated group is its prototype repeated zero times:
+ * the row or paragraph is removed, and with it everything that only ever
+ * belonged to one item. A table whose one row is the prototype keeps that
+ * row, emptied of the group's controls, because a table cannot be left
+ * with no rows at all. The built-in templates are the one exception: their
+ * empty group says "No action items recorded." in one line instead, the
+ * fixed default their own qualification artifacts were generated and
+ * checked against (see {@code BuiltInMinutesTemplateRegistry}). That line
+ * names action items, so it reads right only under those templates' own
+ * heading and is never written into any other form. A group is recognized
+ * as the built-in one by its repeated field IDs being exactly a built-in
+ * template's own -- the field definitions every caller already hands this
+ * filler, so no caller has to say which template it is filling. It is a
+ * fixed line rather than a configurable rule because no {@code
+ * RuleRevision} exists for a built-in template.
  */
 public final class PoiTemplateFiller implements TemplateFiller {
 
     private static final String EMPTY_REPEATED_GROUP_TEXT = "No action items recorded.";
+    private static final String PLACEHOLDER_TEXT_STYLE = "PlaceholderText";
+
+    /** Each built-in template's repeated field IDs: the groups that say {@link #EMPTY_REPEATED_GROUP_TEXT} when empty. */
+    private static final Set<Set<String>> BUILT_IN_REPEATED_GROUPS = BuiltInMinutesTemplateRegistry.all().stream()
+            .map(template -> template.fields().stream()
+                    .filter(field -> field.cardinality() == FieldCardinality.REPEATED)
+                    .map(FieldDefinition::fieldId)
+                    .collect(Collectors.toUnmodifiableSet()))
+            .collect(Collectors.toUnmodifiableSet());
     private static final DateTimeFormatter LONG_DATE = DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.US);
 
     @Override
@@ -143,12 +164,14 @@ public final class PoiTemplateFiller implements TemplateFiller {
             }
         }
 
+        boolean saysWhenEmpty = BUILT_IN_REPEATED_GROUPS.contains(
+                repeatedFields.stream().map(FieldDefinition::fieldId).collect(Collectors.toSet()));
         XWPFTable table = document.getTables().isEmpty() ? null : document.getTables().get(0);
         if (table != null && groupTagsResolveInTable(table, repeatedFields)) {
-            bindTableRows(table, repeatedFields, valuesByField, itemCount);
+            bindTableRows(table, repeatedFields, valuesByField, itemCount, saysWhenEmpty);
         } else {
             XWPFParagraph prototype = findPrototypeParagraph(document, repeatedFields);
-            bindParagraphs(document, prototype, repeatedFields, valuesByField, itemCount);
+            bindParagraphs(document, prototype, repeatedFields, valuesByField, itemCount, saysWhenEmpty);
         }
 
         Map<String, List<String>> intended = new LinkedHashMap<>();
@@ -172,12 +195,23 @@ public final class PoiTemplateFiller implements TemplateFiller {
     }
 
     private void bindTableRows(
-            XWPFTable table, List<FieldDefinition> repeatedFields, Map<String, List<String>> valuesByField, int itemCount) {
+            XWPFTable table,
+            List<FieldDefinition> repeatedFields,
+            Map<String, List<String>> valuesByField,
+            int itemCount,
+            boolean saysWhenEmpty) {
         int prototypeIndex = table.getNumberOfRows() - 1;
         XWPFTableRow prototype = table.getRow(prototypeIndex);
 
         if (itemCount == 0) {
-            explainEmptyGroup(prototype.getTableCells().getFirst().getParagraphs().getFirst());
+            if (saysWhenEmpty) {
+                explainEmptyGroup(prototype.getTableCells().getFirst().getParagraphs().getFirst(), repeatedFields);
+            } else if (table.getNumberOfRows() > 1 && rowHoldsOnlyGroupControls(prototype, repeatedFields)) {
+                // The row goes only when nothing else lives in it: a single value filled into the same row stays.
+                table.removeRow(prototypeIndex);
+                return;
+            }
+            // A row that stays keeps none of the group's controls, so none of them is left showing its placeholder.
             for (XWPFTableCell cell : prototype.getTableCells()) {
                 for (XWPFParagraph paragraph : cell.getParagraphs()) {
                     removeGroupControls(paragraph, repeatedFields);
@@ -216,10 +250,17 @@ public final class PoiTemplateFiller implements TemplateFiller {
             XWPFParagraph prototype,
             List<FieldDefinition> repeatedFields,
             Map<String, List<String>> valuesByField,
-            int itemCount) {
+            int itemCount,
+            boolean saysWhenEmpty) {
         if (itemCount == 0) {
-            explainEmptyGroup(prototype);
-            removeGroupControls(prototype, repeatedFields);
+            if (saysWhenEmpty) {
+                explainEmptyGroup(prototype, repeatedFields);
+            } else if (holdsOnlyGroupControls(prototype, repeatedFields) && !carriesSectionBreak(prototype)) {
+                document.removeBodyElement(document.getPosOfParagraph(prototype));
+            } else {
+                // A single value filled into the same paragraph, or the section break the paragraph ends, stays.
+                removeGroupControls(prototype, repeatedFields);
+            }
             return;
         }
 
@@ -257,20 +298,36 @@ public final class PoiTemplateFiller implements TemplateFiller {
         for (FieldDefinition field : repeatedFields) {
             String tag = tagOf(field);
             for (CTSdtRun sdt : paragraph.getCTP().getSdtArray()) {
-                if (!sdt.getSdtPr().getTag().getVal().equals(tag)) {
+                if (!tag.equals(controlTagOf(sdt))) {
                     continue;
                 }
                 String rewrittenTag = tag + "#" + index;
                 sdt.getSdtPr().getTag().setVal(rewrittenTag);
-                sdt.getSdtPr().getAlias().setVal(rewrittenTag);
+                // A control Word shows by its title keeps it in step; one without a title is left without one.
+                if (sdt.getSdtPr().isSetAlias()) {
+                    sdt.getSdtPr().getAlias().setVal(rewrittenTag);
+                }
                 setContentControlText(sdt, valuesByField.get(field.fieldId()).get(index));
             }
         }
     }
 
-    private void explainEmptyGroup(XWPFParagraph paragraph) {
+    /**
+     * The line takes the paragraph: its runs, the group's own controls and any untagged control go, so the
+     * line never reads straight on from whatever a control Brownie does not fill still shows. A control
+     * bound to another field stays, with the value already written into it.
+     */
+    private void explainEmptyGroup(XWPFParagraph paragraph, List<FieldDefinition> repeatedFields) {
         while (!paragraph.getRuns().isEmpty()) {
             paragraph.removeRun(0);
+        }
+        List<String> tags = repeatedFields.stream().map(this::tagOf).toList();
+        CTP ctp = paragraph.getCTP();
+        for (int i = ctp.sizeOfSdtArray() - 1; i >= 0; i--) {
+            String tag = controlTagOf(ctp.getSdtArray(i));
+            if (tag == null || tags.contains(tag)) {
+                ctp.removeSdt(i);
+            }
         }
         if (paragraph.getCTP().isSetPPr() && paragraph.getCTP().getPPr().isSetNumPr()) {
             paragraph.getCTP().getPPr().unsetNumPr();
@@ -278,11 +335,39 @@ public final class PoiTemplateFiller implements TemplateFiller {
         paragraph.createRun().setText(EMPTY_REPEATED_GROUP_TEXT);
     }
 
+    /** Whether every tagged control in the paragraph belongs to the group: nothing another field fills would go with it. */
+    private boolean holdsOnlyGroupControls(XWPFParagraph paragraph, List<FieldDefinition> repeatedFields) {
+        List<String> tags = repeatedFields.stream().map(this::tagOf).toList();
+        for (CTSdtRun sdt : paragraph.getCTP().getSdtArray()) {
+            String tag = controlTagOf(sdt);
+            if (tag != null && !tags.contains(tag)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean rowHoldsOnlyGroupControls(XWPFTableRow row, List<FieldDefinition> repeatedFields) {
+        for (XWPFTableCell cell : row.getTableCells()) {
+            for (XWPFParagraph paragraph : cell.getParagraphs()) {
+                if (!holdsOnlyGroupControls(paragraph, repeatedFields)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /** A paragraph that ends a section carries its page settings; removing it would merge two sections. */
+    private static boolean carriesSectionBreak(XWPFParagraph paragraph) {
+        return paragraph.getCTP().isSetPPr() && paragraph.getCTP().getPPr().isSetSectPr();
+    }
+
     private void removeGroupControls(XWPFParagraph paragraph, List<FieldDefinition> repeatedFields) {
         List<String> tags = repeatedFields.stream().map(this::tagOf).toList();
         CTP ctp = paragraph.getCTP();
         for (int i = ctp.sizeOfSdtArray() - 1; i >= 0; i--) {
-            if (tags.contains(ctp.getSdtArray(i).getSdtPr().getTag().getVal())) {
+            if (tags.contains(controlTagOf(ctp.getSdtArray(i)))) {
                 ctp.removeSdt(i);
             }
         }
@@ -290,11 +375,19 @@ public final class PoiTemplateFiller implements TemplateFiller {
 
     private boolean hasTag(XWPFParagraph paragraph, String tag) {
         for (CTSdtRun sdt : paragraph.getCTP().getSdtArray()) {
-            if (sdt.getSdtPr().getTag().getVal().equals(tag)) {
+            if (tag.equals(controlTagOf(sdt))) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * A control's tag, or null for one without: a form can hold controls nobody tagged (Word's own
+     * date pickers, a check box), which no field is bound to and which are left exactly as they are.
+     */
+    private static String controlTagOf(CTSdtRun sdt) {
+        return sdt.isSetSdtPr() && sdt.getSdtPr().isSetTag() ? sdt.getSdtPr().getTag().getVal() : null;
     }
 
     private String tagOf(FieldDefinition field) {
@@ -310,7 +403,7 @@ public final class PoiTemplateFiller implements TemplateFiller {
         List<CTSdtRun> matches = new ArrayList<>();
         for (XWPFParagraph paragraph : allParagraphs(document)) {
             for (CTSdtRun sdt : paragraph.getCTP().getSdtArray()) {
-                if (sdt.getSdtPr().getTag().getVal().equals(tag)) {
+                if (tag.equals(controlTagOf(sdt))) {
                     matches.add(sdt);
                 }
             }
@@ -325,23 +418,47 @@ public final class PoiTemplateFiller implements TemplateFiller {
     }
 
     private void setContentControlText(CTSdtRun sdt, String text) {
-        CTSdtContentRun sdtContent = sdt.getSdtContent();
+        // A control can be saved with no content element at all; it gets one rather than stopping the fill.
+        CTSdtContentRun sdtContent = sdt.isSetSdtContent() ? sdt.getSdtContent() : sdt.addNewSdtContent();
+        CTR kept;
         if (sdtContent.sizeOfRArray() == 0) {
-            CTR run = sdtContent.addNewR();
-            CTText t = run.addNewT();
-            t.setStringValue(text);
-            preserveBoundarySpaceIfNeeded(t, text);
-            return;
+            kept = sdtContent.addNewR();
+        } else {
+            kept = sdtContent.getRArray(0);
+            while (kept.sizeOfTArray() > 0) {
+                kept.removeT(0);
+            }
         }
-        CTR first = sdtContent.getRArray(0);
-        while (first.sizeOfTArray() > 0) {
-            first.removeT(0);
-        }
-        CTText t = first.addNewT();
+        CTText t = kept.addNewT();
         t.setStringValue(text);
         preserveBoundarySpaceIfNeeded(t, text);
         for (int i = sdtContent.sizeOfRArray() - 1; i >= 1; i--) {
             sdtContent.removeR(i);
+        }
+        if (!text.isEmpty()) {
+            clearPlaceholderState(sdt, kept);
+        }
+    }
+
+    /**
+     * A control Word saved still showing its prompt ("Click or tap here to
+     * enter text.") is marked as showing its placeholder, and the prompt's
+     * run is styled Placeholder Text. Left on a written value, both keep
+     * Word treating that value as the prompt: shown grey, and selected
+     * whole on the first click so typing replaces it. A run style of any
+     * other name is the form's own formatting and is kept.
+     */
+    private static void clearPlaceholderState(CTSdtRun sdt, CTR kept) {
+        if (sdt.isSetSdtPr() && sdt.getSdtPr().isSetShowingPlcHdr()) {
+            sdt.getSdtPr().unsetShowingPlcHdr();
+        }
+        if (kept.isSetRPr()) {
+            CTRPr runProperties = kept.getRPr();
+            for (int i = runProperties.sizeOfRStyleArray() - 1; i >= 0; i--) {
+                if (PLACEHOLDER_TEXT_STYLE.equals(runProperties.getRStyleArray(i).getVal())) {
+                    runProperties.removeRStyle(i);
+                }
+            }
         }
     }
 
