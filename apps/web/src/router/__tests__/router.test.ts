@@ -39,7 +39,7 @@ describe('router', () => {
    * so following one while signed out lands on the sign-in page rather
    * than on a screen whose first request comes back 401.
    */
-  it.each(['/documents/12', '/templates/new', '/trash', '/your-data', '/chat', '/connections'])(
+  it.each(['/documents/12', '/trash', '/your-data', '/chat', '/connections'])(
     'sends a signed-out visitor from %s to the sign-in page, carrying where they were going',
     async (path) => {
       useSessionStore().status = 'anonymous'
@@ -52,11 +52,11 @@ describe('router', () => {
   )
 
   /**
-   * Documents start from Home or from a template in the sidebar; the page that used to create them is
-   * gone, and a bookmark to it, with or without the template it carried, must not land on a document
-   * numbered "new" or on the not-found page.
+   * Documents start from Home or from a template in the sidebar, and templates from an uploaded form; the
+   * pages that used to create them are gone, and a bookmark to one, with or without what it carried, must
+   * not land on a document numbered "new" or on the not-found page.
    */
-  it.each(['/documents/new', '/documents/new?templateId=3'])('sends %s home, signed in or not', async (path) => {
+  it.each(['/documents/new', '/documents/new?templateId=3', '/templates/new'])('sends %s home, signed in or not', async (path) => {
     const session = useSessionStore()
     for (const signedIn of [false, true]) {
       session.status = signedIn ? 'authenticated' : 'anonymous'
