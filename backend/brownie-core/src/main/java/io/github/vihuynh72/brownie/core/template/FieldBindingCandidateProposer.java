@@ -104,9 +104,11 @@ public final class FieldBindingCandidateProposer {
      * Observable naming convention, not a content inspection -- the same
      * kind of surface-level signal a font family or a package relationship
      * already is elsewhere in this codebase, deliberately not an attempt to
-     * read the field's actual meaning from surrounding label text.
+     * read the field's actual meaning from surrounding label text. Public so
+     * a tag an uploaded form already carries is typed the same way when the
+     * upload step keeps it.
      */
-    private static FieldType inferType(String tag) {
+    public static FieldType inferType(String tag) {
         for (String word : WORD_BREAK.split(tag)) {
             if (word.toLowerCase(Locale.ROOT).equals("date")) {
                 return FieldType.DATE;
