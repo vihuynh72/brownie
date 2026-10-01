@@ -2,9 +2,11 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
-import { readDocumentHandoff } from '@/router/handoff'
+import { forgetFormNotes, readDocumentHandoff } from '@/router/handoff'
 // PDF.js is the largest thing this page can load; it is fetched only once the print preview is shown.
 const PdfPreview = defineAsyncComponent(() => import('@/components/PdfPreview.vue'))
+// A PDF form's page view draws its pages with PDF.js too, so it is loaded only for a PDF form.
+const PdfFormPage = defineAsyncComponent(() => import('@/components/workspace/PdfFormPage.vue'))
 import {
   ApiRequestError,
   acceptPatchProposal,
@@ -14,6 +16,7 @@ import {
   artifactPreviewUrl,
   attachDocumentSource,
   cancelJob,
+  changeFillSpots,
   compileRevision,
   completeUpload,
   executeAssist,
@@ -43,6 +46,7 @@ import {
   startExtraction,
   uploadArtifactContent,
   type ArtifactResponse,
+  type AssistPageAnchor,
   type CalendarImportResponse,
   type DocumentResponse,
   type DocumentRevisionResponse,
@@ -55,6 +59,8 @@ import {
   type FieldStateResponse,
   type PatchAcceptResponse,
   type PatchProposalResponse,
+  type PdfPageAnchor,
+  type PreparationNoticeResponse,
   type QuestionResponse,
   type ReviewDecision,
   type RuleResponse,
@@ -64,13 +70,31 @@ import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { describePayload } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, originLink, originLinkLabel, originSentence } from '@/connections/words'
-import { describeStyle, dominantFillSpotStyle, fieldStateWords, fillSpotStyle, formatDateLikeExport, labelFor } from '@/workspace/layout'
+import {
+  describeStyle,
+  dominantFillSpotStyle,
+  fieldLabel,
+  fieldStateWords,
+  fillSpotStyle,
+  formatDateLikeExport,
+  labelFor,
+  type EditableField,
+} from '@/workspace/layout'
+import { useFoundSpots } from '@/workspace/foundSpots'
+import { formNoteSentences } from '@/upload/fillableCopyWords'
+import { anchorableLines, lineWords, placeOnLine, toDocxAnchor, type PagePoint } from '@/workspace/anchors'
+import { useFillSpotChanges, type SpotUndo } from '@/workspace/fillSpotChanges'
+import { addedWords, removedWords, renamedWords, spotRefusal, undoneWords } from '@/workspace/fillSpotWords'
+import { spotChangeFailure, type PdfSpotRequest, type PdfSpotResult } from '@/workspace/pdfPage'
 import AppIcon from '@/components/AppIcon.vue'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 import ChoiceList from '@/components/workspace/ChoiceList.vue'
 import DocumentPage from '@/components/workspace/DocumentPage.vue'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
+import PlaceSpotDialog, { type PlaceSpotRefusal, type PlaceSpotRequest } from '@/components/workspace/PlaceSpotDialog.vue'
+import RemoveSpotDialog from '@/components/workspace/RemoveSpotDialog.vue'
+import RenameSpotDialog from '@/components/workspace/RenameSpotDialog.vue'
 import VersionHistoryDialog from '@/components/workspace/VersionHistoryDialog.vue'
 
 const props = defineProps<{ documentId: number }>()
@@ -132,7 +156,7 @@ const docView = ref<'page' | 'print'>('page')
 //
 // The rules that apply to this document are the accepted ones on its own template version;
 // proposed and rejected ones are counted, not listed, since deciding them is the template's
-// business (the teaching screen), not the document's.
+// business, not the document's.
 const rules = ref<RuleResponse[]>([])
 const rulesLoadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const rulesInForce = computed(() =>
@@ -141,6 +165,38 @@ const rulesInForce = computed(() =>
 const rulesUndecided = computed(() =>
   rules.value.filter((rule) => rule.templateVersionId === document.value?.templateVersionId && rule.status === 'PROPOSED').length,
 )
+
+// A short window makes the Rules card scroll on its own. While more of it is below, a fade and a "More" hint at
+// its foot say so; the card takes focus, so the arrow keys scroll it, and the hint scrolls it for a pointer.
+const rulesCardRef = ref<HTMLElement | null>(null)
+const rulesCardBodyRef = ref<HTMLElement | null>(null)
+const rulesCardMore = ref(false)
+function measureRulesCard(): void {
+  const card = rulesCardRef.value
+  rulesCardMore.value = card !== null && card.scrollHeight - card.scrollTop - card.clientHeight > 4
+}
+function scrollRulesCard(): void {
+  const card = rulesCardRef.value
+  if (!card || typeof card.scrollBy !== 'function') return
+  const still = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  card.scrollBy({ top: card.clientHeight * 0.8, behavior: still ? 'auto' : 'smooth' })
+}
+let rulesCardObserver: ResizeObserver | null = null
+watch(
+  rulesCardRef,
+  (card) => {
+    rulesCardObserver?.disconnect()
+    rulesCardObserver = null
+    measureRulesCard()
+    if (!card || typeof ResizeObserver === 'undefined') return
+    // The card changes size with the window; what is in it changes with the rules, the notes and the spot chosen.
+    rulesCardObserver = new ResizeObserver(() => measureRulesCard())
+    rulesCardObserver.observe(card)
+    if (rulesCardBodyRef.value) rulesCardObserver.observe(rulesCardBodyRef.value)
+  },
+  { flush: 'post' },
+)
+onBeforeUnmount(() => rulesCardObserver?.disconnect())
 
 /** Field ids an accepted rule requires a value for, so the page can say so before a check does. */
 const ruleRequiredFieldIds = computed(() => {
@@ -174,6 +230,8 @@ const layout = ref<TemplateLayoutResponse | null>(null)
 const layoutState = ref<'loading' | 'ready' | 'unavailable'>('loading')
 const layoutProblem = ref<string | null>(null)
 const layoutLoadedForVersionId = ref<number | null>(null)
+/** The layout being read for a new version, so a change to the fill spots can wait for the page it makes. */
+let layoutRequest: Promise<void> | null = null
 
 /**
  * Only a drawn layout, or the server's own answer that this template cannot be drawn, is final for
@@ -211,6 +269,43 @@ const attachedSources = ref<DocumentSourceResponse[]>(
   (handoff?.attachedSources ?? []).map((source) => ({ ...source, attachedAt: source.fetchedAt })),
 )
 const handoffWarning = ref<string | null>(handoff?.sourceWarning ?? null)
+
+// What Brownie found in an uploaded form and changed in its copy of it: news for the person on arrival, not a
+// warning. It shares one short line over the page with the places Brownie found, folded behind "Details" so
+// the page itself, and its first marked place, stay in view; the Rules card says it again later.
+const formNotes = ref<string[]>(handoff?.formNotes ?? [])
+const formNotesOpen = ref(false)
+const stripButtonsRef = ref<HTMLElement | null>(null)
+
+// A region that appears already holding its notes is not read out, and one that is live would read out its own
+// buttons as they change; so the page says once, through its live line, that the notes are there. The live line
+// itself first appears with the document, and a live line that appears already holding words is not read out
+// either; so the words wait a moment, until screen readers have seen the line empty.
+const NOTES_ANNOUNCEMENT_DELAY_MS = 500
+let formNotesAnnounced = false
+let formNotesTimer: ReturnType<typeof setTimeout> | undefined
+watch(
+  loadState,
+  (state) => {
+    if (state !== 'loaded' || formNotesAnnounced) return
+    formNotesAnnounced = true
+    const count = formNotes.value.length
+    if (count === 0) return
+    formNotesTimer = setTimeout(
+      () => announce(`About this document: ${count === 1 ? '1 note' : `${count} notes`} above the page.`),
+      NOTES_ANNOUNCEMENT_DELAY_MS,
+    )
+  },
+  { flush: 'post' },
+)
+onBeforeUnmount(() => clearTimeout(formNotesTimer))
+
+function dismissFormNotes(): void {
+  formNotes.value = []
+  forgetFormNotes()
+  // The region and the button in it are gone; the document itself is what comes next.
+  void nextTick(() => window.document.getElementById('document-pane')?.focus({ preventScroll: true }))
+}
 const sourceUploadState = ref<'idle' | 'uploading' | 'error'>('idle')
 const sourceUploadError = ref<string | null>(null)
 /** Which attached source Brownie reads; defaults to the most recently attached one. */
@@ -515,7 +610,7 @@ async function loadDocument(): Promise<boolean> {
     reloadError.value = null
     documentGone.value = false
     // The layout is asked for alongside the definitions rather than after them; the page does not wait for it.
-    if (layoutLoadedForVersionId.value !== loaded.templateVersionId) void loadLayout(workspaceId, loaded)
+    if (layoutLoadedForVersionId.value !== loaded.templateVersionId) layoutRequest = loadLayout(workspaceId, loaded)
     if (definitionsLoadedForVersionId.value !== loaded.templateVersionId) {
       await loadFieldDefinitions(workspaceId, loaded)
       void loadRules()
@@ -576,6 +671,11 @@ watch(
 // a locked field (409) rather than letting either side's work silently vanish.
 
 const fieldDefinitions = ref<FieldDefinitionResponse[]>([])
+/**
+ * What the server noticed in making the uploaded file ready to fill, kept with the template version the
+ * document is on; null where the version was made before it was kept, or could not be read.
+ */
+const preparationNotices = ref<readonly PreparationNoticeResponse[] | null>(null)
 /** The first date the document holds, offered as the day of an event added to the calendar from it. */
 const suggestedEventDate = computed(() => {
   const fields = document.value?.currentRevision.fields ?? {}
@@ -596,17 +696,14 @@ async function loadFieldDefinitions(workspaceId: number, loaded: DocumentRespons
   try {
     const version = await getTemplateVersion(workspaceId, loaded.templateId, loaded.templateVersionId)
     fieldDefinitions.value = version?.fields ?? []
+    preparationNotices.value = Array.isArray(version?.preparationNotices) ? version.preparationNotices : null
+    foundSpots.setAccepted(loaded.templateId, version?.acceptedFieldIds)
   } catch {
     fieldDefinitions.value = []
+    preparationNotices.value = null
+    foundSpots.setAccepted(loaded.templateId, [])
   }
   definitionsLoadedForVersionId.value = loaded.templateVersionId
-}
-
-interface EditableField {
-  fieldId: string
-  type: 'TEXT' | 'DATE'
-  cardinality: 'SCALAR' | 'REPEATED'
-  requiredness: 'REQUIRED' | 'OPTIONAL' | null
 }
 
 const editableFields = computed<EditableField[]>(() => {
@@ -616,6 +713,8 @@ const editableFields = computed<EditableField[]>(() => {
       type: definition.type,
       cardinality: definition.cardinality,
       requiredness: definition.requiredness,
+      label: definition.label ?? null,
+      origin: definition.origin ?? null,
     }))
   }
   const fields = document.value?.currentRevision.fields ?? {}
@@ -626,6 +725,327 @@ const editableFields = computed<EditableField[]>(() => {
     requiredness: null,
   }))
 })
+
+/**
+ * The name each field goes by everywhere on this page -- announcements, the chat, Export's "Go to" list,
+ * the Rules card: the form's own label when its definition has one, else the one worked out from the id.
+ */
+const fieldLabelsById = computed(() => new Map(editableFields.value.map((field) => [field.fieldId, fieldLabel(field)])))
+function labelOf(fieldId: string): string {
+  return fieldLabelsById.value.get(fieldId) ?? labelFor(fieldId)
+}
+
+/** The places Brownie found itself: marked on the page until the person keeps them. */
+const foundSpots = useFoundSpots({
+  fields: editableFields,
+  workspaceId: () => session.personalWorkspaceId,
+  templateId: () => document.value?.templateId ?? null,
+  labelOf,
+  announce,
+  kind: () => (isPdfForm.value ? 'PDF' : 'DOCX'),
+})
+const { uncheckedFieldIds: uncheckedFoundIds, uncheckedSet: uncheckedFoundSet, keepPending, keepError, bannerText: foundBannerText } = foundSpots
+
+/** "Keep": the place stays as it is and loses its mark; focus stays in the bar, whose button has gone. */
+async function keepSelectedPlace(): Promise<void> {
+  const current = selected.value
+  if (!current || !(await foundSpots.keep(current.fieldId))) return
+  await nextTick()
+  selectionBarRef.value?.focus({ preventScroll: true })
+}
+
+/**
+ * "Keep all": its button goes. Where the line stays for the notes about the form, focus moves to the line's
+ * next button; otherwise the line goes too, and focus moves on to the document.
+ */
+async function keepAllFoundPlaces(): Promise<void> {
+  if (!(await foundSpots.keepAll())) return
+  await nextTick()
+  const next = stripButtonsRef.value?.querySelector<HTMLElement>('button')
+  if (next) next.focus()
+  else window.document.getElementById('document-pane')?.focus({ preventScroll: true })
+}
+
+/** The line over the page: the places Brownie found while any is unchecked; else the note, or how many notes, about the form. */
+const stripText = computed(() => {
+  if (uncheckedFoundIds.value.length > 0) return foundBannerText.value
+  const count = formNotes.value.length
+  if (count === 1) return formNotes.value[0]!
+  return count > 1 ? `About this document: ${count} notes.` : ''
+})
+/** "Details" opens the notes under the line, unless the line already is the one note. */
+const stripOffersDetails = computed(() => formNotes.value.length > 1 || (formNotes.value.length === 1 && uncheckedFoundIds.value.length > 0))
+
+/**
+ * The Rules card's "About this form": the notes about the upload the form came from, kept with its template
+ * version, for whenever the document is opened. How many places Brownie found is said by the line over the
+ * page while any is unchecked; once all are kept, none is said to be marked.
+ */
+const aboutThisForm = computed(() => {
+  const notices = preparationNotices.value
+  if (!notices || notices.length === 0) return []
+  const unchecked = uncheckedFoundSet.value
+  return formNoteSentences(
+    {
+      kind: isPdfForm.value ? 'PDF' : 'DOCX',
+      notices,
+      spots: fieldDefinitions.value.map((definition) => ({
+        origin: unchecked.has(definition.fieldId) ? 'FOUND_BY_BROWNIE' : 'FORM',
+        binding: { kind: definition.bindingKind },
+      })),
+    },
+    { foundShownOnPage: unchecked.size > 0 },
+  )
+})
+const aboutThisFormOpen = ref(false)
+/**
+ * The notes are shown in one place at a time: while "About this form" is open, the line over the page folds
+ * its own "Details" away rather than saying the same things a second time beside it.
+ */
+const stripDetailsShown = computed(() => stripOffersDetails.value && !aboutThisFormOpen.value)
+watch(aboutThisFormOpen, (open) => {
+  if (open) formNotesOpen.value = false
+})
+
+// ---- Changing the form's fill spots ------------------------------------------------------------------
+//
+// A place chosen on the page (a selection, a click, the menu on its text) or a line and a place chosen
+// from the list becomes a new fill spot; the bar about a spot renames or removes it. Each change makes a
+// new version of the form, which new documents start from too, and the document moves to it with its
+// values: whatever was typed is saved first, and the page is loaded again with the new version's layout.
+// The chat says what was done, with Undo beside it.
+
+/** The lines of the form's body a new fill spot can go in. */
+const anchorLines = computed(() => (layout.value && layout.value.kind !== 'PDF' ? anchorableLines(layout.value) : []))
+const placeDialogRef = ref<InstanceType<typeof PlaceSpotDialog> | null>(null)
+const renameDialogRef = ref<InstanceType<typeof RenameSpotDialog> | null>(null)
+const removeDialogRef = ref<InstanceType<typeof RemoveSpotDialog> | null>(null)
+const moveButtonRef = ref<HTMLElement | null>(null)
+/** The spot the rename or remove dialog is about. */
+let spotChangeTarget: string | null = null
+/** The spot just added, which takes focus once the dialog has closed. */
+let addedSpotToFocus: string | null = null
+
+/** Saves what the person typed before a change to the form, the way Undo does; null when nothing is left unsaved. */
+async function saveTypingFirst(): Promise<string | null> {
+  cancelAutosave()
+  await settleSaving()
+  if (!isDirty.value) return null
+  if (saveStage.value === 'conflict' || rowProblems.value.length > 0) {
+    return 'What you typed on this page cannot be saved as it is, so nothing else was changed. Save it or discard it first.'
+  }
+  await saveEdits('manual')
+  return hasUnsavedWork() ? 'What you typed on this page could not be saved, so nothing else was changed.' : null
+}
+
+/** Loads the document again and waits for the layout of the version it is on, so the page shows what changed. */
+async function reloadWithLayout(): Promise<boolean> {
+  const loaded = await loadDocument()
+  await layoutRequest
+  return loaded
+}
+
+const spotChanges = useFillSpotChanges({
+  workspaceId: () => session.personalWorkspaceId,
+  documentId: () => props.documentId,
+  document,
+  definitions: fieldDefinitions,
+  labelOf,
+  saveTypingFirst,
+  reload: reloadWithLayout,
+})
+const { behindLatest, newerVersionWords, moving: movingToLatest, moveError } = spotChanges
+
+/** A document on an older version of its form is moved to the newest first; the page says so and offers the move. */
+function spotChangesWait(): boolean {
+  if (!behindLatest.value) return false
+  fieldActionError.value = 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.'
+  // The offer may have been set aside with "Not now"; the move is needed now, so it comes back.
+  spotChanges.offerNewerVersionAgain()
+  void nextTick(() => moveButtonRef.value?.focus())
+  return true
+}
+
+/** "Not now": the banner goes with the button that had focus, so focus moves on to the document. */
+function setNewerVersionAside(): void {
+  spotChanges.setNewerVersionAside()
+  void nextTick(() => window.document.getElementById('document-pane')?.focus({ preventScroll: true }))
+}
+
+function openPlaceDialog(): void {
+  if (spotChangesWait()) return
+  fieldActionError.value = null
+  placeDialogRef.value?.openAtLines()
+}
+
+/** A place chosen on the page: the dialog opens at naming it. */
+function onFillHere(point: PagePoint, returnTo: HTMLElement | null): void {
+  if (spotChangesWait()) return
+  const line = anchorLines.value.find((candidate) => candidate.nodeId === point.nodeId && candidate.anchorTextHash === point.anchorTextHash)
+  const place = line ? placeOnLine(line, point) : null
+  if (!line || !place) {
+    fieldActionError.value = 'The page changed; select the place again.'
+    return
+  }
+  fieldActionError.value = null
+  placeDialogRef.value?.openAtPlace(line, place, returnTo)
+}
+
+async function sendNewSpot(request: PlaceSpotRequest): Promise<PlaceSpotRefusal | null> {
+  const parserVersion = layout.value?.parserVersion
+  if (!parserVersion) return { message: 'The page changed; select the place again.', choosePlaceAgain: true }
+  const anchor = toDocxAnchor(request.line, request.place, parserVersion)
+  const outcome = await spotChanges.change([{ kind: 'ADD', label: request.label, type: request.type, anchor }], 'add')
+  if ('refusal' in outcome) return { message: outcome.refusal.message, choosePlaceAgain: outcome.refusal.reload }
+  const { response } = outcome
+  const fieldId = response.fieldIds[0] ?? ''
+  const definition = response.templateVersion.fields.find((field) => field.fieldId === fieldId)
+  const label = definition ? fieldLabel(definition) : request.label
+  addedSpotToFocus = fieldId
+  say({
+    from: 'brownie',
+    text: addedWords(label, request.place.where, response.otherDocumentsOnPreviousVersion),
+    undo: { action: 'add', label, previousRevisionId: response.previousRevisionId, revisionId: response.revision.id },
+  })
+  return null
+}
+
+async function onSpotAdded(): Promise<void> {
+  const fieldId = addedSpotToFocus
+  addedSpotToFocus = null
+  if (fieldId) await focusField(fieldId)
+}
+
+/**
+ * Whether the bar offers changes to the selected spot itself. On a PDF form, only for a spot with a place
+ * on the pages (its page view asks about it); on a Word form, for any spot once its definitions are read,
+ * from a server that can change fill spots: only such a server says which version of the form is newest
+ * (null when it does not know), so an older one's documents offer no change that could only be refused.
+ */
+const spotActionsShown = computed(() => {
+  const current = selected.value
+  if (!current) return false
+  if (isPdfForm.value) return selectedPdfSpot.value !== null && current.rowIndex === null
+  return fieldDefinitions.value.length > 0 && selectedField.value !== null && document.value?.templateLatestVersionId !== undefined
+})
+
+/** The row about the fill spot itself: a place to keep, or changes that can be made to it. */
+const spotRowShown = computed(() => selected.value !== null && (uncheckedFoundSet.value.has(selected.value.fieldId) || spotActionsShown.value))
+/** The row about the value in it: its review and lock once it has a state, and where it came from. */
+const valueRowShown = computed(
+  () => selected.value !== null && (!!selectedState.value || selectedRowHasState.value || evidenceSpanIdsOf(selected.value.fieldId).length > 0),
+)
+
+function openRename(event: MouseEvent): void {
+  const current = selected.value
+  if (!current || spotChangesWait()) return
+  if (isPdfForm.value) {
+    pdfPageRef.value?.openRename(current.fieldId)
+    return
+  }
+  spotChangeTarget = current.fieldId
+  renameDialogRef.value?.open(labelOf(current.fieldId), event.currentTarget as HTMLElement)
+}
+
+async function sendRename(label: string): Promise<string | null> {
+  const fieldId = spotChangeTarget
+  if (!fieldId) return null
+  const before = labelOf(fieldId)
+  const outcome = await spotChanges.change([{ kind: 'RENAME', fieldId, label }], 'rename')
+  if ('refusal' in outcome) return outcome.refusal.message
+  const { response } = outcome
+  const after = labelOf(fieldId)
+  say({
+    from: 'brownie',
+    text: renamedWords(before, after, response.otherDocumentsOnPreviousVersion),
+    undo: { action: 'rename', label: after, previousRevisionId: response.previousRevisionId, revisionId: response.revision.id },
+  })
+  await foundSpots.keepRenamed(fieldId)
+  return null
+}
+
+/** How the text fits in a box Brownie drew on a PDF page; the PDF's own fields keep the form's look. */
+function openRestyle(): void {
+  const current = selected.value
+  if (!current || spotChangesWait()) return
+  pdfPageRef.value?.openRestyle(current.fieldId)
+}
+
+function openRemove(event: MouseEvent): void {
+  const current = selected.value
+  if (!current || spotChangesWait()) return
+  if (isPdfForm.value) {
+    pdfPageRef.value?.openRemove(current.fieldId)
+    return
+  }
+  spotChangeTarget = current.fieldId
+  const definition = fieldDefinitions.value.find((field) => field.fieldId === current.fieldId)
+  const hasValue = scalarDraft(current.fieldId).trim() !== '' || document.value?.currentRevision.fields[current.fieldId] !== undefined
+  const fromTheForm = (definition?.origin ?? 'FORM') === 'FORM'
+  removeDialogRef.value?.open(labelOf(current.fieldId), hasValue, fromTheForm, event.currentTarget as HTMLElement)
+}
+
+async function sendRemove(): Promise<string | null> {
+  const fieldId = spotChangeTarget
+  if (!fieldId) return null
+  const label = labelOf(fieldId)
+  const outcome = await spotChanges.change([{ kind: 'REMOVE', fieldId }], 'remove')
+  if ('refusal' in outcome) return outcome.refusal.message
+  const { response } = outcome
+  say({
+    from: 'brownie',
+    text: removedWords(label, response.otherDocumentsOnPreviousVersion),
+    undo: { action: 'remove', label, previousRevisionId: response.previousRevisionId, revisionId: response.revision.id },
+  })
+  return null
+}
+
+/** The spot and the bar about it are gone; focus goes to the document they were in. */
+function onSpotRemoved(): void {
+  window.document.getElementById('document-pane')?.focus({ preventScroll: true })
+}
+
+const undoingSpotChange = ref(false)
+
+/** Undo beside a change in the chat: back to the version before it, form and values. */
+async function undoSpotChange(line: ChatLine): Promise<void> {
+  const change = line.undo
+  if (!change || line.undone || undoingSpotChange.value) return
+  const since = document.value !== null && (document.value.currentRevision.id !== change.revisionId || isDirty.value)
+  if (since && !window.confirm('This document changed after that. Undo takes those changes back too; they stay in the version history. Undo anyway?')) return
+  undoingSpotChange.value = true
+  try {
+    const problem = await spotChanges.undo(change)
+    if (problem) {
+      say({ from: 'brownie', tone: 'error', text: problem })
+      return
+    }
+    // The toolbar's Undo goes on from here, further back, rather than bringing back the change just undone.
+    if (document.value) undoLandedAt = { undoKey: undoKey(document.value.currentRevision), restoredRevisionId: change.previousRevisionId }
+    line.undone = true
+    say({ from: 'brownie', text: undoneWords(change.action, change.label) })
+  } finally {
+    undoingSpotChange.value = false
+  }
+}
+
+const UNDO_WHAT: Record<SpotUndo['action'], string> = { add: 'adding', rename: 'renaming', remove: 'removing', change: 'the change to' }
+
+/** What was moved to the newest version, said where the offer was until the document changes again. */
+const movedNotice = ref<{ text: string; revisionId: number } | null>(null)
+const shownMovedNotice = computed(() =>
+  movedNotice.value && document.value?.currentRevision.id === movedNotice.value.revisionId ? movedNotice.value.text : null,
+)
+
+async function moveToNewestVersion(): Promise<void> {
+  const words = await spotChanges.moveToLatest()
+  if (!words || !document.value) return
+  movedNotice.value = { text: words, revisionId: document.value.currentRevision.id }
+  fieldActionError.value = null
+  say({ from: 'brownie', text: words })
+  await nextTick()
+  window.document.getElementById('document-pane')?.focus({ preventScroll: true })
+}
 
 /** Until the template's definitions arrive, the page cannot know its fill spots, so it says it is loading. */
 const pageLoading = computed(() => document.value !== null && definitionsLoadedForVersionId.value !== document.value.templateVersionId)
@@ -660,7 +1080,7 @@ async function focusField(fieldId: string): Promise<void> {
   if (!(target instanceof HTMLElement)) return
   target.scrollIntoView?.({ block: 'center' })
   target.focus()
-  if (target.hasAttribute('data-add-row')) announce(`${labelFor(fieldId)} has no rows yet. Add a row to fill it in.`)
+  if (target.hasAttribute('data-add-row')) announce(`${labelOf(fieldId)} has no rows yet. Add a row to fill it in.`)
 }
 
 type Drafts = Record<string, string | string[]>
@@ -773,7 +1193,7 @@ const rowProblems = computed<string[]>(() => {
   for (const index of rowIndexes.value) {
     for (const field of repeatedFields.value) {
       if (field.type === 'DATE' && !(rowDraft(field.fieldId)[index] ?? '').trim()) {
-        problems.push(`Row ${index + 1} needs a value for ${labelFor(field.fieldId)}, or remove the row.`)
+        problems.push(`Row ${index + 1} needs a value for ${fieldLabel(field)}, or remove the row.`)
       }
     }
   }
@@ -992,8 +1412,25 @@ function scheduleAutosave(): void {
   }, AUTOSAVE_DELAY_MS)
 }
 
+/**
+ * While the chat changes the form's fill spots, autosave waits: the change makes a new version of the document,
+ * and a save made meanwhile against the one on screen would be refused, or would refuse the change. What was
+ * typed meanwhile is saved once the page shows the new version.
+ */
+let autosaveHeld = false
+
+function holdAutosave(): void {
+  autosaveHeld = true
+  cancelAutosave()
+}
+
+function releaseAutosave(): void {
+  autosaveHeld = false
+  if (isDirty.value && saveStage.value !== 'conflict') scheduleAutosave()
+}
+
 async function autosave(): Promise<void> {
-  if (!isDirty.value || rowProblems.value.length > 0) return
+  if (autosaveHeld || !isDirty.value || rowProblems.value.length > 0) return
   if (saveStage.value === 'saving' || saveStage.value === 'conflict') return
   await saveEdits('auto')
   // Edits typed while the save was in flight are picked up by the next pause.
@@ -1108,7 +1545,16 @@ async function saveNow(): Promise<void> {
 // with a blank date) is discarded only after the person says so. A locked fill spot keeps its
 // value: the server leaves it as it is and says so.
 const undoing = ref(false)
-let undoLandedAt: { contentHash: string; restoredIndex: number } | null = null
+/** Where the last undo landed: the version it restored, while the document still reads the way it left it. */
+let undoLandedAt: { undoKey: string; restoredRevisionId: number } | null = null
+
+/**
+ * What one step of Undo compares: the values, and the version of the form they were written against,
+ * so a version that only changed the form's fill spots (values carried over as they were) is a step too.
+ */
+function undoKey(revision: DocumentRevisionResponse): string {
+  return `${revision.contentHash}\n${revision.templateVersionId ?? ''}`
+}
 
 async function undoLastChange(): Promise<void> {
   if (undoing.value || !document.value || session.personalWorkspaceId === undefined) return
@@ -1142,10 +1588,11 @@ async function restorePreviousVersion(): Promise<void> {
     const revisions = (await listDocumentRevisions(workspaceId, props.documentId)) ?? []
     const ordered = [...revisions].sort((left, right) => left.revisionNumber - right.revisionNumber)
     const currentIndex = ordered.findIndex((revision) => revision.id === current.id)
-    const startIndex = undoLandedAt && undoLandedAt.contentHash === current.contentHash ? undoLandedAt.restoredIndex : currentIndex
+    const landedIndex = undoLandedAt && undoLandedAt.undoKey === undoKey(current) ? ordered.findIndex((revision) => revision.id === undoLandedAt?.restoredRevisionId) : -1
+    const startIndex = landedIndex >= 0 ? landedIndex : currentIndex
     let targetIndex = -1
     for (let index = Math.min(startIndex, ordered.length) - 1; index >= 0; index--) {
-      if (ordered[index]!.contentHash !== current.contentHash) {
+      if (undoKey(ordered[index]!) !== undoKey(current)) {
         targetIndex = index
         break
       }
@@ -1164,10 +1611,10 @@ async function restorePreviousVersion(): Promise<void> {
       crypto.randomUUID(),
       `Undid a change: back to version ${target.revisionNumber}.`,
     )
-    undoLandedAt = { contentHash: restored.revision.contentHash, restoredIndex: targetIndex }
-    await loadDocument()
+    undoLandedAt = { undoKey: undoKey(restored.revision), restoredRevisionId: target.id }
+    await reloadWithLayout()
     const kept = restored.keptLockedFieldIds ?? []
-    const keptWords = kept.length > 0 ? ` ${kept.map(labelFor).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''
+    const keptWords = kept.length > 0 ? ` ${kept.map(labelOf).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''
     say({ from: 'brownie', text: `Undone: the document is back to how it read in version ${target.revisionNumber}.${keptWords}` })
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
@@ -1184,9 +1631,9 @@ async function restorePreviousVersion(): Promise<void> {
  * the trail carries on through it.
  */
 watch(
-  () => document.value?.currentRevision.contentHash,
-  (contentHash) => {
-    if (undoLandedAt && contentHash !== undoLandedAt.contentHash) undoLandedAt = null
+  () => (document.value ? undoKey(document.value.currentRevision) : null),
+  (key) => {
+    if (undoLandedAt && key !== undoLandedAt.undoKey) undoLandedAt = null
   },
 )
 
@@ -1235,6 +1682,15 @@ function clearSelection(): void {
 }
 
 /**
+ * Words selected on the page bring up "Fill in here" beside them; the bar about the spot last in use gives way,
+ * so the two never show at once. Focus stays where the selection put it.
+ */
+function closeBarForSelectedWords(): void {
+  selected.value = null
+  evidenceOpenFor.value = null
+}
+
+/**
  * The bar follows the spot that has focus and is drawn after the whole page, so Tab alone would only
  * reach it for the last spot. Alt+Enter (Option+Return) in a spot comes here instead, and Escape in
  * the bar goes back to the spot, leaving the bar open.
@@ -1262,7 +1718,10 @@ const actionsKey = /Mac|iPhone|iPad/.test(window.navigator.platform ?? '') ? 'Op
 function keepFocusClearOfBar(): void {
   const bar = selectionBarRef.value
   const focused = window.document.activeElement
-  if (!bar || !(focused instanceof HTMLElement) || !focused.closest('.document-page')) return
+  // A Word page or a PDF form's pages: either way the spot being typed in stays in view above the bar.
+  if (!bar || !(focused instanceof HTMLElement) || !focused.closest('.document-page, .pdf-form-page')) return
+  // A menu the page raised into the top layer (the one on its text) is drawn over the bar, which hides none of it.
+  if (focused.closest('[popover]')) return
   // A button pressed with a pointer is not chased: moving it between the press and the release would
   // lose the click. A fill spot always counts as focus to show, however it was reached.
   if (!focused.classList.contains('fill-spot__control') && !focusIsShown(focused)) return
@@ -1324,7 +1783,7 @@ onBeforeUnmount(() => barObserver?.disconnect())
 const selectedField = computed(() => (selected.value ? (editableFields.value.find((field) => field.fieldId === selected.value!.fieldId) ?? null) : null))
 const selectedLabel = computed(() => {
   if (!selected.value) return ''
-  const label = labelFor(selected.value.fieldId)
+  const label = labelOf(selected.value.fieldId)
   return selected.value.rowIndex === null ? label : `${label}, row ${selected.value.rowIndex + 1}`
 })
 /** The selected spot's own state: for a row, its own column's item, since each column is filled and checked on its own. */
@@ -1378,6 +1837,8 @@ const shownStyle = computed(() => {
 /** The style's parts as chips; none until the template's layout is read, since the style comes from it. */
 const styleChips = computed(() => {
   if (!layout.value) return []
+  // One of a PDF's own fields is written the way the form says, which the page does not know.
+  if (selectedPdfSpot.value?.bindingKind === 'ACROFORM_FIELD') return []
   const style = shownStyle.value
   const chips: string[] = []
   if (style.font) chips.push(style.font)
@@ -1394,7 +1855,7 @@ const dateExample = computed(() => {
   return dateField ? formatDateLikeExport(todayIso()) : null
 })
 /** The fill spots the template itself requires, in page order; a rule that requires more lists them in its own words. */
-const requiredLabels = computed(() => editableFields.value.filter((field) => field.requiredness === 'REQUIRED').map((field) => labelFor(field.fieldId)))
+const requiredLabels = computed(() => editableFields.value.filter((field) => field.requiredness === 'REQUIRED').map((field) => fieldLabel(field)))
 
 function todayIso(): string {
   const now = new Date()
@@ -1416,7 +1877,7 @@ const shownRules = computed(() => {
 })
 
 function ruleWords(rule: RuleResponse): string {
-  return describePayload(rule.payload, labelFor)
+  return describePayload(rule.payload, labelOf)
 }
 
 // ---- Print preview -----------------------------------------------------------------------------
@@ -1975,6 +2436,13 @@ type ChatLine = {
   quote?: boolean
   /** A place in the conversation where the reading under way, or the proposal waiting for a decision, is drawn. */
   slot?: 'run' | 'proposal'
+  /** A change to the form's fill spots this line reports, with Undo beside it. */
+  undo?: SpotUndo
+  undone?: boolean
+  /** The lines a new fill spot could go on, to choose from; picking one sends `choiceFor` again with it. */
+  choices?: { lineText: string; anchor: AssistPageAnchor }[]
+  choiceFor?: string
+  chosen?: boolean
 }
 const chat = ref<ChatLine[]>([])
 let chatSequence = 0
@@ -2044,6 +2512,70 @@ function isShown(element: HTMLElement | null): boolean {
   return element !== null && element.getClientRects().length > 0
 }
 
+// ---- "Here" on the page ----------------------------------------------------------------------------
+//
+// The last place selected or clicked on the page goes with a request to Brownie, so "add a fill spot for
+// Company here" means that place. It is forgotten once the page shows another version of the form.
+const pagePlace = ref<PagePoint | null>(null)
+
+function onPagePlace(point: PagePoint): void {
+  pagePlace.value = point
+}
+
+watch(
+  () => layout.value?.versionId,
+  () => {
+    pagePlace.value = null
+  },
+)
+
+/** The place on the page as a request to Brownie sends it; null when none is chosen or the page moved on. */
+const pagePlaceAnchor = computed<AssistPageAnchor | null>(() => {
+  const point = pagePlace.value
+  const parserVersion = layout.value?.parserVersion
+  if (!point || !parserVersion) return null
+  const line = anchorLines.value.find((candidate) => candidate.nodeId === point.nodeId && candidate.anchorTextHash === point.anchorTextHash)
+  const place = line ? placeOnLine(line, point) : null
+  return line && place ? toDocxAnchor(line, place, parserVersion) : null
+})
+
+/**
+ * The place a message's "here" means, as it is sent: on a PDF form, the point picked on a page for this
+ * message only; on a Word page, the last place chosen there.
+ */
+function takePageAnchor(text: string): AssistPageAnchor | null {
+  if (!isPdfForm.value) return pagePlaceAnchor.value
+  const picked = pdfPageAnchor.value && /\bhere\b/i.test(text) ? pdfPageAnchor.value : null
+  pdfPageAnchor.value = null
+  return picked
+}
+
+/** Under the message box while it says "here": which place that is. */
+const hereHint = computed(() => {
+  if (isPdfForm.value) {
+    if (!composerSaysHere.value) return null
+    const picked = pdfPageAnchor.value
+    return picked ? `"Here" is the place you picked on page ${picked.pageNumber}.` : 'To say where "here" is, click the place on the page first.'
+  }
+  if (!/\b(here|this line)\b/i.test(composerText.value)) return null
+  const point = pagePlace.value
+  const line = point && pagePlaceAnchor.value ? anchorLines.value.find((candidate) => candidate.nodeId === point.nodeId) : null
+  if (!line) return 'To say where "here" is, select the place on the page first.'
+  const words = lineWords(line)
+  return `"Here" is the place you chose on the page, in the paragraph "${words.length > 60 ? `${words.slice(0, 59)}\u2026` : words}".`
+})
+
+/** The codes a refused fill spot change comes back with from the chat, which the page words itself. */
+const SPOT_REFUSAL_CODES = new Set([
+  'FILL_SPOT_ANCHOR_STALE',
+  'FILL_SPOT_PLACE_NOT_ALLOWED',
+  'FILL_SPOT_LOCKED',
+  'FILL_SPOT_WOULD_NOT_PRINT',
+  'TEMPLATE_VERSION_MOVED_ON',
+  'DOCUMENT_TEMPLATE_VERSION_MOVED',
+])
+const SPOT_ACTIONS = { ADD_FILL_SPOT: 'add', RENAME_FILL_SPOT: 'rename', REMOVE_FILL_SPOT: 'remove' } as const
+
 type AssistStage = 'idle' | 'interpreting' | 'executing' | 'done' | 'failed'
 const assistStage = ref<AssistStage>('idle')
 const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
@@ -2063,17 +2595,19 @@ function onComposerKeydown(event: KeyboardEvent): void {
  * proposal the person approves or not. An explanation is text. A line Brownie cannot act on is
  * answered with what it can do.
  */
-async function sendMessage(given?: string): Promise<void> {
+async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor | null; echo?: boolean } = {}): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const text = (given ?? composerText.value).trim()
   if (workspaceId === undefined || text === '' || assistBusy.value || !document.value) return
   if (given === undefined) composerText.value = ''
-  say({ from: 'person', text })
+  if (options.echo !== false) say({ from: 'person', text })
+  // The place chosen on the page goes along, so "here" means it; a line picked from Brownie's choices goes instead.
+  const anchor = options.anchor !== undefined ? options.anchor : takePageAnchor(text)
 
   assistStage.value = 'interpreting'
   let interpretation
   try {
-    interpretation = await interpretAssist(workspaceId, props.documentId, text)
+    interpretation = anchor ? await interpretAssist(workspaceId, props.documentId, text, anchor) : await interpretAssist(workspaceId, props.documentId, text)
   } catch (error) {
     assistStage.value = 'failed'
     say({
@@ -2091,7 +2625,11 @@ async function sendMessage(given?: string): Promise<void> {
 
   if (!interpretation.executable) {
     assistStage.value = 'done'
-    say({ from: 'brownie', text: interpretation.summary, help: interpretation.help })
+    // A spot change refused because the document is on an older version of its form: the answer says to move it
+    // first, so the offer to move comes back even if it was set aside with "Not now".
+    if (interpretation.kind in SPOT_ACTIONS && behindLatest.value) spotChanges.offerNewerVersionAgain()
+    const choices = interpretation.choices ?? []
+    say({ from: 'brownie', text: interpretation.summary, help: interpretation.help, ...(choices.length > 0 ? { choices, choiceFor: text } : {}) })
     return
   }
 
@@ -2114,8 +2652,40 @@ async function sendMessage(given?: string): Promise<void> {
   }
 
   assistStage.value = 'executing'
+  // A change to the form's fill spots makes a new version of the document, so what was typed is saved first, as
+  // a change made from the page is, and autosave waits until the page shows the new version.
+  const changesSpots = interpretation.kind in SPOT_ACTIONS
+  if (changesSpots) {
+    holdAutosave()
+    const unsaved = await saveTypingFirst()
+    if (unsaved !== null || !document.value) {
+      releaseAutosave()
+      assistStage.value = 'failed'
+      say({ from: 'brownie', tone: 'error', text: unsaved ?? 'This document is not loaded yet. Try again in a moment.' })
+      // Nothing was done, so the words go back into the box to send again, unless something new was typed meanwhile.
+      if (given === undefined && composerText.value === '') composerText.value = text
+      return
+    }
+  }
   try {
-    const outcome = await executeAssist(workspaceId, props.documentId, text, document.value.currentRevision.id)
+    const expectedRevisionId = document.value.currentRevision.id
+    const outcome = anchor
+      ? await executeAssist(workspaceId, props.documentId, text, expectedRevisionId, anchor)
+      : await executeAssist(workspaceId, props.documentId, text, expectedRevisionId)
+    if (outcome.spotChange) {
+      // Done at once, like a change made from the page: the page shows the form's new version, and Undo sits beside the answer.
+      const change = outcome.spotChange
+      await reloadWithLayout()
+      const action = outcome.kind in SPOT_ACTIONS ? SPOT_ACTIONS[outcome.kind as keyof typeof SPOT_ACTIONS] : 'add'
+      say({
+        from: 'brownie',
+        text: outcome.summary,
+        undo: { action, label: change.label, previousRevisionId: change.previousRevisionId, revisionId: document.value?.currentRevision.id ?? -1 },
+      })
+      if (action === 'rename') await foundSpots.keepRenamed(change.fieldId)
+      assistStage.value = 'done'
+      return
+    }
     if (outcome.proposal) {
       placeInChat('proposal')
       proposalFromJobId.value = null
@@ -2143,6 +2713,16 @@ async function sendMessage(given?: string): Promise<void> {
       })
       return
     }
+    if (error instanceof ApiRequestError && SPOT_REFUSAL_CODES.has(error.problem?.code ?? '')) {
+      const kind = interpretation.kind in SPOT_ACTIONS ? SPOT_ACTIONS[interpretation.kind as keyof typeof SPOT_ACTIONS] : 'add'
+      const refusal = spotRefusal(error, kind, labelOf)
+      if (refusal.reload) await reloadWithLayout()
+      if (error.problem?.code === 'DOCUMENT_TEMPLATE_VERSION_MOVED') spotChanges.offerNewerVersionAgain()
+      // A box on a PDF page is refused for reasons of its own (off the page, too small), which its words say.
+      const message = isPdfForm.value ? spotChangeFailure(error, labelOf, kind === 'add' ? 'add' : 'change') : refusal.message
+      say({ from: 'brownie', tone: 'error', text: message })
+      return
+    }
     say({
       from: 'brownie',
       tone: 'error',
@@ -2151,7 +2731,19 @@ async function sendMessage(given?: string): Promise<void> {
         describeCommonFailure(error, 'a way to ask Brownie for changes') ??
         (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'I could not do that. Try again.'),
     })
+  } finally {
+    if (changesSpots) releaseAutosave()
   }
+}
+
+/** A line picked from Brownie's choices: the same request again, with that line as the place. */
+async function chooseLineFor(line: ChatLine, index: number): Promise<void> {
+  const choice = line.choices?.[index]
+  if (!choice || !line.choiceFor || line.chosen || assistBusy.value) return
+  line.chosen = true
+  say({ from: 'person', text: choice.lineText })
+  await sendMessage(line.choiceFor, { anchor: choice.anchor, echo: false })
+  await keepFocusInChat()
 }
 
 /** One of Brownie's suggestions, put in the message box for the person to finish rather than sent for them. */
@@ -2181,7 +2773,7 @@ const proposalLines = computed<{ key: string; label: string; value: string }[]>(
       continue
     }
     const value = field.value ?? ''
-    lines.push({ key: fieldId, label: labelFor(fieldId), value: field.type === 'DATE' ? formatDateLikeExport(value) : value })
+    lines.push({ key: fieldId, label: labelOf(fieldId), value: field.type === 'DATE' ? formatDateLikeExport(value) : value })
   }
   const rows = Math.max(0, ...repeated.map(([, values]) => values.length))
   for (let index = 0; index < rows; index++) {
@@ -2189,7 +2781,7 @@ const proposalLines = computed<{ key: string; label: string; value: string }[]>(
       key: `row-${index}`,
       label: `Row ${index + 1}`,
       value: repeated
-        .map(([fieldId, values]) => `${labelFor(fieldId)}: ${values[index] ?? ''}`)
+        .map(([fieldId, values]) => `${labelOf(fieldId)}: ${values[index] ?? ''}`)
         .join('; '),
     })
   }
@@ -2215,7 +2807,7 @@ async function acceptProposal(): Promise<void> {
     await loadDocument()
     const statuses = Object.entries(acceptResult.value.fieldStatuses)
     const applied = statuses.filter(([, status]) => status === 'CLEAN').length
-    const held = statuses.filter(([, status]) => status !== 'CLEAN').map(([fieldId]) => labelFor(fieldId))
+    const held = statuses.filter(([, status]) => status !== 'CLEAN').map(([fieldId]) => labelOf(fieldId))
     const heldWords = held.length > 0 ? ` I left ${held.join(', ')} as ${held.length === 1 ? 'it was' : 'they were'}: locked, or changed since I read the document.` : ''
     if (applied === 0) {
       say({ from: 'brownie', text: `Nothing was filled in.${heldWords}` })
@@ -2293,7 +2885,7 @@ watch(
 )
 
 function questionPrompt(question: QuestionResponse): string {
-  const label = labelFor(question.fieldId)
+  const label = labelOf(question.fieldId)
   return question.reason === 'CONFLICT'
     ? `${label}: the source says something different from what the document holds. Which should it be?`
     : `${label}: I could not find this in the source. What should it be?`
@@ -2356,10 +2948,10 @@ async function recordFieldReview(fieldId: string, decision: ReviewDecision): Pro
   try {
     await recordReviewDecision(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, decision, crypto.randomUUID())
     await loadDocument()
-    announce(`${labelFor(fieldId)}: ${DECISION_WORDS[decision]}.`)
+    announce(`${labelOf(fieldId)}: ${DECISION_WORDS[decision]}.`)
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not record a review decision for ${labelFor(fieldId)}. Try again.`)
+    reportFieldActionFailure(error, `Could not record a review decision for ${labelOf(fieldId)}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -2376,10 +2968,10 @@ async function toggleFieldLock(fieldId: string): Promise<void> {
   try {
     await setFieldLock(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, nextLock, crypto.randomUUID())
     await loadDocument()
-    announce(nextLock === 'EXPLICITLY_LOCKED' ? `${labelFor(fieldId)} locked.` : `${labelFor(fieldId)} unlocked.`)
+    announce(nextLock === 'EXPLICITLY_LOCKED' ? `${labelOf(fieldId)} locked.` : `${labelOf(fieldId)} unlocked.`)
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not change the lock for ${labelFor(fieldId)}. Try again.`)
+    reportFieldActionFailure(error, `Could not change the lock for ${labelOf(fieldId)}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
@@ -2404,7 +2996,7 @@ function toggleSelectedLock(): void {
 const selectedTarget = computed(() => {
   const current = selected.value
   if (!current) return ''
-  return current.rowIndex === null ? labelFor(current.fieldId) : `row ${current.rowIndex + 1}`
+  return current.rowIndex === null ? labelOf(current.fieldId) : `row ${current.rowIndex + 1}`
 })
 
 const selectedPendingKey = computed(() => {
@@ -2431,11 +3023,108 @@ async function goToFieldFromExport(fieldId: string): Promise<void> {
   await focusField(fieldId)
 }
 
+// ---- Changing a PDF form's fill spots --------------------------------------------------------------
+//
+// On a PDF form the page view asks about each change (a box drawn, moved or restyled, a spot added,
+// renamed or taken away) and sends it through here. Like a change on a Word page it makes a new version
+// of the form and moves this document onto it with every value kept: typing not saved yet is saved
+// first, and the chat says what was done with the same Undo.
+
+const isPdfForm = computed(() => layout.value?.kind === 'PDF')
+const pdfPageRef = ref<{
+  openRename: (fieldId: string) => void
+  openRestyle: (fieldId: string) => void
+  openRemove: (fieldId: string) => void
+} | null>(null)
+
+/** The selected spot's first place on a PDF form's pages; null on a Word form, or for a field the pages have no place for. */
+const selectedPdfSpot = computed(() => {
+  const current = selected.value
+  return current ? (layout.value?.pdf?.spots?.find((spot) => spot.fieldId === current.fieldId) ?? null) : null
+})
+
+/** A point picked on a PDF page while the message being written says "here". */
+const pdfPageAnchor = ref<PdfPageAnchor | null>(null)
+const composerSaysHere = computed(() => isPdfForm.value && /\bhere\b/i.test(composerText.value))
+watch(composerSaysHere, (here) => {
+  if (!here) pdfPageAnchor.value = null
+})
+
+const SPOT_CHANGE_DONE: Record<PdfSpotRequest['kind'], (label: string, count: number) => string> = {
+  add: (label) => `Added a fill spot for ${label}. New documents from this form will have it too.`,
+  rename: (label) => `Renamed the fill spot to ${label}. New documents from this form will have the new name too.`,
+  restyle: (label) => `Changed how the text fits in ${label}. New documents from this form will have the change too.`,
+  remove: (label) => `Removed the fill spot ${label}. Its value stays in the version history.`,
+  move: (label, count) =>
+    `${count === 1 ? `Moved the box for ${label}.` : `Moved ${count} boxes.`} New documents from this form will have the change too.`,
+}
+
+/** How Undo names a PDF change: moving or restyling a box is undone as a change to the spot. */
+const PDF_UNDO_ACTION: Record<PdfSpotRequest['kind'], SpotUndo['action']> = {
+  add: 'add',
+  rename: 'rename',
+  restyle: 'change',
+  remove: 'remove',
+  move: 'change',
+}
+
+async function changePdfSpots(request: PdfSpotRequest): Promise<PdfSpotResult> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return { ok: false, message: 'This document is not loaded yet. Try again in a moment.' }
+  if (behindLatest.value) {
+    spotChanges.offerNewerVersionAgain()
+    return { ok: false, message: 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.' }
+  }
+  const unsaved = await saveTypingFirst()
+  if (unsaved !== null) return { ok: false, message: unsaved }
+  const current = document.value
+  try {
+    const result = await changeFillSpots(
+      workspaceId,
+      props.documentId,
+      current.currentRevision.id,
+      current.templateVersionId,
+      request.changes,
+      crypto.randomUUID(),
+    )
+    await reloadWithLayout()
+    await nextTick()
+    const fieldId = result.fieldIds?.[0] ?? null
+    say({
+      from: 'brownie',
+      text: SPOT_CHANGE_DONE[request.kind](request.label, request.changes.length),
+      undo: { action: PDF_UNDO_ACTION[request.kind], label: request.label, previousRevisionId: result.previousRevisionId, revisionId: result.revision.id },
+    })
+    if (request.kind === 'remove') {
+      selected.value = null
+      return { ok: true, focusId: 'document-pane' }
+    }
+    for (const change of request.changes) if (change.kind === 'RENAME' && change.fieldId) await foundSpots.keepRenamed(change.fieldId)
+    return { ok: true, focusId: fieldId ? `edit-${fieldId}` : null }
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 412) {
+      return {
+        ok: false,
+        message: (await loadDocument())
+          ? 'This document changed since you loaded it, so it was reloaded. Try again on the current version.'
+          : 'This document changed since you loaded it, so that was not done.',
+      }
+    }
+    if (error instanceof ApiRequestError && error.problem?.code === 'TEMPLATE_VERSION_MOVED_ON') await loadDocument()
+    if (error instanceof ApiRequestError && error.problem?.code === 'DOCUMENT_TEMPLATE_VERSION_MOVED') {
+      // The form moved on since the page loaded: loading the document again learns of the newer version, which is offered.
+      await loadDocument()
+      spotChanges.offerNewerVersionAgain()
+    }
+    return { ok: false, message: spotChangeFailure(error, labelOf, request.kind === 'add' ? 'add' : 'change') }
+  }
+}
+
 async function onVersionRestored(payload: { revision: DocumentRevisionResponse; keptLockedFieldIds: string[] }): Promise<void> {
   await loadDocument()
   const kept = payload.keptLockedFieldIds ?? []
   announce(
-    `Version restored.${kept.length > 0 ? ` ${kept.map(labelFor).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''}`,
+    `Version restored.${kept.length > 0 ? ` ${kept.map(labelOf).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''}`,
   )
 }
 </script>
@@ -2507,6 +3196,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
     <div class="workspace-notices">
       <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
+      <p v-if="keepError" class="field-error" role="alert">{{ keepError }}</p>
       <p
         v-if="calendarConsent"
         ref="calendarConsentElement"
@@ -2585,7 +3275,59 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         @focusin="onDocumentFocusIn"
         @input="onDocumentInput"
       >
-        <div v-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading" class="empty-state">
+        <!--
+          One short line over the page about the form: the places Brownie found while any is unchecked, with
+          "Keep all", and the notes about the upload behind "Details". Not a live region: it holds its buttons,
+          and the page's live line says once that the notes are there.
+        -->
+        <section v-if="docView === 'page' && stripText" class="form-strip" :class="{ 'form-strip--found': uncheckedFoundIds.length > 0 }" aria-label="About this document">
+          <div class="form-strip__line">
+            <p class="form-strip__text">{{ stripText }}</p>
+            <div ref="stripButtonsRef" class="form-strip__buttons">
+              <button
+                v-if="uncheckedFoundIds.length > 0"
+                type="button"
+                class="button button--secondary form-strip__button"
+                :aria-disabled="keepPending !== null"
+                @click="keepAllFoundPlaces"
+              >
+                Keep all<span class="visually-hidden"> the places Brownie found</span>
+              </button>
+              <button
+                v-if="stripDetailsShown"
+                type="button"
+                class="button button--secondary form-strip__button"
+                :aria-expanded="formNotesOpen ? 'true' : 'false'"
+                aria-controls="form-notes-list"
+                @click="formNotesOpen = !formNotesOpen"
+              >
+                Details<span class="visually-hidden"> about this document</span>
+              </button>
+              <button
+                v-if="formNotes.length > 0 && uncheckedFoundIds.length === 0"
+                type="button"
+                class="button button--secondary form-strip__button"
+                @click="dismissFormNotes"
+              >
+                Dismiss<span class="visually-hidden"> the notes about this document</span>
+              </button>
+            </div>
+          </div>
+          <ul v-if="stripDetailsShown" v-show="formNotesOpen" id="form-notes-list" class="form-strip__notes">
+            <li v-for="note in formNotes" :key="note">{{ note }}</li>
+          </ul>
+        </section>
+
+        <!--
+          Before anything is filled in, how the page gets filled: one quiet line once the page has fill spots, so
+          the first of them stays in view, and a note of its own over a page that has none yet.
+        -->
+        <p v-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading && editableFields.length > 0" class="empty-hint">
+          <strong>Nothing filled in yet.</strong> Type into the highlighted spots, or
+          <button type="button" class="link-button" @click="goToSources">add notes or a transcript</button> for Brownie to
+          fill them in.
+        </p>
+        <div v-else-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading" class="empty-state">
           <p class="empty-state__title">Nothing filled in yet.</p>
           <p class="field-hint">
             Type straight into the highlighted spots, or give Brownie your notes or a transcript and ask it to fill them
@@ -2594,7 +3336,55 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           <button type="button" class="button button--secondary" @click="goToSources">Add notes or a transcript</button>
         </div>
 
+        <!-- A newer version of this document's form (a fill spot added from another document): what it changes, and the move. -->
+        <div v-if="docView === 'page' && newerVersionWords" class="version-banner">
+          <p class="version-banner__text" role="status">{{ newerVersionWords }}</p>
+          <p v-if="moveError" class="field-error version-banner__error" role="alert">{{ moveError }}</p>
+          <div class="version-banner__buttons">
+            <button
+              ref="moveButtonRef"
+              type="button"
+              class="button button--primary"
+              :aria-disabled="movingToLatest ? 'true' : undefined"
+              @click="!movingToLatest && moveToNewestVersion()"
+            >
+              {{ movingToLatest ? 'Moving…' : 'Move this document to it' }}
+            </button>
+            <button type="button" class="button button--secondary" :aria-disabled="movingToLatest ? 'true' : undefined" @click="!movingToLatest && setNewerVersionAside()">
+              Not now
+            </button>
+          </div>
+        </div>
+        <p v-if="docView === 'page' && shownMovedNotice" class="workspace-notice version-banner__moved">{{ shownMovedNotice }}</p>
+
+        <!-- A PDF form is its own pages with the spots laid over them; a Word form is drawn from its text. -->
+        <PdfFormPage
+          v-if="isPdfForm && session.personalWorkspaceId !== undefined"
+          v-show="docView === 'page'"
+          ref="pdfPageRef"
+          :layout="layout"
+          :layout-state="pageLoading ? 'loading' : layoutState"
+          :layout-problem="layoutProblem"
+          :fields="editableFields"
+          :drafts="drafts"
+          :revision-fields="document.currentRevision.fields"
+          :required-field-ids="requiredFieldIds"
+          :locked-field-ids="lockedFieldIds"
+          :rows-locked="rowsLocked"
+          :selected="selected"
+          :found-field-ids="uncheckedFoundSet"
+          :workspace-id="session.personalWorkspaceId"
+          :send-spot-changes="changePdfSpots"
+          :picking-point="composerSaysHere"
+          @update-scalar="updateScalar"
+          @update-row="updateRow"
+          @select="select"
+          @open-actions="openActions"
+          @add-row="addRow"
+          @pick-point="pdfPageAnchor = $event"
+        />
         <DocumentPage
+          v-else
           v-show="docView === 'page'"
           :layout="layout"
           :layout-state="pageLoading ? 'loading' : layoutState"
@@ -2606,11 +3396,18 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           :locked-field-ids="lockedFieldIds"
           :rows-locked="rowsLocked"
           :selected="selected"
+          :found-field-ids="uncheckedFoundSet"
+          :can-add-spots="docView === 'page' && !pageLoading && layoutState === 'ready' && anchorLines.length > 0"
+          :fill-here-hidden="placeDialogRef?.isOpen === true"
           @update-scalar="updateScalar"
           @update-row="updateRow"
           @select="select"
           @open-actions="openActions"
           @add-row="addRow"
+          @add-spot="openPlaceDialog"
+          @fill-here="onFillHere"
+          @place="onPagePlace"
+          @words-selected="closeBarForSelectedWords"
         />
 
         <section v-if="docView === 'print'" class="print-preview" aria-labelledby="print-preview-heading">
@@ -2642,6 +3439,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           v-if="selected && docView === 'page'"
           ref="selectionBarRef"
           class="selection-bar"
+          data-covers-page
           :aria-label="`About ${selectedLabel}`"
           tabindex="-1"
           @keydown.esc.stop="returnToSelectedSpot"
@@ -2658,6 +3456,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <span v-for="chip in selectedState ? fieldStateWords(selectedState) : []" :key="chip" class="badge">{{ chip }}</span>
           </p>
           <p v-if="!selectedState && selectedHint" class="field-hint">{{ selectedHint }}</p>
+          <!-- The place itself, as Brownie found it: "Keep" in the row about the fill spot says it is right. -->
+          <p v-if="uncheckedFoundSet.has(selected.fieldId)" class="selection-bar__found">
+            <span class="badge">Found by Brownie</span> Check that this is the right place.
+          </p>
           <div
             v-if="evidenceOpenFor === selected.fieldId"
             :id="`evidence-${selected.fieldId}`"
@@ -2674,7 +3476,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 <footer class="field-hint">From {{ excerpt.displayFilename ?? 'an attached source' }}</footer>
               </blockquote>
               <p v-if="selected.rowIndex !== null" class="field-hint">
-                These are the passages cited for {{ labelFor(selected.fieldId) }} in every row, not only row {{ selected.rowIndex + 1 }}.
+                These are the passages cited for {{ labelOf(selected.fieldId) }} in every row, not only row {{ selected.rowIndex + 1 }}.
               </p>
               <p v-if="evidenceSpanIdsOf(selected.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
                 Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(selected.fieldId).length }} cited passages.
@@ -2682,38 +3484,79 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <p class="field-hint">Brownie shows where a value came from; it cannot point to where it lands in the exported file.</p>
             </template>
           </div>
-          <div class="button-row">
-            <button
-              v-if="evidenceSpanIdsOf(selected.fieldId).length > 0"
-              class="button button--secondary"
-              type="button"
-              :aria-expanded="evidenceOpenFor === selected.fieldId"
-              :aria-controls="`evidence-${selected.fieldId}`"
-              @click="toggleEvidence(selected.fieldId)"
-            >
-              Where it came from ({{ evidenceSpanIdsOf(selected.fieldId).length }})
-            </button>
-            <template v-if="selectedState || selectedRowHasState">
-              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('ACCEPTED')">
-                Accept<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
-              </button>
-              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')">
-                Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
-              </button>
+          <!--
+            The buttons in rows, each named for what its buttons change, so "Keep" (this place is right) is never
+            read as "Accept" (this value is right). The fill spot: keeping a place Brownie found, its name, on a box
+            Brownie drew how its text fits, or the spot taken away, each asked about in a dialog; kept while the page
+            loads a new version, so focus can come back to them after a change. The value: its review and its lock,
+            and where it came from. A row of a table: moving or removing it.
+          -->
+          <div v-if="spotRowShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-spot-label">
+            <span id="selection-bar-spot-label" class="selection-bar__group-label">This fill spot:</span>
+            <span class="selection-bar__group-buttons">
               <button
-                v-if="selected.rowIndex === null"
+                v-if="uncheckedFoundSet.has(selected.fieldId)"
+                type="button"
+                class="button button--secondary"
+                :aria-disabled="keepPending !== null"
+                @click="keepSelectedPlace"
+              >
+                Keep<span class="visually-hidden"> this fill spot</span>
+              </button>
+              <template v-if="spotActionsShown">
+                <button type="button" class="button button--secondary" @click="openRename">
+                  Rename…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+                <button v-if="selectedPdfSpot?.bindingKind === 'PAGE_BOX'" type="button" class="button button--secondary" @click="openRestyle">
+                  Text size…<span class="visually-hidden">{{ ` for ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+                <button v-if="isPdfForm || selectedField?.cardinality === 'SCALAR'" type="button" class="button button--secondary" @click="openRemove">
+                  Remove…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+              </template>
+            </span>
+          </div>
+          <p v-if="isPdfForm && selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'" class="field-hint">
+            This box belongs to the PDF’s own form, so the form sets where it is and how its text looks.
+          </p>
+          <div v-if="valueRowShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-value-label">
+            <span id="selection-bar-value-label" class="selection-bar__group-label">This value:</span>
+            <span class="selection-bar__group-buttons">
+              <template v-if="selectedState || selectedRowHasState">
+                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('ACCEPTED')">
+                  Accept<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+                </button>
+                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')">
+                  Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+                </button>
+                <button
+                  v-if="selected.rowIndex === null"
+                  class="button button--secondary"
+                  type="button"
+                  :aria-disabled="fieldActionPending === selectedPendingKey"
+                  @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
+                >
+                  Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
+                </button>
+                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()">
+                  {{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+                </button>
+              </template>
+              <button
+                v-if="evidenceSpanIdsOf(selected.fieldId).length > 0"
                 class="button button--secondary"
                 type="button"
-                :aria-disabled="fieldActionPending === selectedPendingKey"
-                @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
+                :aria-expanded="evidenceOpenFor === selected.fieldId"
+                :aria-controls="`evidence-${selected.fieldId}`"
+                @click="toggleEvidence(selected.fieldId)"
               >
-                Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
+                Where it came from ({{ evidenceSpanIdsOf(selected.fieldId).length }})
               </button>
-              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()">
-                {{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
-              </button>
-            </template>
-            <template v-if="selected.rowIndex !== null">
+            </span>
+          </div>
+          <div v-if="selected.rowIndex !== null" class="selection-bar__group" role="group" aria-labelledby="selection-bar-row-label">
+            <span id="selection-bar-row-label" class="selection-bar__group-label">This row:</span>
+            <span class="selection-bar__group-buttons">
               <button class="button button--secondary" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
                 Move up<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
               </button>
@@ -2728,8 +3571,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <button class="button button--secondary" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
                 Remove row {{ selected.rowIndex + 1 }}
               </button>
-            </template>
-            <button type="button" class="button button--secondary selection-bar__rules" @click="showAssistant()">Text style and rules</button>
+            </span>
+          </div>
+          <div class="button-row selection-bar__rules">
+            <button type="button" class="button button--secondary" @click="showAssistant()">Text style and rules</button>
           </div>
           <p v-if="selected.rowIndex !== null && rowsLocked" class="field-hint">A row is locked, so the rows cannot be changed until it is unlocked.</p>
           <p class="field-hint selection-bar__keys">{{ actionsKey }} in a fill spot comes to this bar; Escape goes back to the spot.</p>
@@ -2741,54 +3586,87 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
         <!-- Everything above the message box; on a wide page it scrolls on its own when it cannot all fit. -->
         <div class="assistant-pane__scroll">
-          <section class="rules-card" aria-labelledby="rules-heading">
-            <h3 id="rules-heading" class="rules-card__heading">Rules</h3>
-            <div class="rules-card__style">
-              <span class="rules-card__glyph" aria-hidden="true">Aa</span>
-              <div>
-                <p class="rules-card__caption">
-                  Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
-                </p>
-                <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
-                  <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
+          <!-- Focusable, so the scroll keys move the card where a short window makes it scroll on its own. -->
+          <section ref="rulesCardRef" class="rules-card" aria-labelledby="rules-heading" tabindex="0" @scroll.passive="measureRulesCard">
+            <div ref="rulesCardBodyRef" class="rules-card__body">
+              <div class="rules-card__head">
+                <h3 id="rules-heading" class="rules-card__heading">Rules</h3>
+                <button
+                  v-if="aboutThisForm.length > 0"
+                  type="button"
+                  class="button button--secondary rules-card__about"
+                  :aria-expanded="aboutThisFormOpen ? 'true' : 'false'"
+                  aria-controls="about-this-form"
+                  @click="aboutThisFormOpen = !aboutThisFormOpen"
+                >
+                  About this form
+                </button>
+              </div>
+              <ul v-if="aboutThisForm.length > 0" v-show="aboutThisFormOpen" id="about-this-form" class="rules-card__about-notes">
+                <li v-for="note in aboutThisForm" :key="note">{{ note }}</li>
+              </ul>
+              <div class="rules-card__style">
+                <span class="rules-card__glyph" aria-hidden="true">Aa</span>
+                <div>
+                  <p class="rules-card__caption">
+                    Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
+                  </p>
+                  <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
+                    <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
+                  </ul>
+                  <p v-else class="field-hint">
+                    {{
+                      selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'
+                        ? 'The PDF’s own form sets how this box’s text looks.'
+                        : layoutState === 'loading' && !layoutProblem
+                          ? 'Reading the template’s style…'
+                          : 'The template’s text style could not be read.'
+                    }}
+                  </p>
+                  <p v-if="dateExample" class="rules-card__date">
+                    Dates read like <span class="chip">{{ dateExample }}</span>
+                  </p>
+                </div>
+              </div>
+              <p v-if="styleChips.length > 0" class="field-hint rules-card__source">How values look when exported, taken from the template.</p>
+              <p v-if="!selected && requiredLabels.length > 0" class="rules-card__required">
+                <span class="rules-card__required-mark" aria-hidden="true">*</span> Required before export: {{ requiredLabels.join(', ') }}.
+              </p>
+              <p v-if="rulesLoadState === 'loading'" class="field-hint" aria-live="polite">Loading rules…</p>
+              <p v-else-if="rulesLoadState === 'error'" class="field-hint">
+                The template's rules could not be loaded.
+                <button type="button" class="link-button" @click="loadRules">Try again</button>
+              </p>
+              <template v-else-if="rulesLoadState === 'loaded'">
+                <ul v-if="shownRules.length > 0" class="rules-card__rules">
+                  <li v-for="rule in shownRules" :key="rule.id">
+                    {{ ruleWords(rule) }}
+                    <span v-if="rule.humanExplanation" class="field-hint"> {{ rule.humanExplanation }}</span>
+                  </li>
                 </ul>
                 <p v-else class="field-hint">
-                  {{ layoutState === 'loading' && !layoutProblem ? 'Reading the template’s style…' : 'The template’s text style could not be read.' }}
+                  {{
+                    selected
+                      ? `No rule of this template is about ${selectedLabel}.`
+                      : requiredLabels.length > 0
+                        ? 'The template has no other rules.'
+                        : 'The template has no rules.'
+                  }}
                 </p>
-                <p v-if="dateExample" class="rules-card__date">
-                  Dates read like <span class="chip">{{ dateExample }}</span>
+                <!-- Nothing in the app decides a suggested rule any more: say it does not apply, and promise no step to take. -->
+                <p v-if="rulesUndecided > 0" class="field-hint">
+                  {{
+                    rulesUndecided === 1
+                      ? '1 suggested rule was never turned on, so it does not apply.'
+                      : `${rulesUndecided} suggested rules were never turned on, so they do not apply.`
+                  }}
                 </p>
-              </div>
+              </template>
             </div>
-            <p v-if="styleChips.length > 0" class="field-hint rules-card__source">How values look when exported, taken from the template.</p>
-            <p v-if="!selected && requiredLabels.length > 0" class="rules-card__required">
-              <span class="rules-card__required-mark" aria-hidden="true">*</span> Required before export: {{ requiredLabels.join(', ') }}.
-            </p>
-            <p v-if="rulesLoadState === 'loading'" class="field-hint" aria-live="polite">Loading rules…</p>
-            <p v-else-if="rulesLoadState === 'error'" class="field-hint">
-              The template's rules could not be loaded.
-              <button type="button" class="link-button" @click="loadRules">Try again</button>
-            </p>
-            <template v-else-if="rulesLoadState === 'loaded'">
-              <ul v-if="shownRules.length > 0" class="rules-card__rules">
-                <li v-for="rule in shownRules" :key="rule.id">
-                  {{ ruleWords(rule) }}
-                  <span v-if="rule.humanExplanation" class="field-hint"> {{ rule.humanExplanation }}</span>
-                </li>
-              </ul>
-              <p v-else class="field-hint">
-                {{
-                  selected
-                    ? `No rule of this template is about ${selectedLabel}.`
-                    : requiredLabels.length > 0
-                      ? 'The template has no other rules.'
-                      : 'The template has no rules.'
-                }}
-              </p>
-              <p v-if="rulesUndecided > 0" class="field-hint">
-                {{ rulesUndecided }} proposed {{ rulesUndecided === 1 ? 'rule is' : 'rules are' }} waiting for a decision on the template.
-              </p>
-            </template>
+            <!-- Seen, not heard: a screen reader reads the whole card whether or not it is scrolled. -->
+            <div v-if="rulesCardMore" class="rules-card__more" aria-hidden="true">
+              <span class="rules-card__more-label" @click="scrollRulesCard">More <span class="rules-card__more-arrow">&#8595;</span></span>
+            </div>
           </section>
 
           <!-- Focusable so a keyboard can scroll the conversation even when it holds no button to land on. -->
@@ -2828,6 +3706,25 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>
                   </li>
                 </ul>
+                <ChoiceList
+                  v-if="line.choices && line.choices.length > 0 && !line.chosen"
+                  :options="line.choices.map((choice) => choice.lineText)"
+                  name="The paragraph the fill spot goes in"
+                  :id-prefix="`place-choice-${line.id}`"
+                  :allow-other="false"
+                  :busy="assistBusy"
+                  @choose="(index) => chooseLineFor(line, index)"
+                />
+                <div v-if="line.undo" class="chat-line__actions">
+                  <button
+                    type="button"
+                    class="button button--secondary"
+                    :aria-disabled="line.undone || undoingSpotChange ? 'true' : undefined"
+                    @click="undoSpotChange(line)"
+                  >
+                    {{ line.undone ? 'Undone' : 'Undo' }}<span class="visually-hidden">{{ ` ${UNDO_WHAT[line.undo.action]} ${line.undo.label}` }}</span>
+                  </button>
+                </div>
               </div>
               <!-- A reading of a source, from start to proposal. -->
               <div
@@ -2856,7 +3753,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     <ChoiceList
                       v-else
                       :options="question.candidates.map((candidate) => candidate.value)"
-                      :name="`Your answer for ${labelFor(question.fieldId)}`"
+                      :name="`Your answer for ${labelOf(question.fieldId)}`"
                       :id-prefix="`question-${question.id}`"
                       :other-label="question.candidates.length > 0 ? 'Other' : 'Your answer'"
                       other-placeholder="Type the answer…"
@@ -2934,7 +3831,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   <ul>
                     <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
                       {{ skipped.description ?? `Row ${skipped.itemIndex + 1}` }}
-                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.map(labelFor).join(', ') }})</span>
+                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.map(labelOf).join(', ') }})</span>
                     </li>
                   </ul>
                 </div>
@@ -3004,8 +3901,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             rows="2"
             maxlength="1000"
             placeholder="How may I help you?"
+            :aria-describedby="hereHint ? 'assist-composer-here' : undefined"
             @keydown="onComposerKeydown"
           ></textarea>
+          <p v-if="hereHint" id="assist-composer-here" class="composer__here">{{ hereHint }}</p>
           <div class="composer__tools">
             <button
               ref="addSourceButtonRef"
@@ -3044,9 +3943,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       :unsaved-work="hasUnsavedWork()"
       :save-before-export="saveBeforeExport"
       :reload-document="loadDocument"
-      :field-label="labelFor"
+      :field-label="labelOf"
       :editable-field-ids="editableFieldIds"
       :suggested-event-date="suggestedEventDate"
+      :pdf-only="isPdfForm"
       @go-to-field="goToFieldFromExport"
     />
     <VersionHistoryDialog
@@ -3055,11 +3955,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       :workspace-id="session.personalWorkspaceId"
       :document-id="documentId"
       :current-revision="document.currentRevision"
-      :field-label="labelFor"
+      :field-label="labelOf"
       :unsaved-work="hasUnsavedWork()"
       @restored="onVersionRestored"
       @document-changed="loadDocument"
     />
+    <PlaceSpotDialog ref="placeDialogRef" :lines="anchorLines" :send="sendNewSpot" @added="onSpotAdded" />
+    <RenameSpotDialog ref="renameDialogRef" :send="sendRename" />
+    <RemoveSpotDialog ref="removeDialogRef" :send="sendRemove" @removed="onSpotRemoved" />
   </div>
 </template>
 
@@ -3168,6 +4071,121 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-notices p {
   margin: 0;
+}
+
+/* News about an uploaded form: quiet, and out of the way of the page it sits over. */
+/*
+ * One short line over the page about the form. While it holds places Brownie found that are still to check it
+ * takes their marks' honey colours; once only notes are left it is a plain card. Its words carry it either way.
+ */
+.form-strip {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  font-size: 0.8125rem;
+}
+
+.form-strip--found {
+  border-color: var(--color-honey-line);
+  background: var(--color-honey-faint);
+}
+
+.form-strip__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.form-strip__text {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.form-strip__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.form-strip__button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.form-strip__notes {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: 1.25rem;
+}
+
+.form-strip__notes li + li {
+  margin-block-start: var(--space-1);
+}
+
+/* A newer version of the form: what it changes, and the move to it. */
+.version-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-cocoa-wash);
+  font-size: var(--font-size-sm);
+}
+
+.version-banner__text {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.version-banner__error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.version-banner__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.version-banner__buttons .button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.version-banner__moved {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.chat-line__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-block-start: var(--space-2);
+}
+
+.chat-line__actions .button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.composer__here {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.selection-bar__found {
+  margin: 0;
+  font-size: var(--font-size-sm);
 }
 
 .workspace-notice {
@@ -3421,7 +4439,19 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   gap: var(--space-3);
 }
 
-/* Before anything is filled in: a quiet note over the page, saying how it gets filled. */
+/* Before anything is filled in on a page with fill spots: one quiet line saying how it gets filled. */
+.empty-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.empty-hint strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Before anything is filled in on a page with no fill spots yet: a quiet note over it, saying how it gets filled. */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -3472,6 +4502,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 /* The bar about the selected fill spot stays in reach at the foot of the screen while the page scrolls under it. */
 .selection-bar {
+  container: selection-bar / inline-size;
   position: sticky;
   inset-block-end: var(--space-3);
   z-index: 2;
@@ -3513,6 +4544,40 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 @media (pointer: coarse) {
   .selection-bar__keys {
     display: none;
+  }
+}
+
+/*
+ * A row of the bar's buttons with the name of what they change before them. The names share a width, so
+ * the rows' buttons start in line, and buttons that wrap stay under the first; in a narrow bar the name
+ * sits over its buttons instead. The buttons are a little narrower here, so a row fits on one line.
+ */
+.selection-bar__group {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.selection-bar__group-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.selection-bar__group-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.selection-bar__group .button {
+  padding-inline: 0.625rem;
+}
+
+@container selection-bar (max-width: 24rem) {
+  .selection-bar__group {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -3589,10 +4654,36 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   font-size: 0.8125rem;
 }
 
+.rules-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+}
+
 .rules-card__heading {
-  margin: 0 0 var(--space-3);
+  margin: 0;
   font-size: var(--font-size-sm);
   font-weight: 600;
+}
+
+.rules-card__about {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+}
+
+/* The notes about the upload the form came from, between the heading and the text style. */
+.rules-card__about-notes {
+  margin: 0 0 var(--space-3);
+  padding-inline-start: var(--space-5);
+}
+
+.rules-card__about-notes li + li {
+  margin-block-start: var(--space-1);
 }
 
 /* The text style, on a tinted panel inside the card: the "Aa" tile, a caption, and the style as chips. */
@@ -3673,8 +4764,43 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   padding-inline-start: var(--space-5);
 }
 
-.rules-card > p {
+.rules-card__body > p {
   margin: var(--space-2) 0 0;
+}
+
+/*
+ * While more of the card is below its foot: a fade over the last words and a "More" hint, so a card cut off by
+ * a short window says so. It sits at the foot of the card as it scrolls, takes no room of its own, and lets
+ * every press through but the hint's own.
+ */
+.rules-card__more {
+  position: sticky;
+  inset-block-end: calc(-1 * var(--space-4));
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  block-size: 2.75rem;
+  margin: -2.75rem calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding-block-end: var(--space-1);
+  border-radius: 0 0 1rem 1rem;
+  background: linear-gradient(to bottom, transparent, var(--color-surface) 70%);
+  pointer-events: none;
+}
+
+.rules-card__more-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .rules-card .field-hint {
