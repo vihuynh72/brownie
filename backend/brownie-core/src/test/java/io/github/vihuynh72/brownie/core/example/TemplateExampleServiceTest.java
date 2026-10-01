@@ -320,11 +320,26 @@ class TemplateExampleServiceTest {
             TemplateVersion draft = draftByTemplate.get(templateId);
             return draft == null
                     ? Optional.empty()
-                    : Optional.of(new Template(templateId, WORKSPACE_ID, "Example Template", TemplateStatus.DRAFT, null, OffsetDateTime.now()));
+                    : Optional.of(new Template(templateId, WORKSPACE_ID, "Example Template", TemplateStatus.DRAFT, null, OffsetDateTime.now(), null));
         }
 
         @Override
         public List<Template> findAll(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by TemplateExampleService");
+        }
+
+        @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by TemplateExampleService");
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException("not needed by TemplateExampleService");
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
             throw new UnsupportedOperationException("not needed by TemplateExampleService");
         }
 

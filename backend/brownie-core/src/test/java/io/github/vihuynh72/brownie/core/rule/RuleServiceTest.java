@@ -232,6 +232,21 @@ class RuleServiceTest {
         }
 
         @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by RuleService");
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException("not needed by RuleService");
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException("not needed by RuleService");
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             TemplateVersion draft = drafts.get(templateId);
             return draft != null && draft.workspaceId() == workspaceId ? Optional.of(draft) : Optional.empty();

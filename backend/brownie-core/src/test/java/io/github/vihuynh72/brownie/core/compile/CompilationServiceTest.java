@@ -166,6 +166,21 @@ class CompilationServiceTest {
         }
 
         @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public Optional<TemplateVersion> findDraftVersion(long workspaceId, long userId, long templateId) {
             throw new UnsupportedOperationException();
         }
@@ -204,11 +219,26 @@ class CompilationServiceTest {
 
         @Override
         public Optional<Template> find(long workspaceId, long userId, long templateId) {
-            return Optional.of(new Template(TEMPLATE_ID, WORKSPACE_ID, "Minutes", TemplateStatus.DRAFT, null, OffsetDateTime.now()));
+            return Optional.of(new Template(TEMPLATE_ID, WORKSPACE_ID, "Minutes", TemplateStatus.DRAFT, null, OffsetDateTime.now(), null));
         }
 
         @Override
         public List<Template> findAll(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
             throw new UnsupportedOperationException();
         }
 
