@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
     <div v-if="!docked && sidebarOpen" class="shell__scrim" @click="closeSidebar" />
 
     <div class="shell__body">
-      <header class="shell__bar" :class="{ 'shell__bar--tucked': docked && sidebarOpen }">
+      <header class="shell__bar" :class="{ 'shell__bar--tucked': docked && sidebarOpen, 'shell__bar--floating': docked }">
         <button
           ref="openButtonRef"
           type="button"
@@ -163,7 +163,11 @@ onBeforeUnmount(() => {
         <RouterLink v-if="!docked" class="shell__brand" to="/">Brownie</RouterLink>
       </header>
 
-      <main id="main-content" class="shell__main">
+      <main
+        id="main-content"
+        class="shell__main"
+        :class="{ 'shell__main--under-bar': docked && !sidebarOpen, 'shell__main--after-bar': !docked }"
+      >
         <section v-if="session.status === 'error'" class="card" role="alert">
           <h1>Could not confirm your sign-in</h1>
           <p>{{ session.lastError }}</p>
@@ -183,7 +187,13 @@ onBeforeUnmount(() => {
             <p>Your session has ended, so nothing more can be saved or changed until you sign in again.</p>
             <RouterLink :to="{ name: 'signin', query: { next: router.currentRoute.value.fullPath } }">Sign in again</RouterLink>
           </section>
-          <RouterView />
+          <!--
+            A document's page is drawn afresh for each document: the same page reused for another one
+            would show the first document under the second's address and save edits to the wrong one.
+          -->
+          <RouterView v-slot="{ Component, route: shown }">
+            <component :is="Component" :key="shown.name === 'workspace' ? `document-${String(shown.params.documentId)}` : undefined" />
+          </RouterView>
         </template>
       </main>
     </div>
@@ -198,6 +208,7 @@ onBeforeUnmount(() => {
 }
 
 .shell__body {
+  position: relative;
   flex: 1;
   min-inline-size: 0;
   display: flex;
@@ -226,6 +237,19 @@ onBeforeUnmount(() => {
   padding: var(--space-3) var(--space-4) 0;
 }
 
+/*
+ * Beside a collapsed docked sidebar the only control here is the one that brings it back, so it sits
+ * in the page's top corner, as the design draws it, instead of taking a row of its own. The page
+ * below is told how much of that corner it covers (see .shell__main--under-bar).
+ */
+.shell__bar--floating {
+  position: absolute;
+  inset-block-start: var(--space-3);
+  inset-inline-start: var(--space-3);
+  z-index: 5;
+  padding: 0;
+}
+
 /* Docked and open, the sidebar carries its own collapse control and this one has nothing to say. */
 .shell__bar--tucked {
   display: none;
@@ -243,17 +267,40 @@ onBeforeUnmount(() => {
  * they actually have rather than against the window: with the sidebar
  * docked the two differ by its whole width, and the workspace's three
  * columns are the difference between fitting and painting over each other.
+ *
+ * Its padding is published as custom properties, with the corner the floating sidebar button
+ * covers, so a page that wants more of the window than a page of text needs (the workspace) can
+ * reach past the padding exactly, and can share its first row with that button. Every other page
+ * just starts below the button.
  */
 .shell__main {
+  --shell-gutter-block-start: var(--space-5);
+  --shell-gutter-inline: var(--space-5);
+  --shell-gutter-block-end: var(--space-8);
+  /* How far down, and how far in, the floating sidebar button reaches from the page's top corner. */
+  --shell-bar-block: 0px;
+  --shell-bar-inline: 0px;
+  /* How tall the bar is when it is a row of its own above this region instead (the sidebar as a drawer). */
+  --shell-bar-row: 0px;
   flex: 1;
   container-type: inline-size;
   container-name: main;
-  padding: var(--space-5) var(--space-5) var(--space-8);
+  padding: calc(var(--shell-bar-block) + var(--shell-gutter-block-start)) var(--shell-gutter-inline)
+    var(--shell-gutter-block-end);
+}
+
+.shell__main--under-bar {
+  --shell-bar-block: calc(var(--space-3) + var(--icon-button-size));
+  --shell-bar-inline: calc(var(--space-3) + var(--icon-button-size) + var(--space-2));
+}
+
+.shell__main--after-bar {
+  --shell-bar-row: calc(var(--space-3) + var(--icon-button-size));
 }
 
 @media (min-width: 40rem) {
   .shell__main {
-    padding-inline: var(--space-6);
+    --shell-gutter-inline: var(--space-6);
   }
 }
 </style>
