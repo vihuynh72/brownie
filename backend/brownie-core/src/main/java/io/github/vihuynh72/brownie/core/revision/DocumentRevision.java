@@ -23,11 +23,18 @@ import java.util.Objects;
  * not touch keeps its previous revision's own state; a field this revision
  * sets or replaces gets a fresh one (see {@code RevisionService}'s own
  * carry-forward rule for evidence, applied identically here).
+ *
+ * <p>{@code templateVersionId} is the version of the document's template
+ * this content was written against. A document can move to another version
+ * of its template (a fill spot added, renamed or taken away makes a new
+ * one), so an earlier revision is read, compiled and restored against its
+ * own version, never whichever version the document is on now.
  */
 public record DocumentRevision(
         long id,
         long workspaceId,
         long documentId,
+        long templateVersionId,
         int revisionNumber,
         Long parentRevisionId,
         DocumentContent content,

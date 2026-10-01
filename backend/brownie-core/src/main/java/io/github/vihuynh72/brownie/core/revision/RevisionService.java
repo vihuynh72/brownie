@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.core.revision;
 
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
+import io.github.vihuynh72.brownie.core.template.FieldCardinality;
+import io.github.vihuynh72.brownie.core.template.FieldDefinition;
+import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
@@ -114,13 +117,27 @@ public class RevisionService {
      * revision still agrees with base is {@link PatchFieldStatus#CLEAN};
      * one current has changed since base is {@link PatchFieldStatus#CONFLICT};
      * one current has locked is {@link PatchFieldStatus#LOCKED} regardless
-     * of whether it also conflicts. Read-only: never applies anything.
+     * of whether it also conflicts. A field the document's current template
+     * version no longer has (its fill spot was taken away after the proposal
+     * was made) is {@link PatchFieldStatus#CONFLICT} too: there is nowhere
+     * for its value to go. Read-only: never applies anything.
      */
     public PatchComparison compare(long workspaceId, long userId, long documentId, PatchProposal proposal) {
+        Document document = documentRepository.find(workspaceId, userId, documentId)
+                .orElseThrow(() -> new DocumentNotFoundException(documentId));
         DocumentRevision base = documentRepository.findRevision(workspaceId, userId, documentId, proposal.baseRevisionId())
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
-        return PatchComparator.compare(base, current, proposal.proposedValues());
+        PatchComparison comparison = PatchComparator.compare(base, current, proposal.proposedValues());
+        Set<String> defined = definedFieldIds(
+                requireActiveTemplateVersion(workspaceId, userId, document.templateId(), current.templateVersionId()));
+        if (defined.containsAll(comparison.fieldStatuses().keySet())) {
+            return comparison;
+        }
+        Map<String, PatchFieldStatus> statuses = new LinkedHashMap<>();
+        comparison.fieldStatuses().forEach((fieldId, status) ->
+                statuses.put(fieldId, defined.contains(fieldId) ? status : PatchFieldStatus.CONFLICT));
+        return new PatchComparison(statuses);
     }
 
     /**
@@ -275,7 +292,7 @@ public class RevisionService {
                     previous.authorship(), previous.evidenceSupport(), entry.getValue(), previous.review(), previous.lock()));
         }
         return documentRepository.appendRevisionIdempotently(
-                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, null,
                 current.content(), current.evidence(), nextFieldStates, editReason);
     }
 
@@ -331,7 +348,7 @@ public class RevisionService {
         DocumentRevision target = documentRepository.findRevision(workspaceId, userId, documentId, targetRevisionId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         return documentRepository.appendRevisionIdempotently(
-                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, target.templateVersionId(),
                 target.content(), target.evidence(), target.fieldStates(), editReason);
     }
 
@@ -346,9 +363,16 @@ public class RevisionService {
      * the whole group as it is now rather than mixing current and earlier
      * rows. History is never rewritten: both revisions stay as they were.
      *
+     * <p>The new revision is on the earlier revision's template version, so
+     * restoring across a fill spot being added or taken away moves the
+     * document back to the version it had then. A field that version does
+     * not define has nowhere to go and is dropped, locked or not, and is
+     * named in the result as dropped rather than kept.
+     *
      * <p>{@code editReason} null or blank records "Restored version N.". A
-     * replay of the same request recomputes the kept fields from the same two
-     * immutable revisions, so it answers exactly as the first request did.
+     * replay of the same request recomputes the kept and dropped fields from
+     * the same immutable revisions and version, so it answers exactly as the
+     * first request did.
      */
     public RevisionRestoreResult restoreRevision(
             long workspaceId,
@@ -368,21 +392,133 @@ public class RevisionService {
                     .orElseThrow(() -> new DocumentNotFoundException(documentId));
             DocumentRevision target = documentRepository.findRevision(workspaceId, userId, documentId, targetRevisionId)
                     .orElseThrow(() -> new DocumentNotFoundException(documentId));
-            return new RevisionRestoreResult(existing.get(), RestorePlan.between(replaced, target).keptLockedFieldIds());
+            TemplateVersion targetVersion = requireActiveTemplateVersion(
+                    workspaceId, userId, existing.get().document().templateId(), target.templateVersionId());
+            RestorePlan plan = RestorePlan.between(replaced, target, definedFieldIds(targetVersion));
+            return new RevisionRestoreResult(existing.get(), plan.keptLockedFieldIds(), plan.droppedFieldIds());
         }
-        documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
+        Document document = documentRepository.find(workspaceId, userId, documentId)
+                .orElseThrow(() -> new DocumentNotFoundException(documentId));
         DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
         if (current.id() != expectedRevisionId) {
             throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
         }
         DocumentRevision target = documentRepository.findRevision(workspaceId, userId, documentId, targetRevisionId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
-        RestorePlan plan = RestorePlan.between(current, target);
+        TemplateVersion targetVersion = requireActiveTemplateVersion(workspaceId, userId, document.templateId(), target.templateVersionId());
+        RestorePlan plan = RestorePlan.between(current, target, definedFieldIds(targetVersion));
         String reason = editReason == null || editReason.isBlank() ? "Restored version " + target.revisionNumber() + "." : editReason;
         DocumentMutationResult mutation = documentRepository.appendRevisionIdempotently(
                 workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                target.templateVersionId() == current.templateVersionId() ? null : target.templateVersionId(),
                 plan.content(), plan.evidence(), plan.fieldStates(), reason);
-        return new RevisionRestoreResult(mutation, plan.keptLockedFieldIds());
+        return new RevisionRestoreResult(mutation, plan.keptLockedFieldIds(), plan.droppedFieldIds());
+    }
+
+    /**
+     * Moves the document to another activated version of its own template,
+     * keeping everything it holds that the other version also has. A value
+     * is carried by its field ID, with its evidence and its state (lock
+     * included), because an ID always names the same field in every version
+     * of a template; a field the other version does not define is dropped
+     * and named in the result. A locked value is never dropped quietly: the
+     * move is refused with {@link FillSpotLockedException} naming it, and
+     * nothing is written.
+     *
+     * <p>Refused with {@link DocumentRevisionConflictException} unless
+     * {@code expectedRevisionId} is still current, and with {@link
+     * DocumentAlreadyOnTemplateVersionException} when the document is on
+     * that version already. A replay of the same request answers with the
+     * same revision and the same dropped fields.
+     */
+    public TemplateVersionMove moveToTemplateVersion(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long expectedRevisionId,
+            long targetTemplateVersionId,
+            String editReason) {
+        Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
+                workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
+        if (existing.isPresent()) {
+            DocumentRevision moved = existing.get().revision();
+            long replacedRevisionId = moved.parentRevisionId() == null ? expectedRevisionId : moved.parentRevisionId();
+            DocumentRevision replaced = documentRepository.findRevision(workspaceId, userId, documentId, replacedRevisionId)
+                    .orElseThrow(() -> new DocumentNotFoundException(documentId));
+            TemplateVersion target = requireActiveTemplateVersion(
+                    workspaceId, userId, existing.get().document().templateId(), moved.templateVersionId());
+            return new TemplateVersionMove(existing.get(), replaced.templateVersionId(), VersionCarry.of(replaced, target).droppedFieldIds());
+        }
+        Document document = documentRepository.find(workspaceId, userId, documentId)
+                .orElseThrow(() -> new DocumentNotFoundException(documentId));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
+        if (current.id() != expectedRevisionId) {
+            throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
+        }
+        TemplateVersion target = requireActiveTemplateVersion(workspaceId, userId, document.templateId(), targetTemplateVersionId);
+        if (current.templateVersionId() == target.id()) {
+            throw new DocumentAlreadyOnTemplateVersionException(documentId, target.id());
+        }
+        VersionCarry carry = VersionCarry.of(current, target);
+        for (String fieldId : carry.droppedFieldIds()) {
+            if (RestorePlan.isExplicitlyLocked(current, fieldId)) {
+                throw new FillSpotLockedException(fieldId);
+            }
+        }
+        DocumentContentValidator.validate(carry.content(), target.fieldDefinitions());
+        DocumentContentValidator.validateEvidence(carry.content(), carry.evidence());
+        DocumentMutationResult mutation = documentRepository.appendRevisionIdempotently(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, target.id(),
+                carry.content(), carry.evidence(), carry.fieldStates(), editReason);
+        return new TemplateVersionMove(mutation, current.templateVersionId(), carry.droppedFieldIds());
+    }
+
+    /** Every field ID a version defines. */
+    private static Set<String> definedFieldIds(TemplateVersion version) {
+        Set<String> ids = new TreeSet<>();
+        version.fieldDefinitions().forEach(field -> ids.add(field.fieldId()));
+        return ids;
+    }
+
+    /**
+     * What a revision's content becomes on another version: every value
+     * whose field the version defines with the same type and cardinality,
+     * with its evidence and states; every other field dropped, sorted by ID.
+     */
+    private record VersionCarry(
+            DocumentContent content,
+            Map<String, List<Long>> evidence,
+            Map<FieldItemRef, FieldState> fieldStates,
+            List<String> droppedFieldIds) {
+
+        static VersionCarry of(DocumentRevision revision, TemplateVersion target) {
+            Map<String, FieldDefinition> byId = new LinkedHashMap<>();
+            target.fieldDefinitions().forEach(field -> byId.putIfAbsent(field.fieldId(), field));
+            Map<String, FieldValue> content = new LinkedHashMap<>();
+            Map<String, List<Long>> evidence = new LinkedHashMap<>();
+            Map<FieldItemRef, FieldState> fieldStates = new LinkedHashMap<>();
+            Set<String> dropped = new TreeSet<>();
+            revision.content().fields().forEach((fieldId, value) -> {
+                FieldDefinition field = byId.get(fieldId);
+                if (field == null || !fits(field, value)) {
+                    dropped.add(fieldId);
+                    return;
+                }
+                RestorePlan.copyField(revision, fieldId, content, evidence, fieldStates);
+            });
+            return new VersionCarry(new DocumentContent(content), evidence, fieldStates, List.copyOf(dropped));
+        }
+
+        private static boolean fits(FieldDefinition field, FieldValue value) {
+            return switch (value) {
+                case FieldValue.TextValue ignored -> field.type() == FieldType.TEXT && field.cardinality() == FieldCardinality.SCALAR;
+                case FieldValue.DateValue ignored -> field.type() == FieldType.DATE && field.cardinality() == FieldCardinality.SCALAR;
+                case FieldValue.RepeatedTextValue ignored -> field.type() == FieldType.TEXT && field.cardinality() == FieldCardinality.REPEATED;
+                case FieldValue.RepeatedDateValue ignored -> field.type() == FieldType.DATE && field.cardinality() == FieldCardinality.REPEATED;
+            };
+        }
     }
 
     /** The content, evidence and states a restore appends, worked out from the current revision and the one being restored. */
@@ -390,19 +526,29 @@ public class RevisionService {
             DocumentContent content,
             Map<String, List<Long>> evidence,
             Map<FieldItemRef, FieldState> fieldStates,
-            List<String> keptLockedFieldIds) {
+            List<String> keptLockedFieldIds,
+            List<String> droppedFieldIds) {
 
-        static RestorePlan between(DocumentRevision current, DocumentRevision target) {
+        /** {@code definedFieldIds} are the fields of the restored revision's version: only those can hold a value afterwards. */
+        static RestorePlan between(DocumentRevision current, DocumentRevision target, Set<String> definedFieldIds) {
             Set<String> fieldIds = new TreeSet<>(current.content().fields().keySet());
             fieldIds.addAll(target.content().fields().keySet());
             boolean repeatedGroupLocked = fieldIds.stream()
+                    .filter(definedFieldIds::contains)
                     .anyMatch(fieldId -> isRepeated(current, fieldId) && isExplicitlyLocked(current, fieldId));
 
             Map<String, FieldValue> content = new LinkedHashMap<>();
             Map<String, List<Long>> evidence = new LinkedHashMap<>();
             Map<FieldItemRef, FieldState> fieldStates = new LinkedHashMap<>();
             List<String> kept = new ArrayList<>();
+            List<String> dropped = new ArrayList<>();
             for (String fieldId : fieldIds) {
+                if (!definedFieldIds.contains(fieldId)) {
+                    if (current.content().fields().containsKey(fieldId)) {
+                        dropped.add(fieldId);
+                    }
+                    continue;
+                }
                 boolean repeated = isRepeated(current, fieldId) || isRepeated(target, fieldId);
                 boolean keep = repeated ? repeatedGroupLocked : isExplicitlyLocked(current, fieldId);
                 if (keep) {
@@ -410,7 +556,7 @@ public class RevisionService {
                 }
                 copyField(keep ? current : target, fieldId, content, evidence, fieldStates);
             }
-            return new RestorePlan(new DocumentContent(content), evidence, fieldStates, List.copyOf(kept));
+            return new RestorePlan(new DocumentContent(content), evidence, fieldStates, List.copyOf(kept), List.copyOf(dropped));
         }
 
         private static boolean isRepeated(DocumentRevision revision, String fieldId) {
@@ -419,7 +565,7 @@ public class RevisionService {
         }
 
         /** The same test a direct edit is refused by: the field, or any item of it, is explicitly locked. */
-        private static boolean isExplicitlyLocked(DocumentRevision revision, String fieldId) {
+        static boolean isExplicitlyLocked(DocumentRevision revision, String fieldId) {
             FieldValue value = revision.content().fields().get(fieldId);
             if (value == null) {
                 return false;
@@ -435,7 +581,7 @@ public class RevisionService {
          * item; that item gets the same state any field this codebase has
          * never recorded a state for gets.
          */
-        private static void copyField(
+        static void copyField(
                 DocumentRevision source,
                 String fieldId,
                 Map<String, FieldValue> content,
@@ -485,7 +631,7 @@ public class RevisionService {
         Map<FieldItemRef, FieldState> nextFieldStates = new LinkedHashMap<>(current.fieldStates());
         nextFieldStates.put(ref, transform.apply(previous));
         return documentRepository.appendRevisionIdempotently(
-                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId,
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, null,
                 current.content(), current.evidence(), nextFieldStates, editReason);
     }
 
@@ -548,6 +694,7 @@ public class RevisionService {
                 requestHash,
                 documentId,
                 expectedRevisionId,
+                null,
                 nextContent,
                 nextEvidence,
                 nextFieldStates,
