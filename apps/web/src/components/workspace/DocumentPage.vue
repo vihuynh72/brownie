@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import FillSpot from '@/components/workspace/FillSpot.vue'
+import FillHereBar from '@/components/workspace/FillHereBar.vue'
+import SpotContextMenu from '@/components/workspace/SpotContextMenu.vue'
+import { codePointLength, type PagePoint } from '@/workspace/anchors'
+import { usePageSelection } from '@/workspace/pageSelection'
 import type { DocumentRevisionResponse, FieldStateResponse, TemplateLayoutResponse, TemplateLayoutStyleResponse } from '@/api/client'
 import {
   buildFallbackModel,
   buildPageModel,
-  labelFor,
+  fieldLabel,
   pageBaseHalfPoints,
   pageSheetCss,
   stateFromAssist,
@@ -15,8 +19,10 @@ import {
   type EditableField,
   type PageBlock,
   type PageFieldList,
+  type PageInline,
   type PageParagraph,
   type PageSpot,
+  type PageText,
 } from '@/workspace/layout'
 
 /**
@@ -45,6 +51,12 @@ const props = defineProps<{
   /** A repeated item is locked, so no row can be edited. */
   rowsLocked: boolean
   selected: { fieldId: string; rowIndex: number | null } | null
+  /** Places Brownie found itself that the person has not yet said are right; each carries a "Found by Brownie" badge. */
+  foundFieldIds?: ReadonlySet<string>
+  /** New fill spots can be added to this page: "Add a fill spot", and "Fill in here" on its text. */
+  canAddSpots?: boolean
+  /** A dialog about a new fill spot is over the page, so the "Fill in here" bar stands down. */
+  fillHereHidden?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -54,6 +66,14 @@ const emit = defineEmits<{
   /** The person asked, from a spot, for its review and lock controls. */
   'open-actions': [target: { fieldId: string; rowIndex: number | null }]
   'add-row': []
+  /** The person asked to add a fill spot from the list of the form's lines. */
+  'add-spot': []
+  /** The person chose a place on the page for a new fill spot; `returnTo` takes focus back if they change their mind. */
+  'fill-here': [point: PagePoint, returnTo: HTMLElement | null]
+  /** The latest place selected or clicked on the page: where "here" is. */
+  place: [point: PagePoint]
+  /** Words on the page were selected and the "Fill in here" bar came up beside them; the bar about a spot gives way to it. */
+  'words-selected': []
 }>()
 
 const headingId = useId()
@@ -64,6 +84,11 @@ const BULLET = String.fromCharCode(0x2022)
 const EMPTY_CSS: CssStyle = {}
 
 const fieldsById = computed(() => new Map(props.fields.map((field) => [field.fieldId, field])))
+
+/** The name the page shows for a field: the form's own label when the field has one. */
+function labelOf(fieldId: string): string {
+  return fieldLabel(fieldsById.value.get(fieldId) ?? { fieldId })
+}
 
 /** Rows are the repeated fields' items; the longest column decides, so no typed item is ever hidden. */
 const rowCount = computed(() => {
@@ -122,6 +147,62 @@ function cssFor(style: TemplateLayoutStyleResponse | null, muted = false): CssSt
 
 const ALIGNMENTS = { START: 'start', CENTER: 'center', END: 'end', JUSTIFY: 'justify' } as const
 
+// ---- A spot and the word before it ----------------------------------------------------------------
+
+/** A fill spot drawn on one line with the label before it. */
+interface KeptTogether {
+  kind: 'kept'
+  key: string
+  label: PageText
+  spot: PageSpot
+}
+
+type PageRun = PageInline | KeptTogether
+
+/**
+ * A short label at the end of a piece of text, such as "Date:" or "Date of birth:": words from a word's start
+ * up to a colon, about a few words long, with nothing between them that ends a sentence or a blank.
+ */
+const LABEL_AT_END = /(?<=^|\s)[\p{L}\p{N}][^\t_.\u2026,;!?:\uff1a]{0,30}[:\uff1a]\s*$/u
+
+/** Splits text before the short label it ends with; null when it does not end with one. Spacing alone before the label stays with it. */
+function labelAtEnd(text: string): { head: string; tail: string } | null {
+  const match = LABEL_AT_END.exec(text)
+  if (!match) return null
+  const head = text.slice(0, match.index)
+  return head.trim() === '' ? { head: '', tail: text } : { head, tail: match[0] }
+}
+
+const runsCache = new WeakMap<readonly PageInline[], PageRun[]>()
+
+/**
+ * A paragraph's pieces as the page draws them. Where a fill spot follows a short label ("Date:", "Date of
+ * birth:"), the label is drawn with the spot as one piece, so a line with no room left for the spot sends
+ * the label down with it rather than leaving it at the end of the line, where it would read as part of
+ * what comes before it (a signature line, say). Other words before a spot, such as a question, flow as
+ * they are. The label keeps where it starts in the paragraph's text, so a place chosen in it is read as
+ * before.
+ */
+function runsOf(inlines: readonly PageInline[]): PageRun[] {
+  const cached = runsCache.get(inlines)
+  if (cached) return cached
+  const runs: PageRun[] = []
+  for (const inline of inlines) {
+    const before = runs.at(-1)
+    const split = inline.kind === 'spot' && before?.kind === 'text' && before.controlNodeId === null ? labelAtEnd(before.text) : null
+    if (inline.kind !== 'spot' || before?.kind !== 'text' || split === null) {
+      runs.push(inline)
+      continue
+    }
+    runs.pop()
+    if (split.head !== '') runs.push({ ...before, text: split.head })
+    const anchorStart = before.anchorStart === null ? null : before.anchorStart + codePointLength(split.head)
+    runs.push({ kind: 'kept', key: `${inline.key}/kept`, label: { ...before, key: `${before.key}/last`, text: split.tail, anchorStart }, spot: inline })
+  }
+  runsCache.set(inlines, runs)
+  return runs
+}
+
 function paragraphCss(paragraph: PageParagraph): CssStyle {
   const css: CssStyle = {}
   if (paragraph.alignment) css.textAlign = ALIGNMENTS[paragraph.alignment]
@@ -177,7 +258,7 @@ function spotProps(spot: PageSpot, muted = false) {
     rowIndex: spot.rowIndex,
     type: fieldsById.value.get(spot.fieldId)?.type ?? 'TEXT',
     value: valueOf(spot),
-    label: labelFor(spot.fieldId),
+    label: labelOf(spot.fieldId),
     placeholder: spot.placeholder,
     styleCss: cssFor(spot.style, muted),
     required: props.requiredFieldIds.has(spot.fieldId),
@@ -188,6 +269,8 @@ function spotProps(spot: PageSpot, muted = false) {
     attention: needsRowValue(spot),
     inputId: spot.inputId,
     keysHintId,
+    // A repeated place is marked once, on its first row, rather than on every row of the table.
+    found: (spot.rowIndex === null || spot.rowIndex === 0) && (props.foundFieldIds?.has(spot.fieldId) ?? false),
   }
 }
 
@@ -212,6 +295,43 @@ function onSpotActions(spot: PageSpot): void {
 }
 
 const sheet = ref<HTMLElement | null>(null)
+const pageBody = ref<HTMLElement | null>(null)
+
+// ---- Choosing a place on the page -------------------------------------------------------------------
+
+const DATA_PART = { header: 'HEADER', main: 'MAIN_DOCUMENT', footer: 'FOOTER' } as const
+
+const {
+  bar: fillHereBar,
+  menu: pageMenu,
+  message: pageMessage,
+  onContextMenu,
+  onPointerDown,
+  fillHereFromBar,
+  dismissBar,
+  resume: resumeFillHere,
+  closeMenu,
+  menuFillHere,
+  menuCopy,
+} = usePageSelection({
+  sheet,
+  body: pageBody,
+  enabled: () => props.canAddSpots === true,
+  fillHere: (point, returnTo) => emit('fill-here', point, returnTo),
+  placeSeen: (point) => emit('place', point),
+  paused: () => props.fillHereHidden === true,
+  // Anything the workspace lays over the page, such as the bar about the selected spot.
+  covers: () => Array.from(window.document.querySelectorAll('[data-covers-page]')),
+  barShown: () => emit('words-selected'),
+})
+
+// The dialog over the page has closed: the bar comes back beside the words, or goes if none are selected.
+watch(
+  () => props.fillHereHidden === true,
+  (hidden, wasHidden) => {
+    if (wasHidden && !hidden) resumeFillHere()
+  },
+)
 
 function focusSpot(inputId: string): void {
   const target = window.document.getElementById(inputId)
@@ -317,19 +437,24 @@ watch(model, () => void nextTick(measure))
     <p v-if="!layout && layoutState === 'unavailable'" class="field-hint document-page__notice" role="status">
       {{ layoutProblem ? `${layoutProblem} Its fill spots are listed instead.` : "Brownie could not draw this template's layout, so its fill spots are listed instead." }}
     </p>
-    <div v-if="targets.length > 0" class="document-page__progress">
-      <p class="document-page__progress-text">{{ progressText }}</p>
+    <div v-if="targets.length > 0 || canAddSpots" class="document-page__progress">
+      <p v-if="targets.length > 0" class="document-page__progress-text">{{ progressText }}</p>
       <!-- What the marks on the page mean; each spot also says it in words to assistive technology. -->
       <p v-if="hasRequiredTarget || hasAssistValue" class="document-page__legend">
         <span v-if="hasRequiredTarget"><span class="document-page__legend-required" aria-hidden="true">*</span> Required before export</span>
         <span v-if="hasAssistValue"><span class="document-page__legend-assist" aria-hidden="true">Aa</span> Filled by Brownie</span>
       </p>
-      <button v-if="hasEmptyTarget" type="button" class="button button--secondary" @click="focusNextEmpty">Next empty spot</button>
+      <span class="document-page__progress-actions">
+        <button v-if="hasEmptyTarget" type="button" class="button button--secondary" @click="focusNextEmpty">Next empty spot</button>
+        <button v-if="canAddSpots" type="button" class="button button--secondary" @click="emit('add-spot')">Add a fill spot</button>
+      </span>
     </div>
+    <!-- Why a place chosen on the page cannot take a fill spot; in the tree while spots can be added, so it is heard when it changes. -->
+    <p v-if="canAddSpots" class="document-page__tool-message" :class="{ 'visually-hidden': !pageMessage }" role="status">{{ pageMessage }}</p>
     <p :id="keysHintId" class="visually-hidden">{{ actionsKey }} moves to the bar about this spot.</p>
 
-    <div class="document-page__body">
-      <div ref="sheet" class="document-page__sheet" :style="sheetCss">
+    <div ref="pageBody" class="document-page__body">
+      <div ref="sheet" class="document-page__sheet" :style="sheetCss" @contextmenu="onContextMenu" @pointerdown="onPointerDown">
         <p v-if="sections.length === 0" class="field-hint" :role="layoutState === 'loading' ? 'status' : undefined">
           {{ layoutState === 'loading' ? 'Loading the page…' : 'This document has no fill spots.' }}
         </p>
@@ -344,14 +469,14 @@ watch(model, () => void nextTick(measure))
               <p class="field-hint">The template has no marked place for these.</p>
             </template>
             <p v-for="spot in section.list.scalars" :key="spot.key" class="document-page__paragraph">
-              <span class="document-page__field-label">{{ labelFor(spot.fieldId) }}:</span>
+              <span class="document-page__field-label">{{ labelOf(spot.fieldId) }}:</span>
               <FillSpot v-bind="spotProps(spot)" @update:value="onSpotInput(spot, $event)" @focus="onSpotFocus(spot)" @actions="onSpotActions(spot)" />
             </p>
             <div v-if="section.list.columns.length > 0" class="document-page__table-wrap">
               <table class="document-page__table">
                 <thead>
                   <tr>
-                    <th v-for="fieldId in section.list.columns" :key="fieldId" scope="col">{{ labelFor(fieldId) }}</th>
+                    <th v-for="fieldId in section.list.columns" :key="fieldId" scope="col">{{ labelOf(fieldId) }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -386,14 +511,24 @@ watch(model, () => void nextTick(measure))
                 class="document-page__paragraph"
                 :class="{ 'document-page__no-rows': block.noRows }"
                 :style="paragraphCss(block)"
+                :data-part="DATA_PART[section.place]"
+                :data-node-id="block.nodeId ?? undefined"
+                :data-anchorable="block.anchorable ? 'true' : 'false'"
+                :data-anchor-hash="block.anchorTextHash ?? undefined"
+                :data-repeats="block.repeats ? 'true' : undefined"
               >
                 <template v-if="block.noRows">No rows yet.</template>
                 <template v-else>
                   <span v-if="block.listLevel !== null" class="document-page__bullet" aria-hidden="true">{{ BULLET }}</span>
-                  <template v-for="inline in block.inlines" :key="inline.key">
-                    <span v-if="inline.kind === 'text'" class="document-page__text" :style="cssFor(inline.style, section.place !== 'main')">{{
-                      inline.text
-                    }}</span>
+                  <template v-for="inline in runsOf(block.inlines)" :key="inline.key">
+                    <span
+                      v-if="inline.kind === 'text'"
+                      class="document-page__text"
+                      :style="cssFor(inline.style, section.place !== 'main')"
+                      :data-anchor-start="inline.anchorStart ?? undefined"
+                      :data-control-node-id="inline.controlNodeId ?? undefined"
+                      >{{ inline.text }}</span
+                    >
                     <FillSpot
                       v-else-if="inline.kind === 'spot'"
                       v-bind="spotProps(inline, section.place !== 'main')"
@@ -401,6 +536,18 @@ watch(model, () => void nextTick(measure))
                       @focus="onSpotFocus(inline)"
                       @actions="onSpotActions(inline)"
                     />
+                    <span v-else-if="inline.kind === 'kept'" class="document-page__kept"
+                      ><span
+                        class="document-page__text"
+                        :style="cssFor(inline.label.style, section.place !== 'main')"
+                        :data-anchor-start="inline.label.anchorStart ?? undefined"
+                        >{{ inline.label.text }}</span
+                      ><FillSpot
+                        v-bind="spotProps(inline.spot, section.place !== 'main')"
+                        @update:value="onSpotInput(inline.spot, $event)"
+                        @focus="onSpotFocus(inline.spot)"
+                        @actions="onSpotActions(inline.spot)"
+                    /></span>
                     <span v-else class="document-page__image" role="img" aria-label="Image from the template">Image</span>
                   </template>
                 </template>
@@ -419,17 +566,24 @@ watch(model, () => void nextTick(measure))
                             class="document-page__paragraph"
                             :class="{ 'document-page__no-rows': paragraph.noRows }"
                             :style="paragraphCss(paragraph)"
+                            :data-part="DATA_PART[section.place]"
+                            :data-node-id="paragraph.nodeId ?? undefined"
+                            :data-anchorable="paragraph.anchorable ? 'true' : 'false'"
+                            :data-anchor-hash="paragraph.anchorTextHash ?? undefined"
+                            :data-repeats="paragraph.repeats ? 'true' : undefined"
                           >
                             <template v-if="paragraph.noRows">No rows yet.</template>
                             <template v-else>
                               <span v-if="paragraph.listLevel !== null" class="document-page__bullet" aria-hidden="true">{{
                                 BULLET
                               }}</span>
-                              <template v-for="inline in paragraph.inlines" :key="inline.key">
+                              <template v-for="inline in runsOf(paragraph.inlines)" :key="inline.key">
                                 <span
                                   v-if="inline.kind === 'text'"
                                   class="document-page__text"
                                   :style="cssFor(inline.style, section.place !== 'main')"
+                                  :data-anchor-start="inline.anchorStart ?? undefined"
+                                  :data-control-node-id="inline.controlNodeId ?? undefined"
                                   >{{ inline.text }}</span
                                 >
                                 <FillSpot
@@ -439,6 +593,18 @@ watch(model, () => void nextTick(measure))
                                   @focus="onSpotFocus(inline)"
                                   @actions="onSpotActions(inline)"
                                 />
+                                <span v-else-if="inline.kind === 'kept'" class="document-page__kept"
+                                  ><span
+                                    class="document-page__text"
+                                    :style="cssFor(inline.label.style, section.place !== 'main')"
+                                    :data-anchor-start="inline.label.anchorStart ?? undefined"
+                                    >{{ inline.label.text }}</span
+                                  ><FillSpot
+                                    v-bind="spotProps(inline.spot, section.place !== 'main')"
+                                    @update:value="onSpotInput(inline.spot, $event)"
+                                    @focus="onSpotFocus(inline.spot)"
+                                    @actions="onSpotActions(inline.spot)"
+                                /></span>
                                 <span v-else class="document-page__image" role="img" aria-label="Image from the template">Image</span>
                               </template>
                             </template>
@@ -470,7 +636,29 @@ watch(model, () => void nextTick(measure))
           @click="focusSpot(marker.id)"
         ></span>
       </div>
+
+      <!--
+        Kept, not removed, while a dialog is over the page: focus goes back to its button when the dialog closes,
+        and the words it was about are selected again. Otherwise it is there only while words on the page are.
+      -->
+      <FillHereBar
+        v-if="fillHereBar && canAddSpots"
+        v-show="!fillHereHidden"
+        :top="fillHereBar.top"
+        :left="fillHereBar.left"
+        @fill-here="fillHereFromBar"
+        @dismiss="dismissBar"
+      />
     </div>
+    <SpotContextMenu
+      v-if="pageMenu"
+      :x="pageMenu.x"
+      :y="pageMenu.y"
+      :can-copy="pageMenu.copyText !== ''"
+      @fill-here="menuFillHere"
+      @copy="menuCopy"
+      @close="closeMenu"
+    />
   </section>
 </template>
 
@@ -517,6 +705,14 @@ watch(model, () => void nextTick(measure))
   margin: 0;
 }
 
+.document-page__tool-message:not(.visually-hidden) {
+  inline-size: 100%;
+  max-inline-size: 50rem;
+  margin: 0 auto;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
 .document-page__legend {
   display: flex;
   flex-wrap: wrap;
@@ -537,8 +733,14 @@ watch(model, () => void nextTick(measure))
   color: var(--color-text);
 }
 
-.document-page__progress .button {
+.document-page__progress-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   margin-inline-start: auto;
+}
+
+.document-page__progress .button {
   min-block-size: 1.75rem;
   padding: 0 var(--space-3);
   border-color: var(--color-hairline);
@@ -548,6 +750,7 @@ watch(model, () => void nextTick(measure))
 }
 
 .document-page__body {
+  position: relative;
   display: flex;
   justify-content: center;
   gap: var(--space-5);
@@ -606,6 +809,15 @@ watch(model, () => void nextTick(measure))
 /* The template's own spacing (several spaces between labels, say) is part of how it reads. */
 .document-page__text {
   white-space: pre-wrap;
+}
+
+/*
+ * A fill spot and the label before it, as one piece of the line: where the line has no room left for the
+ * spot, the label moves down with it. No wider than the line, so a long one still wraps inside itself.
+ */
+.document-page__kept {
+  display: inline-block;
+  max-inline-size: 100%;
 }
 
 .document-page__bullet {

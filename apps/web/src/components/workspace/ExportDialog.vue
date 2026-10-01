@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import CalendarEventPanel from '@/components/CalendarEventPanel.vue'
 import DriveSavePanel from '@/components/DriveSavePanel.vue'
@@ -54,6 +54,8 @@ const props = defineProps<{
   editableFieldIds: ReadonlySet<string>
   /** A date the document holds, offered as the day of a calendar event. */
   suggestedEventDate: string | null
+  /** The document is a PDF form: it is filled and exported as a PDF, and never becomes a Word file. */
+  pdfOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -81,7 +83,7 @@ const manifest = ref<ValidationManifestResponse | null>(null)
 /** Set while a check the person asked for runs, so the button they pressed stays where their focus is. */
 const checkAgainPressed = ref(false)
 
-const exportFormat = ref<ExportFormat>('BOTH')
+const exportFormat = ref<ExportFormat>(props.pdfOnly ? 'PDF' : 'BOTH')
 const approval = ref<ExportApprovalResponse | null>(null)
 const receipt = ref<ExportReceiptResponse | null>(null)
 const exporting = ref(false)
@@ -102,6 +104,17 @@ const FORMAT_CHOICES: readonly { value: ExportFormat; label: string }[] = [
   { value: 'PDF', label: 'PDF' },
   { value: 'BOTH', label: 'Word and PDF' },
 ]
+
+/** The formats this document can be exported in: a PDF form only as a PDF. */
+const formatChoices = computed(() => (props.pdfOnly ? FORMAT_CHOICES.filter((choice) => choice.value === 'PDF') : FORMAT_CHOICES))
+
+watch(
+  () => props.pdfOnly === true,
+  (pdfOnly) => {
+    if (pdfOnly) exportFormat.value = 'PDF'
+    else if (exportFormat.value === 'PDF' && approval.value === null) exportFormat.value = 'BOTH'
+  },
+)
 
 const busy = computed(() => stage.value === 'saving' || stage.value === 'checking' || exporting.value)
 
@@ -193,13 +206,16 @@ function baseFileName(title: string): string {
   return cleaned === '' ? 'Document' : cleaned
 }
 
-/** The files the export offers, the same ones its download links name: the Word file only when no PDF stands in for it. */
+/**
+ * The files the export offers, the same ones its download links name: the Word file only when no PDF stands in for it.
+ * A PDF form's export has no Word file at all.
+ */
 const exportedFiles = computed<ExportedFile[]>(() => {
   const made = receipt.value
   if (!made) return []
   const name = baseFileName(props.documentTitle)
   const files: ExportedFile[] = []
-  if (made.format !== 'PDF' || made.pdfArtifactId == null) {
+  if (made.docxArtifactId != null && (made.format !== 'PDF' || made.pdfArtifactId == null)) {
     files.push({
       kind: 'DOCX',
       url: artifactDownloadUrl(props.workspaceId, made.docxArtifactId),
@@ -240,6 +256,48 @@ const shareableFiles = computed<ExportedFile[]>(() => {
     }
   })
 })
+
+// ---- Where the dialog scrolls ------------------------------------------------------------------
+//
+// On a short window the body scrolls between the title and the foot, which both stay in view. While there is
+// more below, the body fades out at its foot and the foot says "More below", so nothing reads as cut off.
+
+const body = ref<HTMLElement | null>(null)
+const content = ref<HTMLElement | null>(null)
+const moreBelow = ref(false)
+
+function measureBody(): void {
+  const element = body.value
+  const more = element !== null && element.scrollHeight - element.scrollTop - element.clientHeight > 4
+  // Set only when it changes; what it changes is drawn over the layout, never in it, so measuring never resizes anything.
+  if (more !== moreBelow.value) moreBelow.value = more
+}
+
+function scrollBodyDown(): void {
+  const element = body.value
+  if (!element || typeof element.scrollBy !== 'function') return
+  const still = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  element.scrollBy({ top: element.clientHeight * 0.8, behavior: still ? 'auto' : 'smooth' })
+}
+
+let bodyObserver: ResizeObserver | null = null
+watch(
+  [body, content],
+  ([box, inside]) => {
+    bodyObserver?.disconnect()
+    bodyObserver = null
+    moreBelow.value = false
+    if (!box) return
+    measureBody()
+    if (typeof ResizeObserver === 'undefined') return
+    // The box changes with the window; what is in it as the check, the export and the Google panels arrive.
+    bodyObserver = new ResizeObserver(() => measureBody())
+    bodyObserver.observe(box)
+    if (inside) bodyObserver.observe(inside)
+  },
+  { flush: 'post' },
+)
+onBeforeUnmount(() => bodyObserver?.disconnect())
 
 // ---- Opening and closing ---------------------------------------------------------------------
 
@@ -423,7 +481,7 @@ async function hydrate(): Promise<void> {
   }
   if (checkedAt !== checkEpoch || exportedAt !== exportEpoch || approved?.validationManifestId !== found.id) return
   // The format shown is the one approved, so the choice on screen matches the files offered below it.
-  if (FORMAT_CHOICES.some((choice) => choice.value === approved.format)) exportFormat.value = approved.format
+  if (formatChoices.value.some((choice) => choice.value === approved.format)) exportFormat.value = approved.format
   approval.value = approved
 
   try {
@@ -631,108 +689,127 @@ async function share(): Promise<void> {
         </button>
       </header>
 
-      <div class="export-dialog__body">
-        <div class="export-dialog__check">
-          <p class="export-dialog__status" aria-live="polite" aria-atomic="true">{{ status }}</p>
-          <p v-if="saveRefused" class="field-error" role="alert">
-            Your latest changes are not saved, so this version cannot be exported yet. Close this and check the message on
-            the page.
-          </p>
-
-          <template v-if="manifest">
-            <p v-if="blocking" class="field-error export-dialog__verdict" role="alert">
-              This version cannot be exported yet. Fix what is listed below, then check again.
+      <div ref="body" class="export-dialog__body" :class="{ 'export-dialog__body--more-below': moreBelow }" @scroll.passive="measureBody">
+        <div ref="content" class="export-dialog__content">
+          <div class="export-dialog__check">
+            <p class="export-dialog__status" aria-live="polite" aria-atomic="true">{{ status }}</p>
+            <p v-if="saveRefused" class="field-error" role="alert">
+              Your latest changes are not saved, so this version cannot be exported yet. Close this and check the message on
+              the page.
             </p>
-            <p class="field-hint">{{ countSentence }}</p>
 
-            <ul v-if="findings.length > 0" class="export-dialog__findings">
-              <!-- The spaces between the parts are written out: the layout drops them, but a screen reader reading the row needs them. -->
-              <li v-for="(finding, index) in findings" :key="index" class="export-dialog__finding">
-                <span
-                  class="export-dialog__severity"
-                  :class="{ 'export-dialog__severity--blocking': finding.severity === 'BLOCKING' }"
-                  >{{ severityWord(finding.severity) }}</span
-                >{{ ' ' }}
-                <span class="export-dialog__finding-text">
-                  <span v-if="finding.fieldId" class="export-dialog__field">{{ fieldLabel(finding.fieldId) }}</span>{{ ' ' }}
-                  <span>{{ finding.message }}</span>
-                </span>{{ ' ' }}
-                <button
-                  v-if="finding.fieldId && editableFieldIds.has(finding.fieldId)"
-                  type="button"
-                  class="button button--secondary export-dialog__go"
-                  @click="emit('go-to-field', finding.fieldId)"
-                >
-                  Go to {{ fieldLabel(finding.fieldId) }}
-                </button>
-              </li>
-            </ul>
-          </template>
+            <template v-if="manifest">
+              <p v-if="blocking" class="field-error export-dialog__verdict" role="alert">
+                This version cannot be exported yet. Fix what is listed below, then check again.
+              </p>
+              <p class="field-hint">{{ countSentence }}</p>
 
-          <p v-if="checkError" class="field-error" role="alert">{{ checkError }}</p>
-          <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
-          <button
-            v-if="checkAgainOffered"
-            ref="checkAgainButton"
-            type="button"
-            class="button button--secondary export-dialog__check-again"
-            :aria-disabled="busy"
-            @click="checkAgain"
-          >
-            Check again
-          </button>
-        </div>
-
-        <div v-if="manifest && !blocking" class="export-dialog__export">
-          <fieldset class="export-dialog__formats">
-            <legend class="field-label">Format</legend>
-            <label v-for="choice in FORMAT_CHOICES" :key="choice.value" class="export-dialog__format">
-              <input v-model="exportFormat" type="radio" name="export-format" :value="choice.value" @change="formatChanged" />
-              {{ choice.label }}
-            </label>
-          </fieldset>
-
-          <button
-            type="button"
-            class="button button--primary export-dialog__approve"
-            :aria-disabled="busy"
-            @click="approveAndExport"
-          >
-            {{ exporting ? 'Exporting…' : 'Approve and export' }}
-          </button>
-          <p v-if="exportError" class="field-error" role="alert">{{ exportError }}</p>
-
-          <div v-if="receipt" class="export-dialog__files">
-            <ul class="export-dialog__links">
-              <li v-for="file in exportedFiles" :key="file.kind">
-                <a class="button button--secondary" :href="file.url" download>
-                  <AppIcon name="download" :size="18" />
-                  {{ file.linkText }}
-                </a>
-              </li>
-            </ul>
-            <template v-if="shareableFiles.length > 0">
-              <button type="button" class="button button--secondary" :aria-disabled="sharing" @click="share">
-                <AppIcon name="share" :size="18" />
-                Share…
-              </button>
-              <p class="field-hint">Your device shares the file. Brownie sends nothing anywhere.</p>
+              <ul v-if="findings.length > 0" class="export-dialog__findings">
+                <!-- The spaces between the parts are written out: the layout drops them, but a screen reader reading the row needs them. -->
+                <li v-for="(finding, index) in findings" :key="index" class="export-dialog__finding">
+                  <span
+                    class="export-dialog__severity"
+                    :class="{ 'export-dialog__severity--blocking': finding.severity === 'BLOCKING' }"
+                    >{{ severityWord(finding.severity) }}</span
+                  >{{ ' ' }}
+                  <span class="export-dialog__finding-text">
+                    <span v-if="finding.fieldId" class="export-dialog__field">{{ fieldLabel(finding.fieldId) }}</span>{{ ' ' }}
+                    <span>{{ finding.message }}</span>
+                  </span>{{ ' ' }}
+                  <button
+                    v-if="finding.fieldId && editableFieldIds.has(finding.fieldId)"
+                    type="button"
+                    class="button button--secondary export-dialog__go"
+                    @click="emit('go-to-field', finding.fieldId)"
+                  >
+                    Go to {{ fieldLabel(finding.fieldId) }}
+                  </button>
+                </li>
+              </ul>
             </template>
-            <p v-if="shareError" class="field-error" role="alert">{{ shareError }}</p>
+
+            <p v-if="checkError" class="field-error" role="alert">{{ checkError }}</p>
+            <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
+            <button
+              v-if="checkAgainOffered"
+              ref="checkAgainButton"
+              type="button"
+              class="button button--secondary export-dialog__check-again"
+              :aria-disabled="busy"
+              @click="checkAgain"
+            >
+              Check again
+            </button>
+          </div>
+
+          <div v-if="manifest && !blocking" class="export-dialog__export">
+            <fieldset v-if="!pdfOnly" class="export-dialog__formats">
+              <legend class="field-label">Format</legend>
+              <label v-for="choice in formatChoices" :key="choice.value" class="export-dialog__format">
+                <input v-model="exportFormat" type="radio" name="export-format" :value="choice.value" @change="formatChanged" />
+                {{ choice.label }}
+              </label>
+            </fieldset>
+            <div v-else class="export-dialog__pdf-only">
+              <p class="field-label">Format: PDF</p>
+              <p class="field-hint">This is a PDF form, so Brownie fills it and exports it as a PDF. It does not turn it into a Word file.</p>
+            </div>
+
+            <!-- Once exported, the download is what comes next, so it becomes the main button and this one steps back. -->
+            <button
+              type="button"
+              class="button export-dialog__approve"
+              :class="receipt ? 'button--secondary' : 'button--primary'"
+              :aria-disabled="busy"
+              @click="approveAndExport"
+            >
+              {{ exporting ? 'Exporting…' : 'Approve and export' }}
+            </button>
+            <p v-if="exportError" class="field-error" role="alert">{{ exportError }}</p>
+
+            <div v-if="receipt" class="export-dialog__files">
+              <ul class="export-dialog__links">
+                <li v-for="file in exportedFiles" :key="file.kind">
+                  <a class="button button--primary" :href="file.url" download>
+                    <AppIcon name="download" :size="18" />
+                    {{ file.linkText }}
+                  </a>
+                </li>
+              </ul>
+              <template v-if="shareableFiles.length > 0">
+                <button type="button" class="button button--secondary" :aria-disabled="sharing" @click="share">
+                  <AppIcon name="share" :size="18" />
+                  Share…
+                </button>
+                <p class="field-hint">Your device shares the file. Brownie sends nothing anywhere.</p>
+              </template>
+              <p v-if="shareError" class="field-error" role="alert">{{ shareError }}</p>
+            </div>
+          </div>
+
+          <div class="export-dialog__elsewhere">
+            <DriveSavePanel :workspace-id="workspaceId" :document-id="documentId" :receipt="receipt" :unsaved-work="unsavedWork" />
+            <CalendarEventPanel
+              :workspace-id="workspaceId"
+              :document-id="documentId"
+              :document-title="documentTitle"
+              :suggested-date="suggestedEventDate"
+              :unsaved-work="unsavedWork"
+            />
           </div>
         </div>
-
-        <div class="export-dialog__elsewhere">
-          <DriveSavePanel :workspace-id="workspaceId" :document-id="documentId" :receipt="receipt" :unsaved-work="unsavedWork" />
-          <CalendarEventPanel
-            :workspace-id="workspaceId"
-            :document-id="documentId"
-            :document-title="documentTitle"
-            :suggested-date="suggestedEventDate"
-            :unsaved-work="unsavedWork"
-          />
-        </div>
       </div>
+
+      <!--
+        Always in view under the body: a way out, and, while the body has more below, a sign that it scrolls. Called
+        Done, so it is never mistaken for the Close button at the top, which a test or a person may name exactly.
+      -->
+      <footer class="export-dialog__footer">
+        <span class="export-dialog__more" :class="{ 'export-dialog__more--shown': moreBelow }" aria-hidden="true" @click="scrollBodyDown">
+          More below <span class="export-dialog__more-arrow">&#8595;</span>
+        </span>
+        <button type="button" class="button button--secondary export-dialog__done" @click="close">Done</button>
+      </footer>
     </template>
   </dialog>
 </template>
@@ -807,9 +884,55 @@ async function share(): Promise<void> {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-4) var(--space-5) var(--space-5);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+
+/* More below: the body fades out at its foot, so the last thing showing reads as going on, not cut off. */
+.export-dialog__body--more-below {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+
+.export-dialog__content {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+.export-dialog__footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--color-hairline);
+}
+
+/* Kept in its place while hidden, so the foot never changes size as the body scrolls. */
+.export-dialog__more {
+  visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.export-dialog__more--shown {
+  visibility: visible;
+}
+
+.export-dialog__done {
+  min-block-size: 2.25rem;
+  margin-inline-start: auto;
+  border-radius: var(--radius-pill);
 }
 
 .export-dialog__body p {
@@ -905,6 +1028,10 @@ async function share(): Promise<void> {
   margin-block-end: var(--space-1);
 }
 
+.export-dialog__pdf-only p {
+  margin: 0;
+}
+
 .export-dialog__format {
   display: flex;
   align-items: center;
@@ -916,12 +1043,10 @@ async function share(): Promise<void> {
   cursor: progress;
 }
 
-/* The same rounded, compact buttons as the workspace behind the window. */
-.export-dialog .button {
-  min-block-size: 2.25rem;
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
-}
+/*
+ * The dialog's own buttons take the shared button's size and shape, as the Google panels below them do, so
+ * the buttons in the one window read as one set.
+ */
 
 .export-dialog__links {
   list-style: none;
@@ -950,7 +1075,8 @@ async function share(): Promise<void> {
   }
 
   .export-dialog__header,
-  .export-dialog__body {
+  .export-dialog__body,
+  .export-dialog__footer {
     padding-inline: var(--space-4);
   }
 }
