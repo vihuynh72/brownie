@@ -265,12 +265,7 @@ class RuleController {
         }
 
         private static TemplateController.BindingRequest bindingRequestFrom(FieldBindingTarget target) {
-            return switch (target) {
-                case FieldBindingTarget.ContentControlTag(String tag) ->
-                        new TemplateController.BindingRequest(TemplateController.BindingKind.CONTENT_CONTROL_TAG, tag, null, null);
-                case FieldBindingTarget.StructuralNode(var part, String nodeId) ->
-                        new TemplateController.BindingRequest(TemplateController.BindingKind.STRUCTURAL_NODE, null, part, nodeId);
-            };
+            return TemplateController.BindingRequest.from(target);
         }
     }
 
