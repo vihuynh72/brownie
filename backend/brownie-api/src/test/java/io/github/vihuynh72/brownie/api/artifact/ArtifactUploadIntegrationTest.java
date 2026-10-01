@@ -49,6 +49,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -610,7 +611,8 @@ class ArtifactUploadIntegrationTest {
                         .cookie(owner)
                         .with(csrf())
                         .content(binary))
-                .andExpect(status().isUnsupportedMediaType());
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.reason").value("NOT_A_DOCUMENT"));
     }
 
     @Test
@@ -627,15 +629,77 @@ class ArtifactUploadIntegrationTest {
                         .cookie(owner)
                         .with(csrf())
                         .content(plainZip))
-                .andExpect(status().isUnsupportedMediaType());
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.reason").value("NOT_A_DOCUMENT"));
     }
 
+    /** The least a package needs to be a Word document: its main part, named by its relationships and typed by its manifest. */
     private static byte[] minimalOoxmlPackage() throws java.io.IOException {
         return zipOf(java.util.Map.of(
                 "[Content_Types].xml",
-                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>",
+                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                        + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                        + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                        + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument"
+                        + ".wordprocessingml.document.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"word/document.xml\"/></Relationships>",
                 "word/document.xml",
                 "<w:document/>"));
+    }
+
+    /** A workbook renamed .docx is told it is a spreadsheet, and recorded as any other unsupported file. */
+    @Test
+    void aRefusalCarriesTheReasonAPersonIsToldAgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-workbook-upload");
+        long workspaceId = workspaceIdFor("subject-workbook-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        byte[] workbook = zipOf(java.util.Map.of(
+                "[Content_Types].xml",
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\""
+                        + " ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"xl/workbook.xml\"/></Relationships>",
+                "xl/workbook.xml",
+                "<workbook/>"));
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .content(workbook))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"))
+                .andExpect(jsonPath("$.reason").value("SPREADSHEET"));
+
+        Artifact rejected = artifactRepository.find(workspaceId, userIdFor("subject-workbook-upload"), artifactId).orElseThrow();
+        assertThat(rejected.status()).isEqualTo(ArtifactStatus.REJECTED);
+        assertThat(rejected.rejectionReason()).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    /** RTF is its own format now, accepted and scanned like any upload, and read only through a Word copy made from it. */
+    @Test
+    void anRtfFileIsAcceptedAsRtfButNotReadForStructureAgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-rtf-upload");
+        long workspaceId = workspaceIdFor("subject-rtf-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        JsonNode uploaded = uploadContent(owner, workspaceId, artifactId,
+                "{\\rtf1\\ansi {\\fonttbl {\\f0 Times;}} Name: ________\\par}".getBytes(StandardCharsets.US_ASCII));
+        assertThat(uploaded.get("detectedMediaType").asText()).isEqualTo("RTF");
+        assertThat(complete(owner, workspaceId, artifactId).get("status").asText()).isEqualTo("READY");
+
+        mockMvc.perform(post("/api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/extraction", workspaceId, artifactId)
+                        .cookie(owner)
+                        .with(csrf()))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("NEEDS_FILLABLE_COPY"));
     }
 
     private static byte[] zipOf(java.util.Map<String, String> entries) throws java.io.IOException {
