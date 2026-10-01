@@ -3,6 +3,9 @@ package io.github.vihuynh72.brownie.api.usage;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
@@ -33,17 +36,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -72,56 +67,38 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * what the provider billed; an allowance that is used up refuses the next
  * request before it is sent, not after; and nobody learns what anybody
  * else spent. The limits are made tiny here so a few cents' worth of seeded
- * rows reaches them.
+ * rows reaches them, and the model is named here rather than left to the
+ * environment, so the amounts below are always that model's prices.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = {
         "spring.autoconfigure.exclude=",
+        "brownie.ai.openai.model=gpt-6-luna",
         "brownie.usage.workspace-monthly-limit-usd=0.05",
         "brownie.usage.global-monthly-limit-usd=0.08"})
-@Testcontainers
+@DockerTest
 @Import(UsageLedgerIntegrationTest.CountingModelGatewayConfig.class)
 class UsageLedgerIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String ISSUER = "https://issuer-usage-ledger";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(org.testcontainers.utility.DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     static final AtomicInteger MODEL_CALLS = new AtomicInteger();
@@ -183,14 +160,14 @@ class UsageLedgerIntegrationTest {
                 assertThat(rs.getLong(1)).isEqualTo(member.userId());
                 assertThat(rs.getString(2)).isEqualTo("ASSIST");
                 assertThat(rs.getObject(3)).isNull();
-                assertThat(rs.getString(4)).isNotBlank();
+                assertThat(rs.getString(4)).isEqualTo("gpt-6-luna");
                 assertThat(rs.getString(5)).isEqualTo("assist-rewrite-v1");
-                assertThat(rs.getString(6)).contains("0.75").contains("4.50");
+                assertThat(rs.getString(6)).isEqualTo("USD per million tokens: input 0.125, output 0.50");
                 assertThat(rs.getString(7)).isEqualTo("SETTLED");
                 assertThat(rs.getInt(8)).isEqualTo(400);
                 assertThat(rs.getInt(9)).isEqualTo(120);
-                // 400 input tokens at $0.75 and 120 output tokens at $4.50 per million.
-                assertThat(rs.getBigDecimal(10)).isEqualByComparingTo(new BigDecimal("0.000840"));
+                // 400 input tokens at $0.125 and 120 output tokens at $0.50 per million.
+                assertThat(rs.getBigDecimal(10)).isEqualByComparingTo(new BigDecimal("0.000110"));
                 // What was held before the answer came back is never less than what it turned out to cost.
                 assertThat(rs.getBigDecimal(11)).isGreaterThan(rs.getBigDecimal(10));
                 assertThat(rs.getBoolean(12)).isTrue();
@@ -200,7 +177,7 @@ class UsageLedgerIntegrationTest {
 
         mockMvc.perform(get(usagePath(member)).cookie(member.session()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.monthUsedUsd").value(0.000840))
+                .andExpect(jsonPath("$.monthUsedUsd").value(0.000110))
                 .andExpect(jsonPath("$.monthLimitUsd").value(0.05))
                 .andExpect(jsonPath("$.monthRequests").value(1))
                 .andExpect(jsonPath("$.sharedAllowanceExhausted").value(false));
@@ -211,7 +188,8 @@ class UsageLedgerIntegrationTest {
         clearLedger();
         Member member = signIn("subject-usage-workspace-limit");
         long documentId = createTitledDocument(member);
-        seedSettled(member.workspaceId(), member.userId(), "0.049500", "now()");
+        // What is left, $0.00015, is less than even the smallest Assist request holds.
+        seedSettled(member.workspaceId(), member.userId(), "0.049850", "now()");
         int callsBefore = MODEL_CALLS.get();
 
         executeShorten(member, documentId)
@@ -222,8 +200,9 @@ class UsageLedgerIntegrationTest {
         assertThat(count("SELECT count(*) FROM model_usage WHERE workspace_id = ? AND state = 'RESERVED'", member.workspaceId())).isZero();
 
         // The same allowance stops a generation run before a job exists. The month is not "fully used" here and
-        // almost never can be, because reservations stop the sum short of the limit: what is left is half a
-        // tenth of a cent, less than the first request of any run would hold, and that is what refuses it.
+        // almost never can be, because reservations stop the sum short of the limit: what is left is a
+        // hundredth and a half of a cent, less than the first request of any run would hold, and that is
+        // what refuses it.
         long notesId = uploadNotes(member);
         mockMvc.perform(post(documentsPath(member) + "/" + documentId + "/generations")
                         .cookie(member.session()).with(csrf())
@@ -236,7 +215,7 @@ class UsageLedgerIntegrationTest {
 
         mockMvc.perform(get(usagePath(member)).cookie(member.session()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.monthRemainingUsd").value(0.0005));
+                .andExpect(jsonPath("$.monthRemainingUsd").value(0.00015));
     }
 
     @Test
@@ -515,7 +494,7 @@ class UsageLedgerIntegrationTest {
     }
 
     private static Connection ownerConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
     /** The shared allowance is one figure for the whole database, so each test starts from an empty month. */

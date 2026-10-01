@@ -10,6 +10,7 @@ import io.github.vihuynh72.brownie.core.generation.usage.UsageLimits;
 import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
@@ -37,11 +38,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is sufficient to construct every generation-side bean.
  *
  * <p>Skips itself cleanly, the same as {@code ExtractionIntegrationTest},
- * when no real-looking {@code BROWNIE_OPENAI_API_KEY} is present.
+ * when no real-looking {@code BROWNIE_OPENAI_API_KEY} is present, before
+ * it starts anything.
  */
 @SpringBootTest
 @EnableAutoConfiguration(exclude = FlywayAutoConfiguration.class)
 @ActiveProfiles("test")
+@EnabledIf(
+        value = "hasRealApiKey",
+        disabledReason = "BROWNIE_OPENAI_API_KEY is not set to a real-looking key; skipping the real-model eval.")
 class CompositionRealModelIntegrationTest {
 
     @DynamicPropertySource
@@ -58,6 +63,10 @@ class CompositionRealModelIntegrationTest {
 
     @Autowired
     private CompositionService compositionService;
+
+    /** The rates of whichever model this run is configured to call, so an evaluation of another model is budgeted at its own price. */
+    @Autowired
+    private ModelPricing modelPricing;
 
     @Test
     void composesAConciseDecisionsSummaryFromRealAcceptedFactsCitingOnlyRealOfferedEvidence() throws Exception {
@@ -79,7 +88,7 @@ class CompositionRealModelIntegrationTest {
                 List.of("meeting.decisions"),
                 List.of(),
                 acceptedFacts,
-                new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini()),
+                new UsageBudget(UsageLimits.defaultRunLimits(), modelPricing),
                 CancellationSignal.never());
 
         FieldCandidate composedDecisions = composed.scalarCandidates().get("meeting.decisions");
