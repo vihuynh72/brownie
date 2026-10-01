@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.api.artifact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
@@ -30,17 +33,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -69,49 +63,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = {"spring.autoconfigure.exclude=", "brownie.artifacts.max-upload-bytes=2000"})
-@Testcontainers
+@DockerTest
 class ArtifactUploadIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE =
-            new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     // A plain, local instance rather than an autowired bean: this Boot
