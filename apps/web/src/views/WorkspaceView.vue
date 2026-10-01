@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { readDocumentHandoff } from '@/router/handoff'
-// PDF.js is the largest thing this page can load; it is fetched only once the preview pane is shown.
+// PDF.js is the largest thing this page can load; it is fetched only once the print preview is shown.
 const PdfPreview = defineAsyncComponent(() => import('@/components/PdfPreview.vue'))
 import {
   ApiRequestError,
@@ -11,26 +11,21 @@ import {
   allocateUpload,
   answerQuestion,
   applyGenerationResult,
-  approveExport,
-  artifactDownloadUrl,
   artifactPreviewUrl,
   attachDocumentSource,
   cancelJob,
   compileRevision,
   completeUpload,
   executeAssist,
-  exportDocument,
   extractArtifact,
   getDocument,
-  getDocumentRevision,
   getEvidenceExcerpt,
   getExtractionResult,
   getGenerationQuestions,
   getJob,
   getLatestCompilation,
-  getLatestExportApproval,
-  getLatestExportReceipt,
   getLatestValidation,
+  getTemplateLayout,
   getTemplateVersion,
   importCalendarEvent,
   importDriveFile,
@@ -41,22 +36,19 @@ import {
   listTemplateVersionRules,
   patchDocumentContent,
   recordReviewDecision,
+  restoreRevision,
   resumeGeneration,
   retryJob,
   setFieldLock,
   startExtraction,
   uploadArtifactContent,
-  validateDocument,
   type ArtifactResponse,
+  type CalendarImportResponse,
   type DocumentResponse,
   type DocumentRevisionResponse,
-  type CalendarImportResponse,
-  type DriveImportResponse,
   type DocumentSourceResponse,
+  type DriveImportResponse,
   type EvidenceExcerptResponse,
-  type ExportApprovalResponse,
-  type ExportFormat,
-  type ExportReceiptResponse,
   type FieldDefinitionResponse,
   type FieldEditRequest,
   type FieldLock,
@@ -64,19 +56,22 @@ import {
   type PatchAcceptResponse,
   type PatchProposalResponse,
   type QuestionResponse,
-  type AssistInterpretationResponse,
   type ReviewDecision,
   type RuleResponse,
-  type ValidationManifestResponse,
+  type TemplateLayoutResponse,
 } from '@/api/client'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
-import { describePayload, describeScope } from '@/rules/describeRule'
+import { describePayload } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, originLink, originLinkLabel, originSentence } from '@/connections/words'
+import { describeStyle, dominantFillSpotStyle, fieldStateWords, fillSpotStyle, formatDateLikeExport, labelFor } from '@/workspace/layout'
+import AppIcon from '@/components/AppIcon.vue'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
-import DriveSavePanel from '@/components/DriveSavePanel.vue'
-import CalendarEventPanel from '@/components/CalendarEventPanel.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
+import ChoiceList from '@/components/workspace/ChoiceList.vue'
+import DocumentPage from '@/components/workspace/DocumentPage.vue'
+import ExportDialog from '@/components/workspace/ExportDialog.vue'
+import VersionHistoryDialog from '@/components/workspace/VersionHistoryDialog.vue'
 
 const props = defineProps<{ documentId: number }>()
 
@@ -86,7 +81,7 @@ const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 
 // One persistent polite live region for the page: assistive technology announces changes to an
 // element that was already in the tree, which a message rendered by v-if at the moment it matters
-// is not. Everything worth hearing (saving, saved, conflict, validation, preview) goes through it.
+// is not. Everything worth hearing (saving, saved, conflict, what Brownie did) goes through it.
 const liveMessage = ref('')
 function announce(text: string): void {
   // Clearing first makes a repeated message (a second "Saved.") announce again.
@@ -113,13 +108,31 @@ onMounted(async () => {
   }
 })
 
-const INSPECTOR_TABS = ['assist', 'rules', 'sources', 'checks', 'history'] as const
-type InspectorTab = (typeof INSPECTOR_TABS)[number]
-const activeTab = ref<InspectorTab>('sources')
+// ---- Where things sit -------------------------------------------------------------------------
+//
+// On a wide page the document and Brownie's panel sit side by side. On a narrow one there is room
+// for one of them at a time, so a two-button switch above them chooses which, and nothing is ever
+// squeezed into a column too thin to read. Both stay mounted either way: switching never loses a
+// half-typed message or a draft value.
+type NarrowView = 'document' | 'assistant'
+const narrowView = ref<NarrowView>('document')
+const assistantHeadingRef = ref<HTMLElement | null>(null)
 
-// Rules tab: read-only. The rules that apply to this document are the accepted ones on its own
-// template version; proposed and rejected ones are counted, not listed, since deciding them is the
-// template's business (the teaching screen), not the document's.
+async function showAssistant(focusHeading = true): Promise<void> {
+  narrowView.value = 'assistant'
+  if (!focusHeading) return
+  await nextTick()
+  assistantHeadingRef.value?.focus()
+}
+
+/** The document's page as it is edited, or the rendered file as it will export. */
+const docView = ref<'page' | 'print'>('page')
+
+// ---- Rules -----------------------------------------------------------------------------------
+//
+// The rules that apply to this document are the accepted ones on its own template version;
+// proposed and rejected ones are counted, not listed, since deciding them is the template's
+// business (the teaching screen), not the document's.
 const rules = ref<RuleResponse[]>([])
 const rulesLoadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const rulesInForce = computed(() =>
@@ -129,7 +142,7 @@ const rulesUndecided = computed(() =>
   rules.value.filter((rule) => rule.templateVersionId === document.value?.templateVersionId && rule.status === 'PROPOSED').length,
 )
 
-/** Field ids an accepted rule requires a value for, so the editor can say so before validation does. */
+/** Field ids an accepted rule requires a value for, so the page can say so before a check does. */
 const ruleRequiredFieldIds = computed(() => {
   const ids = new Set<string>()
   for (const rule of rulesInForce.value) {
@@ -152,162 +165,47 @@ async function loadRules(): Promise<void> {
   }
 }
 
-watch(activeTab, (tab) => {
-  if (tab === 'rules' && (rulesLoadState.value === 'idle' || rulesLoadState.value === 'error')) void loadRules()
-  if (tab !== 'sources') {
-    calendarPickerStartsOpen.value = false
-    drivePickerStartsOpen.value = false
-  }
-})
-
-function selectTab(tab: InspectorTab): void {
-  activeTab.value = tab
-  if (tab === 'history') void loadRevisionHistory()
-  if (tab === 'checks') void hydrateChecksState()
-}
-
-/** The empty document's one call to action: open the Sources tab and put focus on its file picker. */
-async function goToSources(): Promise<void> {
-  selectTab('sources')
-  await nextTick()
-  window.document.getElementById('attach-source')?.focus()
-}
-
-/** Template refs for each tab button, in tab order -- Vue keeps this array in sync with the v-for automatically. */
-const tabButtonEls = ref<HTMLButtonElement[]>([])
-
-function focusTab(index: number): void {
-  tabButtonEls.value[index]?.focus()
-}
+// ---- The template's page ---------------------------------------------------------------------
+//
+// The template's own text, with a place for each value, so the person edits the document as it
+// reads rather than a list of boxes. When the page cannot be drawn (an older server, a template
+// Brownie cannot lay out) every value is still reachable: the page lists its fill spots instead.
+const layout = ref<TemplateLayoutResponse | null>(null)
+const layoutState = ref<'loading' | 'ready' | 'unavailable'>('loading')
+const layoutProblem = ref<string | null>(null)
+const layoutLoadedForVersionId = ref<number | null>(null)
 
 /**
- * Roving-tabindex arrow-key navigation for the inspector tablist (WAI-ARIA tabs pattern): the
- * arrow keys both move focus and activate the target tab, Home/End jump to the first/last tab,
- * and every other key is left alone.
+ * Only a drawn layout, or the server's own answer that this template cannot be drawn, is final for
+ * the version; anything else (an older server, a lost connection, a busy server) is tried again the
+ * next time the document loads, and the page says what actually went wrong rather than blaming the
+ * template.
  */
-function onTabKeydown(event: KeyboardEvent, index: number): void {
-  let nextIndex: number
-  switch (event.key) {
-    case 'ArrowRight':
-    case 'ArrowDown':
-      nextIndex = (index + 1) % INSPECTOR_TABS.length
-      break
-    case 'ArrowLeft':
-    case 'ArrowUp':
-      nextIndex = (index - 1 + INSPECTOR_TABS.length) % INSPECTOR_TABS.length
-      break
-    case 'Home':
-      nextIndex = 0
-      break
-    case 'End':
-      nextIndex = INSPECTOR_TABS.length - 1
-      break
-    default:
-      return
-  }
-  event.preventDefault()
-  selectTab(INSPECTOR_TABS[nextIndex])
-  focusTab(nextIndex)
-}
-
-// Below the 720px breakpoint the inspector pane (tab-strip + tabpanel) collapses into a
-// togglable drawer instead of always being visible beneath the preview pane. The collapse
-// itself is CSS-only (see .inspector-drawer--collapsed, scoped inside that same media query),
-// so this ref just tracks open/closed state -- it has no visible effect at or above the
-// breakpoint, and none of the logic below needs to know the actual viewport width.
-const drawerOpen = ref(false)
-const drawerToggleRef = ref<HTMLButtonElement | null>(null)
-const drawerRef = ref<HTMLDivElement | null>(null)
-const drawerHeadingRef = ref<HTMLHeadingElement | null>(null)
-
-function toggleDrawer(): void {
-  drawerOpen.value = !drawerOpen.value
-}
-
-function closeDrawer(): void {
-  drawerOpen.value = false
-  drawerToggleRef.value?.focus()
-}
-
-watch(drawerOpen, async (open) => {
-  if (!open) return
-  await nextTick()
-  drawerHeadingRef.value?.focus()
-})
-
-// The drawer exists only below the breakpoint. A drawer opened on a narrow viewport that then
-// grows (a window resized, a phone rotated) would otherwise keep its Tab trap on what is now an
-// ordinary column; closing it the moment the viewport is wide releases the trap.
-const narrowViewport =
-  typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 720px)') : null
-function releaseDrawerOnWideViewport(event: { matches: boolean }): void {
-  if (!event.matches && drawerOpen.value) drawerOpen.value = false
-}
-onMounted(() => {
-  if (narrowViewport && typeof narrowViewport.addEventListener === 'function') {
-    narrowViewport.addEventListener('change', releaseDrawerOnWideViewport)
-  }
-})
-onBeforeUnmount(() => {
-  if (narrowViewport && typeof narrowViewport.removeEventListener === 'function') {
-    narrowViewport.removeEventListener('change', releaseDrawerOnWideViewport)
-  }
-})
-
-const DRAWER_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, [tabindex]'
-
-/**
- * Elements that are actual tab stops inside the drawer right now -- the broad selector above,
- * narrowed to what a real Tab key press would actually land on: nothing disabled, and nothing on
- * tabindex="-1" (the roving-tabindex tab buttons this same keydown-Tab check would otherwise wrongly
- * treat as separate stops, since e.g. "button:not([disabled])" alone can't see their tabindex).
- */
-function drawerFocusable(): HTMLElement[] {
-  if (!drawerRef.value) return []
-  return Array.from(drawerRef.value.querySelectorAll<HTMLElement>(DRAWER_FOCUSABLE_SELECTOR)).filter(
-    (el) => !el.hasAttribute('disabled') && el.tabIndex >= 0,
-  )
-}
-
-/**
- * Escape closes the drawer; Tab/Shift+Tab wrap at the drawer's own first/last focusable element so
- * focus can never leave it while open. Gated on drawerOpen itself, not just on the drawer being
- * visible -- above the 720px breakpoint .inspector-drawer--collapsed has no effect at all (it's
- * scoped inside that media query), so the drawer's contents stay visible and focusable regardless
- * of drawerOpen's value; without this guard, Tab would trap a desktop keyboard user inside this
- * region forever; a real WCAG 2.1.2 violation this component's own test suite never caught because
- * jsdom's default viewport already satisfies the >=720px case every test runs under.
- */
-function onDrawerKeydown(event: KeyboardEvent): void {
-  if (!drawerOpen.value) return
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    closeDrawer()
-    return
-  }
-  if (event.key !== 'Tab' || !drawerRef.value) return
-
-  const focusable = drawerFocusable()
-  if (focusable.length === 0) return
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
-
-  // `document` above is this component's own ref (the loaded DocumentResponse), not the DOM
-  // global -- window.document is needed here to read the real activeElement.
-  if (event.shiftKey && window.document.activeElement === first) {
-    event.preventDefault()
-    last.focus()
-  } else if (!event.shiftKey && window.document.activeElement === last) {
-    event.preventDefault()
-    first.focus()
+async function loadLayout(workspaceId: number, loaded: DocumentResponse): Promise<void> {
+  if (!layout.value) layoutState.value = 'loading'
+  try {
+    layout.value = await getTemplateLayout(workspaceId, loaded.templateId, loaded.templateVersionId)
+    layoutState.value = 'ready'
+    layoutProblem.value = null
+    layoutLoadedForVersionId.value = loaded.templateVersionId
+  } catch (error) {
+    if (layout.value && layoutLoadedForVersionId.value === loaded.templateVersionId) return
+    layout.value = null
+    layoutState.value = 'unavailable'
+    const final = error instanceof ApiRequestError && error.status === 422
+    layoutProblem.value = final ? null : describeCommonFailure(error, 'a way to draw a template as a page')
+    if (final) layoutLoadedForVersionId.value = loaded.templateVersionId
   }
 }
 
-// Whatever the new-document screen handed over when it navigated here (see router/handoff.ts): the
-// source it attached during creation, shown at once while the server's own list loads, and a
-// warning if that attachment failed -- shown here, on the screen the person actually lands on,
-// rather than lost with the creation screen's own unmounted state. The server's document-source
-// list is the truth; the handoff only bridges the first paint.
+// ---- Sources ---------------------------------------------------------------------------------
+//
+// Whatever the screen that created this document handed over when it navigated here (see
+// router/handoff.ts): a source attached during creation, shown at once while the server's own list
+// loads, and a warning about the creation (a source that could not be attached, fill spots a learned
+// form had to leave out) -- shown here, on the screen the person actually lands on, rather than lost
+// with the creating screen's own state. The server's document-source list is the truth; the handoff
+// only bridges the first paint.
 const handoff = readDocumentHandoff()
 const attachedSources = ref<DocumentSourceResponse[]>(
   (handoff?.attachedSources ?? []).map((source) => ({ ...source, attachedAt: source.fetchedAt })),
@@ -315,10 +213,26 @@ const attachedSources = ref<DocumentSourceResponse[]>(
 const handoffWarning = ref<string | null>(handoff?.sourceWarning ?? null)
 const sourceUploadState = ref<'idle' | 'uploading' | 'error'>('idle')
 const sourceUploadError = ref<string | null>(null)
-/** Which attached source Assist extracts from; defaults to the most recently attached one. */
+/** Which attached source Brownie reads; defaults to the most recently attached one. */
 const selectedSourceId = ref<number | null>(null)
 /** Sources attached on this page, by upload or by copying: kept when a list read before them arrives after them. */
 const sourcesAddedHere = new Set<number>()
+
+const selectedSource = computed(
+  () => attachedSources.value.find((candidate) => candidate.id === selectedSourceId.value) ?? attachedSources.value[0] ?? null,
+)
+
+function sourceName(source: DocumentSourceResponse | null | undefined): string {
+  if (!source) return 'your source'
+  return source.displayFilename ?? source.origin?.title ?? 'your source'
+}
+
+/** What kind of source it is; where it was copied from, and when, is the card's next line. */
+function sourceKindWords(source: DocumentSourceResponse): string {
+  if (source.origin?.conversion === 'CALENDAR_EVENT_AS_TEXT') return 'Calendar event'
+  if (source.origin?.conversion === 'GOOGLE_DOC_AS_TEXT') return 'Google Doc'
+  return 'Text file'
+}
 
 async function loadDocumentSources(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
@@ -341,21 +255,31 @@ async function loadDocumentSources(): Promise<void> {
   }
 }
 
-// Google sends the person back here after they connect Google Calendar, or choose files in Google
-// Drive, from the Sources tab, with what happened in the address. It is read once and taken out of
-// the address, so a reload or a shared link does not say it again, and it is said at the top of the
-// page rather than in the tab, which a narrow screen keeps in a closed drawer.
+/** The panel under the chat where a source is added: a file, or a copy from a connected Google account. */
+const sourcesOpen = ref(false)
+
+// Google sends the person back here after they connect Google Calendar, choose files in Google
+// Drive, or connect a way to save or add events, with what happened in the address. It is read
+// once and taken out of the address, so a reload or a shared link does not say it again, and it is
+// said at the top of the page, which every screen width shows.
 const route = useRoute()
 const router = useRouter()
 const calendarConsent = ref(readCalendarConsent())
-/** The control Google's answer was for opens by itself, on this first visit to the tab only. */
+const consentAccess = calendarConsent.value?.access ?? null
+/** The control Google's answer was for opens by itself, on this first visit only. */
 const calendarPickerStartsOpen = ref(
   calendarConsent.value !== null &&
-    calendarConsent.value.access !== 'DRIVE_FILES' &&
-    calendarConsent.value.access !== 'DRIVE_SAVING' &&
-    calendarConsent.value.access !== 'CALENDAR_EVENT_CREATION',
+    consentAccess !== 'DRIVE_FILES' &&
+    consentAccess !== 'DRIVE_SAVING' &&
+    consentAccess !== 'CALENDAR_EVENT_CREATION',
 )
-const drivePickerStartsOpen = ref(calendarConsent.value?.access === 'DRIVE_FILES')
+const drivePickerStartsOpen = ref(consentAccess === 'DRIVE_FILES')
+/** Connecting a way to save or to add an event was done from Export, so Export opens again once the document is here. */
+const exportOpensOnArrival = calendarConsent.value?.tone === 'success' && (consentAccess === 'DRIVE_SAVING' || consentAccess === 'CALENDAR_EVENT_CREATION')
+if (calendarPickerStartsOpen.value || drivePickerStartsOpen.value) {
+  sourcesOpen.value = true
+  narrowView.value = 'assistant'
+}
 const calendarConsentElement = ref<HTMLElement | null>(null)
 watch(calendarConsentElement, (element) => element?.focus())
 function readCalendarConsent(): { tone: 'success' | 'failure'; text: string; access: string | null; hint: string | null } | null {
@@ -370,20 +294,20 @@ function readCalendarConsent(): { tone: 'success' | 'failure'; text: string; acc
       ? null
       : outcome.access === 'DRIVE_FILES'
         ? (outcome.added ?? 0) > 0
-          ? 'Copy a file from the Sources tab.'
+          ? 'Choose a file to copy into this document in Brownie\'s panel.'
           : null
         : outcome.access === 'DRIVE_SAVING'
-          ? 'Save the exported document from the Checks tab.'
+          ? 'Save the exported document from Export.'
           : outcome.access === 'CALENDAR_EVENT_CREATION'
-            ? 'Add the event from the Checks tab.'
-            : 'Copy an event from the Sources tab.'
+            ? 'Add the event from Export.'
+            : 'Choose an event to copy into this document in Brownie\'s panel.'
   return { tone: outcome.tone, text: outcome.text, access: outcome.access, hint }
 }
 
 /**
- * Copies one calendar event into this document. Done here rather than in the picker, which lives
- * in the Sources tab: a copy that finishes after the person has moved to another tab still joins
- * the document's sources, where Assist looks for them.
+ * Copies one calendar event into this document. Done here rather than in the picker: a copy that
+ * finishes after the person has closed the panel still joins the document's sources, where
+ * Brownie looks for them.
  */
 async function copyCalendarEvent(eventId: string): Promise<CalendarImportResponse> {
   const workspaceId = session.personalWorkspaceId
@@ -392,9 +316,8 @@ async function copyCalendarEvent(eventId: string): Promise<CalendarImportRespons
   const result = await importCalendarEvent(workspaceId, props.documentId, eventId)
   sourcesAddedHere.add(result.source.id)
   attachedSources.value = [result.source, ...attachedSources.value.filter((attached) => attached.id !== result.source.id)]
-  // Chosen for Assist only if the person has not chosen another source meanwhile, and no run is reading one.
-  const runUnderWay = ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value)
-  if (!runUnderWay && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
+  // Chosen for Brownie only if the person has not chosen another source meanwhile, and no run is reading one.
+  if (!runUnderWay.value && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
   return result
 }
 
@@ -406,15 +329,16 @@ async function copyDriveFile(grantId: number): Promise<DriveImportResponse> {
   const result = await importDriveFile(workspaceId, props.documentId, grantId)
   sourcesAddedHere.add(result.source.id)
   attachedSources.value = [result.source, ...attachedSources.value.filter((attached) => attached.id !== result.source.id)]
-  const runUnderWay = ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value)
-  if (!runUnderWay && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
+  if (!runUnderWay.value && selectedSourceId.value === selectedBefore) selectedSourceId.value = result.source.id
   return result
 }
 
+// ---- Runs: Brownie reading a source ------------------------------------------------------------
+
 /**
  * 'unconfirmed' is a run that moved on to a state whose details this page could not read (its
- * questions, or its result). Nothing is running here any more, so neither "Extracting…" nor Cancel
- * is shown; and nothing new is started until "Check again" has read the run back, since a second
+ * questions, or its result). Nothing is running here any more, so neither progress nor Stop is
+ * shown; and nothing new is started until "Check again" has read the run back, since a second
  * start would be a second paid run.
  */
 type ExtractionStage =
@@ -437,15 +361,24 @@ const cancellationRequested = ref(false)
 const extractionStalled = ref(false)
 /** Why polling stopped, shown beside "Check again". */
 const stalledMessage = ref('')
+/** The name of the source the run on screen reads, for Brownie's sentences about it. */
+const runSourceName = ref<string | null>(null)
+/**
+ * The run this visit started or continued. Its result is turned into a proposal as soon as it is
+ * ready, because the person is waiting for it; a run found finished on arrival waits for a click,
+ * since this page cannot tell whether its values were already looked at.
+ */
+const runFollowedHere = ref<number | null>(null)
+const runUnderWay = computed(() => ['starting', 'running', 'waiting-for-input', 'resuming'].includes(extractionStage.value))
 /** What a run under way is doing, in words rather than the job queue's state names; null while there is nothing to say. */
 const runProgress = computed(() => {
   switch (extractionJobState.value) {
     case 'QUEUED':
-      return 'Waiting for a worker to pick this run up.'
+      return 'Waiting for a worker to pick this up.'
     case 'LEASED':
-      return 'Brownie is reading your source and filling in the fields.'
+      return `Reading ${runSourceName.value ?? 'your source'} and filling in the fields.`
     case 'CANCEL_REQUESTED':
-      return 'Stopping this run.'
+      return 'Stopping.'
     default:
       return null
   }
@@ -453,20 +386,19 @@ const runProgress = computed(() => {
 /** Set while a run has sat QUEUED with no claim attempt for longer than a worker would take to notice it. */
 const noWorkerYet = ref(false)
 const openQuestions = ref<QuestionResponse[]>([])
-const answerDrafts = ref<Record<number, string>>({})
 const answeringQuestionId = ref<number | null>(null)
 
 /**
- * A reload, a second tab, or a network drop must never lose a paid run: the latest generation run
- * for this document is read back from the server and the Assist tab resumes from whatever state
- * its job is really in -- still running (poll), waiting for answers (show them), finished (offer to
- * apply), or ended (say so). Nothing here starts a job.
+ * A reload, a second tab, or a network drop must never lose a paid run: the latest run for this
+ * document is read back from the server and the chat resumes from whatever state its job is really
+ * in -- still running (poll), waiting for answers (show them), finished (offer its values), or
+ * ended (say so). Nothing here starts a job.
  */
 async function rehydrateLatestRun(): Promise<void> {
   try {
     await followLatestRun()
   } catch {
-    // The Assist tab starts as it would before any run; the runs themselves are safe on the server.
+    // The chat starts as it would before any run; the runs themselves are safe on the server.
   }
 }
 
@@ -477,10 +409,12 @@ async function followLatestRun(): Promise<void> {
   const runs = (await listGenerationRuns(workspaceId, props.documentId)) ?? []
   const latest = runs[0]
   if (!latest) return
+  if (runSlotId.value === null || extractionJobId.value !== latest.jobId) placeInChat('run')
   extractionJobId.value = latest.jobId
   extractionJobState.value = latest.job.state
   cancellationRequested.value = latest.job.cancellationRequestedAt != null
   extractionStalled.value = false
+  runSourceName.value = sourceName(attachedSources.value.find((source) => source.artifactId === latest.sourceArtifactId))
   switch (latest.job.state) {
     case 'QUEUED':
     case 'LEASED':
@@ -492,8 +426,8 @@ async function followLatestRun(): Promise<void> {
       try {
         openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, latest.jobId)
       } catch (error) {
-        // An empty question list would offer Continue with nothing answered.
-        stopFollowingUnreadRun('This run is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
+        // An empty question list would offer to continue with nothing answered.
+        stopFollowingUnreadRun('This reading is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
         break
       }
       extractionStage.value = 'waiting-for-input'
@@ -501,7 +435,7 @@ async function followLatestRun(): Promise<void> {
     case 'SUCCEEDED':
       extractionResultArtifactId.value = latest.resultArtifactId ?? null
       extractionStage.value = latest.resultArtifactId != null ? 'succeeded' : 'failed'
-      if (latest.resultArtifactId == null) extractionError.value = 'The last run finished without a readable result.'
+      if (latest.resultArtifactId == null) extractionError.value = 'The last reading finished without a readable result.'
       break
     case 'CANCELLED':
       extractionStage.value = 'cancelled'
@@ -511,15 +445,15 @@ async function followLatestRun(): Promise<void> {
       // DEAD and FAILED are the job queue's names for a run that stopped trying, not words for a person.
       extractionError.value =
         latest.job.state === 'DEAD' || latest.job.state === 'FAILED'
-          ? 'The last run gave up before it could finish.'
-          : 'The last run ended without a result.'
+          ? 'The last reading gave up before it could finish.'
+          : 'The last reading ended without a result.'
   }
 }
 
 /**
  * Stops following a run whose next step could not be read. The run is fine on the server; this
  * page just does not know where it is, so it offers "Check again" rather than showing a run still
- * under way, with a Cancel for it, or inviting a second, paid start.
+ * under way, with a Stop for it, or inviting a second, paid start.
  */
 function stopFollowingUnreadRun(what: string, error: unknown, feature: string): void {
   extractionStage.value = 'unconfirmed'
@@ -528,68 +462,31 @@ function stopFollowingUnreadRun(what: string, error: unknown, feature: string): 
   stalledMessage.value = why ? `${what} ${why}` : what
 }
 
+// ---- Proposals: what Brownie would change ------------------------------------------------------
+
 type ApplyStage = 'idle' | 'applying' | 'proposed' | 'accepting' | 'accepted' | 'failed'
 const applyStage = ref<ApplyStage>('idle')
 const applyError = ref<string | null>(null)
 const patchProposal = ref<PatchProposalResponse | null>(null)
 const acceptResult = ref<PatchAcceptResponse | null>(null)
+/** The first line Brownie says about a proposal: where its values came from, or the change asked for. */
+const proposalIntro = ref('')
+/** The reading whose values the proposal on screen holds; null for a proposal from a request. */
+const proposalFromJobId = ref<number | null>(null)
+/**
+ * A reading whose values the person already approved or set aside on this visit. Its values are
+ * still offered, since the person may want another look, but as a second look: approving them
+ * again would put them over anything changed since.
+ */
+const decidedRunJobId = ref<number | null>(null)
 
 const fieldActionError = ref<string | null>(null)
 const fieldActionPending = ref<string | null>(null)
 
-type ValidationStage = 'idle' | 'validating' | 'validated' | 'failed'
-const validationStage = ref<ValidationStage>('idle')
-const validationError = ref<string | null>(null)
-const validationManifest = ref<ValidationManifestResponse | null>(null)
-/** The revision id `hydrateChecksState` has already tried to rehydrate check state for -- never re-fetched a second time for the same revision. */
-const checksHydratedForRevisionId = ref<number | null>(null)
-
-const exportFormat = ref<ExportFormat>('BOTH')
-/** As the format choice names them, not as the server spells them. */
-const FORMAT_NAMES: Record<ExportFormat, string> = { DOCX: 'DOCX', PDF: 'PDF', BOTH: 'DOCX and PDF' }
-/**
- * Says what was exported in terms of what was asked for. A Word-only export is complete, not "only one
- * file"; and when a PDF was asked for and could not be made, the Word file is offered with the reason.
- */
-const exportOutcomeMessage = computed(() => {
-  const receipt = exportReceipt.value
-  if (!receipt) return ''
-  const hasPdf = receipt.pdfArtifactId != null
-  switch (receipt.format) {
-    case 'DOCX':
-      return 'DOCX exported.'
-    case 'PDF':
-      return hasPdf ? 'PDF exported.' : 'The PDF could not be made for this version, so the DOCX is offered instead.'
-    default:
-      return hasPdf ? 'Both files exported.' : 'The DOCX was exported; the PDF could not be made for this version.'
-  }
-})
-
-type ApprovalStage = 'idle' | 'approving' | 'approved' | 'failed'
-const approvalStage = ref<ApprovalStage>('idle')
-const approvalError = ref<string | null>(null)
-const exportApproval = ref<ExportApprovalResponse | null>(null)
-
-type ExportStage = 'idle' | 'exporting' | 'exported' | 'failed'
-const exportStage = ref<ExportStage>('idle')
-const exportError = ref<string | null>(null)
-const exportReceipt = ref<ExportReceiptResponse | null>(null)
-
-const revisions = ref<DocumentRevisionResponse[]>([])
-type RevisionsLoadState = 'idle' | 'loading' | 'loaded' | 'error'
-const revisionsLoadState = ref<RevisionsLoadState>('idle')
-const revisionsError = ref<string | null>(null)
-
-const compareRevisionId = ref<number | null>(null)
-type CompareStage = 'idle' | 'loading' | 'loaded' | 'error'
-const compareStage = ref<CompareStage>('idle')
-const compareError = ref<string | null>(null)
-const compareRevision = ref<DocumentRevisionResponse | null>(null)
-
-/** Why the first load failed, for the message that stands in for the editor; null otherwise. */
+/** Why the first load failed, for the message that stands in for the page; null otherwise. */
 const loadError = ref<string | null>(null)
 /**
- * Why a reload after the first load failed. The editor stays exactly as it was -- the document last loaded, the
+ * Why a reload after the first load failed. The page stays exactly as it was -- the document last loaded, the
  * person's drafts and their focus -- with this said above it, since what it shows may be out of date.
  */
 const reloadError = ref<string | null>(null)
@@ -605,8 +502,8 @@ function isDocumentGone(error: unknown): boolean {
 async function loadDocument(): Promise<boolean> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined) return false
-  // Only the first load shows the loading state, and only its failure replaces the editor. A reload
-  // after a save, a review decision or an accepted proposal keeps the editor mounted: unmounting it
+  // Only the first load shows the loading state, and only its failure replaces the page. A reload
+  // after a save, a review decision or an accepted proposal keeps the page mounted: unmounting it
   // would drop keyboard focus and any text the person is typing at that moment.
   const reloading = document.value !== null
   if (!reloading) loadState.value = 'loading'
@@ -617,18 +514,24 @@ async function loadDocument(): Promise<boolean> {
     loadError.value = null
     reloadError.value = null
     documentGone.value = false
+    // The layout is asked for alongside the definitions rather than after them; the page does not wait for it.
+    if (layoutLoadedForVersionId.value !== loaded.templateVersionId) void loadLayout(workspaceId, loaded)
     if (definitionsLoadedForVersionId.value !== loaded.templateVersionId) {
       await loadFieldDefinitions(workspaceId, loaded)
       void loadRules()
     }
-    // A reload triggered by some other action (a review decision, an accepted proposal, a
-    // validation run) must never wipe values the person is still typing; only a clean editor
-    // follows the server. A save marks the editor clean itself before it reloads.
+    // A reload triggered by some other action (a review decision, an accepted proposal, a check)
+    // must never wipe values the person is still typing; only a clean page follows the server. A
+    // save marks the page clean itself before it reloads.
     if (!isDirty.value) resetDrafts()
     if (!sidePanelsHydrated) {
       sidePanelsHydrated = true
       await loadDocumentSources()
       await rehydrateLatestRun()
+      if (exportOpensOnArrival) {
+        await nextTick()
+        exportDialogRef.value?.open()
+      }
     }
     return true
   } catch (error) {
@@ -657,22 +560,20 @@ async function loadDocument(): Promise<boolean> {
 let sidePanelsHydrated = false
 
 onMounted(loadDocument)
-watch(() => session.status, (status) => {
-  if (status === 'authenticated') void loadDocument()
-})
+watch(
+  () => session.status,
+  (status) => {
+    if (status === 'authenticated') void loadDocument()
+  },
+)
 
-function fieldDisplayValue(field: DocumentRevisionResponse['fields'][string] | undefined): string {
-  if (!field) return '—'
-  return field.value ?? ((field.values ?? []).join(', ') || '—')
-}
-
-// ---- Editing by hand -----------------------------------------------------------------------
+// ---- Editing by hand -------------------------------------------------------------------------
 //
-// The editor is driven by the template version's own field definitions, so every field the
-// template defines gets a control even before it holds a value. Drafts live apart from the loaded
-// document: what the person types is theirs until they save, and a save is one typed PATCH against
-// the exact revision they were looking at -- the server refuses a stale revision (412) or a locked
-// field (409) rather than letting either side's work silently vanish.
+// The page is driven by the template version's own field definitions, so every field the
+// template defines gets a fill spot even before it holds a value. Drafts live apart from the loaded
+// document: what the person types is theirs until it is saved, and a save is one typed PATCH
+// against the exact revision they were looking at -- the server refuses a stale revision (412) or
+// a locked field (409) rather than letting either side's work silently vanish.
 
 const fieldDefinitions = ref<FieldDefinitionResponse[]>([])
 /** The first date the document holds, offered as the day of an event added to the calendar from it. */
@@ -726,6 +627,8 @@ const editableFields = computed<EditableField[]>(() => {
   }))
 })
 
+/** Until the template's definitions arrive, the page cannot know its fill spots, so it says it is loading. */
+const pageLoading = computed(() => document.value !== null && definitionsLoadedForVersionId.value !== document.value.templateVersionId)
 const scalarFields = computed(() => editableFields.value.filter((field) => field.cardinality === 'SCALAR'))
 /**
  * Every repeated field of a template is one column of the same logical row (an action item's task,
@@ -734,14 +637,30 @@ const scalarFields = computed(() => editableFields.value.filter((field) => field
  */
 const repeatedFields = computed(() => editableFields.value.filter((field) => field.cardinality === 'REPEATED'))
 const editableFieldIds = computed(() => new Set(editableFields.value.map((field) => field.fieldId)))
+const requiredFieldIds = computed(() => {
+  const ids = new Set(ruleRequiredFieldIds.value)
+  for (const field of editableFields.value) if (field.requiredness === 'REQUIRED') ids.add(field.fieldId)
+  return ids
+})
 
-/** Moves keyboard focus to a field's control (a repeated field's first row), so a finding can be fixed without hunting for it. */
-function focusField(fieldId: string): void {
+/**
+ * Moves keyboard focus to a field's fill spot (a repeated field's first row), so a finding can be
+ * fixed without hunting for it. The page is brought into view first: on a narrow screen it may be
+ * behind Brownie's panel, and in print preview it is not drawn at all.
+ */
+async function focusField(fieldId: string): Promise<void> {
+  narrowView.value = 'document'
+  docView.value = 'page'
+  await nextTick()
   const target =
-    window.document.getElementById(`edit-${fieldId}`) ?? window.document.getElementById(`edit-${fieldId}-0`)
+    window.document.getElementById(`edit-${fieldId}`) ??
+    window.document.getElementById(`edit-${fieldId}-0`) ??
+    // A repeated field with no rows yet is filled by adding one.
+    window.document.querySelector<HTMLElement>('#document-pane [data-add-row]')
   if (!(target instanceof HTMLElement)) return
   target.scrollIntoView?.({ block: 'center' })
   target.focus()
+  if (target.hasAttribute('data-add-row')) announce(`${labelFor(fieldId)} has no rows yet. Add a row to fill it in.`)
 }
 
 type Drafts = Record<string, string | string[]>
@@ -770,7 +689,21 @@ function resetDrafts(): void {
   saveError.value = null
 }
 
-const isDirty = computed(() => JSON.stringify(drafts.value) !== JSON.stringify(cleanDrafts.value))
+/**
+ * The drafts as a save would send them. A save trims every value, so a draft that differs only by
+ * surrounding spaces is not a change: counting it as one would leave the page "unsaved" for good,
+ * since no save could ever make the two agree.
+ */
+function comparableDrafts(source: Drafts): string {
+  const comparable: Record<string, string | string[]> = {}
+  for (const fieldId of Object.keys(source).sort()) {
+    const value = source[fieldId]!
+    comparable[fieldId] = Array.isArray(value) ? value.map((item) => item.trim()) : value.trim()
+  }
+  return JSON.stringify(comparable)
+}
+
+const isDirty = computed(() => comparableDrafts(drafts.value) !== comparableDrafts(cleanDrafts.value))
 const hasAnyValue = computed(() => Object.keys(document.value?.currentRevision.fields ?? {}).length > 0)
 
 function scalarDraft(fieldId: string): string {
@@ -790,41 +723,23 @@ const rowCount = computed(() => {
 
 const rowIndexes = computed(() => Array.from({ length: rowCount.value }, (_, index) => index))
 
-/** A human label from a stable field id: "action.item.due" reads as "Action item due"; the id itself stays available to assistive tech through aria-describedby. */
-function labelFor(fieldId: string): string {
-  const words = fieldId.replace(/[._-]+/g, ' ').trim()
-  return words.charAt(0).toUpperCase() + words.slice(1)
+function updateScalar(fieldId: string, value: string): void {
+  drafts.value[fieldId] = value
 }
 
-const STATE_LABELS: Record<string, Record<string, string>> = {
-  authorship: { IMPORTED: 'Imported', AI_COMPOSED: 'From Assist', USER_AUTHORED: 'Typed by you', MIXED: 'Assist and you' },
-  evidenceSupport: {
-    DIRECT: 'Source cited',
-    TRANSFORMED: 'Source cited, reworded',
-    AMBIGUOUS: 'Evidence unclear',
-    UNSUPPORTED: 'Not in the source',
-    MISSING: 'No source cited',
-  },
-  validation: { PASSED: 'Checks passed', WARNING: 'Check warning', BLOCKING: 'Blocks export', UNAVAILABLE: 'Not checked' },
-  review: { UNREVIEWED: 'Not reviewed', ACCEPTED: 'Accepted', REJECTED: 'Rejected', NEEDS_CLARIFICATION: 'Needs clarification' },
-  lock: { PRESERVE_ON_REGENERATION: 'Kept on regeneration', EXPLICITLY_LOCKED: 'Locked' },
+function updateRow(fieldId: string, index: number, value: string): void {
+  // Assigned in place, so the other rows' drafts (and the inputs showing them) are untouched.
+  const values = rowDraft(fieldId)
+  if (index < 0 || index >= values.length) return
+  values[index] = value
 }
 
-/** The words a person reads for a field-state value; the raw constant only when no wording exists for it. */
-function stateLabel(dimension: keyof FieldStateResponse, value: string): string {
-  return STATE_LABELS[dimension]?.[value] ?? value
-}
-
-/** The chips worth showing for one field state: nothing that only restates the obvious (an unchecked field, an unlocked field, no source for a typed value). */
-function stateChips(state: FieldStateResponse): string[] {
-  const chips = [stateLabel('authorship', state.authorship)]
-  if (!(state.evidenceSupport === 'MISSING' && state.authorship === 'USER_AUTHORED')) {
-    chips.push(stateLabel('evidenceSupport', state.evidenceSupport))
-  }
-  if (state.validation !== 'NOT_RUN') chips.push(stateLabel('validation', state.validation))
-  chips.push(stateLabel('review', state.review))
-  if (state.lock !== 'EDITABLE') chips.push(stateLabel('lock', state.lock))
-  return chips
+/** What a review decision is called when the page says it was recorded. */
+const DECISION_WORDS: Record<ReviewDecision, string> = {
+  UNREVIEWED: 'not reviewed',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  NEEDS_CLARIFICATION: 'needs clarification',
 }
 
 function fieldStateOf(fieldId: string): FieldStateResponse | null {
@@ -835,12 +750,15 @@ function isFieldLocked(fieldId: string): boolean {
   return fieldStateOf(fieldId)?.lock === 'EXPLICITLY_LOCKED'
 }
 
-/** The state of one row, read from its first column; every column of a row is reviewed and locked together by the row controls below. */
-function rowState(index: number): FieldStateResponse | null {
-  const first = repeatedFields.value[0]
-  if (!first) return null
-  return document.value?.currentRevision.fields[first.fieldId]?.itemFieldStates?.[index] ?? null
+const lockedFieldIds = computed(() => new Set(scalarFields.value.filter((field) => isFieldLocked(field.fieldId)).map((field) => field.fieldId)))
+
+/** Whether any column of a row is locked: a row locked partway (a lock that stopped after its first column) still reads as locked. */
+function rowLocked(index: number): boolean {
+  return repeatedFields.value.some(
+    (field) => document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates?.[index]?.lock === 'EXPLICITLY_LOCKED',
+  )
 }
+
 
 /** A lock on any row of any column blocks editing every row: the server refuses a field edit while one of its items is locked, and the columns can only be saved together. */
 const rowsLocked = computed(() =>
@@ -862,19 +780,29 @@ const rowProblems = computed<string[]>(() => {
   return problems
 })
 
+/** The page moves focus into the new row itself, since it knows where the row is drawn. */
 function addRow(): void {
   for (const field of repeatedFields.value) {
     drafts.value[field.fieldId] = [...rowDraft(field.fieldId), '']
   }
 }
 
-function removeRow(index: number): void {
+async function removeRow(index: number): Promise<void> {
   for (const field of repeatedFields.value) {
     drafts.value[field.fieldId] = rowDraft(field.fieldId).filter((_, position) => position !== index)
   }
+  if (selected.value?.rowIndex != null) selected.value = null
+  announce(`Row ${index + 1} removed.`)
+  // The button pressed went with the bar; focus goes to the row that took its place, or the one
+  // before it, or "Add row" when none is left, rather than to the top of the page.
+  await nextTick()
+  const first = repeatedFields.value[0]
+  const next = first && rowCount.value > 0 ? window.document.getElementById(`edit-${first.fieldId}-${Math.min(index, rowCount.value - 1)}`) : null
+  const addRowButton = window.document.querySelector<HTMLElement>('#document-pane [data-add-row]')
+  ;(next ?? addRowButton)?.focus()
 }
 
-function moveRow(index: number, delta: -1 | 1): void {
+async function moveRow(index: number, delta: -1 | 1): Promise<void> {
   const target = index + delta
   if (target < 0 || target >= rowCount.value) return
   for (const field of repeatedFields.value) {
@@ -884,12 +812,13 @@ function moveRow(index: number, delta: -1 | 1): void {
     values[target] = moved
     drafts.value[field.fieldId] = values
   }
+  if (selected.value && selected.value.rowIndex === index) selected.value = { ...selected.value, rowIndex: target }
+  announce(`Row ${index + 1} moved ${delta < 0 ? 'up' : 'down'}.`)
 }
 
 type SaveStage = 'idle' | 'saving' | 'saved' | 'conflict' | 'failed'
 const saveStage = ref<SaveStage>('idle')
 const saveError = ref<string | null>(null)
-const editNote = ref('')
 
 function buildEdits(): FieldEditRequest[] {
   const fields = document.value?.currentRevision.fields ?? {}
@@ -920,7 +849,25 @@ function buildEdits(): FieldEditRequest[] {
   return edits
 }
 
+/** The save under way, if any, so that Export and Undo can wait for it rather than act beside it. */
+let currentSave: Promise<void> | null = null
+
 async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
+  const save = saveEditsOnce(trigger)
+  currentSave = save
+  try {
+    await save
+  } finally {
+    if (currentSave === save) currentSave = null
+  }
+}
+
+/** Waits until no save is under way; a save never throws, it records how it ended. */
+async function settleSaving(): Promise<void> {
+  while (currentSave) await currentSave
+}
+
+async function saveEditsOnce(trigger: 'manual' | 'auto'): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined || !document.value || rowProblems.value.length > 0) return
   const edits = buildEdits()
@@ -939,11 +886,10 @@ async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
       {
         expectedRevisionId: document.value.currentRevision.id,
         edits,
-        editReason: editNote.value.trim() || (trigger === 'auto' ? 'Autosaved.' : 'Edited in the workspace.'),
+        editReason: trigger === 'auto' ? 'Autosaved.' : 'Edited in the workspace.',
       },
       crypto.randomUUID(),
     )
-    editNote.value = ''
     if (await loadDocument()) {
       reconcileDraftsAfterSave(sent)
     } else {
@@ -956,7 +902,7 @@ async function saveEdits(trigger: 'manual' | 'auto' = 'manual'): Promise<void> {
     saveStage.value = 'saved'
   } catch (error) {
     if (error instanceof ApiRequestError && error.status === 412) {
-      // Someone (or another action in this same browser) moved the document on since this editor
+      // Someone (or another action in this same browser) moved the document on since this page
       // last loaded it. The drafts stay exactly as typed; the document reloads underneath them so a
       // second save applies onto what is really current -- the person chooses which.
       saveStage.value = 'conflict'
@@ -974,12 +920,12 @@ function saveFailureMessage(error: unknown): string {
   if (isDocumentGone(error)) {
     return (
       'Your changes were not saved: this document is no longer available, for example because it was moved to ' +
-      'the trash. They are still in the fields above.'
+      'the trash. They are still on the page.'
     )
   }
   if (error instanceof ApiRequestError) {
     if (error.status === 409 && error.problem?.code === 'FIELD_LOCKED') {
-      return error.problem.detail ?? 'A field you changed is locked. Unlock it first, or discard that change.'
+      return error.problem.detail ?? 'A fill spot you changed is locked. Unlock it first, or undo that change.'
     }
     if (error.status === 422 || error.status === 400) {
       return error.problem?.detail ?? error.message
@@ -1026,7 +972,7 @@ function reportFieldActionFailure(error: unknown, fallback: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Autosave: a pause in typing saves what changed against the revision this editor loaded. Rows
+// Autosave: a pause in typing saves what changed against the revision this page loaded. Rows
 // with a problem (a blank date) are never sent; the problem is shown instead. A conflict stops
 // autosaving until the person chooses what to do with their edits; a failed save waits for the
 // next edit rather than retrying on its own. "Save now" remains for people who want to be sure.
@@ -1077,10 +1023,24 @@ function hasUnsavedWork(): boolean {
   return isDirty.value || saveStage.value === 'saving'
 }
 
-onBeforeRouteLeave(() => {
+/** What the status beside Export says, in the fewest words that are true. */
+const saveStatus = computed<{ tone: 'saved' | 'pending' | 'problem'; text: string }>(() => {
+  if (saveStage.value === 'conflict') return { tone: 'problem', text: 'Not saved' }
+  if (saveStage.value === 'saving') return { tone: 'pending', text: 'Saving…' }
+  if (isDirty.value) return saveStage.value === 'failed' || rowProblems.value.length > 0 ? { tone: 'problem', text: 'Not saved' } : { tone: 'pending', text: 'Unsaved changes' }
+  if (saveStage.value === 'failed') return { tone: 'problem', text: 'Not saved' }
+  return { tone: 'saved', text: 'Saved' }
+})
+
+function confirmLeavingUnsavedWork(): boolean {
   if (!hasUnsavedWork()) return true
   return window.confirm('You have unsaved changes on this document. Leave anyway?')
-})
+}
+
+onBeforeRouteLeave(confirmLeavingUnsavedWork)
+// Another document opened from here (a template started from the sidebar) is the same route with
+// another id, which the leave guard does not see.
+onBeforeRouteUpdate((to, from) => to.params.documentId === from.params.documentId || confirmLeavingUnsavedWork())
 
 function warnBeforeUnload(event: BeforeUnloadEvent): void {
   if (!hasUnsavedWork()) return
@@ -1097,8 +1057,8 @@ onBeforeUnmount(() => {
 /**
  * After a save, take the server's normalized values into every field the person has not touched
  * since the save began, and leave the others exactly as typed. Assigning field by field, rather
- * than replacing the drafts object, means an input whose draft did not change is not re-rendered,
- * so a caret in it stays where it was.
+ * than replacing the drafts object, means a fill spot whose draft did not change is not
+ * re-rendered, so a caret in it stays where it was.
  */
 function reconcileDraftsAfterSave(sent: Drafts): void {
   const server = draftsFromRevision()
@@ -1111,73 +1071,368 @@ function reconcileDraftsAfterSave(sent: Drafts): void {
   cleanDrafts.value = JSON.parse(JSON.stringify(server))
 }
 
-async function recordRowReview(index: number, decision: ReviewDecision): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !document.value) return
-  const rowKey = `row-${index}`
-  fieldActionPending.value = rowKey
+/**
+ * Asked by Export before it checks the document: nothing may be exported that the server does not
+ * hold. A save already under way is waited for. A conflict is the person's to settle, so Export
+ * never saves over the other version for them; it says the changes are not saved instead.
+ */
+async function saveBeforeExport(): Promise<boolean> {
+  cancelAutosave()
+  await settleSaving()
+  if (saveStage.value === 'conflict' || rowProblems.value.length > 0) return false
+  if (isDirty.value) await saveEdits('manual')
+  // A save whose reload failed leaves this page on the version before it, which Export would then check.
+  return !hasUnsavedWork() && reloadError.value === null
+}
+
+const saveStatusRef = ref<HTMLElement | null>(null)
+
+/** "Save now" goes away once nothing is left to save; focus then moves to the status that says so. */
+async function saveNow(): Promise<void> {
+  if (saveStage.value === 'saving' || rowProblems.value.length > 0) return
+  await saveEdits('manual')
+  await nextTick()
+  const active = window.document.activeElement
+  if (active === null || active === window.document.body) saveStatusRef.value?.focus()
+}
+
+// ---- Undo --------------------------------------------------------------------------------------
+//
+// Undo goes back to how the document read before its latest change, whoever made it -- a pause in
+// typing, Brownie's filled-in values, a restore -- by restoring the most recent earlier version
+// whose values differ from the current ones. Versions that only recorded a check, a review or a
+// lock are skipped, since undoing one would appear to do nothing. Pressing it again goes further
+// back: the page remembers where the last undo landed for as long as the document still reads the
+// way that undo left it. Typing not saved yet is saved first, so undoing it leaves it in the
+// version history rather than losing it; typing that cannot be saved as it is (a conflict, a row
+// with a blank date) is discarded only after the person says so. A locked fill spot keeps its
+// value: the server leaves it as it is and says so.
+const undoing = ref(false)
+let undoLandedAt: { contentHash: string; restoredIndex: number } | null = null
+
+async function undoLastChange(): Promise<void> {
+  if (undoing.value || !document.value || session.personalWorkspaceId === undefined) return
+  undoing.value = true
   fieldActionError.value = null
   try {
-    // One decision per column of the row, each against the revision the previous one produced.
-    let revisionId = document.value.currentRevision.id
-    for (const field of repeatedFields.value) {
-      const revision = await recordReviewDecision(workspaceId, props.documentId, revisionId, field.fieldId, decision, crypto.randomUUID(), index)
-      revisionId = revision.id
+    cancelAutosave()
+    await settleSaving()
+    if (isDirty.value) {
+      if (saveStage.value === 'conflict' || rowProblems.value.length > 0) {
+        if (!window.confirm('Undo discards the changes on this page that are not saved. Discard them?')) return
+        resetDrafts()
+        announce('Your unsaved changes were undone.')
+        return
+      }
+      await saveEdits('manual')
+      // The save's own message says why it did not happen; nothing is undone meanwhile.
+      if (hasUnsavedWork()) return
     }
-    await loadDocument()
-  } catch (error) {
-    if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not record a review decision for row ${index + 1}. Try again.`)
+    await restorePreviousVersion()
   } finally {
-    fieldActionPending.value = null
+    undoing.value = false
   }
 }
 
-async function toggleRowLock(index: number): Promise<void> {
+async function restorePreviousVersion(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !document.value) return
-  const nextLock: FieldLock = rowState(index)?.lock === 'EXPLICITLY_LOCKED' ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
-  const rowKey = `row-${index}`
-  fieldActionPending.value = rowKey
-  fieldActionError.value = null
+  const current = document.value?.currentRevision
+  if (workspaceId === undefined || !current) return
   try {
-    let revisionId = document.value.currentRevision.id
-    for (const field of repeatedFields.value) {
-      const revision = await setFieldLock(workspaceId, props.documentId, revisionId, field.fieldId, nextLock, crypto.randomUUID(), index)
-      revisionId = revision.id
+    const revisions = (await listDocumentRevisions(workspaceId, props.documentId)) ?? []
+    const ordered = [...revisions].sort((left, right) => left.revisionNumber - right.revisionNumber)
+    const currentIndex = ordered.findIndex((revision) => revision.id === current.id)
+    const startIndex = undoLandedAt && undoLandedAt.contentHash === current.contentHash ? undoLandedAt.restoredIndex : currentIndex
+    let targetIndex = -1
+    for (let index = Math.min(startIndex, ordered.length) - 1; index >= 0; index--) {
+      if (ordered[index]!.contentHash !== current.contentHash) {
+        targetIndex = index
+        break
+      }
     }
+    if (currentIndex < 0 || targetIndex < 0) {
+      announce('There is nothing earlier to go back to.')
+      fieldActionError.value = 'There is nothing earlier to go back to.'
+      return
+    }
+    const target = ordered[targetIndex]!
+    const restored = await restoreRevision(
+      workspaceId,
+      props.documentId,
+      target.id,
+      current.id,
+      crypto.randomUUID(),
+      `Undid a change: back to version ${target.revisionNumber}.`,
+    )
+    undoLandedAt = { contentHash: restored.revision.contentHash, restoredIndex: targetIndex }
     await loadDocument()
+    const kept = restored.keptLockedFieldIds ?? []
+    const keptWords = kept.length > 0 ? ` ${kept.map(labelFor).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''
+    say({ from: 'brownie', text: `Undone: the document is back to how it read in version ${target.revisionNumber}.${keptWords}` })
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not change the lock for row ${index + 1}. Try again.`)
-  } finally {
-    fieldActionPending.value = null
+    reportFieldActionFailure(error, 'Could not undo the last change. Try again.')
+    if (error instanceof ApiRequestError && error.routeMissing) {
+      fieldActionError.value = describeCommonFailure(error, 'a way to undo a change')
+    }
   }
 }
 
-function resetApprovalAndExportState(): void {
-  approvalStage.value = 'idle'
-  approvalError.value = null
-  exportApproval.value = null
-  exportStage.value = 'idle'
-  exportError.value = null
-  exportReceipt.value = null
+/**
+ * A change to what the document says starts the undo trail again from the newest version. A
+ * version that only recorded a check, a review or a lock leaves the values as Undo left them, so
+ * the trail carries on through it.
+ */
+watch(
+  () => document.value?.currentRevision.contentHash,
+  (contentHash) => {
+    if (undoLandedAt && contentHash !== undoLandedAt.contentHash) undoLandedAt = null
+  },
+)
+
+// ---- The selected fill spot ----------------------------------------------------------------------
+//
+// Whichever fill spot the person last moved into: its state, review and lock controls sit in the
+// bar at the foot of the page, and the Rules card shows its text style and the rules about it.
+const selected = ref<{ fieldId: string; rowIndex: number | null } | null>(null)
+const selectionBarRef = ref<HTMLElement | null>(null)
+/** Set while the bar hands focus back to its spot on closing, so that focus does not open the bar again. */
+let closingBar = false
+
+function select(selection: { fieldId: string; rowIndex: number | null }): void {
+  if (closingBar) return
+  if (selected.value?.fieldId === selection.fieldId && selected.value?.rowIndex === selection.rowIndex) return
+  selected.value = selection
+  if (evidenceOpenFor.value !== null && evidenceOpenFor.value !== selection.fieldId) evidenceOpenFor.value = null
 }
 
-// ---------------------------------------------------------------------------------------------
-// Preview pane: the latest compiled PDF of this document, drawn beside the editor. A compilation is
-// never started on its own -- it spawns the isolated renderer -- so the pane shows whatever exists
-// for the current content (a compilation from an earlier "Regenerate preview" or from validation,
-// which compiles too) and asks for a click to make a new one. Staleness is judged by the
-// revision's content hash, not its id: a review decision or a lock makes a new revision without
-// changing a single value, and a preview of identical content is not out of date.
+function spotElementId(target: { fieldId: string; rowIndex: number | null }): string {
+  return target.rowIndex === null ? `edit-${target.fieldId}` : `edit-${target.fieldId}-${target.rowIndex}`
+}
+
+/** The fill spot last focused; a field the template draws in two places has two, and focus goes back to the one the person was in. */
+let lastSpotElement: HTMLElement | null = null
+
+function spotElementFor(target: { fieldId: string; rowIndex: number | null }): HTMLElement | null {
+  const id = spotElementId(target)
+  const last = lastSpotElement
+  if (last && last.isConnected && (last.id === id || last.id.startsWith(`${id}--`))) return last
+  return window.document.getElementById(id)
+}
+
+function clearSelection(): void {
+  const previous = selected.value
+  selected.value = null
+  evidenceOpenFor.value = null
+  if (!previous) return
+  // Back to the fill spot the bar was about, so a keyboard user carries on where they were.
+  closingBar = true
+  try {
+    spotElementFor(previous)?.focus()
+  } finally {
+    closingBar = false
+  }
+}
+
+/**
+ * The bar follows the spot that has focus and is drawn after the whole page, so Tab alone would only
+ * reach it for the last spot. Alt+Enter (Option+Return) in a spot comes here instead, and Escape in
+ * the bar goes back to the spot, leaving the bar open.
+ */
+async function openActions(target: { fieldId: string; rowIndex: number | null }): Promise<void> {
+  select(target)
+  await nextTick()
+  // The bar is always in view at the foot of the screen, so the page stays where it is.
+  selectionBarRef.value?.focus({ preventScroll: true })
+}
+
+function returnToSelectedSpot(): void {
+  const current = selected.value
+  if (current) spotElementFor(current)?.focus()
+}
+
+/** How to reach the bar from a spot, in the words of the keyboard in use. */
+const actionsKey = /Mac|iPhone|iPad/.test(window.navigator.platform ?? '') ? 'Option+Return' : 'Alt+Enter'
+
+/**
+ * The bar sits over the foot of the page, so a spot that gets focus there, or that the bar grows
+ * over, would be typed into unseen. The page scrolls by just enough to show it above the bar; a value
+ * taller than the room there keeps its first line, where the caret is, in view.
+ */
+function keepFocusClearOfBar(): void {
+  const bar = selectionBarRef.value
+  const focused = window.document.activeElement
+  if (!bar || !(focused instanceof HTMLElement) || !focused.closest('.document-page')) return
+  // A button pressed with a pointer is not chased: moving it between the press and the release would
+  // lose the click. A fill spot always counts as focus to show, however it was reached.
+  if (!focused.classList.contains('fill-spot__control') && !focusIsShown(focused)) return
+  const barBox = bar.getBoundingClientRect()
+  // A bar that takes no room (the document pane hidden behind Brownie's panel) covers nothing.
+  if (barBox.height === 0) return
+  const box = focused.getBoundingClientRect()
+  // A spot the person has scrolled away from, below the screen, is not chased.
+  if (box.top >= barBox.bottom) return
+  const covered = box.bottom - barBox.top + 12
+  if (covered <= 0) return
+  // Where the page fills the window, the document pane scrolls on its own and the window does not.
+  const pane = bar.closest('.document-pane')
+  const paneScrolls =
+    pane instanceof HTMLElement &&
+    typeof pane.scrollBy === 'function' &&
+    window.getComputedStyle(pane).overflowY !== 'visible' &&
+    pane.scrollHeight > pane.clientHeight
+  const top = paneScrolls ? pane.getBoundingClientRect().top : 0
+  const scroll = Math.min(covered, Math.max(0, box.top - top - 12))
+  if (scroll <= 0) return
+  if (paneScrolls) pane.scrollBy({ top: scroll })
+  else if (typeof window.scrollBy === 'function') window.scrollBy({ top: scroll })
+}
+
+/** Whether the browser shows this element's focus; an engine that cannot say is taken to show it. */
+function focusIsShown(element: HTMLElement): boolean {
+  try {
+    return element.matches(':focus-visible')
+  } catch {
+    return true
+  }
+}
+
+let barObserver: ResizeObserver | null = null
+watch(selectionBarRef, (bar) => {
+  barObserver?.disconnect()
+  barObserver = null
+  // The bar grows when the spot it is about gets a state (after a save), and can then cover it.
+  if (bar && typeof ResizeObserver !== 'undefined') {
+    barObserver = new ResizeObserver(() => keepFocusClearOfBar())
+    barObserver.observe(bar)
+  }
+})
+watch(selected, () => void nextTick(keepFocusClearOfBar), { flush: 'post' })
+
+function onDocumentFocusIn(event: FocusEvent): void {
+  if (event.target instanceof HTMLElement && event.target.classList.contains('fill-spot__control')) lastSpotElement = event.target
+  void nextTick(keepFocusClearOfBar)
+}
+
+/** A text spot grows as a value wraps; the line being typed stays above the bar. */
+function onDocumentInput(): void {
+  void nextTick(keepFocusClearOfBar)
+}
+
+onBeforeUnmount(() => barObserver?.disconnect())
+
+const selectedField = computed(() => (selected.value ? (editableFields.value.find((field) => field.fieldId === selected.value!.fieldId) ?? null) : null))
+const selectedLabel = computed(() => {
+  if (!selected.value) return ''
+  const label = labelFor(selected.value.fieldId)
+  return selected.value.rowIndex === null ? label : `${label}, row ${selected.value.rowIndex + 1}`
+})
+/** The selected spot's own state: for a row, its own column's item, since each column is filled and checked on its own. */
+const selectedState = computed<FieldStateResponse | null>(() => {
+  const current = selected.value
+  if (!current) return null
+  if (current.rowIndex === null) return fieldStateOf(current.fieldId)
+  return document.value?.currentRevision.fields[current.fieldId]?.itemFieldStates?.[current.rowIndex] ?? null
+})
+/** A row's review and lock act on the whole row, so they are offered whenever any of its columns holds a value. */
+const selectedRowHasState = computed(() => {
+  const current = selected.value
+  if (!current || current.rowIndex === null) return false
+  const index = current.rowIndex
+  return repeatedFields.value.some((field) => (document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates?.[index] ?? null) !== null)
+})
+const selectedRequired = computed(() => (selected.value ? requiredFieldIds.value.has(selected.value.fieldId) : false))
+/** What the bar's Lock or Unlock does: a field's own lock, or the whole row's, the same test the row action makes. */
+const selectedLocked = computed(() => {
+  const current = selected.value
+  if (!current) return false
+  return current.rowIndex === null ? selectedState.value?.lock === 'EXPLICITLY_LOCKED' : rowLocked(current.rowIndex)
+})
+/** What the bar says about a spot with no state yet: empty, or typed and not saved; nothing when it is saved as it reads. */
+const selectedHint = computed<string | null>(() => {
+  const current = selected.value
+  if (!current) return null
+  const draft = (current.rowIndex === null ? scalarDraft(current.fieldId) : (rowDraft(current.fieldId)[current.rowIndex] ?? '')).trim()
+  if (draft === '') return 'Nothing filled in here yet.'
+  const clean = cleanDrafts.value[current.fieldId]
+  const saved = current.rowIndex === null ? (typeof clean === 'string' ? clean : '') : (Array.isArray(clean) ? (clean[current.rowIndex] ?? '') : '')
+  return draft === saved.trim() ? null : 'Not saved yet.'
+})
+
+// A reload can take away what was selected: a row removed elsewhere, or a field the version no longer has.
+watch([editableFieldIds, rowCount], () => {
+  const current = selected.value
+  if (!current) return
+  if (!editableFieldIds.value.has(current.fieldId) || (current.rowIndex !== null && current.rowIndex >= rowCount.value)) {
+    selected.value = null
+  }
+})
+
+// ---- Rules card ------------------------------------------------------------------------------
+
+/** The text style a value in the selected fill spot takes when exported; the most common one when nothing is selected. */
+const shownStyle = computed(() => {
+  const style = selected.value && layout.value ? fillSpotStyle(layout.value, selected.value.fieldId) : null
+  return describeStyle(style ?? (layout.value ? dominantFillSpotStyle(layout.value) : null))
+})
+/** The style's parts as chips; none until the template's layout is read, since the style comes from it. */
+const styleChips = computed(() => {
+  if (!layout.value) return []
+  const style = shownStyle.value
+  const chips: string[] = []
+  if (style.font) chips.push(style.font)
+  if (style.size) chips.push(style.size)
+  chips.push(style.weight)
+  if (style.italic) chips.push('Italic')
+  if (style.underline) chips.push('Underlined')
+  return chips
+})
+/** How a date reads once exported, shown with today's date, where the selected spot (or any spot) is a date. */
+const dateExample = computed(() => {
+  const dateField =
+    selectedField.value?.type === 'DATE' || (!selectedField.value && editableFields.value.some((field) => field.type === 'DATE'))
+  return dateField ? formatDateLikeExport(todayIso()) : null
+})
+/** The fill spots the template itself requires, in page order; a rule that requires more lists them in its own words. */
+const requiredLabels = computed(() => editableFields.value.filter((field) => field.requiredness === 'REQUIRED').map((field) => labelFor(field.fieldId)))
+
+function todayIso(): string {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+/** Rules about the selected fill spot and rules about the whole document; every rule when nothing is selected. */
+const shownRules = computed(() => {
+  const fieldId = selected.value?.fieldId ?? null
+  if (!fieldId) return rulesInForce.value
+  return rulesInForce.value.filter((rule) => {
+    const payload = rule.payload
+    if (payload.kind === 'REQUIRED_FIELDS') return (payload.fieldIds ?? []).includes(fieldId)
+    if (payload.fieldId) return payload.fieldId === fieldId
+    return rule.scope.kind === 'WHOLE_TEMPLATE'
+  })
+})
+
+function ruleWords(rule: RuleResponse): string {
+  return describePayload(rule.payload, labelFor)
+}
+
+// ---- Print preview -----------------------------------------------------------------------------
+//
+// The latest compiled PDF of this document: the file as it exports. A compilation is never started
+// on its own -- it spawns the isolated renderer -- so the view shows whatever exists for the
+// current content (from an earlier "Generate preview" or from a check, which compiles too) and asks
+// for a click to make a new one. Staleness is judged by the revision's content hash, not its id: a
+// review decision or a lock makes a new revision without changing a single value, and a preview of
+// identical content is not out of date.
 type PreviewStage = 'idle' | 'loading' | 'generating' | 'ready' | 'failed'
 const previewStage = ref<PreviewStage>('idle')
 const previewError = ref<string | null>(null)
 const previewArtifactId = ref<number | null>(null)
 const previewContentHash = ref<string | null>(null)
 const previewRevisionNumber = ref<number | null>(null)
-const previewOpen = ref(typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 1100px)').matches : false)
 
 const previewUrl = computed(() => {
   const workspaceId = session.personalWorkspaceId
@@ -1202,6 +1457,16 @@ async function loadExistingPreview(): Promise<void> {
   } catch (error) {
     // A server without the route is not one with no preview yet: generating one would fail the same way.
     if (error instanceof ApiRequestError && error.status === 404 && !error.routeMissing) {
+      // A check compiles this exact content too, and its PDF is the same file an export offers.
+      try {
+        const checked = await getLatestValidation(workspaceId, props.documentId, current.id)
+        if (checked.pdfArtifactId != null) {
+          adoptPreview(checked.pdfArtifactId, current.contentHash, current.revisionNumber)
+          return
+        }
+      } catch {
+        // No check either: the preview has simply not been made yet.
+      }
       previewStage.value = previewArtifactId.value != null ? 'ready' : 'idle'
       return
     }
@@ -1234,17 +1499,19 @@ function adoptPreview(pdfArtifactId: number, contentHash: string, revisionNumber
   previewStage.value = 'ready'
 }
 
-function togglePreview(): void {
-  previewOpen.value = !previewOpen.value
-}
-
-watch(() => document.value?.currentRevision.contentHash, () => void loadExistingPreview())
+// Only read while the print preview is what the person is looking at.
+watch(
+  [() => document.value?.currentRevision.contentHash, docView],
+  ([, view]) => {
+    if (view === 'print') void loadExistingPreview()
+  },
+)
 
 // ---------------------------------------------------------------------------------------------
-// Evidence: a value filled by Assist carries the ids of the source spans it was taken from. The
-// marker opens the cited excerpts, fetched through the document's own evidence route. Nothing
-// here can point at a page or a position on the preview: the renderer emits no locator, and
-// the panel says so instead of guessing.
+// Evidence: a value filled by Brownie carries the ids of the source spans it was taken from. The
+// bar at the foot of the page opens the cited excerpts, fetched through the document's own
+// evidence route. Nothing here can point at a position on the rendered file: the renderer emits no
+// locator, and the panel says so instead of guessing.
 const evidenceOpenFor = ref<string | null>(null)
 const evidenceExcerpts = ref<EvidenceExcerptResponse[]>([])
 const evidenceStage = ref<'idle' | 'loading' | 'ready' | 'failed'>('idle')
@@ -1254,8 +1521,6 @@ const MAX_EVIDENCE_EXCERPTS = 5
 function evidenceSpanIdsOf(fieldId: string): number[] {
   return document.value?.currentRevision.fields[fieldId]?.evidenceSourceSpanIds ?? []
 }
-
-const repeatedFieldsWithEvidence = computed(() => repeatedFields.value.filter((field) => evidenceSpanIdsOf(field.fieldId).length > 0))
 
 async function toggleEvidence(fieldId: string): Promise<void> {
   const workspaceId = session.personalWorkspaceId
@@ -1281,248 +1546,7 @@ async function toggleEvidence(fieldId: string): Promise<void> {
   }
 }
 
-function resetChecksState(): void {
-  validationStage.value = 'idle'
-  validationError.value = null
-  validationManifest.value = null
-  resetApprovalAndExportState()
-}
-
-// A revision changes here either because another action already reloaded the document (accepting
-// a patch proposal, a field review decision, a lock toggle -- any validate/approve/export state on
-// screen was scoped to the revision that just stopped being current, so it can no longer be
-// trusted), or because validateCurrentRevision() itself just refreshed the document after the new
-// revision its own POST /validate created -- in that one case validationManifest.value already
-// names the new revision, so it (and the approval/export state validate just recomputed) must
-// survive rather than be wiped a moment after being set. Either way, the revision list any earlier
-// History-tab visit cached is now stale and must be re-fetched next time that tab is opened.
-watch(() => document.value?.currentRevision.id, (newRevisionId) => {
-  revisionsLoadState.value = 'idle'
-  revisions.value = []
-  if (newRevisionId !== undefined && validationManifest.value?.revisionId === newRevisionId) {
-    return
-  }
-  resetChecksState()
-})
-
-/**
- * Shared by validate, approve, and export.
- *
- * A 412 means whatever this action was scoped to (the revision validate ran against, or the
- * manifest/approval approve or export relied on) is no longer current -- the only sound recovery
- * is a fresh validate, so every checks/approval/export ref is cleared here. The message is also
- * written directly to validationError (in addition to being returned) because approvalError and
- * exportError live inside the `validationManifest`-gated part of the template, which this same
- * reset just made disappear -- validationError is the only place left that stays visible.
- *
- * A 404 means only the specific manifest/approval/receipt this action pointed at is gone (e.g.
- * superseded by another approval); the validation manifest itself is still meaningful, so only the
- * approval/export state is reset.
- *
- * A 422 carries a single server message rather than an itemized list.
- *
- * Anything else that every page words the same way -- a busy renderer, too many requests, a
- * server without the route -- is said as such, with the server's own explanation where it gave
- * one; `feature` names the step for a server that does not have it.
- */
-function checksFailureMessage(error: unknown, feature: string): string {
-  if (error instanceof ApiRequestError) {
-    if (error.status === 412) {
-      resetChecksState()
-      const message = 'This document changed since you last validated it. Validate again.'
-      validationError.value = message
-      return message
-    }
-    if (error.status === 404 && !error.routeMissing) {
-      resetApprovalAndExportState()
-      return error.problem?.detail ?? 'That approval is no longer available. Validate again.'
-    }
-    if (error.status === 422) {
-      return error.problem?.detail ?? error.message
-    }
-  }
-  return describeCommonFailure(error, feature) ?? 'Something went wrong. Try again.'
-}
-
-async function validateCurrentRevision(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !document.value) return
-
-  validationStage.value = 'validating'
-  validationError.value = null
-  try {
-    const manifest = await validateDocument(
-      workspaceId,
-      props.documentId,
-      document.value.currentRevision.id,
-      crypto.randomUUID(),
-    )
-    validationManifest.value = manifest
-    resetApprovalAndExportState()
-    // /validate always appends a brand-new current revision (it records per-field validation
-    // results onto it) distinct from the one just validated -- resync document.value with that new
-    // revision so the rest of the page (and the currentRevision.id watcher above) sees it too.
-    await loadDocument()
-    // Validation compiled this exact content, so its PDF is the preview -- no second render needed.
-    if (manifest.pdfArtifactId != null && document.value) {
-      adoptPreview(manifest.pdfArtifactId, document.value.currentRevision.contentHash, document.value.currentRevision.revisionNumber)
-    }
-    validationStage.value = 'validated'
-  } catch (error) {
-    validationStage.value = 'failed'
-    validationError.value = checksFailureMessage(error, 'document checks')
-  }
-}
-
-// Approving again (same format re-approved, or a new one after the watcher below cleared a prior
-// approval) must never leave a stale receipt from an earlier approval visible next to it.
-watch(exportFormat, () => {
-  if (approvalStage.value !== 'idle') {
-    resetApprovalAndExportState()
-  }
-})
-
-async function approveCurrentExport(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  const manifest = validationManifest.value
-  if (workspaceId === undefined || !manifest) return
-
-  exportStage.value = 'idle'
-  exportError.value = null
-  exportReceipt.value = null
-  approvalStage.value = 'approving'
-  approvalError.value = null
-  try {
-    exportApproval.value = await approveExport(workspaceId, props.documentId, manifest.id, exportFormat.value)
-    approvalStage.value = 'approved'
-  } catch (error) {
-    approvalStage.value = 'failed'
-    approvalError.value = checksFailureMessage(error, 'export approval')
-  }
-}
-
-async function exportApprovedDocument(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !exportApproval.value) return
-
-  exportStage.value = 'exporting'
-  exportError.value = null
-  try {
-    exportReceipt.value = await exportDocument(workspaceId, props.documentId)
-    exportStage.value = 'exported'
-  } catch (error) {
-    exportStage.value = 'failed'
-    exportError.value = checksFailureMessage(error, 'exports')
-  }
-}
-
-/**
- * Best-effort rehydration for a document that already has validate/approve/export state recorded
- * against its current revision from an earlier session (or before a page reload) -- Validate,
- * Approve for export and Export all remain available and authoritative regardless, so any failure
- * here (including a 404 for "nothing recorded yet", the common case) is silently ignored rather
- * than surfaced as an error.
- */
-async function hydrateChecksState(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !document.value) return
-  const revisionId = document.value.currentRevision.id
-  if (checksHydratedForRevisionId.value === revisionId) return
-  checksHydratedForRevisionId.value = revisionId
-  if (validationStage.value !== 'idle') return
-
-  let manifest: ValidationManifestResponse
-  try {
-    manifest = await getLatestValidation(workspaceId, props.documentId, revisionId)
-  } catch {
-    return
-  }
-  validationManifest.value = manifest
-  validationStage.value = 'validated'
-
-  let approval: ExportApprovalResponse
-  try {
-    approval = await getLatestExportApproval(workspaceId, props.documentId)
-  } catch {
-    return
-  }
-  if (approval.validationManifestId !== manifest.id) return
-  exportApproval.value = approval
-  approvalStage.value = 'approved'
-
-  try {
-    const receipt = await getLatestExportReceipt(workspaceId, props.documentId)
-    if (receipt.exportApprovalId === approval.id) {
-      exportReceipt.value = receipt
-      exportStage.value = 'exported'
-    }
-  } catch {
-    // No export recorded against this approval yet -- fine, the Export button covers that.
-  }
-}
-
-async function loadRevisionHistory(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || revisionsLoadState.value === 'loading' || revisionsLoadState.value === 'loaded') return
-
-  revisionsLoadState.value = 'loading'
-  revisionsError.value = null
-  try {
-    revisions.value = await listDocumentRevisions(workspaceId, props.documentId)
-    revisionsLoadState.value = 'loaded'
-  } catch (error) {
-    revisionsLoadState.value = 'error'
-    revisionsError.value =
-      describeCommonFailure(error, 'revision history') ??
-      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
-      "Could not load this document's revision history."
-  }
-}
-
-// Stamps each call so an out-of-order response (an earlier compare that resolves after a later
-// one) can never overwrite the result of a more recent request -- compareRevisionId and
-// compareRevision are otherwise two independently-written refs with no other guard tying them together.
-let compareRequestToken = 0
-
-async function compareToRevision(revisionId: number): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined) return
-
-  const requestToken = ++compareRequestToken
-  compareRevisionId.value = revisionId
-  compareStage.value = 'loading'
-  compareError.value = null
-  try {
-    const revision = await getDocumentRevision(workspaceId, props.documentId, revisionId)
-    if (requestToken !== compareRequestToken) return
-    compareRevision.value = revision
-    compareStage.value = 'loaded'
-  } catch (error) {
-    if (requestToken !== compareRequestToken) return
-    compareStage.value = 'error'
-    compareError.value =
-      describeCommonFailure(error, 'revision history') ??
-      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
-      'Could not load that revision.'
-  }
-}
-
-const orderedRevisions = computed<DocumentRevisionResponse[]>(() => [...revisions.value].reverse())
-
-const compareFieldIds = computed<string[]>(() => {
-  if (!compareRevision.value || !document.value) return []
-  return Array.from(
-    new Set([...Object.keys(compareRevision.value.fields), ...Object.keys(document.value.currentRevision.fields)]),
-  ).sort()
-})
-
-function fieldChanged(fieldId: string): boolean {
-  if (!compareRevision.value || !document.value) return false
-  return (
-    fieldDisplayValue(compareRevision.value.fields[fieldId]) !==
-    fieldDisplayValue(document.value.currentRevision.fields[fieldId])
-  )
-}
+// ---- Adding a source ---------------------------------------------------------------------------
 
 /**
  * Why a finished upload was not accepted, as a clause. The rejection reasons are the scanner's and
@@ -1589,26 +1613,60 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
     sourcesAddedHere.add(attached.id)
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
-    selectedSourceId.value = attached.id
+    // The new source is the one read next, but a reading under way keeps the source it started with.
+    if (!runUnderWay.value) selectedSourceId.value = attached.id
     sourceUploadState.value = 'idle'
+    announce(`${sourceName(attached)} attached.`)
   } catch (error) {
     sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
   }
 }
 
+// Google's answer opened a picker by itself on this first visit only; after the panel closes, it
+// opens with every picker closed like any other time.
+watch(sourcesOpen, (open) => {
+  if (open) return
+  calendarPickerStartsOpen.value = false
+  drivePickerStartsOpen.value = false
+})
+
+async function toggleSources(): Promise<void> {
+  sourcesOpen.value = !sourcesOpen.value
+  if (!sourcesOpen.value) return
+  await nextTick()
+  window.document.getElementById('attach-source')?.focus()
+}
+
+const addSourceButtonRef = ref<HTMLElement | null>(null)
+
+/** The panel's own close button goes with it, so focus returns to the + that opened it. */
+async function closeSources(): Promise<void> {
+  sourcesOpen.value = false
+  await nextTick()
+  addSourceButtonRef.value?.focus()
+}
+
+/** The empty page's one call to action: Brownie's panel, with the file picker open and focused. */
+async function goToSources(): Promise<void> {
+  await showAssistant(false)
+  sourcesOpen.value = true
+  await nextTick()
+  window.document.getElementById('attach-source')?.focus()
+}
+
+// ---- Reading a source ----------------------------------------------------------------------------
+
 /**
- * Asks the trusted worker to pull typed facts (and action-item rows) out of
- * the selected source. The job may pause to ask about anything missing or
- * conflicting; once it finishes, "Apply to document" turns the result into
- * a proposal and "Accept and update document" is the only step that
- * changes this document's own fields. A failure here happens before any
- * job exists, so trying again is safe; once a job id is known, the poll
+ * Asks the trusted worker to pull typed facts (and repeated rows) out of the selected source. The
+ * job may pause to ask about anything missing or conflicting; once it finishes, its values become
+ * a proposal, and approving the proposal is the only step that changes this document. A failure
+ * here happens before any job exists, so trying again is safe; once a job id is known, the poll
  * loop below never starts another.
  */
 async function tryGroundedExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  const source = attachedSources.value.find((candidate) => candidate.id === selectedSourceId.value) ?? attachedSources.value[0]
+  const source = selectedSource.value
   if (workspaceId === undefined || !source) return
 
   extractionStage.value = 'starting'
@@ -1623,15 +1681,18 @@ async function tryGroundedExtraction(): Promise<void> {
   applyError.value = null
   patchProposal.value = null
   acceptResult.value = null
+  runSourceName.value = sourceName(source)
+  placeInChat('run')
   try {
     const receipt = await startExtraction(workspaceId, props.documentId, source.artifactId, crypto.randomUUID())
     extractionJobId.value = receipt.jobId
+    runFollowedHere.value = receipt.jobId
     extractionStage.value = 'running'
   } catch (error) {
     extractionStage.value = 'failed'
     extractionError.value =
-      describeCommonFailure(error, 'extraction from sources') ??
-      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Could not start extraction. Try again.')
+      describeCommonFailure(error, 'reading sources') ??
+      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Could not start reading. Try again.')
     return
   }
   await pollJobUntilTerminal(workspaceId, extractionJobId.value!)
@@ -1646,10 +1707,10 @@ async function tryGroundedExtraction(): Promise<void> {
 function pollFailureWaitingCannotFix(error: unknown): string | null {
   if (!(error instanceof ApiRequestError)) return null
   if (brownieSaysNotThere(error)) {
-    return 'This run is no longer available, for example because its document was moved to the trash.'
+    return 'This reading is no longer available, for example because its document was moved to the trash.'
   }
   if (error.status === 401 || error.routeMissing) return describeCommonFailure(error, 'a way to check on a run')
-  if (error.status === 403) return 'Brownie no longer lets this account see this run, so this page stopped checking on it.'
+  if (error.status === 403) return 'Brownie no longer lets this account see this reading, so this page stopped checking on it.'
   return null
 }
 
@@ -1690,8 +1751,8 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       }
       extractionError.value =
         error instanceof ApiRequestError && error.status === 429
-          ? 'Brownie asked this page to check less often; still checking on this run.'
-          : 'Lost contact with the server; still checking on this run.'
+          ? 'Brownie asked this page to check less often; still checking.'
+          : 'Lost contact with the server; still checking.'
       delayMs = Math.min(delayMs * 2, 15_000)
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       continue
@@ -1706,10 +1767,11 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       try {
         openQuestions.value = await getGenerationQuestions(workspaceId, props.documentId, jobId)
       } catch (error) {
-        stopFollowingUnreadRun('This run is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
+        stopFollowingUnreadRun('This reading is waiting for your answers, but its questions could not be loaded.', error, 'questions for a run')
         return
       }
       extractionStage.value = 'waiting-for-input'
+      announce('Brownie has a question for you.')
       return
     }
     if (terminalStates.has(job.state)) {
@@ -1718,17 +1780,19 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
         try {
           result = await getExtractionResult(workspaceId, props.documentId, jobId)
         } catch (error) {
-          stopFollowingUnreadRun('This run has finished, but its result could not be loaded.', error, 'run results')
+          stopFollowingUnreadRun('This reading has finished, but its result could not be loaded.', error, 'run results')
           return
         }
         extractionResultArtifactId.value = result.artifactId
         extractionStage.value = 'succeeded'
+        if (runFollowedHere.value === jobId) void applyResultToDocument()
       } else if (job.state === 'CANCELLED') {
         extractionStage.value = 'cancelled'
+        announce('Brownie stopped reading. Nothing on the document changed.')
       } else {
         extractionStage.value = 'failed'
         // FAILED or DEAD: the job queue's names for a run that stopped trying, not words for a person.
-        extractionError.value = 'This run gave up before it could finish.'
+        extractionError.value = 'This reading gave up before it could finish.'
       }
       return
     }
@@ -1736,7 +1800,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
   }
   if (pageLeft) return
   extractionStalled.value = true
-  stalledMessage.value = 'Still running after ten minutes of checking. The run continues on the server.'
+  stalledMessage.value = 'Still reading after ten minutes of checking. It carries on on the server.'
 }
 
 /** Re-reads the run from the server; used after polling stopped, and safe at any time. */
@@ -1745,7 +1809,7 @@ async function checkRunAgain(): Promise<void> {
     await followLatestRun()
   } catch (error) {
     // The run is as it was; only this check failed, so the offer to check stays.
-    stalledMessage.value = describeCommonFailure(error, 'a list of runs') ?? 'Brownie could not check on this run just now.'
+    stalledMessage.value = describeCommonFailure(error, 'a list of runs') ?? 'Brownie could not check on this reading just now.'
   }
 }
 
@@ -1753,9 +1817,9 @@ const retryingRun = ref(false)
 /** The job the server said can never be started again, so the offer is not repeated for it. */
 const runThatCannotBeRetried = ref<number | null>(null)
 /**
- * Only a run that gave up can be started again. Starting a new extraction from the same source on
- * the same version of the document would find this same run and report the same ending, so this is
- * the way forward until the document changes.
+ * Only a run that gave up can be started again. Starting a new reading from the same source on the
+ * same version of the document would find this same run and report the same ending, so this is the
+ * way forward until the document changes.
  */
 const canRetryRun = computed(
   () =>
@@ -1776,12 +1840,12 @@ async function retryRun(): Promise<void> {
     extractionJobState.value = job.state
     extractionStalled.value = false
     cancellationRequested.value = false
+    runFollowedHere.value = jobId
     extractionStage.value = 'running'
   } catch (error) {
     if (error instanceof ApiRequestError && error.problem?.code === 'JOB_TARGET_STALE') {
       runThatCannotBeRetried.value = jobId
-      extractionError.value =
-        'This document has changed since that run began, so it cannot be started again. Start a new extraction instead.'
+      extractionError.value = 'This document has changed since that reading began, so it cannot be started again. Ask me to fill it again instead.'
     } else if (error instanceof ApiRequestError && !error.routeMissing && (error.status === 409 || error.status === 404)) {
       // The run is not in the state this page last saw (another tab restarted it, or it has since
       // finished), so asking again cannot help; what the server says now is what should be shown.
@@ -1790,7 +1854,7 @@ async function retryRun(): Promise<void> {
     } else {
       // Nothing happened to the run. A server without the retry route says nothing about the run
       // itself, so it keeps its ending and the offer stays for once the server has been updated.
-      extractionError.value = describeCommonFailure(error, 'a way to start a run again') ?? 'Could not start this run again. Try again.'
+      extractionError.value = describeCommonFailure(error, 'a way to start a run again') ?? 'Could not start this reading again. Try again.'
     }
     return
   } finally {
@@ -1801,13 +1865,13 @@ async function retryRun(): Promise<void> {
 
 /**
  * Cooperative: the worker checks before each paid call and the job ends CANCELLED; a model call
- * already in flight may still finish and cost. The button therefore says "requested" until the job
+ * already in flight may still finish and cost. The button therefore says "Stopping…" until the job
  * really reaches a resting state, which the poll loop reports.
  */
 async function cancelExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const jobId = extractionJobId.value
-  if (workspaceId === undefined || jobId === null) return
+  if (workspaceId === undefined || jobId === null || cancellationRequested.value) return
   extractionError.value = null
   try {
     await cancelJob(workspaceId, jobId, crypto.randomUUID())
@@ -1818,14 +1882,15 @@ async function cancelExtraction(): Promise<void> {
       await pollJobUntilTerminal(workspaceId, jobId)
     }
   } catch (error) {
-    extractionError.value = describeCommonFailure(error, 'a way to cancel a run') ?? 'Could not request cancellation. Try again.'
+    extractionError.value = describeCommonFailure(error, 'a way to cancel a run') ?? 'Could not stop reading. Try again.'
   }
 }
 
-async function submitAnswer(questionId: number): Promise<void> {
+/** Saves one answer; once every question has one, the reading carries on by itself, since that is what answering was for. */
+async function answerWith(questionId: number, value: string): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  const answerValue = (answerDrafts.value[questionId] ?? '').trim()
-  if (workspaceId === undefined || !answerValue) return
+  const answerValue = value.trim()
+  if (workspaceId === undefined || !answerValue || answeringQuestionId.value !== null) return
 
   answeringQuestionId.value = questionId
   extractionError.value = null
@@ -1834,8 +1899,13 @@ async function submitAnswer(questionId: number): Promise<void> {
     openQuestions.value = openQuestions.value.map((question) => (question.id === answered.id ? answered : question))
   } catch (error) {
     extractionError.value = describeCommonFailure(error, "a way to answer a run's questions") ?? 'Could not save that answer. Try again.'
+    return
   } finally {
     answeringQuestionId.value = null
+  }
+  await keepFocusInChat('question')
+  if (openQuestions.value.length > 0 && openQuestions.value.every((question) => question.status === 'ANSWERED')) {
+    await resumeAfterAnswers()
   }
 }
 
@@ -1848,119 +1918,288 @@ async function resumeAfterAnswers(): Promise<void> {
   extractionError.value = null
   try {
     await resumeGeneration(workspaceId, props.documentId, jobId, crypto.randomUUID())
+    runFollowedHere.value = jobId
     extractionStage.value = 'running'
     await pollJobUntilTerminal(workspaceId, jobId)
   } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 409 && !error.routeMissing) {
+      // The run is no longer waiting (another tab carried on, or it was stopped): what the server says now is what to show.
+      await rehydrateLatestRun()
+      return
+    }
     extractionStage.value = 'waiting-for-input'
-    extractionError.value = describeCommonFailure(error, 'a way to continue a run once its questions are answered') ?? 'Could not resume extraction. Try again.'
+    extractionError.value = describeCommonFailure(error, 'a way to continue a run once its questions are answered') ?? 'Could not carry on reading. Try again.'
   }
 }
 
 async function applyResultToDocument(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const jobId = extractionJobId.value
-  if (workspaceId === undefined || jobId === null) return
+  if (workspaceId === undefined || jobId === null || applyStage.value === 'applying') return
 
   applyStage.value = 'applying'
   applyError.value = null
   try {
-    patchProposal.value = await applyGenerationResult(workspaceId, props.documentId, jobId)
+    const proposal = await applyGenerationResult(workspaceId, props.documentId, jobId)
+    placeInChat('proposal')
+    proposalFromJobId.value = jobId
+    patchProposal.value = proposal
+    acceptResult.value = null
+    proposalIntro.value = `Here is what I found in ${runSourceName.value ?? 'your source'}:`
     applyStage.value = 'proposed'
+    announce('Brownie found values for this document. Check them, then approve them to fill them in.')
+    // "Show what I found" went away with the reading's status; the proposal it showed takes focus.
+    await keepFocusInChat()
   } catch (error) {
     applyStage.value = 'failed'
-    applyError.value = describeCommonFailure(error, "a way to apply a run's results") ?? 'Could not turn this result into a proposal. Try again.'
+    applyError.value =
+      error instanceof ApiRequestError && error.problem?.code === 'GENERATION_RESULT_EMPTY'
+        ? `I could not find any of this document's values in ${runSourceName.value ?? 'that source'}.`
+        : (describeCommonFailure(error, "a way to apply a run's results") ?? 'Could not get the values ready. Try again.')
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The composer: a typed request is interpreted first (what it would do, to which field or finding)
-// and only an explicit second click executes it. A change or a rewrite comes back as a proposal
-// that goes through the same accept step as an Assist result; an explanation is text; a draft
-// request starts the existing extraction; anything else is answered with what Brownie can do.
-type AssistStage = 'idle' | 'interpreting' | 'interpreted' | 'executing' | 'done' | 'failed'
-const assistText = ref('')
-const assistStage = ref<AssistStage>('idle')
-const assistInterpretation = ref<AssistInterpretationResponse | null>(null)
-const assistExplanation = ref<string | null>(null)
-const assistError = ref<string | null>(null)
-const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
+// ---- The chat -----------------------------------------------------------------------------------
+//
+// What was said on this visit, in order. Brownie's composer is not a free conversation: each line is
+// matched to one of a few bounded things Brownie can do (fill from a source, change a field, shorten
+// or rewrite a text field, explain a finding), and nothing changes on the document until the person
+// approves the proposal it makes. What is still under way (reading a source, questions, a proposal)
+// is drawn after these lines from the page's own state, so a reload shows it again.
+type ChatLine = {
+  id: number
+  from: 'person' | 'brownie'
+  text: string
+  tone?: 'error'
+  help?: string[]
+  quote?: boolean
+  /** A place in the conversation where the reading under way, or the proposal waiting for a decision, is drawn. */
+  slot?: 'run' | 'proposal'
+}
+const chat = ref<ChatLine[]>([])
+let chatSequence = 0
+const chatLogRef = ref<HTMLElement | null>(null)
+/**
+ * Where the reading and the proposal sit in the conversation: after whatever was said before they
+ * began, and before whatever is said while they wait. Only the latest place of each is drawn, so an
+ * earlier reading or proposal leaves behind only the lines said about it.
+ */
+const runSlotId = ref<number | null>(null)
+const proposalSlotId = ref<number | null>(null)
 
-async function interpretAssistRequest(): Promise<void> {
+/**
+ * Adds a line to the conversation. What Brownie says is also announced, through the page's one live
+ * region: the conversation itself is not a live region, so nothing is heard twice, and a reply is
+ * heard even while the document is shown instead of the chat.
+ */
+function say(line: Omit<ChatLine, 'id'>): void {
+  chat.value.push({ id: ++chatSequence, ...line })
+  if (line.from === 'brownie' && line.text && !line.slot) {
+    const help = (line.help ?? []).map((item) => (item.split(':')[0] ?? '').replace(/[<>]/g, '').trim()).filter(Boolean)
+    announce(help.length > 0 ? `${line.text} ${help.join('; ')}.` : line.text)
+  }
+  void scrollChatToEnd()
+}
+
+function placeInChat(slot: 'run' | 'proposal'): void {
+  say({ from: 'brownie', text: '', slot })
+  if (slot === 'run') runSlotId.value = chatSequence
+  else proposalSlotId.value = chatSequence
+}
+
+async function scrollChatToEnd(): Promise<void> {
+  await nextTick()
+  const log = chatLogRef.value
+  if (log && typeof log.scrollTo === 'function') log.scrollTo({ top: log.scrollHeight })
+  // Where the panel above the message box scrolls too (a short window), it moves just enough to show the
+  // conversation's end, and no further.
+  const outer = log?.parentElement
+  if (log && outer && outer.scrollHeight > outer.clientHeight) {
+    const hidden = log.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom
+    if (hidden > 0) outer.scrollTop += hidden
+  }
+}
+
+watch([extractionStage, applyStage, () => openQuestions.value.length], () => void scrollChatToEnd())
+
+watch(extractionError, (text) => {
+  // A reading that failed says so in an alert of its own.
+  if (text && extractionStage.value !== 'failed') announce(text)
+})
+watch(
+  () => (extractionStalled.value ? stalledMessage.value : ''),
+  (text) => {
+    if (text) announce(text)
+  },
+)
+watch(noWorkerYet, (none) => {
+  if (none) announce('No worker has picked this up yet. The reading waits until the Brownie worker is running.')
+})
+watch(extractionStage, (stage) => {
+  // The failure's alert sits in Brownie's panel; where the panel is hidden, it is said instead.
+  if (stage === 'failed' && !isShown(chatLogRef.value)) announce(extractionError.value ?? 'The reading stopped before it could finish.')
+})
+
+function isShown(element: HTMLElement | null): boolean {
+  return element !== null && element.getClientRects().length > 0
+}
+
+type AssistStage = 'idle' | 'interpreting' | 'executing' | 'done' | 'failed'
+const assistStage = ref<AssistStage>('idle')
+const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
+const composerText = ref('')
+
+function onComposerKeydown(event: KeyboardEvent): void {
+  // Enter sends and Shift+Enter starts a new line, as in most chat boxes; a key that finishes an
+  // input-method composition (Japanese, Chinese, Korean) is left to finish it.
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  void sendMessage()
+}
+
+/**
+ * Sends one line to Brownie. The line is read first (what it would do, to which field), then done
+ * straight away: filling from a source starts a reading, and a change or a rewrite comes back as a
+ * proposal the person approves or not. An explanation is text. A line Brownie cannot act on is
+ * answered with what it can do.
+ */
+async function sendMessage(given?: string): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  const text = assistText.value.trim()
-  if (workspaceId === undefined || text === '') return
+  const text = (given ?? composerText.value).trim()
+  if (workspaceId === undefined || text === '' || assistBusy.value || !document.value) return
+  if (given === undefined) composerText.value = ''
+  say({ from: 'person', text })
+
   assistStage.value = 'interpreting'
-  assistError.value = null
-  assistExplanation.value = null
-  assistInterpretation.value = null
+  let interpretation
   try {
-    assistInterpretation.value = await interpretAssist(workspaceId, props.documentId, text)
-    assistStage.value = 'interpreted'
+    interpretation = await interpretAssist(workspaceId, props.documentId, text)
   } catch (error) {
     assistStage.value = 'failed'
-    assistError.value =
-      describeCommonFailure(error, 'the Assist composer') ??
-      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not read that request. Try again.')
+    say({
+      from: 'brownie',
+      tone: 'error',
+      text:
+        (brownieSaysNotThere(error) ? 'This document is no longer available, for example because it was moved to the trash.' : null) ??
+        describeCommonFailure(error, 'a way to ask Brownie for changes') ??
+        (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'I could not read that request. Try again.'),
+    })
+    // Nothing was done, so the words go back into the box to send again, unless something new was typed meanwhile.
+    if (given === undefined && composerText.value === '') composerText.value = text
+    return
   }
-}
 
-async function runAssistRequest(): Promise<void> {
-  const workspaceId = session.personalWorkspaceId
-  const interpretation = assistInterpretation.value
-  const text = assistText.value.trim()
-  if (workspaceId === undefined || !interpretation?.executable || !document.value) return
+  if (!interpretation.executable) {
+    assistStage.value = 'done'
+    say({ from: 'brownie', text: interpretation.summary, help: interpretation.help })
+    return
+  }
+
   if (interpretation.kind === 'DRAFT') {
     assistStage.value = 'done'
     if (attachedSources.value.length === 0) {
-      assistError.value = 'Attach a source on the Sources tab first; then Assist can draft from it.'
+      say({ from: 'brownie', text: 'Add your notes or a transcript with Add a source (+) first, then ask me again.' })
+      return
+    }
+    if (extractionStage.value === 'unconfirmed') {
+      say({ from: 'brownie', text: 'I lost track of the last reading. Press "Check again" above so I can see where it is before starting another.' })
+      return
+    }
+    if (runUnderWay.value) {
+      say({ from: 'brownie', text: 'I am already reading a source for this document. Wait for it to finish, or stop it first.' })
       return
     }
     await tryGroundedExtraction()
     return
   }
+
   assistStage.value = 'executing'
-  assistError.value = null
   try {
     const outcome = await executeAssist(workspaceId, props.documentId, text, document.value.currentRevision.id)
     if (outcome.proposal) {
+      placeInChat('proposal')
+      proposalFromJobId.value = null
       patchProposal.value = outcome.proposal
       acceptResult.value = null
       applyError.value = null
+      proposalIntro.value = interpretation.kind === 'CHANGE_FIELD' ? 'Here is the change you asked for:' : 'Here is my suggestion:'
       applyStage.value = 'proposed'
-      announce('Assist proposed a change. Review it, then accept it to update the document.')
+      announce('Brownie proposed a change. Check it, then approve it to update the document.')
     }
     if (outcome.explanation) {
-      assistExplanation.value = outcome.explanation
-      announce('Assist explained the finding.')
+      say({ from: 'brownie', text: outcome.explanation, quote: true })
     }
     assistStage.value = 'done'
   } catch (error) {
     assistStage.value = 'failed'
     if (error instanceof ApiRequestError && error.status === 412) {
       // The reload's own message says why, when the current version could not be read.
-      assistError.value = (await loadDocument())
-        ? 'This document changed since you loaded it, so it was reloaded. Ask again on the current version.'
-        : 'This document changed since you loaded it, so that was not done.'
+      say({
+        from: 'brownie',
+        tone: 'error',
+        text: (await loadDocument())
+          ? 'This document changed since you loaded it, so it was reloaded. Ask again on the current version.'
+          : 'This document changed since you loaded it, so that was not done.',
+      })
       return
     }
-    assistError.value =
-      describeCommonFailure(error, 'the Assist composer') ??
-      (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'Assist could not do that. Try again.')
+    say({
+      from: 'brownie',
+      tone: 'error',
+      text:
+        (brownieSaysNotThere(error) ? 'This document is no longer available, for example because it was moved to the trash.' : null) ??
+        describeCommonFailure(error, 'a way to ask Brownie for changes') ??
+        (error instanceof ApiRequestError && error.problem?.detail ? error.problem.detail : 'I could not do that. Try again.'),
+    })
   }
 }
 
-function clearAssistRequest(): void {
-  assistText.value = ''
-  assistStage.value = 'idle'
-  assistInterpretation.value = null
-  assistExplanation.value = null
-  assistError.value = null
+/** One of Brownie's suggestions, put in the message box for the person to finish rather than sent for them. */
+async function useSuggestion(item: string): Promise<void> {
+  const example = /for example "([^"]+)"/.exec(item)?.[1]
+  // Without an example, the request's own words up to its first blank ("Shorten "), for the person to finish.
+  const words = item.split(':')[0] ?? ''
+  const blank = words.indexOf('<')
+  composerText.value = example ?? (blank >= 0 ? words.slice(0, blank) : words.trim())
+  await nextTick()
+  const box = window.document.getElementById('assist-composer')
+  if (box instanceof HTMLTextAreaElement) {
+    box.focus()
+    box.setSelectionRange(box.value.length, box.value.length)
+  }
 }
+
+/** A proposal's values as lines a person reads: one per field, and one per row for repeated fields. */
+const proposalLines = computed<{ key: string; label: string; value: string }[]>(() => {
+  const proposal = patchProposal.value
+  if (!proposal) return []
+  const lines: { key: string; label: string; value: string }[] = []
+  const repeated: [string, string[]][] = []
+  for (const [fieldId, field] of Object.entries(proposal.proposedValues)) {
+    if (field.cardinality === 'REPEATED') {
+      repeated.push([fieldId, (field.values ?? []).map((value) => (field.type === 'DATE' ? formatDateLikeExport(value) : value))])
+      continue
+    }
+    const value = field.value ?? ''
+    lines.push({ key: fieldId, label: labelFor(fieldId), value: field.type === 'DATE' ? formatDateLikeExport(value) : value })
+  }
+  const rows = Math.max(0, ...repeated.map(([, values]) => values.length))
+  for (let index = 0; index < rows; index++) {
+    lines.push({
+      key: `row-${index}`,
+      label: `Row ${index + 1}`,
+      value: repeated
+        .map(([fieldId, values]) => `${labelFor(fieldId)}: ${values[index] ?? ''}`)
+        .join('; '),
+    })
+  }
+  return lines
+})
 
 async function acceptProposal(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const proposal = patchProposal.value
-  if (workspaceId === undefined || !proposal || !document.value) return
+  if (workspaceId === undefined || !proposal || !document.value || applyStage.value === 'accepting') return
 
   applyStage.value = 'accepting'
   applyError.value = null
@@ -1974,9 +2213,137 @@ async function acceptProposal(): Promise<void> {
     )
     applyStage.value = 'accepted'
     await loadDocument()
+    const statuses = Object.entries(acceptResult.value.fieldStatuses)
+    const applied = statuses.filter(([, status]) => status === 'CLEAN').length
+    const held = statuses.filter(([, status]) => status !== 'CLEAN').map(([fieldId]) => labelFor(fieldId))
+    const heldWords = held.length > 0 ? ` I left ${held.join(', ')} as ${held.length === 1 ? 'it was' : 'they were'}: locked, or changed since I read the document.` : ''
+    if (applied === 0) {
+      say({ from: 'brownie', text: `Nothing was filled in.${heldWords}` })
+    } else {
+      say({
+        from: 'brownie',
+        text: `Filled in ${applied} ${applied === 1 ? 'value' : 'values'}.${heldWords} Check each one before you export.`,
+      })
+    }
+    if (proposalFromJobId.value !== null) decidedRunJobId.value = proposalFromJobId.value
+    patchProposal.value = null
   } catch (error) {
     applyStage.value = 'proposed'
-    applyError.value = describeCommonFailure(error, 'a way to accept proposed changes') ?? 'Could not apply this proposal. Try again.'
+    if (error instanceof ApiRequestError && error.status === 412) {
+      applyError.value = (await loadDocument())
+        ? 'This document changed since I made this proposal, so it was reloaded. Ask me again on the current version.'
+        : 'This document changed since I made this proposal, so nothing was filled in.'
+      return
+    }
+    applyError.value = describeCommonFailure(error, 'a way to accept proposed changes') ?? 'Could not fill these in. Try again.'
+  }
+}
+
+/** Not now: the proposal is set aside on this page; nothing on the document changed, and nothing is sent. */
+function setProposalAside(): void {
+  if (proposalFromJobId.value !== null) decidedRunJobId.value = proposalFromJobId.value
+  patchProposal.value = null
+  applyStage.value = 'idle'
+  applyError.value = null
+  say({ from: 'brownie', text: 'All right, I left the document as it is.' })
+}
+
+async function onProposalChoice(index: number): Promise<void> {
+  if (index === 0) await acceptProposal()
+  else setProposalAside()
+  await keepFocusInChat()
+}
+
+/**
+ * A choice pressed in the chat goes away with what it answered (a proposal, a question), which
+ * would drop focus to the top of the page. It goes to the next question still open instead, or to
+ * the message box.
+ */
+async function keepFocusInChat(prefer: 'proposal' | 'question' = 'proposal'): Promise<void> {
+  await nextTick()
+  // A result being turned into a proposal is about to take the place of what went; focus waits for it.
+  if (applyStage.value === 'applying') return
+  const active = window.document.activeElement
+  if (active instanceof HTMLElement && active !== window.document.body && active.isConnected) return
+  // Only when the control that held focus in the conversation went away, never when the person left it for the page.
+  if (!lastChatFocus || lastChatFocus.isConnected) return
+  const log = chatLogRef.value
+  const offered = log?.querySelector<HTMLElement>('.proposal') ?? null
+  const question = log?.querySelector<HTMLElement>('.question .choices__option, .question .choices__other-input') ?? null
+  const status = log?.querySelector<HTMLElement>('.run-status') ?? null
+  const failure = status?.querySelector('[role="alert"]') ? status : null
+  const next =
+    (prefer === 'question' ? (question ?? offered) : (offered ?? question)) ?? failure ?? window.document.getElementById('assist-composer')
+  lastChatFocus = null
+  next?.focus()
+}
+
+/** The control in the conversation that last had focus; null once focus moves anywhere else. */
+let lastChatFocus: Element | null = null
+function onPageFocusIn(event: FocusEvent): void {
+  lastChatFocus = event.target instanceof Element && (chatLogRef.value?.contains(event.target) ?? false) ? event.target : null
+}
+onMounted(() => window.document.addEventListener('focusin', onPageFocusIn))
+onBeforeUnmount(() => window.document.removeEventListener('focusin', onPageFocusIn))
+// Whatever replaces a proposal, a question list or a button of the reading (Carry on, Stop, Try again, Check again) takes the focus it held.
+watch(
+  [proposalSlotId, patchProposal, extractionStage, applyStage, extractionStalled, canRetryRun, () => openQuestions.value.length],
+  () => void keepFocusInChat(),
+  { flush: 'post' },
+)
+
+function questionPrompt(question: QuestionResponse): string {
+  const label = labelFor(question.fieldId)
+  return question.reason === 'CONFLICT'
+    ? `${label}: the source says something different from what the document holds. Which should it be?`
+    : `${label}: I could not find this in the source. What should it be?`
+}
+
+// ---- Review and lock ---------------------------------------------------------------------------
+
+async function recordRowReview(index: number, decision: ReviewDecision): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return
+  const rowKey = `row-${index}`
+  fieldActionPending.value = rowKey
+  fieldActionError.value = null
+  try {
+    // One decision per column of the row, each against the revision the previous one produced.
+    let revisionId = document.value.currentRevision.id
+    for (const field of repeatedFields.value) {
+      const revision = await recordReviewDecision(workspaceId, props.documentId, revisionId, field.fieldId, decision, crypto.randomUUID(), index)
+      revisionId = revision.id
+    }
+    await loadDocument()
+    announce(`Row ${index + 1}: ${DECISION_WORDS[decision]}.`)
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
+    reportFieldActionFailure(error, `Could not record a review decision for row ${index + 1}. Try again.`)
+  } finally {
+    fieldActionPending.value = null
+  }
+}
+
+async function toggleRowLock(index: number): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || !document.value) return
+  const nextLock: FieldLock = rowLocked(index) ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
+  const rowKey = `row-${index}`
+  fieldActionPending.value = rowKey
+  fieldActionError.value = null
+  try {
+    let revisionId = document.value.currentRevision.id
+    for (const field of repeatedFields.value) {
+      const revision = await setFieldLock(workspaceId, props.documentId, revisionId, field.fieldId, nextLock, crypto.randomUUID(), index)
+      revisionId = revision.id
+    }
+    await loadDocument()
+    announce(nextLock === 'EXPLICITLY_LOCKED' ? `Row ${index + 1} locked.` : `Row ${index + 1} unlocked.`)
+  } catch (error) {
+    if (await reloadedAfterStaleRevision(error)) return
+    reportFieldActionFailure(error, `Could not change the lock for row ${index + 1}. Try again.`)
+  } finally {
+    fieldActionPending.value = null
   }
 }
 
@@ -1989,17 +2356,19 @@ async function recordFieldReview(fieldId: string, decision: ReviewDecision): Pro
   try {
     await recordReviewDecision(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, decision, crypto.randomUUID())
     await loadDocument()
+    announce(`${labelFor(fieldId)}: ${DECISION_WORDS[decision]}.`)
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not record a review decision for ${fieldId}. Try again.`)
+    reportFieldActionFailure(error, `Could not record a review decision for ${labelFor(fieldId)}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
 }
 
-async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise<void> {
+async function toggleFieldLock(fieldId: string): Promise<void> {
   const workspaceId = session.personalWorkspaceId
-  if (workspaceId === undefined || !document.value) return
+  const currentLock = fieldStateOf(fieldId)?.lock
+  if (workspaceId === undefined || !document.value || !currentLock) return
 
   const nextLock: FieldLock = currentLock === 'EXPLICITLY_LOCKED' ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
   fieldActionPending.value = fieldId
@@ -2007,12 +2376,67 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
   try {
     await setFieldLock(workspaceId, props.documentId, document.value.currentRevision.id, fieldId, nextLock, crypto.randomUUID())
     await loadDocument()
+    announce(nextLock === 'EXPLICITLY_LOCKED' ? `${labelFor(fieldId)} locked.` : `${labelFor(fieldId)} unlocked.`)
   } catch (error) {
     if (await reloadedAfterStaleRevision(error)) return
-    reportFieldActionFailure(error, `Could not change the lock for ${fieldId}. Try again.`)
+    reportFieldActionFailure(error, `Could not change the lock for ${labelFor(fieldId)}. Try again.`)
   } finally {
     fieldActionPending.value = null
   }
+}
+
+/** The review buttons of the bar, for the selected fill spot or row. */
+function reviewSelected(decision: ReviewDecision): void {
+  const current = selected.value
+  if (!current) return
+  if (current.rowIndex === null) void recordFieldReview(current.fieldId, decision)
+  else void recordRowReview(current.rowIndex, decision)
+}
+
+function toggleSelectedLock(): void {
+  const current = selected.value
+  if (!current) return
+  if (current.rowIndex === null) void toggleFieldLock(current.fieldId)
+  else void toggleRowLock(current.rowIndex)
+}
+
+/** What the bar's decisions are about, in the words of their accessible names: a field, or a whole row. */
+const selectedTarget = computed(() => {
+  const current = selected.value
+  if (!current) return ''
+  return current.rowIndex === null ? labelFor(current.fieldId) : `row ${current.rowIndex + 1}`
+})
+
+const selectedPendingKey = computed(() => {
+  const current = selected.value
+  if (!current) return null
+  return current.rowIndex === null ? current.fieldId : `row-${current.rowIndex}`
+})
+
+// ---- Dialogs -----------------------------------------------------------------------------------
+
+const exportDialogRef = ref<InstanceType<typeof ExportDialog> | null>(null)
+const historyDialogRef = ref<InstanceType<typeof VersionHistoryDialog> | null>(null)
+
+function openExport(): void {
+  exportDialogRef.value?.open()
+}
+
+function openHistory(): void {
+  historyDialogRef.value?.open()
+}
+
+async function goToFieldFromExport(fieldId: string): Promise<void> {
+  exportDialogRef.value?.close()
+  await focusField(fieldId)
+}
+
+async function onVersionRestored(payload: { revision: DocumentRevisionResponse; keptLockedFieldIds: string[] }): Promise<void> {
+  await loadDocument()
+  const kept = payload.keptLockedFieldIds ?? []
+  announce(
+    `Version restored.${kept.length > 0 ? ` ${kept.map(labelFor).join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} value because ${kept.length === 1 ? 'it is' : 'they are'} locked.` : ''}`,
+  )
 }
 </script>
 
@@ -2037,1059 +2461,713 @@ async function toggleFieldLock(fieldId: string, currentLock: FieldLock): Promise
     <RouterLink to="/">Back to your documents</RouterLink>
   </section>
 
-  <section v-else-if="document">
-    <div class="workspace-topbar">
-      <div>
-        <RouterLink to="/" class="field-hint">&larr; Your documents</RouterLink>
-        <h1>{{ document.title }}</h1>
+  <div v-else-if="document" class="workspace" :class="`workspace--showing-${narrowView}`">
+    <header class="workspace-bar">
+      <div class="workspace-bar__start">
+        <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
+        <button type="button" class="icon-button" :aria-disabled="undoing" @click="undoLastChange">
+          <AppIcon name="undo" />
+          <span class="visually-hidden">Undo the last change</span>
+        </button>
+        <button type="button" class="icon-button" @click="openHistory">
+          <AppIcon name="history" />
+          <span class="visually-hidden">Version history</span>
+        </button>
       </div>
-      <button type="button" class="button" :aria-expanded="previewOpen" aria-controls="pdf-pane" @click="togglePreview">
-        {{ previewOpen ? 'Hide preview' : 'Show preview' }}
+      <!-- Which face of the document the page shows; kept in the bar so the page itself starts at once. -->
+      <div class="view-toggle" role="group" aria-label="Document view">
+        <button type="button" class="view-toggle__button" :aria-pressed="docView === 'page'" @click="docView = 'page'">
+          Page
+        </button>
+        <button type="button" class="view-toggle__button" :aria-pressed="docView === 'print'" @click="docView = 'print'">
+          Print preview
+        </button>
+      </div>
+      <div class="workspace-bar__end">
+        <p ref="saveStatusRef" class="save-status" :class="`save-status--${saveStatus.tone}`" tabindex="-1">
+          <span class="save-status__dot" aria-hidden="true"></span>
+          <span>{{ saveStatus.text }}</span>
+        </p>
+        <button
+          v-if="isDirty && saveStage !== 'conflict'"
+          type="button"
+          class="button button--secondary workspace-bar__save"
+          :aria-disabled="saveStage === 'saving' || rowProblems.length > 0"
+          @click="saveNow"
+        >
+          Save now
+        </button>
+        <button type="button" class="button button--primary workspace-bar__export" @click="openExport">Export</button>
+      </div>
+    </header>
+
+    <h1 class="workspace-title">{{ document.title }}</h1>
+
+    <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
+
+    <div class="workspace-notices">
+      <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
+      <p
+        v-if="calendarConsent"
+        ref="calendarConsentElement"
+        :class="calendarConsent.tone === 'success' ? 'workspace-notice' : 'field-error'"
+        :role="calendarConsent.tone === 'success' ? 'status' : 'alert'"
+        tabindex="-1"
+      >
+        {{ calendarConsent.text }}
+        <template v-if="calendarConsent.hint">{{ calendarConsent.hint }}</template>
+      </p>
+      <p v-if="reloadError" class="field-error" role="alert">
+        {{ reloadError }}
+        <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
+      </p>
+      <p v-if="saveError" class="field-error" role="alert">
+        {{ saveError }}
+        <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+      </p>
+      <div v-if="saveStage === 'conflict'" class="field-error conflict-notice" role="alert">
+        <!-- The revision on screen is only the current one when the reload after the conflict worked. -->
+        <p v-if="reloadError">
+          This document changed since you started editing, and its latest version could not be loaded, so nothing was
+          saved. Your edits are still on the page.
+        </p>
+        <p v-else>
+          This document changed since you started editing (version {{ document.currentRevision.revisionNumber }} is now
+          current). Your edits are still on the page. Save them onto the latest version, or discard them to see what
+          changed.
+        </p>
+        <div class="button-row">
+          <button type="button" class="button button--primary" @click="saveEdits('manual')">Save my edits onto the latest</button>
+          <button type="button" class="button button--secondary" @click="resetDrafts">Discard my edits</button>
+        </div>
+      </div>
+      <div v-if="rowProblems.length > 0" class="field-error" role="alert">
+        <ul class="plain-list">
+          <li v-for="problem in rowProblems" :key="problem">{{ problem }}</li>
+        </ul>
+      </div>
+      <p v-if="fieldActionError" class="field-error" role="alert">
+        {{ fieldActionError }}
+        <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+      </p>
+    </div>
+
+    <!-- Only shown where the two panes cannot sit side by side. -->
+    <div class="workspace-switch" role="group" aria-label="Show">
+      <button
+        type="button"
+        class="workspace-switch__button"
+        :aria-pressed="narrowView === 'document'"
+        aria-controls="document-pane"
+        @click="narrowView = 'document'"
+      >
+        Document
+      </button>
+      <button
+        type="button"
+        class="workspace-switch__button"
+        :aria-pressed="narrowView === 'assistant'"
+        aria-controls="assistant-pane"
+        @click="showAssistant(false)"
+      >
+        Brownie
       </button>
     </div>
-    <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
-    <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
-    <p
-      v-if="calendarConsent"
-      ref="calendarConsentElement"
-      :class="calendarConsent.tone === 'success' ? 'workspace-notice' : 'field-error'"
-      :role="calendarConsent.tone === 'success' ? 'status' : 'alert'"
-      tabindex="-1"
-    >
-      {{ calendarConsent.text }}
-      <template v-if="calendarConsent.hint">{{ calendarConsent.hint }}</template>
-    </p>
-    <p v-if="reloadError" class="field-error" role="alert">
-      {{ reloadError }}
-      <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
-    </p>
 
-    <div class="workspace-layout" :class="{ 'workspace-layout--with-preview': previewOpen }">
-      <div class="card preview-pane">
-        <h2>Content</h2>
-        <p v-if="fieldActionError" class="field-error" role="alert">
-          {{ fieldActionError }}
-          <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
-        </p>
-
-        <div v-if="!hasAnyValue && !isDirty" class="empty-state">
+    <div class="workspace-panes">
+      <!-- Focusable, so the scroll keys move the document where it scrolls on its own. -->
+      <div
+        id="document-pane"
+        class="document-pane"
+        role="region"
+        aria-label="Document area"
+        tabindex="0"
+        @focusin="onDocumentFocusIn"
+        @input="onDocumentInput"
+      >
+        <div v-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading" class="empty-state">
           <p class="empty-state__title">Nothing filled in yet.</p>
           <p class="field-hint">
-            Type values straight into the fields below, or attach your notes or a transcript and use Assist to
-            fill them from there. You review every value before it is exported.
+            Type straight into the highlighted spots, or give Brownie your notes or a transcript and ask it to fill them
+            in. You check every value before it is exported.
           </p>
-          <button type="button" class="button" @click="goToSources">Attach a source</button>
+          <button type="button" class="button button--secondary" @click="goToSources">Add notes or a transcript</button>
         </div>
-        <p v-else class="field-hint">Edit any value below and save. Each save keeps the previous version in History.</p>
 
-        <form v-if="editableFields.length > 0" class="field-list" @submit.prevent="saveEdits('manual')">
-          <div v-for="field in scalarFields" :id="`field-${field.fieldId}`" :key="field.fieldId" class="field-row">
-            <div class="field-row__value">
-              <label class="field-row__label" :for="`edit-${field.fieldId}`">
-                {{ labelFor(field.fieldId) }}
-                <span v-if="field.requiredness === 'REQUIRED'" class="field-hint">(required)</span>
-                <span v-else-if="ruleRequiredFieldIds.has(field.fieldId)" class="field-hint">(required by a rule)</span>
-              </label>
-              <input
-                :id="`edit-${field.fieldId}`"
-                :type="field.type === 'DATE' ? 'date' : 'text'"
-                class="field-input"
-                :value="scalarDraft(field.fieldId)"
-                :disabled="isFieldLocked(field.fieldId)"
-                :aria-describedby="`field-id-${field.fieldId}`"
-                @input="drafts[field.fieldId] = ($event.target as HTMLInputElement).value"
-              />
-              <span :id="`field-id-${field.fieldId}`" class="visually-hidden">Field {{ field.fieldId }}</span>
-              <span v-if="isFieldLocked(field.fieldId)" class="field-hint">Locked: unlock it to edit.</span>
-            </div>
-            <div v-if="fieldStateOf(field.fieldId)" class="field-row__state">
-              <span v-for="chip in stateChips(fieldStateOf(field.fieldId)!)" :key="chip" class="badge">{{ chip }}</span>
-              <button
-                v-if="evidenceSpanIdsOf(field.fieldId).length > 0"
-                class="button"
-                type="button"
-                :aria-expanded="evidenceOpenFor === field.fieldId"
-                :aria-controls="`evidence-${field.fieldId}`"
-                :aria-label="`Evidence for ${field.fieldId}`"
-                @click="toggleEvidence(field.fieldId)"
-              >
-                Evidence ({{ evidenceSpanIdsOf(field.fieldId).length }})
-              </button>
-              <div class="field-row__actions">
-                <button
-                  class="button"
-                  type="button"
-                  :disabled="fieldActionPending === field.fieldId"
-                  :aria-label="`Accept ${field.fieldId}`"
-                  @click="recordFieldReview(field.fieldId, 'ACCEPTED')"
-                >
-                  Accept
-                </button>
-                <button
-                  class="button"
-                  type="button"
-                  :disabled="fieldActionPending === field.fieldId"
-                  :aria-label="`Reject ${field.fieldId}`"
-                  @click="recordFieldReview(field.fieldId, 'REJECTED')"
-                >
-                  Reject
-                </button>
-                <button
-                  class="button"
-                  type="button"
-                  :disabled="fieldActionPending === field.fieldId"
-                  :aria-label="`Mark ${field.fieldId} as needing clarification`"
-                  @click="recordFieldReview(field.fieldId, 'NEEDS_CLARIFICATION')"
-                >
-                  Needs clarification
-                </button>
-                <button
-                  class="button"
-                  type="button"
-                  :disabled="fieldActionPending === field.fieldId"
-                  :aria-label="`${isFieldLocked(field.fieldId) ? 'Unlock' : 'Lock'} ${field.fieldId}`"
-                  @click="toggleFieldLock(field.fieldId, fieldStateOf(field.fieldId)!.lock as FieldLock)"
-                >
-                  {{ isFieldLocked(field.fieldId) ? 'Unlock' : 'Lock' }}
-                </button>
-              </div>
-            </div>
-            <div v-if="evidenceOpenFor === field.fieldId" :id="`evidence-${field.fieldId}`" class="evidence-panel">
-              <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
-              <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
-              <template v-else>
-                <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
-                  <p>{{ excerpt.excerptText }}</p>
-                  <footer class="field-hint">From {{ excerpt.displayFilename ?? `source #${excerpt.sourceSnapshotId}` }}</footer>
-                </blockquote>
-                <p v-if="evidenceSpanIdsOf(field.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
-                  Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(field.fieldId).length }} cited passages.
-                </p>
-                <p class="field-hint">Brownie can show where a value came from; it cannot point to where a value lands on the preview page.</p>
-              </template>
-            </div>
-          </div>
+        <DocumentPage
+          v-show="docView === 'page'"
+          :layout="layout"
+          :layout-state="pageLoading ? 'loading' : layoutState"
+          :layout-problem="layoutProblem"
+          :fields="editableFields"
+          :drafts="drafts"
+          :revision-fields="document.currentRevision.fields"
+          :required-field-ids="requiredFieldIds"
+          :locked-field-ids="lockedFieldIds"
+          :rows-locked="rowsLocked"
+          :selected="selected"
+          @update-scalar="updateScalar"
+          @update-row="updateRow"
+          @select="select"
+          @open-actions="openActions"
+          @add-row="addRow"
+        />
 
-          <fieldset v-if="repeatedFields.length > 0" class="row-group">
-            <legend class="field-row__label">Rows</legend>
-            <p v-if="rowsLocked" class="field-hint">A row is locked, so the rows cannot be edited until it is unlocked.</p>
-            <div v-if="rowCount > 0" class="row-table-wrap">
-            <table class="row-table">
-              <thead>
-                <tr>
-                  <th scope="col">#</th>
-                  <th v-for="field in repeatedFields" :key="field.fieldId" scope="col">{{ labelFor(field.fieldId) }}</th>
-                  <th scope="col">Row actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="index in rowIndexes" :key="index">
-                  <th scope="row">{{ index + 1 }}</th>
-                  <td v-for="field in repeatedFields" :key="field.fieldId">
-                    <label class="visually-hidden" :for="`edit-${field.fieldId}-${index}`">
-                      {{ labelFor(field.fieldId) }}, row {{ index + 1 }}
-                    </label>
-                    <input
-                      :id="`edit-${field.fieldId}-${index}`"
-                      :type="field.type === 'DATE' ? 'date' : 'text'"
-                      class="field-input"
-                      :value="rowDraft(field.fieldId)[index] ?? ''"
-                      :disabled="rowsLocked"
-                      @input="rowDraft(field.fieldId)[index] = ($event.target as HTMLInputElement).value"
-                    />
-                  </td>
-                  <td>
-                    <div class="field-row__actions">
-                      <span v-if="rowState(index)" class="badge">{{ stateLabel('review', rowState(index)!.review) }}</span>
-                      <span v-if="rowState(index) && rowState(index)!.lock !== 'EDITABLE'" class="badge">
-                        {{ stateLabel('lock', rowState(index)!.lock) }}
-                      </span>
-                      <button
-                        class="button"
-                        type="button"
-                        :disabled="rowsLocked"
-                        :aria-label="`Remove row ${index + 1}`"
-                        @click="removeRow(index)"
-                      >
-                        Remove
-                      </button>
-                      <button
-                        class="button"
-                        type="button"
-                        :disabled="rowsLocked || index === 0"
-                        :aria-label="`Move row ${index + 1} up`"
-                        @click="moveRow(index, -1)"
-                      >
-                        Up
-                      </button>
-                      <button
-                        class="button"
-                        type="button"
-                        :disabled="rowsLocked || index === rowCount - 1"
-                        :aria-label="`Move row ${index + 1} down`"
-                        @click="moveRow(index, 1)"
-                      >
-                        Down
-                      </button>
-                      <template v-if="rowState(index)">
-                        <button
-                          class="button"
-                          type="button"
-                          :disabled="fieldActionPending === `row-${index}`"
-                          :aria-label="`Accept row ${index + 1}`"
-                          @click="recordRowReview(index, 'ACCEPTED')"
-                        >
-                          Accept
-                        </button>
-                        <button
-                          class="button"
-                          type="button"
-                          :disabled="fieldActionPending === `row-${index}`"
-                          :aria-label="`Reject row ${index + 1}`"
-                          @click="recordRowReview(index, 'REJECTED')"
-                        >
-                          Reject
-                        </button>
-                        <button
-                          class="button"
-                          type="button"
-                          :disabled="fieldActionPending === `row-${index}`"
-                          :aria-label="`${rowState(index)!.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock'} row ${index + 1}`"
-                          @click="toggleRowLock(index)"
-                        >
-                          {{ rowState(index)!.lock === 'EXPLICITLY_LOCKED' ? 'Unlock' : 'Lock' }}
-                        </button>
-                      </template>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            </div>
-            <p v-else class="field-hint">No rows yet.</p>
-            <button type="button" class="button" :disabled="rowsLocked" @click="addRow">Add row</button>
-            <div v-if="repeatedFieldsWithEvidence.length > 0" class="evidence-links">
-              <button
-                v-for="field in repeatedFieldsWithEvidence"
-                :key="field.fieldId"
-                class="button"
-                type="button"
-                :aria-expanded="evidenceOpenFor === field.fieldId"
-                :aria-controls="`evidence-${field.fieldId}`"
-                @click="toggleEvidence(field.fieldId)"
-              >
-                Evidence for {{ labelFor(field.fieldId) }} ({{ evidenceSpanIdsOf(field.fieldId).length }})
-              </button>
-            </div>
-            <div
-              v-for="field in repeatedFieldsWithEvidence"
-              v-show="evidenceOpenFor === field.fieldId"
-              :id="`evidence-${field.fieldId}`"
-              :key="`panel-${field.fieldId}`"
-              class="evidence-panel"
-            >
-              <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
-              <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
-              <template v-else-if="evidenceOpenFor === field.fieldId">
-                <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
-                  <p>{{ excerpt.excerptText }}</p>
-                  <footer class="field-hint">From {{ excerpt.displayFilename ?? `source #${excerpt.sourceSnapshotId}` }}</footer>
-                </blockquote>
-                <p class="field-hint">Brownie can show where a value came from; it cannot point to where a value lands on the preview page.</p>
-              </template>
-            </div>
-          </fieldset>
-
-          <div class="save-bar">
-            <div class="field-row__value">
-              <label class="field-label" for="edit-note">Note for history (optional)</label>
-              <input id="edit-note" v-model="editNote" type="text" class="field-input" />
-            </div>
-            <div class="field-row__actions">
-              <button
-                type="submit"
-                class="button button--primary"
-                :disabled="!isDirty || saveStage === 'saving' || rowProblems.length > 0"
-              >
-                {{ saveStage === 'saving' ? 'Saving…' : 'Save now' }}
-              </button>
-              <button type="button" class="button" :disabled="!isDirty || saveStage === 'saving'" @click="resetDrafts">
-                Discard changes
-              </button>
-            </div>
-            <p v-if="saveStage === 'saved' && !isDirty">Saved.</p>
-            <p v-if="isDirty && saveStage !== 'saving' && saveStage !== 'conflict'" class="field-hint">
-              Unsaved changes. Brownie saves a moment after you stop typing.
-            </p>
-            <div v-if="rowProblems.length > 0" class="field-error" role="alert">
-              <ul>
-                <li v-for="problem in rowProblems" :key="problem">{{ problem }}</li>
-              </ul>
-            </div>
-            <p v-if="saveError" class="field-error" role="alert">
-              {{ saveError }}
-              <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
-            </p>
-            <div v-if="saveStage === 'conflict'" class="field-error conflict-notice" role="alert">
-              <!-- The revision on screen is only the current one when the reload after the conflict worked. -->
-              <p v-if="reloadError">
-                This document changed since you started editing, and its latest version could not be loaded, so
-                nothing was saved. Your edits are still in the fields above.
-              </p>
-              <p v-else>
-                This document changed since you started editing (revision
-                {{ document.currentRevision.revisionNumber }} is now current). Your edits are still in the fields
-                above. Save them onto the latest version, or discard them to see what changed.
-              </p>
-              <div class="field-row__actions">
-                <button type="button" class="button button--primary" @click="saveEdits('manual')">Save my edits onto the latest</button>
-                <button type="button" class="button" @click="resetDrafts">Discard my edits</button>
-              </div>
-            </div>
-          </div>
-        </form>
-      </div>
-
-      <div v-if="previewOpen" id="pdf-pane" class="card pdf-pane">
-        <h2>Preview</h2>
-        <p v-if="previewStage === 'ready' && previewRevisionNumber != null" class="field-hint">
-          Preview of version {{ previewRevisionNumber }}.
-          <span v-if="previewIsStale">The document has changed since it was made.</span>
-          <span v-else-if="isDirty">You have unsaved edits; save, then regenerate to see them.</span>
-        </p>
-        <p v-if="previewStage === 'idle'" class="field-hint">No preview yet. Generate one to see this document as it will export.</p>
-        <p v-if="previewStage === 'loading'" aria-live="polite">Checking for a preview…</p>
-        <p v-if="previewStage === 'generating'" aria-live="polite">Generating the preview…</p>
-        <p v-if="previewError" class="field-error" role="alert">{{ previewError }}</p>
-        <div class="pdf-pane__actions">
-          <button
-            class="button button--primary"
-            type="button"
-            :disabled="previewStage === 'generating' || previewStage === 'loading'"
-            @click="regeneratePreview"
-          >
-            {{ previewStage === 'generating' ? 'Generating…' : previewArtifactId == null ? 'Generate preview' : 'Regenerate preview' }}
-          </button>
-          <a v-if="previewUrl" class="button" :href="previewUrl" target="_blank" rel="noopener">Open the PDF in a new tab</a>
-        </div>
-        <PdfPreview :src="previewUrl" :label="`Preview of version ${previewRevisionNumber ?? ''}`" />
-      </div>
-
-      <div class="card inspector-pane">
-        <button
-          ref="drawerToggleRef"
-          type="button"
-          class="button drawer-toggle"
-          :aria-expanded="drawerOpen"
-          aria-controls="inspector-drawer"
-          @click="toggleDrawer"
-        >
-          {{ drawerOpen ? 'Hide details' : 'Show details' }}
-        </button>
-
-        <div
-          id="inspector-drawer"
-          ref="drawerRef"
-          class="inspector-drawer"
-          :class="{ 'inspector-drawer--collapsed': !drawerOpen }"
-          role="region"
-          aria-labelledby="inspector-drawer-heading"
-          @keydown="onDrawerKeydown"
-        >
-          <h2 id="inspector-drawer-heading" ref="drawerHeadingRef" class="visually-hidden" tabindex="-1">
-            Document details
-          </h2>
-
-          <div class="tab-strip" role="tablist" aria-label="Document inspector">
+        <section v-if="docView === 'print'" class="print-preview" aria-labelledby="print-preview-heading">
+          <h2 id="print-preview-heading" class="visually-hidden">Print preview</h2>
+          <p v-if="previewStage === 'ready' && previewRevisionNumber != null" class="field-hint">
+            The file as it exports, from version {{ previewRevisionNumber }}.
+            <span v-if="previewIsStale">The document has changed since it was made.</span>
+            <span v-else-if="isDirty">You have unsaved changes; they appear once saved and generated again.</span>
+          </p>
+          <p v-if="previewStage === 'idle'" class="field-hint">Generate a preview to see this document exactly as it exports.</p>
+          <p v-if="previewStage === 'loading'" aria-live="polite">Checking for a preview…</p>
+          <p v-if="previewStage === 'generating'" aria-live="polite">Generating the preview…</p>
+          <p v-if="previewError" class="field-error" role="alert">{{ previewError }}</p>
+          <div class="button-row">
             <button
-              v-for="(tab, index) in INSPECTOR_TABS"
-              :key="tab"
-              ref="tabButtonEls"
+              class="button button--secondary"
               type="button"
-              role="tab"
-              :aria-selected="activeTab === tab"
-              :tabindex="activeTab === tab ? 0 : -1"
-              class="tab-button"
-              :class="{ 'tab-button--active': activeTab === tab }"
-              @click="selectTab(tab)"
-              @keydown="onTabKeydown($event, index)"
+              :aria-disabled="previewStage === 'generating' || previewStage === 'loading'"
+              @click="previewStage !== 'generating' && previewStage !== 'loading' && regeneratePreview()"
             >
-              {{
-                tab === 'assist'
-                  ? 'Assist'
-                  : tab === 'rules'
-                    ? 'Rules'
-                    : tab === 'sources'
-                      ? 'Sources'
-                      : tab === 'checks'
-                        ? 'Checks'
-                        : 'History'
-              }}
+              {{ previewStage === 'generating' ? 'Generating…' : previewArtifactId == null ? 'Generate preview' : 'Generate again' }}
             </button>
           </div>
+          <PdfPreview :src="previewUrl" :label="`Preview of version ${previewRevisionNumber ?? ''}`" />
+        </section>
 
-          <div role="tabpanel">
-            <div v-if="activeTab === 'sources'">
-              <label class="field-label" for="attach-source">Attach a source</label>
-              <input
-                id="attach-source"
-                type="file"
-                accept=".txt,text/plain"
-                :disabled="sourceUploadState === 'uploading'"
-                @change="onSourceFileChosen"
-              />
-              <p class="field-hint">
-                Plain-text notes or a transcript (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Assist reads
-                plain-text sources.
+        <!-- The selected fill spot's state and the decisions about it. At the foot of the page, where a finger or a pointer reaches it without covering the text above. -->
+        <section
+          v-if="selected && docView === 'page'"
+          ref="selectionBarRef"
+          class="selection-bar"
+          :aria-label="`About ${selectedLabel}`"
+          tabindex="-1"
+          @keydown.esc.stop="returnToSelectedSpot"
+        >
+          <div class="selection-bar__head">
+            <p class="selection-bar__name">{{ selectedLabel }}</p>
+            <button type="button" class="icon-button" @click="clearSelection">
+              <AppIcon name="close" :size="18" />
+              <span class="visually-hidden">Close the bar about {{ selectedLabel }}</span>
+            </button>
+          </div>
+          <p v-if="selectedState || selectedRequired" class="selection-bar__chips">
+            <span v-if="selectedRequired" class="badge">Required</span>
+            <span v-for="chip in selectedState ? fieldStateWords(selectedState) : []" :key="chip" class="badge">{{ chip }}</span>
+          </p>
+          <p v-if="!selectedState && selectedHint" class="field-hint">{{ selectedHint }}</p>
+          <div
+            v-if="evidenceOpenFor === selected.fieldId"
+            :id="`evidence-${selected.fieldId}`"
+            class="evidence-panel"
+            role="region"
+            :aria-label="`Where ${selectedLabel} came from`"
+            tabindex="0"
+          >
+            <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
+            <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
+            <template v-else>
+              <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
+                <p>{{ excerpt.excerptText }}</p>
+                <footer class="field-hint">From {{ excerpt.displayFilename ?? 'an attached source' }}</footer>
+              </blockquote>
+              <p v-if="selected.rowIndex !== null" class="field-hint">
+                These are the passages cited for {{ labelFor(selected.fieldId) }} in every row, not only row {{ selected.rowIndex + 1 }}.
               </p>
-              <p v-if="sourceUploadState === 'uploading'" aria-live="polite">Uploading…</p>
-              <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
-              <CalendarSourcePicker
-                v-if="session.personalWorkspaceId !== undefined"
-                :workspace-id="session.personalWorkspaceId"
-                :document-id="documentId"
-                :start-open="calendarPickerStartsOpen"
-                :unsaved-work="hasUnsavedWork()"
-                :copy-event="copyCalendarEvent"
-                @used="calendarConsent = null"
-              />
-              <DriveSourcePicker
-                v-if="session.personalWorkspaceId !== undefined"
-                :workspace-id="session.personalWorkspaceId"
-                :document-id="documentId"
-                :start-open="drivePickerStartsOpen"
-                :unsaved-work="hasUnsavedWork()"
-                :copy-file="copyDriveFile"
-                @used="calendarConsent = null"
-              />
+              <p v-if="evidenceSpanIdsOf(selected.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
+                Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(selected.fieldId).length }} cited passages.
+              </p>
+              <p class="field-hint">Brownie shows where a value came from; it cannot point to where it lands in the exported file.</p>
+            </template>
+          </div>
+          <div class="button-row">
+            <button
+              v-if="evidenceSpanIdsOf(selected.fieldId).length > 0"
+              class="button button--secondary"
+              type="button"
+              :aria-expanded="evidenceOpenFor === selected.fieldId"
+              :aria-controls="`evidence-${selected.fieldId}`"
+              @click="toggleEvidence(selected.fieldId)"
+            >
+              Where it came from ({{ evidenceSpanIdsOf(selected.fieldId).length }})
+            </button>
+            <template v-if="selectedState || selectedRowHasState">
+              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('ACCEPTED')">
+                Accept<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+              </button>
+              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')">
+                Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+              </button>
+              <button
+                v-if="selected.rowIndex === null"
+                class="button button--secondary"
+                type="button"
+                :aria-disabled="fieldActionPending === selectedPendingKey"
+                @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
+              >
+                Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
+              </button>
+              <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()">
+                {{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+              </button>
+            </template>
+            <template v-if="selected.rowIndex !== null">
+              <button class="button button--secondary" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
+                Move up<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
+              </button>
+              <button
+                class="button button--secondary"
+                type="button"
+                :aria-disabled="rowsLocked || selected.rowIndex === rowCount - 1"
+                @click="!rowsLocked && selected.rowIndex < rowCount - 1 && moveRow(selected.rowIndex, 1)"
+              >
+                Move down<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
+              </button>
+              <button class="button button--secondary" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
+                Remove row {{ selected.rowIndex + 1 }}
+              </button>
+            </template>
+            <button type="button" class="button button--secondary selection-bar__rules" @click="showAssistant()">Text style and rules</button>
+          </div>
+          <p v-if="selected.rowIndex !== null && rowsLocked" class="field-hint">A row is locked, so the rows cannot be changed until it is unlocked.</p>
+          <p class="field-hint selection-bar__keys">{{ actionsKey }} in a fill spot comes to this bar; Escape goes back to the spot.</p>
+        </section>
+      </div>
 
-              <ul v-if="attachedSources.length > 0" class="source-list">
-                <li v-for="source in attachedSources" :key="source.id">
-                  {{ source.displayFilename ?? `Source #${source.id}` }}
-                  <span class="field-hint">(attached {{ new Date(source.attachedAt).toLocaleString() }})</span>
-                  <span v-if="originSentence(source)" class="field-hint source-list__origin">
+      <aside id="assistant-pane" class="assistant-pane" aria-labelledby="assistant-heading">
+        <h2 id="assistant-heading" ref="assistantHeadingRef" class="visually-hidden" tabindex="-1">Chat with Brownie</h2>
+
+        <!-- Everything above the message box; on a wide page it scrolls on its own when it cannot all fit. -->
+        <div class="assistant-pane__scroll">
+          <section class="rules-card" aria-labelledby="rules-heading">
+            <h3 id="rules-heading" class="rules-card__heading">Rules</h3>
+            <div class="rules-card__style">
+              <span class="rules-card__glyph" aria-hidden="true">Aa</span>
+              <div>
+                <p class="rules-card__caption">
+                  Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
+                </p>
+                <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
+                  <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
+                </ul>
+                <p v-else class="field-hint">
+                  {{ layoutState === 'loading' && !layoutProblem ? 'Reading the template’s style…' : 'The template’s text style could not be read.' }}
+                </p>
+                <p v-if="dateExample" class="rules-card__date">
+                  Dates read like <span class="chip">{{ dateExample }}</span>
+                </p>
+              </div>
+            </div>
+            <p v-if="styleChips.length > 0" class="field-hint rules-card__source">How values look when exported, taken from the template.</p>
+            <p v-if="!selected && requiredLabels.length > 0" class="rules-card__required">
+              <span class="rules-card__required-mark" aria-hidden="true">*</span> Required before export: {{ requiredLabels.join(', ') }}.
+            </p>
+            <p v-if="rulesLoadState === 'loading'" class="field-hint" aria-live="polite">Loading rules…</p>
+            <p v-else-if="rulesLoadState === 'error'" class="field-hint">
+              The template's rules could not be loaded.
+              <button type="button" class="link-button" @click="loadRules">Try again</button>
+            </p>
+            <template v-else-if="rulesLoadState === 'loaded'">
+              <ul v-if="shownRules.length > 0" class="rules-card__rules">
+                <li v-for="rule in shownRules" :key="rule.id">
+                  {{ ruleWords(rule) }}
+                  <span v-if="rule.humanExplanation" class="field-hint"> {{ rule.humanExplanation }}</span>
+                </li>
+              </ul>
+              <p v-else class="field-hint">
+                {{
+                  selected
+                    ? `No rule of this template is about ${selectedLabel}.`
+                    : requiredLabels.length > 0
+                      ? 'The template has no other rules.'
+                      : 'The template has no rules.'
+                }}
+              </p>
+              <p v-if="rulesUndecided > 0" class="field-hint">
+                {{ rulesUndecided }} proposed {{ rulesUndecided === 1 ? 'rule is' : 'rules are' }} waiting for a decision on the template.
+              </p>
+            </template>
+          </section>
+
+          <!-- Focusable so a keyboard can scroll the conversation even when it holds no button to land on. -->
+          <div ref="chatLogRef" class="chat" role="region" aria-label="Conversation with Brownie" tabindex="0">
+            <ul v-if="attachedSources.length > 0" class="source-cards" aria-label="Sources">
+              <li v-for="source in attachedSources" :key="source.id" class="source-card">
+                <span class="source-card__tile" aria-hidden="true"><AppIcon name="document" :size="18" /></span>
+                <span class="source-card__body">
+                  <span class="source-card__name">{{ sourceName(source) }}</span>
+                  <span class="source-card__meta">
+                    {{ sourceKindWords(source) }}
+                    <span v-if="attachedSources.length > 1 && source.id === selectedSource?.id"> · Brownie reads this one</span>
+                  </span>
+                  <span v-if="originSentence(source)" class="source-card__meta">
                     {{ originSentence(source) }}
                     <a v-if="originLink(source)" :href="originLink(source) ?? undefined" target="_blank" rel="noopener noreferrer"
                       >{{ originLinkLabel(source) }}<span class="visually-hidden"> (opens in a new tab)</span></a
                     >
                   </span>
-                </li>
-              </ul>
-              <p v-else class="field-hint">No sources attached to this document yet.</p>
+                </span>
+              </li>
+            </ul>
+
+            <div class="chat-line chat-line--brownie">
+              <p>
+                I can fill this document from your notes, a transcript or a conversation. Add one with Add a source (+),
+                then ask me to fill it in. You can also type straight into the highlighted spots, and change anything I fill in.
+              </p>
             </div>
 
-            <div v-else-if="activeTab === 'assist'">
-              <form class="assist-composer" @submit.prevent="interpretAssistRequest">
-                <label class="field-label" for="assist-composer">Ask Assist</label>
-                <textarea
-                  id="assist-composer"
-                  v-model="assistText"
-                  class="field-input assist-composer__input"
-                  rows="2"
-                  placeholder="e.g. change meeting title to Spring Planning"
-                  :disabled="assistBusy"
-                ></textarea>
-                <p class="field-hint">
-                  Brownie does a few bounded things: draft from your sources, change a field, shorten or rewrite a
-                  text field, explain a finding. It shows what it would touch before it does anything.
-                </p>
-                <div class="field-row__actions">
-                  <button type="submit" class="button" :disabled="assistText.trim() === '' || assistBusy">
-                    {{ assistStage === 'interpreting' ? 'Reading…' : 'Interpret' }}
-                  </button>
-                  <button v-if="assistStage !== 'idle'" type="button" class="button" :disabled="assistBusy" @click="clearAssistRequest">
-                    Clear
-                  </button>
-                </div>
-                <p v-if="assistError" class="field-error" role="alert">{{ assistError }}</p>
-                <div v-if="assistInterpretation" class="assist-plan" role="group" aria-labelledby="assist-plan-heading">
-                  <p id="assist-plan-heading" class="field-label">What Assist would do</p>
-                  <p>{{ assistInterpretation.summary }}</p>
-                  <dl v-if="assistInterpretation.scope">
-                    <template v-if="assistInterpretation.scope.fieldId">
-                      <dt>Field</dt>
-                      <dd>{{ assistInterpretation.scope.label }} ({{ assistInterpretation.scope.fieldId }})</dd>
-                    </template>
-                    <template v-if="assistInterpretation.scope.findingMessage">
-                      <dt>Finding</dt>
-                      <dd>{{ assistInterpretation.scope.findingMessage }}</dd>
-                    </template>
-                    <template v-else-if="assistInterpretation.scope.fieldId">
-                      <dt>Now</dt>
-                      <dd>{{ assistInterpretation.scope.currentValue ?? '(empty)' }}</dd>
-                    </template>
-                  </dl>
-                  <ul v-if="assistInterpretation.help.length > 0" class="assist-help">
-                    <li v-for="item in assistInterpretation.help" :key="item">{{ item }}</li>
-                  </ul>
-                  <p v-if="assistInterpretation.executable && assistInterpretation.usesModel" class="field-hint">
-                    This makes one model call. Nothing changes on the document until you accept the result.
-                  </p>
-                  <div v-if="assistInterpretation.executable" class="field-row__actions">
-                    <button type="button" class="button button--primary" :disabled="assistBusy" @click="runAssistRequest">
-                      {{ assistStage === 'executing' ? 'Working…' : 'Do it' }}
-                    </button>
-                  </div>
-                </div>
-                <blockquote v-if="assistExplanation" class="assist-explanation">
-                  <p>{{ assistExplanation }}</p>
-                </blockquote>
-              </form>
-
-              <p class="field-hint">
-                Pulls this template's fields (and any repeated rows) out of an attached source. Brownie asks you
-                about anything missing or conflicting, then proposes the values. Nothing changes on this
-                document until you accept them.
-              </p>
-              <p v-if="attachedSources.length === 0" class="field-hint">Attach a source first, on the Sources tab.</p>
-              <template v-else>
-                <template v-if="attachedSources.length > 1">
-                  <label class="field-label" for="extract-source">Source to read</label>
-                  <select id="extract-source" v-model.number="selectedSourceId" :disabled="extractionStage === 'starting' || extractionStage === 'running'">
-                    <option v-for="source in attachedSources" :key="source.id" :value="source.id">
-                      {{ source.displayFilename ?? `Source #${source.id}` }}
-                    </option>
-                  </select>
+            <template v-for="line in chat" :key="line.id">
+              <div v-if="!line.slot" class="chat-line" :class="`chat-line--${line.from}`">
+                <blockquote v-if="line.quote" class="chat-line__quote"><p>{{ line.text }}</p></blockquote>
+                <p v-else :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                <ul v-if="line.help && line.help.length > 0" class="chat-suggestions" aria-label="What you can ask">
+                  <li v-for="item in line.help" :key="item">
+                    <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>
+                  </li>
+                </ul>
+              </div>
+              <!-- A reading of a source, from start to proposal. -->
+              <div
+                v-else-if="line.slot === 'run' && line.id === runSlotId && extractionStage !== 'idle'"
+                class="chat-line chat-line--brownie run-status"
+                tabindex="-1"
+              >
+                <template v-if="extractionStage === 'starting'">
+                  <p>Starting to read {{ runSourceName }}…</p>
                 </template>
-                <button
-                  class="button button--primary"
-                  type="button"
-                  :disabled="
-                    extractionStage === 'starting' ||
-                    extractionStage === 'running' ||
-                    extractionStage === 'waiting-for-input' ||
-                    extractionStage === 'resuming' ||
-                    extractionStage === 'unconfirmed'
-                  "
-                  @click="tryGroundedExtraction"
-                >
-                  {{ extractionStage === 'starting' || extractionStage === 'running' ? 'Extracting…' : 'Try grounded extraction' }}
-                </button>
-                <button
-                  v-if="extractionStage === 'running' || extractionStage === 'waiting-for-input'"
-                  class="button"
-                  type="button"
-                  :disabled="cancellationRequested"
-                  @click="cancelExtraction"
-                >
-                  {{ cancellationRequested ? 'Cancellation requested…' : 'Cancel' }}
-                </button>
-                <p v-if="extractionStage === 'running' && runProgress" aria-live="polite">{{ runProgress }}</p>
-                <p v-if="extractionStage === 'running' && noWorkerYet" class="field-error" role="status">
-                  No worker has picked this run up yet. If the Brownie worker is not running, the run waits until it is;
-                  you can cancel it and try again later.
-                </p>
-                <p v-if="extractionStage === 'cancelled'" aria-live="polite">This run was cancelled. Nothing was applied.</p>
-                <div v-if="extractionStalled" class="field-hint" role="status">
-                  <p>{{ stalledMessage }}</p>
-                  <button class="button" type="button" @click="checkRunAgain">Check again</button>
-                </div>
-                <p v-if="extractionError" class="field-error" role="alert">{{ extractionError }}</p>
-                <div v-if="canRetryRun" class="field-row__actions">
-                  <button class="button" type="button" :disabled="retryingRun" @click="retryRun">
-                    {{ retryingRun ? 'Starting again…' : 'Try this run again' }}
+                <template v-else-if="extractionStage === 'running'">
+                  <p aria-live="polite">{{ runProgress ?? `Reading ${runSourceName ?? 'your source'}…` }}</p>
+                  <p v-if="noWorkerYet" class="field-error">
+                    No worker has picked this up yet. If the Brownie worker is not running, the reading waits until it is; you
+                    can stop it and start it again once the worker is running.
+                  </p>
+                  <button class="button button--secondary" type="button" :aria-disabled="cancellationRequested" @click="cancelExtraction">
+                    {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
                   </button>
-                </div>
-
-                <div v-if="extractionStage === 'waiting-for-input' || extractionStage === 'resuming'" class="question-list" aria-live="polite">
-                  <p class="field-hint">A few things need your input before this can finish.</p>
-                  <div v-for="question in openQuestions" :key="question.id" class="question-item">
-                    <p class="field-label">
-                      {{ labelFor(question.fieldId) }}
-                      <span class="field-hint">({{ question.reason === 'CONFLICT' ? 'conflicts with the current value' : 'missing' }})</span>
-                    </p>
-                    <template v-if="question.status === 'ANSWERED'">
-                      <p>Answered: {{ question.answerValue }}</p>
-                    </template>
-                    <template v-else>
-                      <ul v-if="question.candidates.length > 0" class="source-list">
-                        <li v-for="(candidate, index) in question.candidates" :key="index">
-                          <button type="button" class="button" @click="answerDrafts[question.id] = candidate.value">
-                            {{ candidate.value }}
-                          </button>
-                        </li>
-                      </ul>
-                      <label class="field-label" :for="`answer-${question.id}`">Your answer</label>
-                      <input
-                        :id="`answer-${question.id}`"
-                        type="text"
-                        v-model="answerDrafts[question.id]"
-                        :disabled="answeringQuestionId === question.id"
-                      />
-                      <button
-                        class="button"
-                        type="button"
-                        :disabled="answeringQuestionId === question.id || !(answerDrafts[question.id] ?? '').trim()"
-                        @click="submitAnswer(question.id)"
-                      >
-                        Save answer
-                      </button>
-                    </template>
+                </template>
+                <template v-else-if="extractionStage === 'waiting-for-input' || extractionStage === 'resuming'">
+                  <p>A few things need your answer before I can finish.</p>
+                  <div v-for="question in openQuestions" :key="question.id" class="question">
+                    <p class="question__prompt">{{ questionPrompt(question) }}</p>
+                    <p v-if="question.status === 'ANSWERED'" class="field-hint">You answered: {{ question.answerValue }}</p>
+                    <ChoiceList
+                      v-else
+                      :options="question.candidates.map((candidate) => candidate.value)"
+                      :name="`Your answer for ${labelFor(question.fieldId)}`"
+                      :id-prefix="`question-${question.id}`"
+                      :other-label="question.candidates.length > 0 ? 'Other' : 'Your answer'"
+                      other-placeholder="Type the answer…"
+                      :clear-on-send="false"
+                      :busy="answeringQuestionId !== null || extractionStage === 'resuming'"
+                      @choose="(index) => answerWith(question.id, question.candidates[index]!.value)"
+                      @other="(text) => answerWith(question.id, text)"
+                    />
                   </div>
+                  <p v-if="extractionStage === 'resuming'" aria-live="polite">Carrying on with your answers…</p>
                   <button
+                    v-else-if="openQuestions.length > 0 && openQuestions.every((question) => question.status === 'ANSWERED')"
                     class="button button--primary"
                     type="button"
-                    :disabled="extractionStage === 'resuming' || !openQuestions.every((q) => q.status === 'ANSWERED')"
                     @click="resumeAfterAnswers"
                   >
-                    {{ extractionStage === 'resuming' ? 'Resuming…' : 'Continue' }}
+                    Carry on reading
                   </button>
-                </div>
-
-                <div v-if="extractionStage === 'succeeded' && extractionResultArtifactId !== null">
-                  <p>
-                    Done —
-                    <a :href="`/api/v1/workspaces/${session.personalWorkspaceId}/uploads/${extractionResultArtifactId}/download`">
-                      download the raw result
-                    </a>.
-                  </p>
+                  <button class="button button--secondary" type="button" :aria-disabled="cancellationRequested" @click="cancelExtraction">
+                    {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
+                  </button>
+                </template>
+                <template v-else-if="extractionStage === 'succeeded' && !patchProposal">
+                  <p>I finished reading {{ runSourceName ?? 'your source' }}.</p>
+                  <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
                   <button
-                    v-if="applyStage === 'idle' || applyStage === 'failed'"
-                    class="button button--primary"
+                    class="button button--secondary"
                     type="button"
-                    @click="applyResultToDocument"
+                    :aria-disabled="applyStage === 'applying'"
+                    @click="applyStage !== 'applying' && applyResultToDocument()"
                   >
-                    Apply to document
+                    {{
+                      applyStage === 'applying'
+                        ? 'Getting the values ready…'
+                        : decidedRunJobId === extractionJobId
+                          ? 'Show what I found again'
+                          : 'Show what I found'
+                    }}
                   </button>
-                  <p v-if="applyStage === 'applying'" aria-live="polite">Preparing proposal…</p>
-                  <!-- Only a failed apply is said here; a failed accept is said beside the proposal, which may have come from the composer instead. -->
-                  <p v-if="applyError && applyStage === 'failed'" class="field-error" role="alert">{{ applyError }}</p>
-
+                </template>
+                <template v-else-if="extractionStage === 'cancelled'">
+                  <p>I stopped reading. Nothing on the document changed.</p>
+                </template>
+                <template v-else-if="extractionStage === 'failed'">
+                  <p class="field-error" role="alert">{{ extractionError ?? 'The reading stopped before it could finish.' }}</p>
+                  <button v-if="canRetryRun" class="button button--secondary" type="button" :aria-disabled="retryingRun" @click="!retryingRun && retryRun()">
+                    {{ retryingRun ? 'Starting again…' : 'Try this reading again' }}
+                  </button>
+                </template>
+                <p v-if="extractionError && extractionStage !== 'failed'" class="field-error">{{ extractionError }}</p>
+                <div v-if="extractionStalled">
+                  <p>{{ stalledMessage }}</p>
+                  <button class="button button--secondary" type="button" @click="checkRunAgain">Check again</button>
                 </div>
-              </template>
+              </div>
 
-              <div v-if="patchProposal && applyStage !== 'idle' && applyStage !== 'failed'" class="question-item">
-                <p class="field-label">Proposed changes</p>
-                <dl>
-                  <template v-for="(field, fieldId) in patchProposal.proposedValues" :key="fieldId">
-                    <dt>{{ labelFor(fieldId) }}</dt>
-                    <dd>
-                      <ol v-if="field.cardinality === 'REPEATED'" class="proposed-items">
-                        <li v-for="(item, index) in field.values ?? []" :key="index">{{ item }}</li>
-                      </ol>
-                      <template v-else>{{ field.value }}</template>
-                    </dd>
-                  </template>
-                </dl>
-                <p v-if="patchProposal.proposedRepeatedItemCount > 0" class="field-hint">
-                  {{ patchProposal.proposedRepeatedItemCount }} action item{{ patchProposal.proposedRepeatedItemCount === 1 ? '' : 's' }}
-                  proposed, listed above in matching order.
-                </p>
-                <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="field-error" role="status">
+              <!-- A proposal, from a reading or from a request: nothing changes until it is approved. -->
+              <div
+                v-else-if="line.slot === 'proposal' && line.id === proposalSlotId && patchProposal && applyStage !== 'idle'"
+                class="chat-line chat-line--brownie proposal"
+                tabindex="-1"
+              >
+                <p>{{ proposalIntro }}</p>
+                <ul class="proposal__values">
+                  <li v-for="value in proposalLines" :key="value.key">
+                    <span class="proposal__label">{{ value.label }}:</span> {{ value.value }}
+                  </li>
+                </ul>
+                <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="proposal__skipped" role="status">
                   <p>
-                    {{ patchProposal.skippedRepeatedItems.length }} action item{{ patchProposal.skippedRepeatedItems.length === 1 ? ' was' : 's were' }}
-                    found in your source but could not be proposed, because a required detail could not be determined.
-                    Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
+                    I also found {{ patchProposal.skippedRepeatedItems.length }}
+                    {{ patchProposal.skippedRepeatedItems.length === 1 ? 'row' : 'rows' }} I could not complete, because a detail was
+                    missing. Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
                   </p>
                   <ul>
                     <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
-                      {{ skipped.description ?? `Item ${skipped.itemIndex + 1}` }}
-                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.join(', ') }})</span>
+                      {{ skipped.description ?? `Row ${skipped.itemIndex + 1}` }}
+                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.map(labelFor).join(', ') }})</span>
                     </li>
                   </ul>
                 </div>
-                <button
-                  v-if="applyStage !== 'accepted'"
-                  class="button button--primary"
-                  type="button"
-                  :disabled="applyStage === 'accepting'"
-                  @click="acceptProposal"
-                >
-                  {{ applyStage === 'accepting' ? 'Applying…' : 'Accept and update document' }}
-                </button>
+                <p>Can you confirm? I will fill in the document once you approve it.</p>
+                <ChoiceList
+                  :options="['I approve, fill it in', 'Not now']"
+                  name="Your decision about these values"
+                  id-prefix="proposal"
+                  other-label="Other"
+                  other-placeholder="Type what you would prefer…"
+                  :busy="applyStage === 'accepting'"
+                  @choose="onProposalChoice"
+                  @other="(text) => sendMessage(text)"
+                />
+                <p v-if="applyStage === 'accepting'" aria-live="polite">Filling in…</p>
                 <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
-                <p v-if="applyStage === 'accepted'" aria-live="polite">Applied to the document.</p>
-                <p
-                  v-if="acceptResult && Object.values(acceptResult.fieldStatuses).some((s) => s !== 'CLEAN')"
-                  class="field-hint"
-                  aria-live="polite"
-                >
-                  Some fields could not be applied automatically (conflicting or locked).
-                </p>
               </div>
-            </div>
+            </template>
+            <p v-if="assistStage === 'interpreting' || assistStage === 'executing'" class="chat-line chat-line--brownie chat-typing" aria-live="polite">
+              Working on it…
+            </p>
+          </div>
 
-            <div v-else-if="activeTab === 'checks'">
-              <button
-                class="button button--primary"
-                type="button"
-                :disabled="validationStage === 'validating'"
-                @click="validateCurrentRevision"
-              >
-                {{ validationStage === 'validating' ? 'Validating…' : 'Validate this revision' }}
+          <div v-if="sourcesOpen" id="add-source-panel" class="add-source">
+            <div class="add-source__head">
+              <p class="add-source__title">Add a source</p>
+              <button type="button" class="icon-button" @click="closeSources">
+                <AppIcon name="close" :size="18" />
+                <span class="visually-hidden">Close adding a source</span>
               </button>
-              <p v-if="validationStage === 'validating'" aria-live="polite">Validating…</p>
-              <p v-if="validationError" class="field-error" role="alert">{{ validationError }}</p>
-
-              <template v-if="validationManifest">
-                <p v-if="validationManifest.hasUnresolvedBlocking" class="field-error" role="alert">
-                  Cannot export: unresolved blocking findings
-                </p>
-                <p v-else aria-live="polite">Ready to export</p>
-
-                <ul v-if="validationManifest.findings.length > 0" class="finding-list">
-                  <li v-for="(finding, index) in validationManifest.findings" :key="index" class="finding-row">
-                    <span class="badge">{{ finding.severity }}</span>
-                    <span v-if="finding.fieldId" class="field-row__label">{{ labelFor(finding.fieldId) }}</span>
-                    <span>{{ finding.message }}</span>
-                    <button
-                      v-if="finding.fieldId && editableFieldIds.has(finding.fieldId)"
-                      type="button"
-                      class="button"
-                      :aria-label="`Go to ${finding.fieldId}`"
-                      @click="focusField(finding.fieldId)"
-                    >
-                      Go to field
-                    </button>
-                  </li>
-                </ul>
-                <p v-else class="field-hint">No findings.</p>
-
-                <template v-if="!validationManifest.hasUnresolvedBlocking">
-                  <label class="field-label" for="export-format">Export format</label>
-                  <select id="export-format" v-model="exportFormat">
-                    <option value="DOCX">DOCX</option>
-                    <option value="PDF">PDF</option>
-                    <option value="BOTH">Both</option>
-                  </select>
-                  <button
-                    class="button button--primary"
-                    type="button"
-                    :disabled="approvalStage === 'approving'"
-                    @click="approveCurrentExport"
-                  >
-                    {{ approvalStage === 'approving' ? 'Approving…' : 'Approve for export' }}
-                  </button>
-                  <p v-if="approvalError" class="field-error" role="alert">{{ approvalError }}</p>
-                </template>
-
-                <div v-if="exportApproval">
-                  <p class="field-hint">Approved for: {{ FORMAT_NAMES[exportApproval.format] }}</p>
-                  <button
-                    class="button button--primary"
-                    type="button"
-                    :disabled="exportStage === 'exporting'"
-                    @click="exportApprovedDocument"
-                  >
-                    {{ exportStage === 'exporting' ? 'Exporting…' : 'Export' }}
-                  </button>
-                  <p v-if="exportError" class="field-error" role="alert">{{ exportError }}</p>
-                </div>
-
-                <div v-if="exportReceipt">
-                  <p aria-live="polite">{{ exportOutcomeMessage }}</p>
-                  <ul class="source-list">
-                    <li v-if="exportReceipt.format !== 'PDF' || exportReceipt.pdfArtifactId == null">
-                      <a :href="artifactDownloadUrl(session.personalWorkspaceId!, exportReceipt.docxArtifactId)">Download DOCX</a>
-                    </li>
-                    <li v-if="exportReceipt.pdfArtifactId != null">
-                      <a :href="artifactDownloadUrl(session.personalWorkspaceId!, exportReceipt.pdfArtifactId)">Download PDF</a>
-                    </li>
-                  </ul>
-                </div>
-              </template>
-
-              <!-- Outside the checks above: a save made from an earlier export stays reachable after the document changes. -->
-              <DriveSavePanel
-                v-if="session.personalWorkspaceId !== undefined"
-                :workspace-id="session.personalWorkspaceId"
-                :document-id="documentId"
-                :receipt="exportReceipt"
-                :unsaved-work="hasUnsavedWork()"
-              />
-              <CalendarEventPanel
-                v-if="session.personalWorkspaceId !== undefined && document"
-                :workspace-id="session.personalWorkspaceId"
-                :document-id="documentId"
-                :document-title="document.title"
-                :suggested-date="suggestedEventDate"
-                :unsaved-work="hasUnsavedWork()"
-              />
             </div>
-
-            <div v-else-if="activeTab === 'history'">
-              <p v-if="revisionsLoadState === 'loading'" aria-live="polite">Loading revision history…</p>
-              <p v-if="revisionsError" class="field-error" role="alert">{{ revisionsError }}</p>
-
-              <ul v-if="orderedRevisions.length > 0" class="revision-list">
-                <li v-for="revision in orderedRevisions" :key="revision.id" class="revision-row">
-                  <div class="revision-row__body">
-                    <span class="field-row__label">Revision {{ revision.revisionNumber }}</span>
-                    <span class="field-hint">{{ revision.editReason }}</span>
-                    <span class="field-hint">{{ new Date(revision.createdAt).toLocaleString() }}</span>
-                  </div>
-                  <button
-                    class="button"
-                    type="button"
-                    :disabled="compareStage === 'loading' && compareRevisionId === revision.id"
-                    :aria-label="`Compare revision ${revision.revisionNumber} to current`"
-                    @click="compareToRevision(revision.id)"
-                  >
-                    Compare to current
-                  </button>
-                </li>
-              </ul>
-              <p v-else-if="revisionsLoadState === 'loaded'" class="field-hint">No earlier revisions yet.</p>
-
-              <div v-if="compareStage !== 'idle'" class="compare-panel">
-                <p v-if="compareStage === 'loading'" aria-live="polite">Loading revision {{ compareRevisionId }}…</p>
-                <p v-if="compareError" class="field-error" role="alert">{{ compareError }}</p>
-
-                <template v-if="compareStage === 'loaded' && compareRevision && document">
-                  <h3>Revision {{ compareRevision.revisionNumber }} vs. current</h3>
-                  <div class="compare-row">
-                    <span></span>
-                    <div class="compare-row__values">
-                      <span class="field-hint">Revision {{ compareRevision.revisionNumber }}</span>
-                      <span class="field-hint">Current (revision {{ document.currentRevision.revisionNumber }})</span>
-                    </div>
-                  </div>
-                  <div
-                    v-for="fieldId in compareFieldIds"
-                    :key="fieldId"
-                    class="compare-row"
-                    :class="{ 'compare-row--changed': fieldChanged(fieldId) }"
-                  >
-                    <span class="field-row__label">{{ labelFor(fieldId) }}</span>
-                    <div class="compare-row__values">
-                      <span>{{ fieldDisplayValue(compareRevision.fields[fieldId]) }}</span>
-                      <span>{{ fieldDisplayValue(document.currentRevision.fields[fieldId]) }}</span>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-
-            <div v-else-if="activeTab === 'rules'">
-              <p class="field-hint">
-                The rules this document's template version enforces when it is validated and exported. Rules are
-                taught on the template, so they are read-only here.
-              </p>
-              <p v-if="rulesLoadState === 'loading'" aria-live="polite">Loading rules…</p>
-              <p v-else-if="rulesLoadState === 'error'" class="field-error" role="alert">Could not load the rules. Try again.</p>
-              <template v-else-if="rulesLoadState === 'loaded'">
-                <p v-if="rulesInForce.length === 0" class="field-hint">
-                  No accepted rules on this template version beyond its required fields.
-                </p>
-                <ul v-else class="rule-list">
-                  <li v-for="rule in rulesInForce" :key="rule.id" class="rule-row">
-                    <span class="badge">{{ rule.category }}</span>
-                    <span class="rule-row__scope">{{ describeScope(rule.scope) }}</span>
-                    <span>{{ describePayload(rule.payload) }}</span>
-                    <p v-if="rule.humanExplanation" class="field-hint">{{ rule.humanExplanation }}</p>
-                  </li>
-                </ul>
-                <p v-if="rulesUndecided > 0" class="field-hint">
-                  {{ rulesUndecided }} proposed {{ rulesUndecided === 1 ? 'rule is' : 'rules are' }} waiting for a decision on the template.
-                </p>
-              </template>
-            </div>
+            <label class="field-label" for="attach-source">Upload notes or a transcript</label>
+            <input id="attach-source" type="file" accept=".txt,text/plain" :disabled="sourceUploadState === 'uploading'" @change="onSourceFileChosen" />
+            <p class="field-hint">
+              Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
+            </p>
+            <p v-if="sourceUploadState === 'uploading'" aria-live="polite">Uploading…</p>
+            <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
+            <CalendarSourcePicker
+              v-if="session.personalWorkspaceId !== undefined"
+              :workspace-id="session.personalWorkspaceId"
+              :document-id="documentId"
+              :start-open="calendarPickerStartsOpen"
+              :unsaved-work="hasUnsavedWork()"
+              :copy-event="copyCalendarEvent"
+              @used="calendarConsent = null"
+            />
+            <DriveSourcePicker
+              v-if="session.personalWorkspaceId !== undefined"
+              :workspace-id="session.personalWorkspaceId"
+              :document-id="documentId"
+              :start-open="drivePickerStartsOpen"
+              :unsaved-work="hasUnsavedWork()"
+              :copy-file="copyDriveFile"
+              @used="calendarConsent = null"
+            />
           </div>
         </div>
-      </div>
+
+        <form class="composer" @submit.prevent="sendMessage()">
+          <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
+          <label class="visually-hidden" for="assist-composer">How may I help you?</label>
+          <textarea
+            id="assist-composer"
+            v-model="composerText"
+            class="composer__input"
+            rows="2"
+            maxlength="1000"
+            placeholder="How may I help you?"
+            @keydown="onComposerKeydown"
+          ></textarea>
+          <div class="composer__tools">
+            <button
+              ref="addSourceButtonRef"
+              type="button"
+              class="icon-button composer__add"
+              :aria-expanded="sourcesOpen"
+              aria-controls="add-source-panel"
+              @click="toggleSources"
+            >
+              <AppIcon name="plus" />
+              <span class="visually-hidden">Add a source</span>
+            </button>
+            <label v-if="attachedSources.length > 1" class="composer__source">
+              <span class="composer__source-label">Read</span>
+              <select id="extract-source" v-model.number="selectedSourceId" :disabled="runUnderWay">
+                <option v-for="source in attachedSources" :key="source.id" :value="source.id">{{ sourceName(source) }}</option>
+              </select>
+            </label>
+            <button type="submit" class="composer__send" :aria-disabled="composerText.trim() === '' || assistBusy">
+              <AppIcon name="send" :size="18" />
+              <span class="visually-hidden">Send</span>
+            </button>
+          </div>
+        </form>
+        <p class="assistant-disclaimer">Brownie can make mistakes. Check each filled value before you export.</p>
+      </aside>
     </div>
-  </section>
+
+    <ExportDialog
+      v-if="session.personalWorkspaceId !== undefined"
+      ref="exportDialogRef"
+      :workspace-id="session.personalWorkspaceId"
+      :document-id="documentId"
+      :document-title="document.title"
+      :current-revision-id="document.currentRevision.id"
+      :unsaved-work="hasUnsavedWork()"
+      :save-before-export="saveBeforeExport"
+      :reload-document="loadDocument"
+      :field-label="labelFor"
+      :editable-field-ids="editableFieldIds"
+      :suggested-event-date="suggestedEventDate"
+      @go-to-field="goToFieldFromExport"
+    />
+    <VersionHistoryDialog
+      v-if="session.personalWorkspaceId !== undefined"
+      ref="historyDialogRef"
+      :workspace-id="session.personalWorkspaceId"
+      :document-id="documentId"
+      :current-revision="document.currentRevision"
+      :field-label="labelFor"
+      :unsaved-work="hasUnsavedWork()"
+      @restored="onVersionRestored"
+      @document-changed="loadDocument"
+    />
+  </div>
 </template>
 
 <style scoped>
-.workspace-topbar {
-  margin-bottom: var(--space-5);
-}
-
-.workspace-topbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.workspace-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: var(--space-5);
-}
-
-/* A grid item is never wider than its column: its own content scrolls or wraps instead of painting over the next pane. */
-.workspace-layout > * {
-  min-width: 0;
-}
-
 /*
- * Three columns only where all three keep a usable width; below that the
- * preview takes a full row under the editor.
+ * The page is two panes: the document, and Brownie's panel. They sit side by side only where both
+ * keep a readable width -- the question is how wide this page's own region is, not the window,
+ * since the app's sidebar beside it can be showing or collapsed. Below that, a switch shows one
+ * at a time. 50rem is a narrow but readable page (about 30rem) plus the panel's minimum (18rem)
+ * and the gap between them, which keeps a laptop with the sidebar open at two panes.
  *
- * The question asked is how wide this page's own region is, not how wide
- * the window is: the sidebar beside it can be showing or collapsed, and
- * those two answers differ by its whole width. 68rem is the three
- * columns' own minimums (22 + 20 + 22) plus the two gaps between them,
- * so the threshold is the layout's real requirement rather than a guess
- * at a screen size.
+ * The shell pads its pages for reading; this one reaches nearer the window's edges, as the design
+ * draws it, and shares its first row with the shell's floating sidebar button when there is one.
  */
-@container main (min-width: 68rem) {
-  .workspace-layout--with-preview {
-    grid-template-columns: minmax(22rem, 3fr) minmax(20rem, 3fr) minmax(22rem, 2fr);
-  }
-}
-
-@container main (max-width: 67.999rem) {
-  .workspace-layout--with-preview .pdf-pane {
-    grid-column: 1 / -1;
-  }
-}
-
-.pdf-pane__actions {
+.workspace {
   display: flex;
-  gap: var(--space-3);
+  flex-direction: column;
+  margin-block-start: calc(var(--space-3) - var(--shell-gutter-block-start, var(--space-5)) - var(--shell-bar-block, 0px));
+  margin-inline: calc(var(--space-4) - var(--shell-gutter-inline, var(--space-5)));
+}
+
+/* The top bar: Undo and version history at the start; how the document is shown, the save status and Export at the end. */
+.workspace-bar {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  margin-bottom: var(--space-3);
+  gap: var(--space-2) var(--space-4);
+  min-block-size: var(--icon-button-size);
+  /* Leaves the corner the shell's floating sidebar button covers, so the two read as one row. */
+  padding-inline-start: max(0px, calc(var(--shell-bar-inline, 0px) - var(--space-4)));
 }
 
-.evidence-panel {
-  grid-column: 1 / -1;
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  border-left: 3px solid var(--color-honey);
-  background: var(--color-honey-soft);
-  border-radius: var(--radius);
-}
-
-.evidence-excerpt {
-  margin: 0 0 var(--space-2);
-}
-
-.evidence-excerpt p {
-  margin: 0 0 var(--space-1);
-}
-
-.evidence-links {
+.workspace-bar__start,
+.workspace-bar__end {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-3);
 }
 
-.assist-composer {
-  margin-bottom: var(--space-4);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--color-border);
+.workspace-bar__start {
+  gap: var(--space-1);
+  margin-inline-end: auto;
 }
 
-.assist-composer__input {
-  width: 100%;
-  min-height: 3.5rem;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  resize: vertical;
+.workspace-bar__end {
+  gap: var(--space-3);
 }
 
-.assist-plan {
-  margin-top: var(--space-3);
-  padding: var(--space-3);
-  border-left: 3px solid var(--color-honey);
-  background: var(--color-honey-soft);
-  border-radius: var(--radius);
+.workspace-bar__export,
+.workspace-bar__save {
+  min-block-size: 2rem;
+  padding-inline: var(--space-4);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
 }
 
-.assist-help {
-  margin: var(--space-2) 0;
-  padding-left: var(--space-4);
+.save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
 }
 
-.assist-explanation {
-  margin: var(--space-3) 0 0;
-  padding: var(--space-3);
-  border-left: 3px solid var(--color-border);
-  background: var(--color-surface);
+.save-status__dot {
+  inline-size: 0.375rem;
+  block-size: 0.375rem;
+  border-radius: 50%;
+  background: var(--color-success);
 }
 
-/* Hidden above the 720px breakpoint -- the inspector pane is a normal, always-visible column there. */
-.drawer-toggle {
+.save-status--pending .save-status__dot {
+  background: var(--color-honey);
+}
+
+.save-status--problem {
+  color: var(--color-error);
+}
+
+.save-status--problem .save-status__dot {
+  background: var(--color-error);
+}
+
+/* The document's name, large and light, as the design sets it; it scales with the room the page has. */
+.workspace-title {
+  margin: var(--space-1) 0 var(--space-4);
+  text-align: center;
+  font-weight: 400;
+  font-size: clamp(1.75rem, 1rem + 2.2cqi, 3rem);
+  line-height: 1.2;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.workspace-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+}
+
+.workspace-notices:empty {
   display: none;
 }
 
-@media (max-width: 720px) {
-  .workspace-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .compare-row {
-    grid-template-columns: 1fr;
-  }
-
-  .compare-row__values {
-    grid-template-columns: 1fr;
-  }
-
-  .drawer-toggle {
-    display: inline-flex;
-    margin-bottom: var(--space-4);
-  }
-
-  .inspector-drawer--collapsed {
-    display: none;
-  }
-}
-
-dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--space-2) var(--space-4);
-}
-
-.proposed-items {
+.workspace-notices p {
   margin: 0;
-  padding-left: var(--space-4);
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-.empty-state__title {
-  margin: 0;
-  font-weight: 600;
-}
-
-dt {
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
-.tab-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--color-border);
-  margin-bottom: var(--space-4);
-}
-
-.tab-button {
-  background: none;
-  border: none;
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
-.tab-button--active {
-  color: var(--color-text);
-  border-bottom-color: var(--color-honey);
-}
-
-.source-list {
-  padding-left: var(--space-5);
-}
-
-.source-list__origin {
-  display: block;
 }
 
 .workspace-notice {
@@ -3098,198 +3176,851 @@ dt {
   background: var(--color-cocoa-wash);
 }
 
-.field-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.field-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.field-row__value {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.field-row__label {
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
-.field-row__state {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.field-row__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.field-input {
-  width: 100%;
-  max-width: 32rem;
-  box-sizing: border-box;
-}
-
-.row-group {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-}
-
-/* The rows table scrolls sideways inside its own box when the columns need more room than the pane has.
-   The box is also the positioning context for the visually hidden row labels inside it, which are
-   absolutely positioned and would otherwise escape the box and widen the whole page. */
-.row-table-wrap {
-  position: relative;
-  width: 100%;
-  overflow-x: auto;
-}
-
-.row-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.row-table th,
-.row-table td {
-  text-align: left;
-  vertical-align: top;
-  padding: var(--space-2);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.row-table .field-input {
-  min-width: 10rem;
-}
-
-.save-bar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-}
-
 .conflict-notice {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-.badge {
-  display: inline-block;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius);
-  background: var(--color-honey-soft);
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.plain-list {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--color-focus);
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: start;
+}
+
+/*
+ * Two small two-way switches: which face of the document shows (in the bar), and, where the panes
+ * cannot sit side by side, which pane shows.
+ */
+.workspace-switch,
+.view-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--color-paper-deep);
+}
+
+/* The switch between the panes: only where they cannot sit side by side. */
+.workspace-switch {
+  display: none;
+  align-self: center;
+  margin-block-end: var(--space-3);
+}
+
+.workspace-switch__button,
+.view-toggle__button {
+  min-block-size: 1.75rem;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.workspace-switch__button:hover,
+.view-toggle__button:hover {
+  color: var(--color-text);
+}
+
+/* The chosen one is outlined as well as lifted, so it stands out from the track at 3:1 or more. */
+.workspace-switch__button[aria-pressed='true'],
+.view-toggle__button[aria-pressed='true'] {
+  border-color: var(--color-cocoa);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 1px 2px rgb(42 41 36 / 0.08);
+}
+
+/* Forced colours draw every edge alike, so the chosen one takes the system's own selected colours instead. */
+@media (forced-colors: active) {
+  .workspace-switch__button[aria-pressed='true'],
+  .view-toggle__button[aria-pressed='true'] {
+    forced-color-adjust: none;
+    background: SelectedItem;
+    color: SelectedItemText;
+  }
+}
+
+.workspace-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.workspace-panes > * {
+  min-inline-size: 0;
+}
+
+@container main (min-width: 50rem) {
+  .workspace-title {
+    margin-block-end: var(--space-6);
+  }
+
+  /* The page and Brownie's panel share the width about evenly, as the design has them, set in a little from the window's edges. */
+  .workspace-panes {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 1fr);
+    column-gap: var(--space-6);
+    padding-inline: clamp(0rem, 4cqi - 1.5rem, 2.5rem);
+  }
+
+  /*
+   * Never taller than the screen. If its parts cannot all fit, what is above the message box scrolls
+   * and the message box stays below it, outside the scrolling part, so nothing focused can sit under
+   * it. The padding keeps focus rings (a forced-colours outline reaches 5px) inside the scrolling edge.
+   */
+  .assistant-pane {
+    position: sticky;
+    inset-block-start: var(--space-3);
+    max-block-size: calc(100dvh - var(--space-5));
+  }
+
+  .assistant-pane__scroll {
+    overflow-y: auto;
+    padding: 6px;
+    margin: -6px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar) transparent;
+  }
+
+  .add-source {
+    max-block-size: 40dvh;
+  }
+
+  .selection-bar__rules {
+    display: none;
+  }
+
+  /*
+   * Where the window is tall enough, the page fills it exactly, as the design draws it: the bar and the
+   * title stay put, the document scrolls in its own pane, and Brownie's panel keeps the message box at
+   * the foot of the screen from the moment the page opens. The shell's own bar, where it is a row above
+   * this page, is left its height. Shorter windows scroll as one page.
+   */
+  @media (min-height: 36rem) {
+    .workspace {
+      block-size: calc(100dvh - var(--shell-bar-row, 0px) - 2 * var(--space-3));
+      margin-block-end: calc(var(--space-3) - var(--shell-gutter-block-end, var(--space-8)));
+    }
+
+    .workspace-panes {
+      flex: 1 1 auto;
+      min-block-size: 0;
+      grid-template-rows: minmax(0, 1fr);
+      align-items: stretch;
+    }
+
+    .assistant-pane {
+      position: static;
+      max-block-size: none;
+      min-block-size: 0;
+    }
+
+    /*
+     * The Rules card gives way before the conversation does, scrolling on its own in a short window; the
+     * conversation's own length never decides how much of the room it gets.
+     */
+    .assistant-pane__scroll > .rules-card {
+      flex: 0 1 auto;
+      min-block-size: 0;
+      overflow-y: auto;
+    }
+
+    .assistant-pane__scroll > .chat {
+      flex: 1 1 0;
+    }
+
+    /* The padding keeps focus rings, and the outline of a selected fill spot, inside the scrolling edge. */
+    .document-pane {
+      min-block-size: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 6px 6px var(--space-4);
+      margin: -6px -6px 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-scrollbar) transparent;
+    }
+  }
+}
+
+@container main (max-width: 49.999rem) {
+  .workspace-switch {
+    display: inline-flex;
+  }
+
+  .workspace--showing-document .assistant-pane,
+  .workspace--showing-assistant .document-pane {
+    display: none;
+  }
+
+  /*
+   * The bar keeps Undo and the save status on its first line, and puts the switch between the page and
+   * the print preview on a line of its own under them, rather than letting the three wrap wherever
+   * they happen to break. The empty last item forces the break.
+   */
+  .workspace-bar {
+    row-gap: 0;
+  }
+
+  /* Pushed to the end of its line, which is the first line or, where it wraps, a line of its own. */
+  .workspace-bar__end {
+    margin-inline-start: auto;
+  }
+
+  .workspace-bar::after {
+    content: '';
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .view-toggle {
+    order: 2;
+    margin-block-start: var(--space-2);
+  }
+
+  /* The face of the document means nothing while Brownie's panel is the one showing. */
+  .workspace--showing-assistant .view-toggle {
+    display: none;
+  }
+
+  .assistant-pane {
+    min-block-size: min(40rem, calc(100dvh - 12rem));
+  }
+}
+
+/*
+ * Positioned, like the conversation and the part of Brownie's panel that scrolls, so the text kept for
+ * assistive technology inside it (placed out of sight, but still placed) is clipped where the pane
+ * scrolls instead of stretching the window below it.
+ */
+.document-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Before anything is filled in: a quiet note over the page, saying how it gets filled. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  font-size: var(--font-size-sm);
+}
+
+.empty-state p {
+  margin: 0;
+}
+
+.empty-state__title {
+  font-weight: 600;
+}
+
+.empty-state .field-hint {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.empty-state .button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: 0.8125rem;
+}
+
+.print-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.print-preview p {
+  margin: 0;
+}
+
+.print-preview .button {
+  min-block-size: 2rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+}
+
+/* The bar about the selected fill spot stays in reach at the foot of the screen while the page scrolls under it. */
+.selection-bar {
+  position: sticky;
+  inset-block-end: var(--space-3);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: 0 8px 28px rgb(42 41 36 / 0.1);
+}
+
+/* An outline, not a shadow, so forced colours keep it. */
+.selection-bar:focus-visible {
+  outline: 2px solid var(--color-cocoa);
+  outline-offset: 2px;
+}
+
+.selection-bar .button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
+.selection-bar .field-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.selection-bar .selection-bar__keys {
+  font-size: var(--font-size-xs);
+}
+
+/* On a touch screen there is no key to press. */
+@media (pointer: coarse) {
+  .selection-bar__keys {
+    display: none;
+  }
+}
+
+.selection-bar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.selection-bar__name {
+  margin: 0;
   font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
-.question-list {
+.selection-bar__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-honey-soft);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.evidence-panel {
+  padding: var(--space-3);
+  border-inline-start: 3px solid var(--color-honey);
+  background: var(--color-honey-soft);
+  border-radius: var(--radius);
+  max-block-size: 14rem;
+  overflow-y: auto;
+  font-size: var(--font-size-sm);
+}
+
+.evidence-panel p {
+  margin: 0 0 var(--space-1);
+}
+
+.evidence-excerpt {
+  margin: 0 0 var(--space-2);
+}
+
+/* Brownie's panel: the Rules card, the conversation, and the message box. */
+.assistant-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-block-size: 0;
+}
+
+.assistant-pane__scroll {
+  position: relative;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  margin-top: var(--space-4);
+  min-block-size: 0;
 }
 
-.question-item {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+.rules-card {
+  flex: none;
+  padding: var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  font-size: 0.8125rem;
+}
+
+.rules-card__heading {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* The text style, on a tinted panel inside the card: the "Aa" tile, a caption, and the style as chips. */
+.rules-card__style {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  border-radius: 0.75rem;
+  background: var(--color-paper);
 }
 
-.finding-list {
-  list-style: none;
-  margin: var(--space-3) 0;
+.rules-card__glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  border-radius: 0.375rem;
+  background: var(--color-surface);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-cocoa);
+}
+
+.rules-card__style p {
+  margin: 0;
+}
+
+.rules-card__style .rules-card__caption {
+  margin-block-end: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  list-style: none;
 }
 
-.finding-row {
+/* Read-only: white with a thin edge, as the design draws them, and no hover, since pressing one does nothing. */
+.chip {
+  display: inline-block;
+  padding: 3px var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.375rem;
+  background: var(--color-surface);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.rules-card__style .rules-card__date {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--color-border);
+  gap: var(--space-1) var(--space-2);
+  margin-block-start: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
-.revision-list {
+.rules-card__required {
+  color: var(--color-text);
+}
+
+.rules-card__required-mark {
+  font-weight: 700;
+  color: var(--color-error);
+}
+
+.rules-card__rules {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-5);
+}
+
+.rules-card > p {
+  margin: var(--space-2) 0 0;
+}
+
+.rules-card .field-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* The conversation: what the person said on the right in light bubbles, Brownie's replies as plain text on the left. */
+.chat {
+  position: relative;
+  flex: 1 1 auto;
+  min-block-size: 8rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: 0 var(--space-3) var(--space-2) var(--space-1);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+
+/*
+ * Earlier lines fade out at the top of the conversation instead of being cut through. The fade stays
+ * at the top while the lines scroll under it, takes no room of its own (the negative margin cancels the
+ * gap after it), and lets every press through.
+ */
+.chat::before {
+  content: '';
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  flex: none;
+  block-size: var(--space-3);
+  margin-block-end: calc(-1 * var(--space-4));
+  background: linear-gradient(to bottom, var(--color-paper), transparent);
+  pointer-events: none;
+}
+
+.chat-line p {
+  margin: 0;
+}
+
+.chat-line--person {
+  align-self: flex-end;
+  max-inline-size: 85%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-bubble-border);
+  border-radius: 0.375rem;
+  background: var(--color-bubble);
+  overflow-wrap: anywhere;
+}
+
+.chat-line--brownie {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
+.chat-line--brownie .button {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+}
+
+.chat-line__quote {
+  margin: 0;
+  padding-inline-start: var(--space-3);
+  border-inline-start: 3px solid var(--color-hairline);
+}
+
+/* What Brownie can do, as one card of rows, like the numbered choices. */
+.chat-suggestions {
   list-style: none;
-  margin: var(--space-3) 0;
-  padding: 0;
+  margin: 0;
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  inline-size: 100%;
+  max-inline-size: 35rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+}
+
+.chat-suggestion {
+  inline-size: 100%;
+  min-block-size: 2.5rem;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  text-align: start;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.chat-suggestion:hover,
+.chat-suggestion:focus-visible {
+  background: var(--color-paper);
+}
+
+.chat-typing {
+  color: var(--color-text-muted);
+}
+
+.run-status,
+.proposal {
+  inline-size: 100%;
+}
+
+.question {
+  inline-size: 100%;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-.revision-row {
+.question__prompt {
+  font-weight: 500;
+}
+
+.proposal__values {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+.proposal__label {
+  font-weight: 500;
+}
+
+.proposal__skipped {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--color-honey-soft);
+}
+
+.proposal__skipped ul {
+  margin: var(--space-1) 0 0;
+  padding-inline-start: var(--space-5);
+}
+
+.proposal :deep(.choices),
+.question :deep(.choices) {
+  inline-size: 100%;
+  max-inline-size: 35rem;
+}
+
+/* The sources attached to the document, on the person's side, each as a file card. */
+.source-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.source-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-inline-size: 90%;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.625rem;
+  background: var(--color-surface);
+}
+
+.source-card__tile {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.875rem;
+  block-size: 1.875rem;
+  border-radius: 0.375rem;
+  background: var(--color-cocoa-tile);
+  color: var(--color-surface);
+}
+
+.source-card__body {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  line-height: 1.35;
+}
+
+.source-card__name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.source-card__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* Opened to be used, so it keeps its height (up to a cap on a wide page) and the conversation gives way to it. */
+.add-source {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  overflow-y: auto;
+  font-size: var(--font-size-sm);
+}
+
+.add-source p {
+  margin: 0;
+}
+
+.add-source__head {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
 }
 
-.revision-row__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.compare-panel {
-  margin-top: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.compare-row {
-  display: grid;
-  grid-template-columns: 1fr 2fr;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.compare-row__values {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-}
-
-.compare-row--changed {
-  background: var(--color-honey-soft);
-  border-radius: var(--radius);
-}
-
-.compare-row--changed .compare-row__values span {
+.add-source__title {
   font-weight: 600;
+}
+
+/* The message box: a rounded card with the question as its placeholder, + at its start and Send at its end. */
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-3) var(--space-3) var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: 1.125rem;
+  background: var(--color-surface);
+  transition: border-color var(--motion-fast) var(--motion-ease);
+}
+
+.composer:focus-within {
+  border-color: var(--color-cocoa);
+}
+
+/* Forced colours make every border the same system colour, so focus is outlined in the system's own focus colour. */
+@media (forced-colors: active) {
+  .composer:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+.composer__input {
+  inline-size: 100%;
+  min-block-size: 3rem;
+  max-block-size: 10rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  resize: none;
+  field-sizing: content;
+}
+
+.composer__input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.composer__input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.composer__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: calc(-1 * var(--space-2));
+}
+
+/* The design's + is drawn heavier than the other icons, so the one way to add a source stands out. */
+.composer__add {
+  color: var(--color-text);
+}
+
+.composer__add :deep(.app-icon) {
+  stroke-width: 2.4;
+}
+
+.composer__source {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.composer__source select {
+  min-inline-size: 0;
+  max-inline-size: 12rem;
+}
+
+.composer__send {
+  margin-inline-start: auto;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  border: 1px solid var(--color-cocoa);
+  border-radius: 50%;
+  background: var(--color-cocoa);
+  color: var(--color-surface);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.composer__send:hover:not([aria-disabled='true']) {
+  border-color: var(--color-cocoa-strong);
+  background: var(--color-cocoa-strong);
+}
+
+.composer__send[aria-disabled='true'] {
+  border-color: var(--color-bubble-border);
+  background: var(--color-bubble-border);
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.assistant-disclaimer {
+  flex: none;
+  margin: 0;
+  text-align: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+@media (pointer: coarse) {
+  .composer__send {
+    inline-size: 2.75rem;
+    block-size: 2.75rem;
+  }
 }
 </style>
