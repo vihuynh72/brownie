@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.core.rule;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
@@ -129,7 +130,11 @@ public class RuleService {
                         "Template " + templateId + " does not exist, or has no open draft version to propose a rule against."));
     }
 
+    /** A PDF template has no Word structure, so its rules are checked with none: {@link RulePayloadValidator} refuses what would need one. */
     private DocxStructuralGraph requireGraph(long workspaceId, long userId, TemplateVersion draft) {
+        if (draft.kind() == TemplateKind.PDF) {
+            return null;
+        }
         ExtractionVersion extraction = extractionVersionRepository
                 .findById(workspaceId, userId, draft.extractionVersionId())
                 .orElseThrow(() -> new IllegalStateException(
