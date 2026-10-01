@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.generation;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStorageException;
@@ -134,6 +135,12 @@ public class GenerationOrchestrationService {
     private final BlobStore blobStore;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final ObjectMapper objectMapper;
+    /**
+     * Writes a run's input bundle with every property that has no value
+     * left out, so a worker built before a property was added (a field's
+     * label, say) still reads each bundle that does not use it.
+     */
+    private final ObjectMapper bundleMapper;
     private final TransactionTemplate transactionTemplate;
     private final UsageService usageService;
     private final String modelName;
@@ -171,6 +178,9 @@ public class GenerationOrchestrationService {
         this.blobStore = blobStore;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.objectMapper = objectMapper;
+        this.bundleMapper = objectMapper.rebuild()
+                .changeDefaultPropertyInclusion(inclusion -> inclusion.withValueInclusion(JsonInclude.Include.NON_NULL))
+                .build();
         this.transactionTemplate = transactionTemplate;
         this.usageService = usageService;
         this.modelName = modelName;
@@ -638,7 +648,7 @@ public class GenerationOrchestrationService {
     private boolean writeBundleIfAbsent(long workspaceId, CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
         String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash.value());
         try {
-            byte[] json = objectMapper.writeValueAsBytes(bundle);
+            byte[] json = bundleMapper.writeValueAsBytes(bundle);
             blobStore.writeNewAndDigest(objectKey, new ByteArrayInputStream(json), MAX_BUNDLE_BYTES);
             return true;
         } catch (BlobAlreadyExistsException ignored) {

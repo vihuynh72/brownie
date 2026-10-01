@@ -44,6 +44,7 @@ import io.github.vihuynh72.brownie.core.question.ResolvedAnswerBundle;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -153,7 +154,17 @@ class GenerationExtractionJobProcessor {
         this.jobLeaseRepository = jobLeaseRepository;
         this.jobOutputPublisher = jobOutputPublisher;
         this.leaseDuration = leaseDuration;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = bundleMapper();
+    }
+
+    /**
+     * Reads the bundles the API stages and writes this worker's own. A
+     * property this worker does not know is passed over rather than failing
+     * the run, so an API newer than the worker (one that adds a property to
+     * a bundle) does not stop every run until the worker is restarted.
+     */
+    static ObjectMapper bundleMapper() {
+        return new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     void process(LeasedJob leasedJob) {
