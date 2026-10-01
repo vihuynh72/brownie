@@ -325,7 +325,14 @@ paths:
         value, evidence and state (a lock on any item of any repeated field
         keeps every repeated field, since their items line up). A field the
         earlier revision did not have is left without a value. No history
-        is changed. The edit reason defaults to "Restored version N.".
+        is changed. The edit reason defaults to "Restored version N.". The
+        new revision is on the earlier revision's template version: restoring
+        across a fill spot correction moves the document back to that version
+        (a value that version has no fill spot for is dropped and named in
+        droppedFieldIds), and when the document was the only one on the
+        version it leaves and the two are one correction apart, the
+        template's current version moves back with it (and forward again on
+        redo).
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/DocumentId"
@@ -358,6 +365,137 @@ paths:
           $ref: "#/components/responses/Conflict"
         "412":
           description: The expected revision is no longer current (code STALE_REVISION, with currentRevisionId).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/fill-spots:
+    post:
+      operationId: changeFillSpots
+      summary: >
+        Adds, renames or takes away fill spots of an open document, or on a
+        PDF form adds, moves, resizes or restyles a box, as one new activated
+        version of its form made from the version the document is on; the
+        document moves to it keeping every value the new version has a fill
+        spot for. Forms started from the template afterwards have the
+        correction too; other documents stay on their version until moved.
+        Adding to a Word form edits its file where the anchor says and proves
+        a sample render, so it takes a few seconds; a PDF form's file is never
+        changed (only its boxes and fields are) and its proof is a quick
+        sample fill; renaming reuses everything. Send every box moved in one
+        editing session in one request: it makes one version. Idempotent per
+        Idempotency-Key: a replay answers with the same result.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FillSpotsRequest"
+      responses:
+        "200":
+          description: The document on its new form version, the revision appended, and what Undo needs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FillSpotsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            TEMPLATE_VERSION_MOVED_ON (another correction of the same form got
+            there first; reload and try again), DOCUMENT_TEMPLATE_VERSION_MOVED
+            (the document is not on templateVersionId, or is behind the form's
+            newest version, which is templateLatestVersionId: move it first),
+            FILL_SPOT_ANCHOR_STALE (the page changed since the place was
+            chosen), FILL_SPOT_LOCKED (a value to be removed is locked, with
+            fieldId), or an Idempotency-Key reused for a different request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "412":
+          description: The expected revision is no longer current (code STALE_REVISION, with currentRevisionId).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            FILL_SPOT_PLACE_NOT_ALLOWED with reason (INSIDE_LINK,
+            INSIDE_FIELD_CODE, HEADER_FOOTER, REPEATING_REGION, PROTECTED,
+            NOT_FOUND, NOT_REACHABLE for a Word form; OFF_PAGE, TOO_SMALL,
+            OVERLAPS, NOT_FILLABLE for a box on a PDF page: not all on its
+            page, smaller than 8 by 6 points, covering more than a fifth of
+            another place, or on a page Brownie cannot write on),
+            FILL_SPOT_CHANGE_INVALID (a name that is not one, a spot the form
+            does not have, too many changes, no spot left, a text size outside
+            4 to 72 points, moving or restyling one of a PDF's own form fields,
+            or a change for the other kind of form: an ADD on a PDF form, a box
+            on a Word form), FILL_SPOT_WOULD_NOT_PRINT (the form would not
+            print correctly with the change, with fields), or the checks
+            activation makes (bindings, rules).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many requests that edit and render a form in a short time (code RATE_LIMITED, with Retry-After).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/template-version:
+    post:
+      operationId: moveDocumentToTemplateVersion
+      summary: >
+        Moves the document to another activated version of its form (for
+        example the newest one, after a fill spot was added from another
+        document), keeping every value that version has a fill spot for and
+        naming the ones dropped. A locked value is never dropped: the move is
+        refused with FILL_SPOT_LOCKED instead. Idempotent per Idempotency-Key.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemplateVersionMoveRequest"
+      responses:
+        "200":
+          description: The document on the version, and the revision appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersionMoveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: FILL_SPOT_LOCKED (with fieldId), DOCUMENT_ALREADY_ON_VERSION, or an Idempotency-Key reused for a different request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "412":
+          description: The expected revision is no longer current (code STALE_REVISION, with currentRevisionId).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The version is not an activated version of this document's form.
           content:
             application/problem+json:
               schema:
@@ -895,7 +1033,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "415":
-          description: The uploaded content is not a supported media type.
+          description: >
+            The uploaded content is not a supported media type, or is one in a form Brownie will not
+            open. Code UNSUPPORTED_MEDIA_TYPE, with reason saying why.
           content:
             application/problem+json:
               schema:
@@ -946,8 +1086,102 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "415":
+          description: >
+            NEEDS_FILLABLE_COPY: the artifact is a word-processing file Brownie accepts but reads only
+            through a Word copy made from it (detectedMediaType DOTX, DOCM, DOTM, DOC, RTF, ODT or PAGES).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/fillable-form:
+    post:
+      operationId: makeFillableForm
+      summary: >
+        Makes an uploaded form ready to fill: a clean Word working copy
+        (converted first when the upload is .doc, .rtf, .odt, .ott or
+        .pages), stored as a new artifact and extracted, whose places to fill
+        are found, named and made into spots. A PDF is filled as it is: no
+        copy is made (templateSourceArtifactId is the upload itself), its
+        form reading is kept (extraction.id is the reading a PDF template
+        draft pins), and its spots are the form's own text fields, or, on a
+        PDF with none, boxes over the blanks on its pages. Each spot is ready
+        to send back as a template field as it is. Runs inside the request
+        and waits for the same sandbox slots rendering uses. The first
+        request answers 201; asking again for the same upload answers 200
+        with the same answer (for a PDF, the same reading and the same
+        spots, kept from the first request, so its places are named once).
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "201":
+          description: The copy was made by this request (for a PDF, this request found and named its places).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FillableFormResponse"
+        "200":
+          description: The copy an earlier request made (for a PDF, the answer an earlier request kept).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FillableFormResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          description: >
+            NOT_A_WORD_PROCESSING_DOCUMENT (plain text is no form), or
+            FORMAT_DISABLED (this server has switched converting the file's
+            format off; the error's format property names it).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            FILLABLE_FORM_FAILED: the file was accepted but no fillable copy
+            could be made; the error's reason is CANNOT_OPEN (the file did not
+            open as its format), DAMAGED, or TIMED_OUT (converting it took too
+            long). PDF_FORM_NOT_FILLABLE: a PDF that cannot be filled at all;
+            the error's reason is ENCRYPTED, SIGNED, XFA, LAUNCH_ACTION,
+            EMBEDDED_FILES, DOCUMENT_JAVASCRIPT, DAMAGED or TOO_LARGE.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            RENDERER_BUSY (every sandbox slot stayed taken; with a Retry-After
+            header), CONVERTER_UNAVAILABLE (the converter could not be run; with
+            a Retry-After header), or any other ServiceUnavailable code.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: getFillableForm
+      summary: >
+        What an earlier POST made of this upload, without making anything:
+        its Word copy, or for a PDF the spots that POST kept. 404 when nothing
+        has been made of it yet.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: The stored answer, a Word copy or a PDF's kept spots.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FillableFormResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/workspaces/{workspaceId}/templates:
     get:
@@ -980,9 +1214,18 @@ paths:
       operationId: createTemplateDraft
       summary: >
         Creates a new custom template's own draft against an already-
-        extracted DOCX source. Deliberately returns the draft version
-        alongside the template, since a caller needs that version's own
-        number for the very next PUT .../draft/bindings call.
+        extracted DOCX source, or against a PDF already prepared as a form
+        (the server picks the kind from the file: a PDF makes a PDF
+        template pinned to its stored form reading). Deliberately returns
+        the draft version alongside the template, since a caller needs that
+        version's own number for the very next PUT .../draft/bindings call.
+        A PDF whose reading refused the whole file answers 422 with code
+        PDF_FORM_NOT_FILLABLE and a reason (ENCRYPTED, SIGNED, XFA,
+        LAUNCH_ACTION, EMBEDDED_FILES, DOCUMENT_JAVASCRIPT, DAMAGED,
+        TOO_LARGE); one never prepared answers 422 SOURCE_NOT_EXTRACTABLE.
+        The upload step's notices for the file may be sent along to be kept
+        with the template; a notice it could not have given (an unknown
+        code, too large a count, too long a detail, too many) answers 400.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       requestBody:
@@ -998,6 +1241,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemplateDraftResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
@@ -1103,7 +1348,7 @@ paths:
       summary: >
         Activates the draft's current version after re-validating its
         bindings and rules and proving a real sample fill and render --
-        refuses an empty field list.
+        refuses an empty field list unless allowNoPlaces is true.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/TemplateId"
@@ -1128,6 +1373,67 @@ paths:
           $ref: "#/components/responses/UnprocessableContent"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/fields/{fieldId}/review:
+    put:
+      operationId: keepFillSpot
+      summary: >
+        Says a spot Brownie found is right, so the page stops marking it as
+        found. Belongs to the template, so it holds in every later version
+        that still has the field. Keeping it again changes nothing.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - name: fieldId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FieldReviewRequest"
+      responses:
+        "204":
+          description: Kept.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such template, or it has no such field in its open draft or active version.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/field-reviews:
+    post:
+      operationId: keepFillSpots
+      summary: >
+        Keeps several found spots at once ("Keep all"): every field is kept,
+        or, when one cannot be, none is.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FieldReviewsRequest"
+      responses:
+        "204":
+          description: Kept.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such template, or it has no such field in its open draft or active version.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}:
     get:
@@ -1161,7 +1467,8 @@ paths:
         changes nothing. Fill spots appear only in the main document body
         (the filler never writes into headers or footers), and the
         repeating row or paragraph is the one the filler copies once per
-        repeated item.
+        repeated item. A PDF template (kind PDF) has no parts; its pages,
+        lines and places are in pdf instead, from its pinned form reading.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/TemplateId"
@@ -1187,6 +1494,47 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/box-suggestion:
+    post:
+      operationId: suggestPdfBox
+      summary: >
+        Where a box on a PDF template's page would go for a person who
+        pointed at a place (point) or chose a line (lineIndex, the keyboard
+        way): just right of a label on the same line, a box to the next text
+        or the page's text margin, one line tall; anywhere else a box two
+        inches wide at the point. Its style is taken from the words beside
+        it, and labelGuess from the words just before it (null when none).
+        Deterministic, no model call, nothing kept; counted as a read.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/VersionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoxSuggestionRequest"
+      responses:
+        "200":
+          description: The suggested box.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoxSuggestionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            The version is a Word template, which has no pages to place a
+            box on (code TEMPLATE_LAYOUT_UNAVAILABLE).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules:
     post:
@@ -1496,7 +1844,9 @@ paths:
         and format) answers with that approval, so a repeated request
         records nothing twice. Any other approval, including going back to
         a format chosen earlier, is a new one and becomes the latest, which
-        is the one an export follows.
+        is the one an export follows. A PDF form is exported as a PDF only:
+        approving DOCX or BOTH for one answers 422 with code
+        EXPORT_FORMAT_NOT_OFFERED.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/DocumentId"
@@ -3190,6 +3540,12 @@ components:
         createdAt:
           type: string
           format: date-time
+        templateVersionId:
+          type: integer
+          format: int64
+          description: >
+            The template version this revision's content was written against;
+            always sent by a server that can move documents between versions.
 
     RestoreRevisionRequest:
       type: object
@@ -3216,6 +3572,14 @@ components:
           description: Fields that kept their current value because they were locked, sorted by field ID.
           items:
             type: string
+        droppedFieldIds:
+          type: array
+          description: >
+            Fields whose value was dropped because the restored revision's
+            template version has no fill spot for them, locked or not, sorted
+            by field ID.
+          items:
+            type: string
 
     DocumentResponse:
       type: object
@@ -3232,6 +3596,14 @@ components:
         templateVersionId:
           type: integer
           format: int64
+        templateLatestVersionId:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            The template's current version, the one new documents start from.
+            When it differs from templateVersionId the form has a newer
+            version this document can be moved to.
         currentRevisionId:
           type: integer
           format: int64
@@ -3240,6 +3612,185 @@ components:
           format: date-time
         currentRevision:
           $ref: "#/components/schemas/DocumentRevisionResponse"
+
+    DocxAnchor:
+      type: object
+      description: >
+        A place in one paragraph of a Word form, as the page layout gives it:
+        the paragraph's nodeId and anchorTextHash, and start and end counted
+        in Unicode code points into its anchor text (the text of its own
+        runs, as the layout's anchorStart offsets count it). AT is a point
+        (start equals end); REPLACE takes the place of the text between start
+        and end; WHOLE_LINE replaces the whole line when it holds only a
+        blank and otherwise goes at its end; EXISTING_CONTROL makes the
+        control at controlNodeId the spot.
+      required: [part, placement, parserVersion]
+      properties:
+        part:
+          type: string
+          enum: [MAIN_DOCUMENT, HEADER, FOOTER]
+        paragraphNodeId:
+          type: string
+          nullable: true
+        placement:
+          type: string
+          enum: [AT, REPLACE, WHOLE_LINE, EXISTING_CONTROL]
+        start:
+          type: integer
+          minimum: 0
+        end:
+          type: integer
+          minimum: 0
+        anchorTextHash:
+          type: string
+          nullable: true
+        parserVersion:
+          type: string
+        controlNodeId:
+          type: string
+          nullable: true
+
+    FillSpotChangeRequest:
+      type: object
+      required: [kind]
+      description: >
+        ADD takes label, type (TEXT when left out) and anchor; RENAME takes
+        fieldId and label; REMOVE takes fieldId (on a PDF form only the spot
+        goes; the file is never changed). A name is 1 to 60 characters on
+        one line. On a PDF form: ADD_BOX takes pageNumber, box, label and
+        type, and may take style (left out, the look of the words beside the
+        box, or an ordinary 11 pt sans-serif on a scan), multiline (false)
+        and overflow (SHRINK_TO_FIT); MOVE_BOX takes fieldId and box, the
+        new place and size on the same page; RESTYLE_BOX takes fieldId and
+        at least one of sizePt, overflow and multiline, leaving the others as
+        they are. Only a box Brownie draws moves or restyles: one of the
+        PDF's own form fields is refused. One spot can be renamed, moved and
+        restyled in one request, each once.
+      properties:
+        kind:
+          type: string
+          enum: [ADD, RENAME, REMOVE, ADD_BOX, MOVE_BOX, RESTYLE_BOX]
+        fieldId:
+          type: string
+          nullable: true
+        label:
+          type: string
+          nullable: true
+        type:
+          type: string
+          enum: [TEXT, DATE]
+          nullable: true
+        anchor:
+          allOf:
+            - $ref: "#/components/schemas/DocxAnchor"
+          nullable: true
+        pageNumber:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: ADD_BOX only.
+        box:
+          allOf:
+            - $ref: "#/components/schemas/PdfBox"
+          nullable: true
+          description: ADD_BOX and MOVE_BOX.
+        style:
+          allOf:
+            - $ref: "#/components/schemas/PdfTextStyle"
+          nullable: true
+          description: ADD_BOX only; left out, the look of the words beside the box.
+        multiline:
+          type: boolean
+          nullable: true
+          description: ADD_BOX (false when left out) and RESTYLE_BOX (unchanged when left out).
+        overflow:
+          type: string
+          enum: [SHRINK_TO_FIT, BLOCK]
+          nullable: true
+          description: >
+            ADD_BOX (SHRINK_TO_FIT when left out) and RESTYLE_BOX (unchanged
+            when left out). When the text does not fit: make it smaller, down
+            to 6 pt, or stop export until it is shortened.
+        sizePt:
+          type: number
+          minimum: 4
+          maximum: 72
+          nullable: true
+          description: RESTYLE_BOX only; the text size the box starts at, in points.
+
+    FillSpotsRequest:
+      type: object
+      required: [expectedRevisionId, templateVersionId, changes]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        templateVersionId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The template version the page showed; it must be the document's own.
+        changes:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/FillSpotChangeRequest"
+
+    FillSpotsResponse:
+      type: object
+      required: [document, revision, templateVersion, previousRevisionId, fieldIds, otherDocumentsOnPreviousVersion]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentResponse"
+        revision:
+          $ref: "#/components/schemas/DocumentRevisionResponse"
+        templateVersion:
+          $ref: "#/components/schemas/TemplateVersionResponse"
+        previousRevisionId:
+          type: integer
+          format: int64
+          description: The revision the change replaced; restoring it is Undo.
+        fieldIds:
+          type: array
+          description: The field IDs the changes named, in request order; an added spot's new ID included.
+          items:
+            type: string
+        otherDocumentsOnPreviousVersion:
+          type: integer
+          minimum: 0
+          description: How many other documents are still on the version the document left.
+
+    TemplateVersionMoveRequest:
+      type: object
+      required: [expectedRevisionId, templateVersionId]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        templateVersionId:
+          type: integer
+          format: int64
+          minimum: 1
+
+    TemplateVersionMoveResponse:
+      type: object
+      required: [document, revision, previousTemplateVersionId, droppedFieldIds]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentResponse"
+        revision:
+          $ref: "#/components/schemas/DocumentRevisionResponse"
+        previousTemplateVersionId:
+          type: integer
+          format: int64
+        droppedFieldIds:
+          type: array
+          description: Fields whose value was dropped because the version has no fill spot for them, sorted by field ID.
+          items:
+            type: string
 
     CommandReceiptResponse:
       type: object
@@ -3568,7 +4119,12 @@ components:
             CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the
             same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT,
             EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE,
-            HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID.
+            HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID; with
+            UNSUPPORTED_MEDIA_TYPE, why the file was refused: NOT_A_DOCUMENT,
+            SPREADSHEET, PRESENTATION, PASSWORD_PROTECTED, RIGHTS_PROTECTED,
+            REMOTE_CONTENT (it asks whoever opens it to fetch something from a
+            network) or DAMAGED; with FILLABLE_FORM_FAILED, CANNOT_OPEN, DAMAGED
+            or TIMED_OUT.
         access:
           type: string
           enum: [DRIVE_FILES, CALENDAR_EVENTS, DRIVE_SAVING, CALENDAR_EVENT_CREATION]
@@ -3641,8 +4197,13 @@ components:
           nullable: true
         detectedMediaType:
           type: string
-          enum: [DOCX, PDF, PLAIN_TEXT]
+          enum: [DOCX, DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES, PDF, PLAIN_TEXT]
           nullable: true
+          description: >
+            What the bytes are, never what the name or the browser said. DOC covers a Word 97-2003
+            template (.dot) too, and ODT an OpenDocument template (.ott). Only DOCX is read for its
+            structure; DOTX, DOCM, DOTM, DOC, RTF, ODT and PAGES are filled through a Word copy made
+            from them.
         displayFilename:
           type: string
           nullable: true
@@ -3663,10 +4224,40 @@ components:
         failureReason:
           type: string
           nullable: true
+        unsupportedFeatures:
+          type: array
+          description: >
+            For a Word file, what stopped the read (only when the status is
+            UNSUPPORTED); empty for other formats.
+          items:
+            $ref: "#/components/schemas/DocxFeatureFindingResponse"
+        keptAsIsFeatures:
+          type: array
+          description: >
+            For a Word file, what it keeps as it is beside a complete read:
+            floating shapes, tables inside tables, fields Word works out by
+            itself, embedded documents of allowed programs. Empty for other
+            formats. Absent from servers that predate it.
+          items:
+            $ref: "#/components/schemas/DocxFeatureFindingResponse"
       description: >
-        The full shape carries format-specific fields (feature findings for
-        DOCX, page geometry for PDF) not modeled here yet -- the frontend
-        workspace only needs the terminal status today.
+        The full shape carries further format-specific fields (page geometry
+        for PDF) not modeled here yet.
+
+    DocxFeatureFindingResponse:
+      type: object
+      required: [feature, location, detail]
+      properties:
+        feature:
+          type: string
+          enum: [TRACKED_CHANGES, UNRESOLVED_COMMENT, FLOATING_SHAPE, NESTED_TABLE, LINKED_EXTERNAL_IMAGE,
+                 EMBEDDED_OBJECT, UNSUPPORTED_FIELD, PACKAGE_SIGNATURE, DYNAMIC_FIELD, UNSAFE_EMBEDDED_OBJECT,
+                 TRACKED_FORMATTING_CHANGE]
+        location:
+          type: string
+          description: Where in the file, such as "word/document.xml, p4".
+        detail:
+          type: string
 
     TemplateResponse:
       type: object
@@ -3712,7 +4303,7 @@ components:
           enum: [REQUIRED, OPTIONAL]
         bindingKind:
           type: string
-          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE]
+          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE, ACROFORM_FIELD, PAGE_BOX]
         tag:
           type: string
           nullable: true
@@ -3722,6 +4313,47 @@ components:
         nodeId:
           type: string
           nullable: true
+        acroFormField:
+          type: string
+          nullable: true
+          description: ACROFORM_FIELD only; the full dotted name of the PDF form's own text field. Absent from servers that predate PDF templates.
+        pageBox:
+          allOf:
+            - $ref: "#/components/schemas/PageBoxBinding"
+          nullable: true
+          description: PAGE_BOX only; the box on a PDF page the value is written in. Absent from servers that predate PDF templates.
+        label:
+          type: string
+          nullable: true
+          maxLength: 60
+          description: >
+            The name a person sees for this field, taken from the document or
+            typed by the person; null means it is worked out from fieldId
+            ("meeting.title" reads "Meeting title"). Absent from servers that
+            predate stored labels.
+        origin:
+          type: string
+          nullable: true
+          enum: [FORM, FOUND_BY_BROWNIE, ADDED_BY_PERSON, null]
+          description: >
+            Who placed the spot; null means it came with the form (FORM).
+            Absent from servers that predate it.
+        docxControl:
+          type: string
+          nullable: true
+          enum: [ORIGINAL, TAGGED_BY_BROWNIE, INSERTED_BY_BROWNIE, null]
+          description: >
+            For a Word document, whether the spot's named control was in the
+            file already (ORIGINAL, also what null means) or was named or added
+            by Brownie. Absent from servers that predate it.
+        blankText:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: >
+            The form's own blank ("________", "[Company]"), printed in the spot
+            while it has no value; null when there is none. Absent from servers
+            that predate it.
 
     TemplateVersionResponse:
       type: object
@@ -3739,9 +4371,23 @@ components:
         sourceArtifactId:
           type: integer
           format: int64
+        kind:
+          type: string
+          enum: [DOCX, PDF]
+          description: >
+            What the template is filled into: a Word file (DOCX) or a PDF
+            (PDF). Absent from servers that predate PDF templates, which
+            only have DOCX ones.
         extractionVersionId:
           type: integer
           format: int64
+          nullable: true
+          description: The Word structure a DOCX version is pinned to; null for a PDF version.
+        pdfFormExtractionId:
+          type: integer
+          format: int64
+          nullable: true
+          description: The PDF form reading a PDF version is pinned to; null (or absent, from older servers) for a DOCX version.
         status:
           type: string
           enum: [DRAFT, ACTIVATED]
@@ -3756,6 +4402,29 @@ components:
           type: string
           format: date-time
           nullable: true
+        acceptedFieldIds:
+          type: array
+          description: >
+            The template's fields a person has kept (PUT .../fields/{fieldId}/review).
+            A field found by Brownie and not in this list is still marked as found.
+          items:
+            type: string
+        derivedFromVersionId:
+          type: integer
+          format: int64
+          nullable: true
+          description: The version this one was made from by correcting a document's fill spots; null for one made from a file.
+        preparationNotices:
+          type: array
+          nullable: true
+          description: >
+            What the person was told when the template's file was made ready
+            to fill: the upload step's notices (codes as in
+            FillableFormResponse.notices), kept with the template version
+            and carried on to every version made from it. Null for a version
+            made before notices were kept, and absent from older servers.
+          items:
+            $ref: "#/components/schemas/PreparationNoticeResponse"
 
     TemplateLayoutResponse:
       type: object
@@ -3767,6 +4436,15 @@ components:
         versionId:
           type: integer
           format: int64
+        kind:
+          type: string
+          enum: [DOCX, PDF]
+          description: Which page this is; absent from servers that predate PDF templates, which only have DOCX ones.
+        pdf:
+          allOf:
+            - $ref: "#/components/schemas/PdfLayoutResponse"
+          nullable: true
+          description: PDF only; null for a DOCX version, whose page is parts.
         parserVersion:
           type: string
           description: The extractor that read the file for this response.
@@ -3828,6 +4506,20 @@ components:
           description: TABLE only; null for a PARAGRAPH.
           items:
             $ref: "#/components/schemas/TemplateLayoutRowResponse"
+        nodeId:
+          type: string
+          nullable: true
+          description: PARAGRAPH only; the paragraph's node id in the graph of the layout's parserVersion.
+        anchorable:
+          type: boolean
+          description: >
+            PARAGRAPH only; true when a fill spot can be added in it: in the
+            body the filler writes into, outside the repeating row or
+            paragraph. Always false for a TABLE.
+        anchorTextHash:
+          type: string
+          nullable: true
+          description: PARAGRAPH only; the hash of its anchor text that a place chosen in it sends back. Null when it is not anchorable.
 
     TemplateLayoutRowResponse:
       type: object
@@ -3877,6 +4569,32 @@ components:
             TEXT and FILL_SPOT; null when the template sets none of these
             properties. For a FILL_SPOT it is the style of the control's
             first run, which is the formatting a filled value takes.
+        anchorStart:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            TEXT only, in an anchorable paragraph; where the text starts in the
+            paragraph's anchor text, in code points. Null for text shown from a
+            control no field names, which carries controlNodeId instead. Two
+            pieces of text are joined only when they stay contiguous.
+        controlNodeId:
+          type: string
+          nullable: true
+          description: TEXT only; the control this text is shown from, which an EXISTING_CONTROL anchor names.
+        nodeId:
+          type: string
+          nullable: true
+          description: FILL_SPOT only; the node id of the spot's control.
+        origin:
+          type: string
+          enum: [FORM, FOUND_BY_BROWNIE, ADDED_BY_PERSON]
+          nullable: true
+          description: FILL_SPOT only; who placed the spot.
+        label:
+          type: string
+          nullable: true
+          description: FILL_SPOT only; the name a person sees for the spot's field.
 
     TemplateLayoutStyleResponse:
       type: object
@@ -3915,6 +4633,30 @@ components:
           type: integer
           format: int64
           minimum: 1
+        preparationNotices:
+          type: array
+          maxItems: 40
+          description: >
+            Optional: the notices the upload step gave for this file
+            (FillableFormResponse.notices), kept with the template so they
+            can be shown again. Left out, none are kept.
+          items:
+            $ref: "#/components/schemas/PreparationNoticeRequest"
+
+    PreparationNoticeRequest:
+      type: object
+      required: [code, count]
+      properties:
+        code:
+          type: string
+          description: One of the codes FillableFormResponse.notices lists.
+        count:
+          type: integer
+          minimum: 0
+        detail:
+          type: string
+          nullable: true
+          maxLength: 200
 
     TemplateDraftResponse:
       type: object
@@ -3928,11 +4670,15 @@ components:
     BindingRequest:
       type: object
       required: [kind]
-      description: Only tag (for CONTENT_CONTROL_TAG) or part/nodeId (for STRUCTURAL_NODE) is required, chosen by kind; the other is ignored.
+      description: >
+        Only the part kind chooses is required and the rest is ignored: tag
+        (CONTENT_CONTROL_TAG), part/nodeId (STRUCTURAL_NODE), acroFormField
+        (ACROFORM_FIELD) or pageBox (PAGE_BOX). A Word binding on a PDF
+        template, or the reverse, is refused as WRONG_FORMAT.
       properties:
         kind:
           type: string
-          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE]
+          enum: [CONTENT_CONTROL_TAG, STRUCTURAL_NODE, ACROFORM_FIELD, PAGE_BOX]
         tag:
           type: string
           nullable: true
@@ -3940,6 +4686,201 @@ components:
           type: string
           nullable: true
         nodeId:
+          type: string
+          nullable: true
+        acroFormField:
+          type: string
+          nullable: true
+          description: The full dotted name of one of the PDF form's own text fields.
+        pageBox:
+          allOf:
+            - $ref: "#/components/schemas/PageBoxBinding"
+          nullable: true
+
+    PageBoxBinding:
+      type: object
+      required: [page, x, y, width, height]
+      description: >
+        A box on a PDF page, in points, on the page as stored (before it is
+        turned), with the origin at the top-left of the page's visible area
+        and Y down. A box must be wholly on its page, at least 8 by 6
+        points, and cover no more than a fifth of another place.
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
+        style:
+          $ref: "#/components/schemas/PdfTextStyle"
+        multiline:
+          type: boolean
+          default: false
+        overflow:
+          type: string
+          enum: [SHRINK_TO_FIT, BLOCK]
+          default: SHRINK_TO_FIT
+          description: >
+            When the text does not fit: make it smaller, down to 6 pt
+            (SHRINK_TO_FIT), or stop export until it is shortened (BLOCK).
+
+    PdfTextStyle:
+      type: object
+      description: How text in a box looks. Left out, it is an ordinary 11 pt sans-serif.
+      properties:
+        font:
+          type: string
+          enum: [SANS, SERIF, MONO]
+          default: SANS
+        bold:
+          type: boolean
+          default: false
+        sizePt:
+          type: number
+          minimum: 4
+          maximum: 72
+          default: 11
+
+    PdfLayoutResponse:
+      type: object
+      required: [sourceArtifactId, pages, spots]
+      properties:
+        sourceArtifactId:
+          type: integer
+          format: int64
+          description: The PDF to draw the pages from.
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdfLayoutPage"
+        spots:
+          type: array
+          description: Every place a value goes, one per place a form field is shown, in the version's field order.
+          items:
+            $ref: "#/components/schemas/PdfLayoutSpot"
+
+    PdfLayoutPage:
+      type: object
+      required: [pageNumber, width, height, rotation, hasText, lines]
+      properties:
+        pageNumber:
+          type: integer
+          minimum: 1
+        width:
+          type: number
+          description: The visible area's width in points, before the page is turned.
+        height:
+          type: number
+        rotation:
+          type: integer
+          enum: [0, 90, 180, 270]
+        hasText:
+          type: boolean
+          description: False for a scanned page, whose words cannot be read.
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdfLayoutLine"
+
+    PdfLayoutLine:
+      type: object
+      required: [index, text, x, y, w, h]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+        x:
+          type: number
+        y:
+          type: number
+        w:
+          type: number
+        h:
+          type: number
+
+    PdfLayoutSpot:
+      type: object
+      required: [fieldId, label, origin, pageNumber, box, multiline, overflow, bindingKind]
+      properties:
+        fieldId:
+          type: string
+        label:
+          type: string
+        origin:
+          type: string
+          enum: [FORM, FOUND_BY_BROWNIE, ADDED_BY_PERSON]
+        pageNumber:
+          type: integer
+          minimum: 1
+        box:
+          $ref: "#/components/schemas/PdfBox"
+        style:
+          allOf:
+            - $ref: "#/components/schemas/PdfTextStyle"
+          nullable: true
+          description: Null for one of the form's own fields, whose look the form sets.
+        multiline:
+          type: boolean
+        overflow:
+          type: string
+          enum: [SHRINK_TO_FIT, BLOCK]
+        bindingKind:
+          type: string
+          enum: [ACROFORM_FIELD, PAGE_BOX]
+
+    PdfBox:
+      type: object
+      required: [x, y, width, height]
+      description: Points, on the page as stored, origin at the top-left of the page's visible area, Y down.
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
+
+    BoxSuggestionRequest:
+      type: object
+      required: [pageNumber]
+      description: Exactly one of point and lineIndex.
+      properties:
+        pageNumber:
+          type: integer
+          minimum: 1
+        point:
+          type: object
+          required: [x, y]
+          nullable: true
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+        lineIndex:
+          type: integer
+          minimum: 0
+          nullable: true
+
+    BoxSuggestionResponse:
+      type: object
+      required: [box, style, labelGuess]
+      properties:
+        box:
+          $ref: "#/components/schemas/PdfBox"
+        style:
+          $ref: "#/components/schemas/PdfTextStyle"
+        labelGuess:
           type: string
           nullable: true
 
@@ -3961,6 +4902,35 @@ components:
           enum: [REQUIRED, OPTIONAL]
         binding:
           $ref: "#/components/schemas/BindingRequest"
+        label:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 60
+          description: >
+            The name a person sees for this field. Spaces are tidied; it must
+            then be one line of 1 to 60 characters with at least one letter or
+            number, or the request is refused as malformed. Leave it out to
+            have the name worked out from fieldId.
+        origin:
+          type: string
+          nullable: true
+          enum: [FORM, FOUND_BY_BROWNIE, ADDED_BY_PERSON, null]
+          description: Who placed the spot; leave it out for one that came with the form.
+        docxControl:
+          type: string
+          nullable: true
+          enum: [ORIGINAL, TAGGED_BY_BROWNIE, INSERTED_BY_BROWNIE, null]
+          description: For a Word document, where the spot's named control came from; leave it out when it was in the file.
+        blankText:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 200
+          description: >
+            The form's own blank, printed in the spot while it has no value. One
+            line with no tabs or other control characters, or the request is
+            refused as malformed.
 
     ReplaceBindingsRequest:
       type: object
@@ -3981,6 +4951,184 @@ components:
         expectedVersionNumber:
           type: integer
           minimum: 1
+        allowNoPlaces:
+          type: boolean
+          description: >
+            true lets a draft with no fields activate, for a form opened with
+            no places found: the document opens and the person adds its spots.
+            Left out, a draft with no fields is refused.
+
+    FieldReviewRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [KEPT]
+
+    FieldReviewsRequest:
+      type: object
+      required: [fieldIds]
+      properties:
+        fieldIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 64
+        decision:
+          type: string
+          enum: [KEPT]
+          description: May be left out; KEPT is the only review there is.
+
+    FillableFormResponse:
+      type: object
+      required: [kind, sourceArtifactId, templateSourceArtifactId, sourceFormat, converted, extraction, spots, notices, spotNaming]
+      properties:
+        kind:
+          type: string
+          enum: [DOCX, PDF]
+        sourceArtifactId:
+          type: integer
+          format: int64
+          description: The upload, which is never changed.
+        templateSourceArtifactId:
+          type: integer
+          format: int64
+          description: The artifact to create the template draft from (for Word, the clean working copy; for a PDF, the upload itself).
+        sourceFormat:
+          type: string
+          description: The upload's detected media type (DOCX, DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES or PDF).
+        converted:
+          type: boolean
+        extraction:
+          $ref: "#/components/schemas/FillableFormExtraction"
+        spots:
+          type: array
+          items:
+            $ref: "#/components/schemas/FillableFormSpot"
+        notices:
+          type: array
+          description: >
+            What the person should be told about how the file was made ready,
+            in order. Codes: TRACKED_CHANGES_AND_COMMENTS, MACROS_REMOVED,
+            SIGNATURE_REMOVED, LINKED_CONTENT_REMOVED, FIELDS_FROZEN,
+            EMBEDDED_FILES_TO_PICTURES, EDITING_RESTRICTION_REMOVED, CONVERTED
+            (detail is the format converted from), KEPT_AS_IS (detail is the
+            feature), SPOTS_FOUND, NO_SPOTS_FOUND, SIGNATURE_LINES_LEFT,
+            CHECKBOXES_LEFT, SOME_NAMED_BY_RULES, SPOTS_SKIPPED,
+            BLANKS_OUTSIDE_BODY, TABLE_ROWS_GROW, PLACES_LEFT_OUT (places the
+            rules found that the naming step decided are not for filling in,
+            such as an example answer or a box kept for the office; a place to
+            sign is counted by SIGNATURE_LINES_LEFT instead), and for a PDF
+            SCANNED_PDF (no text and no fields: boxes are drawn by hand) and
+            PDF_FIELDS_LEFT (the form's check boxes, choices and signature
+            fields, left for the person).
+          items:
+            $ref: "#/components/schemas/PreparationNoticeResponse"
+        spotNaming:
+          type: string
+          enum: [MODEL, RULES]
+          description: MODEL when the model named at least one spot.
+        rulesOnlyReason:
+          type: string
+          nullable: true
+          enum: [DISABLED, NO_CANDIDATES, ALLOWANCE_USED_UP, MODEL_UNAVAILABLE, null]
+          description: Why the rules named every spot; null when the model named some.
+
+    FillableFormExtraction:
+      type: object
+      required: [id, status, parserVersion, keptAsIs]
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [COMPLETE, UNSUPPORTED, FAILED]
+        parserVersion:
+          type: string
+        keptAsIs:
+          type: array
+          items:
+            type: object
+            required: [feature, count]
+            properties:
+              feature:
+                type: string
+              count:
+                type: integer
+                minimum: 1
+
+    FillableFormSpot:
+      type: object
+      description: >
+        One spot, in the shape of a template field request, so it can be sent
+        back as a field as it is; namedBy, requiredHint, suggestedType and
+        foundAs describe how it was found and named. A Word spot is bound to
+        its control's tag (CONTENT_CONTROL_TAG); a PDF spot to one of the
+        form's own fields (ACROFORM_FIELD) or to a box on a page (PAGE_BOX).
+      required: [fieldId, type, cardinality, requiredness, binding, origin, namedBy, requiredHint]
+      properties:
+        fieldId:
+          type: string
+        label:
+          type: string
+          nullable: true
+          description: Null for a control the form had already named with a usable id; its name is worked out from fieldId.
+        type:
+          type: string
+          enum: [TEXT, DATE]
+        cardinality:
+          type: string
+          enum: [SCALAR, REPEATED]
+        requiredness:
+          type: string
+          enum: [REQUIRED, OPTIONAL]
+          description: Always OPTIONAL; a guess never blocks an export (see requiredHint).
+        binding:
+          $ref: "#/components/schemas/BindingRequest"
+        origin:
+          type: string
+          enum: [FORM, FOUND_BY_BROWNIE, ADDED_BY_PERSON]
+        docxControl:
+          type: string
+          nullable: true
+          enum: [ORIGINAL, TAGGED_BY_BROWNIE, INSERTED_BY_BROWNIE, null]
+          description: Null for a PDF.
+        blankText:
+          type: string
+          nullable: true
+          description: >
+            The form's own blank the spot replaced (underscores, a bracketed
+            prompt), printed while the spot is empty. Null for a PDF, whose
+            page is never changed.
+        namedBy:
+          type: string
+          enum: [MODEL, RULES]
+        requiredHint:
+          type: boolean
+        suggestedType:
+          type: string
+          nullable: true
+          description: The type as the namer put it (TEXT, DATE, NUMBER or LONG_TEXT); null for a PDF.
+        foundAs:
+          type: string
+          nullable: true
+          description: What the rules saw there (UNDERSCORES, BRACKET, EMPTY_CELL, EXISTING_TAGGED_CONTROL, ...); null for a PDF.
+
+    PreparationNoticeResponse:
+      type: object
+      required: [code, count]
+      properties:
+        code:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+        detail:
+          type: string
+          nullable: true
 
     CandidateFieldBindingResponse:
       type: object
@@ -4248,6 +5396,62 @@ components:
             Which changes in a person's Google account this deployment makes, each only when its person
             approves that exact change. Empty unless Google is set up and such changes are switched on. A server
             from before such changes existed leaves it out.
+        formFileTypes:
+          type: array
+          description: >
+            What a file chooser for a form to fill may offer, and how each is filled: NATIVE as the Word
+            document it is, CONVERTED through a Word copy converted from it, PDF as a PDF. An extension
+            appears once for each media type a browser may report for it. The server still judges every
+            file by its bytes. A server from before these formats leaves it out.
+          items:
+            type: object
+            required: [extension, mediaType, route]
+            properties:
+              extension:
+                type: string
+                description: Without the dot, lower case.
+              mediaType:
+                type: string
+              route:
+                type: string
+                enum: [NATIVE, CONVERTED, PDF]
+        fillSpotNaming:
+          type: string
+          enum: [MODEL, RULES]
+          description: >
+            Who names the places Brownie finds in an uploaded form: MODEL when the form's text is sent to the
+            model for that, RULES when Brownie's own rules name them on the server. A server from before
+            places were found on upload leaves it out.
+
+    PdfPageAnchor:
+      type: object
+      required: [kind, pageNumber]
+      description: >
+        A place selected on a PDF form's page: page pageNumber, and either a
+        point (points, on the page as stored, before it is turned, origin at
+        the top-left of its visible area, Y down: the convention boxes use)
+        or one of the page's lines by its index in the page layout. Exactly
+        one of point and lineIndex.
+      properties:
+        kind:
+          type: string
+          enum: [PDF]
+        pageNumber:
+          type: integer
+          minimum: 1
+        point:
+          type: object
+          required: [x, y]
+          nullable: true
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+        lineIndex:
+          type: integer
+          minimum: 0
+          nullable: true
 
     AssistTextRequest:
       type: object
@@ -4256,6 +5460,16 @@ components:
         text:
           type: string
           maxLength: 1000
+        pageAnchor:
+          description: >
+            The place selected on the page, if any: where "here" and "this
+            line" are, or the choice picked from an interpretation's choices.
+            A place in a Word form's text (DocxAnchor, with no kind) or on a
+            PDF form's page (PdfPageAnchor, kind PDF).
+          oneOf:
+            - $ref: "#/components/schemas/DocxAnchor"
+            - $ref: "#/components/schemas/PdfPageAnchor"
+            - type: "null"
 
     AssistExecuteRequest:
       type: object
@@ -4265,6 +5479,46 @@ components:
           type: string
           maxLength: 1000
         expectedRevisionId:
+          type: integer
+          format: int64
+        pageAnchor:
+          oneOf:
+            - $ref: "#/components/schemas/DocxAnchor"
+            - $ref: "#/components/schemas/PdfPageAnchor"
+            - type: "null"
+
+    AssistPlaceChoiceResponse:
+      type: object
+      required: [lineText, anchor]
+      properties:
+        lineText:
+          type: string
+        anchor:
+          description: >
+            The place, in the shape the page sends it back in as pageAnchor:
+            a place in a Word form's text, or a line on a PDF form's page
+            (kind PDF, pageNumber and lineIndex).
+          oneOf:
+            - $ref: "#/components/schemas/DocxAnchor"
+            - $ref: "#/components/schemas/PdfPageAnchor"
+
+    AssistSpotChangeResponse:
+      type: object
+      required: [fieldId, label, previousRevisionId, templateVersionId]
+      properties:
+        fieldId:
+          type: string
+        label:
+          type: string
+        lineText:
+          type: string
+          nullable: true
+          description: The line an added spot went on; null for a rename, a removal, or a box put at a point on a PDF page.
+        previousRevisionId:
+          type: integer
+          format: int64
+          description: The revision the change replaced; restoring it is Undo.
+        templateVersionId:
           type: integer
           format: int64
 
@@ -4290,7 +5544,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, NONE]
+          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, ADD_FILL_SPOT, RENAME_FILL_SPOT, REMOVE_FILL_SPOT, NONE]
         summary:
           type: string
         scope:
@@ -4305,6 +5559,14 @@ components:
           type: array
           items:
             type: string
+        choices:
+          type: array
+          description: >
+            The lines a new fill spot could go on when the quoted words are on
+            more than one; send the chosen anchor back as pageAnchor with the
+            same text. Empty otherwise.
+          items:
+            $ref: "#/components/schemas/AssistPlaceChoiceResponse"
 
     AssistExecutionResponse:
       type: object
@@ -4312,7 +5574,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, NONE]
+          enum: [DRAFT, CHANGE_FIELD, REWRITE_FIELD, EXPLAIN_FINDING, ADD_FILL_SPOT, RENAME_FILL_SPOT, REMOVE_FILL_SPOT, NONE]
         summary:
           type: string
         proposal:
@@ -4326,6 +5588,11 @@ components:
           type: array
           items:
             type: string
+        spotChange:
+          allOf:
+            - $ref: "#/components/schemas/AssistSpotChangeResponse"
+          nullable: true
+          description: Set when a fill spot was added, renamed or taken away, which is applied at once.
 
     EvidenceExcerptResponse:
       type: object
@@ -4752,8 +6019,11 @@ components:
         docxArtifactId:
           type: integer
           format: int64
+          nullable: true
+          description: Null for a PDF template, which is filled as a PDF and has no Word file.
         docxSha256:
           type: string
+          nullable: true
         pdfArtifactId:
           type: integer
           format: int64
@@ -4808,8 +6078,11 @@ components:
         docxArtifactId:
           type: integer
           format: int64
+          nullable: true
+          description: Null for a PDF template, which is filled as a PDF and has no Word file.
         docxSha256:
           type: string
+          nullable: true
         pdfArtifactId:
           type: integer
           format: int64
@@ -4891,8 +6164,11 @@ components:
         docxArtifactId:
           type: integer
           format: int64
+          nullable: true
+          description: Null for a PDF template's export, which is a PDF and nothing else.
         docxSha256:
           type: string
+          nullable: true
         pdfArtifactId:
           type: integer
           format: int64
@@ -5138,3 +6414,8 @@ components:
         supportContact:
           type: [string, "null"]
           description: Whoever runs this deployment published this; absent until they have.
+        formTextSentToModel:
+          type: boolean
+          description: >
+            Whether an uploaded form's text is sent to the model, without a further request, so Brownie can
+            find the places to fill in and name them. A server from before that leaves it out, and sends nothing.
