@@ -317,7 +317,7 @@ const connectHint = computed(() =>
       </template>
 
       <p v-else-if="receipt === null" class="field-hint">
-        Brownie saves the exported file. Validate, approve and export this version of the document to save it to Google Drive.
+        Brownie saves the exported file. Once this version is approved and exported, it can be saved to Google Drive.
       </p>
 
       <p v-else-if="kinds.length === 0" class="field-hint">The latest export has no file that can be saved to Google Drive here.</p>

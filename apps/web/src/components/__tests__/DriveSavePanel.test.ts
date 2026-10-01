@@ -411,7 +411,7 @@ describe('what the review of this panel found', () => {
     const wrapper = await mountPanel({ receipt: null })
 
     expect(wrapper.find('form').exists()).toBe(false)
-    expect(text(wrapper)).toContain('Validate, approve and export this version of the document to save it to Google Drive.')
+    expect(text(wrapper)).toContain('Once this version is approved and exported, it can be saved to Google Drive.')
     expect(buttonNamed(wrapper, `Ask Google what happened to ${FILE}`).exists()).toBe(true)
   })
 
