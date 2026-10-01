@@ -25,9 +25,12 @@ import java.util.Set;
  * The library's text reader, made to charge a {@link PdfReadingBudget}
  * for each thing it is about to open, at the point where it opens it: a
  * page's content when the page begins, a form each time one is drawn, a
- * font when an operator sets it. Everything that reads the text of a PDF
- * nobody here wrote goes through this, so that an upload and a rendered
- * file read back from the renderer are held to the same limits.
+ * font when an operator sets it. It also counts a page's operators and
+ * the values waiting for each, and refuses to save the drawing state more
+ * deeply than the budget allows.
+ * Everything that reads the text of a PDF nobody here wrote goes through
+ * this, so that an upload and a rendered file read back from the renderer
+ * are held to the same limits.
  */
 public class BoundedPdfTextStripper extends PDFTextStripper {
 
@@ -54,6 +57,7 @@ public class BoundedPdfTextStripper extends PDFTextStripper {
             while (contents.hasNext()) {
                 budget.charge(contents.next().getCOSObject());
             }
+            budget.countValuesBeforeOperators(page, page.getCOSObject());
         }
         super.processPage(page);
     }
@@ -61,6 +65,7 @@ public class BoundedPdfTextStripper extends PDFTextStripper {
     @Override
     public void showForm(PDFormXObject form) throws IOException {
         budget.charge(form.getCOSObject());
+        budget.countValuesBeforeOperators(form, form.getCOSObject());
         Set<COSName> outer = fontsBuiltForThisStream;
         fontsBuiltForThisStream = new HashSet<>();
         try {
@@ -73,6 +78,7 @@ public class BoundedPdfTextStripper extends PDFTextStripper {
     @Override
     public void showTransparencyGroup(PDTransparencyGroup form) throws IOException {
         budget.charge(form.getCOSObject());
+        budget.countValuesBeforeOperators(form, form.getCOSObject());
         Set<COSName> outer = fontsBuiltForThisStream;
         fontsBuiltForThisStream = new HashSet<>();
         try {
@@ -83,7 +89,14 @@ public class BoundedPdfTextStripper extends PDFTextStripper {
     }
 
     @Override
+    public void saveGraphicsState() {
+        budget.requireRoomToSaveState(getGraphicsStackSize());
+        super.saveGraphicsState();
+    }
+
+    @Override
     protected void processOperator(Operator operator, List<COSBase> operands) throws IOException {
+        budget.countOperator();
         if (!operands.isEmpty() && operands.get(0) instanceof COSName name) {
             if (OperatorName.SET_FONT_AND_SIZE.equals(operator.getName())) {
                 chargeFontNamed(name);
