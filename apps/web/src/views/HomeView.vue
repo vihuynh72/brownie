@@ -6,7 +6,8 @@ import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { ApiRequestError, listDocuments, trashDocument, type DocumentSummaryResponse } from '@/api/client'
 import { documentHandoffState } from '@/router/handoff'
-import { FORM_FILE_ACCEPT, learnFormAndStartDocument, type LearnStep } from '@/upload/learnAndStart'
+import { loadCapabilities } from '@/capabilities'
+import { FORM_FILE_ACCEPT, learnFormAndStartDocument, learnStepWords } from '@/upload/learnAndStart'
 import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
 
 const session = useSessionStore()
@@ -56,21 +57,29 @@ onMounted(loadDocuments)
 // says it is unavailable with aria-disabled rather than the disabled attribute, which would drop
 // the keyboard focus it holds; a press in that time does nothing.
 
-const STEP_WORDS: Record<LearnStep, string> = {
-  uploading: 'Uploading…',
-  checking: 'Checking the file…',
-  learning: 'Learning where the values go…',
-  preparing: 'Getting the template ready…',
-  opening: 'Opening your document…',
-}
-
 const fileInput = ref<HTMLInputElement | null>(null)
 // Kept outside the page (see formUploadState), so leaving Home mid-way loses neither the step nor how it ended.
 const uploadStep = formUploadStep
 const uploadError = formUploadError
 const uploadFinished = formUploadFinished
 const uploading = computed(() => uploadStep.value !== null)
-const uploadStatus = computed(() => (uploadStep.value ? STEP_WORDS[uploadStep.value] : ''))
+const uploadStatus = computed(() => (uploadStep.value ? learnStepWords(uploadStep.value.step, uploadStep.value.detail) : ''))
+
+// Where this deployment has the AI service name the places in an uploaded form, the form's text goes to it, and the
+// person is told so before they choose a file. Asked only once signed in: the question is about their uploads.
+const namingByModel = ref(false)
+async function loadNaming(): Promise<void> {
+  try {
+    namingByModel.value = (await loadCapabilities()).fillSpotNaming === 'MODEL'
+  } catch {
+    // Unknown, and nothing is said; an upload that happens anyway is worded by the server's own answers.
+    namingByModel.value = false
+  }
+}
+onMounted(() => {
+  if (session.status === 'authenticated') void loadNaming()
+})
+const uploadDescribedBy = computed(() => (namingByModel.value ? 'home-upload-kinds home-upload-disclosure' : 'home-upload-kinds'))
 // Someone who moves on while a form is being learned is not pulled back to it when it is ready: the
 // document is in their recent documents, and the template under My Templates, either way.
 let leftHome = false
@@ -95,9 +104,9 @@ async function onFormChosen(event: Event): Promise<void> {
 
   uploadError.value = null
   uploadFinished.value = null
-  uploadStep.value = 'uploading'
-  const outcome = await learnFormAndStartDocument(workspaceId, file, (step) => {
-    uploadStep.value = step
+  uploadStep.value = { step: 'uploading', detail: { mediaType: null, waiting: false } }
+  const outcome = await learnFormAndStartDocument(workspaceId, file, (step, detail) => {
+    uploadStep.value = { step, detail }
   })
   if (!outcome.ok) {
     uploadStep.value = null
@@ -106,17 +115,23 @@ async function onFormChosen(event: Event): Promise<void> {
   }
   if (leftHome) {
     // Said on Home when the person comes back, with a way to the document, instead of lost.
-    uploadFinished.value = { documentId: outcome.documentId, name: outcome.name, note: outcome.note }
+    uploadFinished.value = { documentId: outcome.documentId, name: outcome.name, notes: outcome.notes }
     uploadStep.value = null
     return
   }
-  // A note about the form rides along in the pushed route's history state, so it is read on the
-  // page the person lands on, and still there if they reload it.
-  await router.push({
-    path: `/documents/${outcome.documentId}`,
-    state: outcome.note ? documentHandoffState({ attachedSources: [], sourceWarning: outcome.note }) : undefined,
-  })
+  await router.push(documentLocation(outcome.documentId, outcome.notes))
   uploadStep.value = null
+}
+
+/**
+ * The notes about the form ride along in the pushed route's history state, so they are read on
+ * the page the person lands on, and still there if they reload it.
+ */
+function documentLocation(documentId: number, notes: string[]) {
+  return {
+    path: `/documents/${documentId}`,
+    state: notes.length > 0 ? documentHandoffState({ attachedSources: [], sourceWarning: null, formNotes: notes }) : undefined,
+  }
 }
 
 // ---- Recent documents ------------------------------------------------------------------------
@@ -187,6 +202,7 @@ watch(
   (status) => {
     if (status === 'authenticated') {
       void loadDocuments()
+      void loadNaming()
     }
   },
 )
@@ -259,6 +275,7 @@ const recentDays = computed<DayGroup[]>(() => {
           type="button"
           class="button button--primary home__upload"
           :aria-disabled="uploading ? 'true' : undefined"
+          :aria-describedby="uploadDescribedBy"
           @click="chooseForm"
         >
           <AppIcon name="upload" :size="40" />
@@ -279,14 +296,23 @@ const recentDays = computed<DayGroup[]>(() => {
         <AppIcon name="upload" :size="40" />
         <span>Upload your documents</span>
       </RouterLink>
+      <p id="home-upload-kinds" class="home__upload-kinds">Word, PDF, Pages, OpenDocument or RTF</p>
+      <p v-if="session.status === 'authenticated' && namingByModel" id="home-upload-disclosure" class="home__upload-disclosure">
+        When you upload a form, its text is sent to our AI service so Brownie can find the places to fill.
+      </p>
 
-      <!-- The page's one polite live region: each step is read out as it starts. -->
-      <p class="home__upload-status" role="status">{{ uploadStatus }}</p>
+      <!--
+        The page's one polite live region: each step is read out as it starts. Its line is kept while it is
+        empty, so the list below does not move when a form is chosen; the turning ring beside it is only seen.
+      -->
+      <div class="home__upload-progress">
+        <span v-if="uploading" class="activity-indicator" aria-hidden="true"></span>
+        <p class="home__upload-status" role="status">{{ uploadStatus }}</p>
+      </div>
       <p v-if="uploadError" class="field-error home__upload-error" role="alert">{{ uploadError }}</p>
       <p v-if="uploadFinished" class="home__notice home__upload-finished">
         Brownie learned "{{ uploadFinished.name }}" and started a document from it.
-        <RouterLink :to="`/documents/${uploadFinished.documentId}`" @click="uploadFinished = null">Open it</RouterLink>.
-        <template v-if="uploadFinished.note"> {{ uploadFinished.note }}</template>
+        <RouterLink :to="documentLocation(uploadFinished.documentId, uploadFinished.notes)" @click="uploadFinished = null">Open it</RouterLink>.
       </p>
     </div>
 
@@ -307,7 +333,7 @@ const recentDays = computed<DayGroup[]>(() => {
         <RouterLink to="/trash">trash bin</RouterLink>.
       </p>
       <p v-else-if="documents.length === 0" class="field-hint home__hint">
-        There are no documents here. Upload a Word form above to start one, or choose a template under My Templates.
+        There are no documents here. Upload a form above to start one, or choose a template under My Templates.
       </p>
 
       <div v-for="day in recentDays" :key="day.key" class="home__day">
@@ -421,15 +447,38 @@ const recentDays = computed<DayGroup[]>(() => {
 }
 
 /*
- * Empty until a form is chosen, and then one line that changes. It stays in
- * the page while empty, because a live region that only appears with its
- * first message is not reliably read out.
+ * Empty until a form is chosen, and then one line that changes, in the text
+ * colour and beside a turning ring, so it reads as something happening and
+ * not as one more hint. It stays in the page while empty, because a live
+ * region that only appears with its first message is not reliably read out,
+ * and its line's height is kept, so nothing under it moves when it fills.
  */
+.home__upload-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-block-size: calc(var(--font-size-sm) * 1.5);
+  max-inline-size: 36rem;
+}
+
 .home__upload-status {
   margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  text-align: center;
+}
+
+/* What the button takes, and where a form's text goes: quiet lines, still at full reading contrast. */
+.home__upload-kinds,
+.home__upload-disclosure {
+  margin: 0;
+  max-inline-size: 36rem;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   text-align: center;
+  text-wrap: balance;
 }
 
 .home__upload-error {
