@@ -9,16 +9,26 @@ import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, listDocuments: vi.fn(), trashDocument: vi.fn() }
+  return { ...actual, listDocuments: vi.fn(), trashDocument: vi.fn(), getCapabilities: vi.fn() }
 })
 vi.mock('@/upload/learnAndStart', async () => {
   const actual = await vi.importActual<typeof import('@/upload/learnAndStart')>('@/upload/learnAndStart')
   return { ...actual, learnFormAndStartDocument: vi.fn() }
 })
 
-import { ApiRequestError, listDocuments, trashDocument, type DeletionResponse } from '@/api/client'
-import { learnFormAndStartDocument, type LearnOutcome, type LearnStep } from '@/upload/learnAndStart'
+import { ApiRequestError, getCapabilities, listDocuments, trashDocument, type CapabilitiesResponse, type DeletionResponse } from '@/api/client'
+import { learnFormAndStartDocument, type LearnOutcome, type LearnStep, type StepDetail } from '@/upload/learnAndStart'
+import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
+import { resetCapabilitiesCache } from '@/capabilities'
 import { readDocumentHandoff } from '@/router/handoff'
+
+/** What the server says it can do; `fillSpotNaming` is left out as an older server leaves it out. */
+function capabilities(fillSpotNaming?: CapabilitiesResponse['fillSpotNaming']): CapabilitiesResponse {
+  return {
+    maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30,
+    ...(fillSpotNaming ? { fillSpotNaming } : {}),
+  }
+}
 
 let router: Router
 
@@ -61,6 +71,8 @@ describe('HomeView', () => {
     vi.mocked(listDocuments).mockReset()
     vi.mocked(trashDocument).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
+    resetCapabilitiesCache()
   })
 
   /** A visitor who is not signed in gets the same front door, not a wall: the upload action is still there to follow. */
@@ -100,6 +112,9 @@ describe('HomeView', () => {
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
+    // What the button takes is said to everyone; what happens to a form's text is asked about only once signed in.
+    expect(wrapper.get('.home__upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
+    expect(getCapabilities).not.toHaveBeenCalled()
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -180,7 +195,7 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(wrapper.get('.home__hint').text()).toBe(
-      'There are no documents here. Upload a Word form above to start one, or choose a template under My Templates.',
+      'There are no documents here. Upload a form above to start one, or choose a template under My Templates.',
     )
     expect(wrapper.find('.home__hint a').exists()).toBe(false)
   })
@@ -202,7 +217,7 @@ describe('HomeView', () => {
       'There are no documents here now. Anything moved to the trash can be restored from the trash bin.',
     )
     expect(empty!.get('a').attributes('href')).toBe('/trash')
-    expect(wrapper.text()).not.toContain('Upload a Word form above')
+    expect(wrapper.text()).not.toContain('Upload a form above')
     expect(await axe(wrapper.element)).toHaveNoViolations()
     wrapper.unmount()
   })
@@ -335,7 +350,7 @@ describe('HomeView', () => {
     expect(wrapper.get('[role="alert"]').text()).toBe('"March Minutes" was already deleted, so it was taken off this list.')
     // It had documents a moment ago, so the empty list must not read as though there never were any.
     expect(wrapper.text()).toContain('There are no documents here now.')
-    expect(wrapper.text()).not.toContain('Upload a Word form above')
+    expect(wrapper.text()).not.toContain('Upload a form above')
   })
 
   it('has no automatically-detectable accessibility violations with documents listed', async () => {
@@ -357,6 +372,11 @@ describe('HomeView: uploading a form', () => {
     setActivePinia(createPinia())
     vi.mocked(listDocuments).mockReset().mockResolvedValue([])
     vi.mocked(learnFormAndStartDocument).mockReset()
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
+    resetCapabilitiesCache()
+    formUploadStep.value = null
+    formUploadError.value = null
+    formUploadFinished.value = null
     document.body.innerHTML = ''
   })
 
@@ -367,7 +387,7 @@ describe('HomeView: uploading a form', () => {
   }
 
   /** The chooser belongs to a hidden input; the one control a person or a screen reader meets is the button. */
-  it('opens the file chooser from the button, offering Word forms and PDFs', async () => {
+  it('opens the file chooser from the button, offering every word-processing form and PDFs', async () => {
     signedIn()
     const wrapper = await mountWithRouter()
     await flushPromises()
@@ -378,11 +398,60 @@ describe('HomeView: uploading a form', () => {
 
     expect(openChooser).toHaveBeenCalledTimes(1)
     expect(input.attributes('accept')).toBe(
-      '.docx,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf',
+      '.docx,.dotx,.docm,.dotm,.doc,.dot,.rtf,.odt,.ott,.pages,.pdf,' +
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.template,' +
+        'application/vnd.ms-word.document.macroEnabled.12,application/vnd.ms-word.template.macroEnabled.12,' +
+        'application/msword,application/rtf,text/rtf,application/vnd.oasis.opendocument.text,' +
+        'application/vnd.oasis.opendocument.text-template,application/vnd.apple.pages,' +
+        'application/x-iwork-pages-sffpages,application/pdf',
     )
     expect(input.attributes('tabindex')).toBe('-1')
     expect(input.attributes('aria-hidden')).toBe('true')
-    expect(wrapper.get('button.home__upload').text()).toBe('Upload your documents')
+    const button = wrapper.get('button.home__upload')
+    expect(button.text()).toBe('Upload your documents')
+    // The kinds of file it takes are said under it in plain words, and read out with it.
+    expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
+    expect(button.attributes('aria-describedby')).toBe('home-upload-kinds')
+  })
+
+  /** Where the AI service names the places found, a form's text goes to it; the person reads that before choosing a file. */
+  it("says under the button that a form's text goes to the AI service, only where it does", async () => {
+    signedIn()
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities('MODEL'))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    const disclosure = wrapper.get('#home-upload-disclosure')
+    expect(disclosure.text()).toBe('When you upload a form, its text is sent to our AI service so Brownie can find the places to fill.')
+    expect(disclosure.attributes('role')).toBeUndefined()
+    expect(wrapper.get('button.home__upload').attributes('aria-describedby')).toBe('home-upload-kinds home-upload-disclosure')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  it.each([
+    ["Brownie's own rules", capabilities('RULES')],
+    ['an older server', capabilities()],
+  ])('says nothing about the AI service where %s name the places', async (_case, answer) => {
+    signedIn()
+    vi.mocked(getCapabilities).mockResolvedValue(answer)
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(getCapabilities).toHaveBeenCalled()
+    expect(wrapper.find('#home-upload-disclosure').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('AI service')
+  })
+
+  it('says nothing about the AI service when it cannot ask the server', async () => {
+    signedIn()
+    vi.mocked(getCapabilities).mockRejectedValue(new TypeError('Failed to fetch'))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.find('#home-upload-disclosure').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
 
   /**
@@ -392,7 +461,7 @@ describe('HomeView: uploading a form', () => {
   it('says each step as it starts, keeps the button unavailable, and opens the new document', async () => {
     signedIn()
     let finish: (outcome: LearnOutcome) => void = () => {}
-    let report: (step: LearnStep) => void = () => {}
+    let report: (step: LearnStep, detail: StepDetail) => void = () => {}
     vi.mocked(learnFormAndStartDocument).mockImplementation((_workspaceId, _file, onStep) => {
       report = onStep ?? report
       return new Promise((resolve) => (finish = resolve))
@@ -408,6 +477,10 @@ describe('HomeView: uploading a form', () => {
     expect(learnFormAndStartDocument).toHaveBeenCalledWith(7, file, expect.any(Function))
     const status = wrapper.get('[role="status"]')
     expect(status.text()).toBe('Uploading…')
+    // Set apart from the hints above it by a turning ring beside it, which is seen and not read out.
+    const ring = wrapper.get('.home__upload-progress .activity-indicator')
+    expect(ring.attributes('aria-hidden')).toBe('true')
+    expect(status.element.contains(ring.element)).toBe(false)
     expect(button.attributes('aria-disabled')).toBe('true')
     expect(button.attributes('disabled')).toBeUndefined()
     expect(document.activeElement).toBe(button.element)
@@ -416,20 +489,23 @@ describe('HomeView: uploading a form', () => {
     await button.trigger('click')
     expect(openChooser).not.toHaveBeenCalled()
 
-    const steps: [LearnStep, string][] = [
-      ['checking', 'Checking the file…'],
-      ['learning', 'Learning where the values go…'],
-      ['preparing', 'Getting the template ready…'],
-      ['opening', 'Opening your document…'],
+    const steps: [LearnStep, StepDetail, string][] = [
+      ['checking', { mediaType: 'PAGES', waiting: false }, 'Checking the file…'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: true }, 'Waiting for a free moment…'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…'],
+      ['learning', { mediaType: 'PAGES', waiting: false }, 'Learning the form…'],
+      ['preparing', { mediaType: 'PAGES', waiting: false }, 'Getting the template ready…'],
+      ['opening', { mediaType: 'PAGES', waiting: false }, 'Opening your document…'],
     ]
-    for (const [step, words] of steps) {
-      report(step)
+    for (const [step, detail, words] of steps) {
+      report(step, detail)
       await nextTick()
       expect(status.text()).toBe(words)
     }
     expect(await axe(wrapper.element)).toHaveNoViolations()
 
-    finish({ ok: true, documentId: 77, name: 'Club minutes', note: null })
+    finish({ ok: true, documentId: 77, name: 'Club minutes', notes: [] })
     await flushPromises()
 
     expect(router.currentRoute.value.fullPath).toBe('/documents/77')
@@ -437,11 +513,14 @@ describe('HomeView: uploading a form', () => {
     wrapper.unmount()
   })
 
-  /** Part of the form was not learned: the document still opens, and the page it opens on says which part. */
-  it('hands a note about the form to the document it opens', async () => {
+  /** What Brownie found and changed is news about the form, not a warning: the page it opens on shows it under its own heading. */
+  it('hands the notes about the form to the document it opens', async () => {
     signedIn()
-    const note = 'Brownie did not learn "client.name". That tag is on more than one content control in the form.'
-    vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 78, name: 'Invoice', note })
+    const notes = [
+      "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged.",
+      'Brownie found 2 places to fill in. Each is marked "Found by Brownie" so you can check it.',
+    ]
+    vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 78, name: 'Invoice', notes })
     const wrapper = await mountWithRouter()
     await flushPromises()
 
@@ -449,14 +528,14 @@ describe('HomeView: uploading a form', () => {
     await flushPromises()
 
     expect(router.currentRoute.value.fullPath).toBe('/documents/78')
-    expect(readDocumentHandoff()).toEqual({ attachedSources: [], sourceWarning: note })
+    expect(readDocumentHandoff()).toEqual({ attachedSources: [], sourceWarning: null, formNotes: notes })
   })
 
   it('says why a form could not be used, clears the progress line, and lets the person choose another', async () => {
     signedIn()
     vi.mocked(learnFormAndStartDocument).mockResolvedValue({
       ok: false,
-      message: 'Brownie can fill Word (.docx) forms. It cannot fill a PDF.',
+      message: 'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.',
     })
     const wrapper = await mountWithRouter({ attachTo: document.body })
     await flushPromises()
@@ -464,14 +543,17 @@ describe('HomeView: uploading a form', () => {
     await chooseFile(wrapper, new File(['%PDF'], 'form.pdf'))
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toBe('Brownie can fill Word (.docx) forms. It cannot fill a PDF.')
+    expect(wrapper.get('[role="alert"]').text()).toBe(
+      'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.',
+    )
     expect(wrapper.get('[role="status"]').text()).toBe('')
+    expect(wrapper.find('.activity-indicator').exists()).toBe(false)
     expect(wrapper.get('button.home__upload').attributes('aria-disabled')).toBeUndefined()
     expect(router.currentRoute.value.fullPath).toBe('/')
     expect(await axe(wrapper.element)).toHaveNoViolations()
 
     // The reason belongs to the file it was about: choosing another takes it away.
-    vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 79, name: 'Minutes', note: null })
+    vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 79, name: 'Minutes', notes: [] })
     await chooseFile(wrapper, new File(['docx'], 'Minutes.docx'))
     await flushPromises()
 
@@ -491,10 +573,26 @@ describe('HomeView: uploading a form', () => {
     await router.push('/trash')
     const push = vi.spyOn(router, 'push')
     wrapper.unmount()
-    finish({ ok: true, documentId: 80, name: 'Minutes', note: null })
+    finish({ ok: true, documentId: 80, name: 'Minutes', notes: ['Brownie found 1 place to fill in.'] })
     await flushPromises()
 
     expect(push).not.toHaveBeenCalled()
+  })
+
+  /** Coming back to Home, the person finds the document it made, and opening it from there still brings its notes. */
+  it('offers the document made while the person was away, with its notes', async () => {
+    signedIn()
+    formUploadFinished.value = { documentId: 80, name: 'Minutes', notes: ['Brownie found 1 place to fill in.'] }
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.get('.home__upload-finished').text()).toBe('Brownie learned "Minutes" and started a document from it. Open it.')
+    await wrapper.get('.home__upload-finished a').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.fullPath).toBe('/documents/80')
+    expect(readDocumentHandoff()).toEqual({ attachedSources: [], sourceWarning: null, formNotes: ['Brownie found 1 place to fill in.'] })
+    expect(formUploadFinished.value).toBeNull()
   })
 
   /** More than one polite region on a page and a screen reader queues them against each other. */
@@ -508,6 +606,9 @@ describe('HomeView: uploading a form', () => {
     const live = wrapper.findAll('[aria-live="polite"], [role="status"]')
     expect(live).toHaveLength(1)
     expect(live[0]!.classes()).toContain('home__upload-status')
+    // Its line is there before anything is chosen, holding the room the steps will take, with no ring yet.
+    expect(live[0]!.element.parentElement?.classList).toContain('home__upload-progress')
+    expect(wrapper.find('.activity-indicator').exists()).toBe(false)
   })
 })
 
