@@ -2,8 +2,6 @@ package io.github.vihuynh72.brownie.core.compile;
 
 import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Lets only so many renders run at once. A render is the most expensive
@@ -14,43 +12,25 @@ import java.util.concurrent.TimeUnit;
  * host has. With one, the rest wait their turn for a bounded time and are
  * then told to try again, which costs nothing.
  *
- * <p>Turns are taken in arrival order, so a burst from one person cannot
- * keep starving a request that was already waiting.
+ * <p>The turns themselves are {@link RenderSlots}, which converting another
+ * format to Word shares, since it starts the same container.
  */
 public final class ConcurrencyLimitedDocumentRenderer implements DocumentRenderer {
 
     private final DocumentRenderer delegate;
-    private final Semaphore slots;
-    private final Duration maxWait;
+    private final RenderSlots slots;
 
     public ConcurrencyLimitedDocumentRenderer(DocumentRenderer delegate, int maxConcurrent, Duration maxWait) {
+        this(delegate, new RenderSlots(maxConcurrent, maxWait));
+    }
+
+    public ConcurrencyLimitedDocumentRenderer(DocumentRenderer delegate, RenderSlots slots) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.maxWait = Objects.requireNonNull(maxWait, "maxWait");
-        if (maxConcurrent < 1) {
-            throw new IllegalArgumentException("At least one render must be allowed at a time.");
-        }
-        if (maxWait.isNegative()) {
-            throw new IllegalArgumentException("maxWait must not be negative.");
-        }
-        this.slots = new Semaphore(maxConcurrent, true);
+        this.slots = Objects.requireNonNull(slots, "slots");
     }
 
     @Override
     public RenderedPdf renderToPdf(byte[] docxBytes) {
-        boolean acquired;
-        try {
-            acquired = slots.tryAcquire(maxWait.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new RenderCapacityExceededException("Rendering was interrupted while waiting for its turn.");
-        }
-        if (!acquired) {
-            throw new RenderCapacityExceededException("Every render slot is busy. Try again shortly.");
-        }
-        try {
-            return delegate.renderToPdf(docxBytes);
-        } finally {
-            slots.release();
-        }
+        return slots.runInTurn(() -> delegate.renderToPdf(docxBytes));
     }
 }
