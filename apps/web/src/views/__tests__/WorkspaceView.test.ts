@@ -38,6 +38,8 @@ vi.mock('@/api/client', async () => {
     importCalendarEvent: vi.fn(),
     importDriveFile: vi.fn(),
     interpretAssist: vi.fn(),
+    keepFillSpot: vi.fn(),
+    keepFillSpots: vi.fn(),
     listActions: vi.fn(),
     listCalendarEvents: vi.fn(),
     listConnections: vi.fn(),
@@ -98,6 +100,8 @@ import {
   importCalendarEvent,
   importDriveFile,
   interpretAssist,
+  keepFillSpot,
+  keepFillSpots,
   listActions,
   listCalendarEvents,
   listConnections,
@@ -140,7 +144,7 @@ import type {
   ValidationManifestResponse,
 } from '@/api/client'
 import { axe } from '@/test/axe'
-import { documentHandoffState, type DocumentHandoff } from '@/router/handoff'
+import { documentHandoffState, readDocumentHandoff, type DocumentHandoff } from '@/router/handoff'
 import { resetCapabilitiesCache } from '@/capabilities'
 import { formatDateLikeExport } from '@/workspace/layout'
 
@@ -173,6 +177,8 @@ const API = [
   importCalendarEvent,
   importDriveFile,
   interpretAssist,
+  keepFillSpot,
+  keepFillSpots,
   listActions,
   listCalendarEvents,
   listConnections,
@@ -917,6 +923,7 @@ describe('WorkspaceView: the page', () => {
     const page = await mountPage()
 
     expect(page.find('.empty-state').exists()).toBe(false)
+    expect(page.find('.empty-hint').exists()).toBe(false)
     expect(page.get('.document-page [role="status"]').text()).toBe('Loading the page…')
   })
 
@@ -955,14 +962,29 @@ describe('WorkspaceView: the page', () => {
     expect(decodeURIComponent(link.attributes('href')!)).toBe('/signin?next=/documents/1')
   })
 
-  it('leads an empty page to adding notes: the panel opens beside the chat with the file picker focused', async () => {
+  it('leads an empty page to adding notes in one quiet line: the panel opens beside the chat with the file picker focused', async () => {
     const page = await mountPage()
 
-    expect(page.get('.empty-state').text()).toContain('Nothing filled in yet.')
-    await press(page, 'Add notes or a transcript')
+    // The page has fill spots, so the line stays short and the first of them stays in view.
+    expect(page.find('.empty-state').exists()).toBe(false)
+    expect(norm(page.get('.empty-hint').text())).toBe(
+      'Nothing filled in yet. Type into the highlighted spots, or add notes or a transcript for Brownie to fill them in.',
+    )
+    expect(await axe(page.element)).toHaveNoViolations()
+    await press(page, 'add notes or a transcript')
 
     expect(pressedOf(page, 'Brownie')).toBe('true')
     expect(page.find('#add-source-panel').exists()).toBe(true)
+    expect(document.activeElement?.id).toBe('attach-source')
+  })
+
+  it('keeps the whole note, and its button, over a page that has no fill spots yet', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue({ ...MINUTES_TEMPLATE_VERSION, fields: [] })
+    const page = await mountPage()
+
+    expect(page.find('.empty-hint').exists()).toBe(false)
+    expect(page.get('.empty-state').text()).toContain('Nothing filled in yet.')
+    await press(page, 'Add notes or a transcript')
     expect(document.activeElement?.id).toBe('attach-source')
   })
 
@@ -1038,7 +1060,7 @@ describe('WorkspaceView: editing by hand', () => {
     expect(liveRegion(page).text()).toBe('Saved.')
     expect(hasButton(page, 'Save now')).toBe(false)
     expect(valueOf(page, 'edit-meeting.title')).toBe('Garden Club Planning')
-    expect(page.find('.empty-state').exists()).toBe(false)
+    expect(page.find('.empty-hint').exists()).toBe(false)
 
     await selectSpot(page, 'edit-meeting.title')
     expect(chipsOf(page)).toContain('Typed by you')
@@ -1496,6 +1518,36 @@ describe('WorkspaceView: the bar about the selected fill spot', () => {
       ['meeting.title', 'REJECTED', 6],
       ['meeting.title', 'NEEDS_CLARIFICATION', 6],
     ])
+  })
+
+  it('groups the buttons of the bar about a spot by what they change: the fill spot, the value in it, and a row', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_ROW)
+    vi.mocked(getTemplateVersion).mockResolvedValue({
+      ...MINUTES_TEMPLATE_VERSION,
+      fields: MINUTES_TEMPLATE_VERSION.fields.map((field) => (field.fieldId === 'meeting.title' ? { ...field, origin: 'FOUND_BY_BROWNIE' } : field)),
+    })
+    const page = await mountPage()
+    const groups = () =>
+      selectionBar(page)
+        .findAll('[role="group"]')
+        .map((group) => ({
+          name: window.document.getElementById(group.attributes('aria-labelledby') ?? '')?.textContent,
+          buttons: group.findAll('button').map((button) => accessibleName(button.element)),
+        }))
+
+    await selectSpot(page, 'edit-meeting.title')
+    // "Keep" (the place is right) and "Accept" (the value is right) never sit side by side.
+    expect(groups()[0]!.name).toBe('This fill spot:')
+    expect(groups()[0]!.buttons[0]).toBe('Keep this fill spot')
+    expect(groups()[0]!.buttons).not.toContain('Accept Meeting title')
+    expect(groups()[1]).toEqual({
+      name: 'This value:',
+      buttons: ['Accept Meeting title', 'Reject Meeting title', 'Needs clarification for Meeting title', 'Lock Meeting title'],
+    })
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    await selectSpot(page, 'edit-action.item.task-0')
+    expect(groups().at(-1)).toEqual({ name: 'This row:', buttons: ['Move up row 1', 'Move down row 1', 'Remove row 1'] })
   })
 
   // The hidden half of each name begins with a space the template compiler would drop, so the page writes it out.
@@ -2152,6 +2204,45 @@ describe('WorkspaceView: Export and Version history', () => {
     expect(liveRegion(page).text()).toBe('Action item due has no rows yet. Add a row to fill it in.')
   })
 
+  it("names a field by the form's own label in Export's Go to list and in what the page announces", async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue({
+      ...MINUTES_TEMPLATE_VERSION,
+      fields: MINUTES_TEMPLATE_VERSION.fields.map((field) =>
+        field.fieldId === 'meeting.date'
+          ? { ...field, label: 'Ngày họp', origin: 'FOUND_BY_BROWNIE' as const }
+          : field.fieldId === 'action.item.due'
+            ? { ...field, label: 'Due by', origin: 'ADDED_BY_PERSON' as const }
+            : field,
+      ),
+    })
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(validateDocument).mockResolvedValue(
+      manifest({
+        hasUnresolvedBlocking: true,
+        findings: [
+          { code: 'REQUIRED_FIELD_MISSING', severity: 'BLOCKING', fieldId: 'meeting.date', message: 'Meeting date is required.' },
+          { code: 'REQUIRED_FIELD_MISSING', severity: 'BLOCKING', fieldId: 'action.item.due', message: 'Add at least one action item.' },
+        ],
+      }),
+    )
+    const page = await mountPage()
+    expect(page.get('[id="edit-meeting.date"]').attributes('aria-label')).toBe('Ngày họp, required')
+
+    await press(page, 'Export', 'header.workspace-bar')
+    await flushPromises()
+    await press(page, 'Go to Due by', 'dialog.export-dialog')
+    await flushPromises()
+
+    expect(accessibleName(document.activeElement!)).toBe('Add row')
+    expect(liveRegion(page).text()).toBe('Due by has no rows yet. Add a row to fill it in.')
+
+    await press(page, 'Export', 'header.workspace-bar')
+    await flushPromises()
+    await press(page, 'Go to Ngày họp', 'dialog.export-dialog')
+    await flushPromises()
+    expect(document.activeElement?.id).toBe('edit-meeting.date')
+  })
+
   it('opens Version history, and a restore made there reloads the document and says so', async () => {
     const R1 = revision({ id: 1, revisionNumber: 1, fields: { 'meeting.title': scalarField('Weekly Sync') } })
     const R2 = revision({ id: 2, revisionNumber: 2, contentHash: HASH_B, editReason: 'Autosaved.', fields: { 'meeting.title': scalarField('Spring Planning') } })
@@ -2324,6 +2415,38 @@ describe('WorkspaceView: print preview', () => {
 // =================================================================================================
 
 describe('WorkspaceView: the Rules card', () => {
+  /** The card as a short window draws it: `content` pixels of it in a box `shown` high, scrolled `top` down. */
+  function rulesCardScrolled(page: Page, content: number, shown: number, top: number): HTMLElement {
+    const card = page.get('section.rules-card').element as HTMLElement
+    Object.defineProperty(card, 'scrollHeight', { value: content, configurable: true })
+    Object.defineProperty(card, 'clientHeight', { value: shown, configurable: true })
+    card.scrollTop = top
+    card.dispatchEvent(new Event('scroll'))
+    return card
+  }
+
+  it('says when more of the card is below its foot, with a fade and a hint, and stops once the end is in view', async () => {
+    const page = await mountPage()
+    expect(page.find('.rules-card__more').exists()).toBe(false)
+
+    const card = rulesCardScrolled(page, 400, 150, 0)
+    await flushPromises()
+    const more = page.get('.rules-card__more')
+    expect(norm(more.text())).toBe('More ↓')
+    // Seen, not heard, and the card itself is the keyboard's way to scroll it.
+    expect(more.attributes('aria-hidden')).toBe('true')
+    expect(card.tabIndex).toBe(0)
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    card.scrollBy = vi.fn()
+    await more.get('.rules-card__more-label').trigger('click')
+    expect(card.scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: 120 }))
+
+    rulesCardScrolled(page, 400, 150, 250)
+    await flushPromises()
+    expect(page.find('.rules-card__more').exists()).toBe(false)
+  })
+
   const RULES = [
     {
       id: 1,
@@ -2363,7 +2486,7 @@ describe('WorkspaceView: the Rules card', () => {
     },
   ] as never
 
-  it("lists the accepted rules of the document's own template version, read-only, and counts the proposed ones", async () => {
+  it("lists the accepted rules of the document's own template version, read-only, and says the proposed ones do not apply", async () => {
     vi.mocked(listTemplateVersionRules).mockResolvedValue(RULES)
     const page = await mountPage()
 
@@ -2373,9 +2496,18 @@ describe('WorkspaceView: the Rules card', () => {
     expect(card).toContain('Every set of minutes names its meeting.')
     expect(card).not.toContain('Meeting location')
     expect(card).not.toContain('at most 80 characters')
-    expect(card).toContain('1 proposed rule is waiting for a decision on the template.')
+    expect(card).toContain('1 suggested rule was never turned on, so it does not apply.')
+    expect(card).not.toContain('waiting for a decision')
     expect(rulesCard(page).findAll('button')).toHaveLength(0)
     expect((await axe(page.element)).violations).toEqual([])
+  })
+
+  it('can be reached from the keyboard, so its scroll keys work where a short window makes it scroll on its own', async () => {
+    const page = await mountPage()
+
+    const card = rulesCard(page)
+    expect(card.attributes('tabindex')).toBe('0')
+    expect(window.document.getElementById(card.attributes('aria-labelledby')!)?.textContent).toBe('Rules')
   })
 
   it('shows only the rules about the selected fill spot', async () => {
@@ -3742,7 +3874,7 @@ describe('WorkspaceView: a document handed over by the screen that created it', 
     vi.mocked(listDocumentSources).mockReturnValue(new Promise(() => {}))
     vi.mocked(startExtraction).mockResolvedValue(accepted())
     vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
-    const page = await mountPage('/documents/1', { attachedSources: [HANDED], sourceWarning: null })
+    const page = await mountPage('/documents/1', { attachedSources: [HANDED], sourceWarning: null, formNotes: [] })
 
     expect(sourceCards(page).map((card) => card.get('.source-card__name').text())).toEqual(['minutes.txt'])
     expect(page.findAll('[role="alert"]')).toHaveLength(0)
@@ -3754,7 +3886,7 @@ describe('WorkspaceView: a document handed over by the screen that created it', 
 
   it("says the creation screen's failed attachment here, where the person lands, before anything else", async () => {
     const warning = 'Your source file was not attached: the malware scan flagged it. The document was still created.'
-    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: warning })
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: warning, formNotes: [] })
 
     const alerts = page.findAll('[role="alert"]')
     expect(alerts.length).toBeGreaterThan(0)
@@ -4209,5 +4341,279 @@ describe('WorkspaceView accessibility', () => {
 
     expect(historyDialog(page).findAll('.revision-row')).toHaveLength(2)
     expect(await axe(page.element)).toHaveNoViolations()
+  })
+})
+
+describe('WorkspaceView: a form uploaded on Home', () => {
+  const NOTES = [
+    "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged.",
+    'Brownie left the signature line empty, for signing by hand.',
+  ]
+
+  /** Brownie found the location, the decisions and the attendees itself; the attendees were kept already. */
+  const FOUND_VERSION: TemplateVersionResponse = {
+    ...MINUTES_TEMPLATE_VERSION,
+    fields: MINUTES_TEMPLATE_VERSION.fields.map((field) => {
+      if (field.fieldId === 'meeting.location') return { ...field, origin: 'FOUND_BY_BROWNIE', label: 'Where we met' }
+      if (field.fieldId === 'meeting.decisions' || field.fieldId === 'meeting.attendees') return { ...field, origin: 'FOUND_BY_BROWNIE' }
+      return field
+    }),
+    acceptedFieldIds: ['meeting.attendees'],
+  }
+  const FOUND_IDS = ['meeting.location', 'meeting.decisions', 'meeting.attendees'] as const
+
+  const strip = (page: Page) => page.find('section.form-strip')
+  const stripText = (page: Page) => norm(strip(page).get('.form-strip__text').text())
+  /** The fill spots that carry the "Found by Brownie" badge, by their control's id. */
+  const marked = (page: Page) =>
+    page.findAll('.fill-spot__found').map((badge) => badge.element.parentElement!.querySelector('.fill-spot__control')!.id)
+
+  it('says the notes about the form are there in one line over the page, as news and not as a warning', async () => {
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+    const region = strip(page)
+    // Not a live region: it holds its buttons, and it appears already full. The page's own live line says it is there,
+    // once, and only a moment after the line itself appeared empty, since a live line that appears full is not read out.
+    expect(region.attributes('role')).toBeUndefined()
+    expect(region.attributes('aria-label')).toBe('About this document')
+    expect(liveRegion(page).text()).toBe('')
+    await vi.waitFor(() => expect(liveRegion(page).text()).toBe('About this document: 2 notes above the page.'))
+    expect(stripText(page)).toBe('About this document: 2 notes.')
+    // Folded behind Details, so the page itself stays in view.
+    expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('none')
+    expect(region.findAll('li').map((item) => item.text())).toEqual(NOTES)
+    expect(page.findAll('[role="alert"]')).toHaveLength(0)
+    // Over the page, not among the notices across both panes.
+    expect(page.get('#document-pane').find('section.form-strip').exists()).toBe(true)
+    expect(await axe(page.element)).toHaveNoViolations()
+  })
+
+  it('opens the notes under the line with Details and folds them again, saying which way the button goes', async () => {
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+    const details = buttonNamed(page, 'Details about this document', 'section.form-strip')!
+    expect(details.attributes('aria-expanded')).toBe('false')
+    expect(details.attributes('aria-controls')).toBe('form-notes-list')
+    await press(page, 'Details about this document', 'section.form-strip')
+
+    expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('')
+    expect(details.attributes('aria-expanded')).toBe('true')
+    expect(window.document.activeElement).toBe(details.element)
+    expect(await axe(page.element)).toHaveNoViolations()
+    await press(page, 'Details about this document', 'section.form-strip')
+    expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('none')
+  })
+
+  it('shows a single note as the line itself, with nothing to open', async () => {
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: [NOTES[1]!] })
+
+    expect(stripText(page)).toBe(NOTES[1])
+    expect(hasButton(page, 'Details about this document')).toBe(false)
+    expect(hasButton(page, 'Dismiss the notes about this document', 'section.form-strip')).toBe(true)
+  })
+
+  it('lets the person dismiss the notes for good, and moves on to the document', async () => {
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+    await press(page, 'Dismiss the notes about this document', 'section.form-strip')
+
+    expect(strip(page).exists()).toBe(false)
+    expect(window.document.activeElement?.id).toBe('document-pane')
+    // A reload reads the same history entry, which no longer holds them.
+    expect(readDocumentHandoff()?.formNotes).toEqual([])
+  })
+
+  it('shows no line for a document that was not made from an upload', async () => {
+    const page = await mountPage()
+
+    expect(strip(page).exists()).toBe(false)
+  })
+
+  it('says how many places Brownie found and how to tell them, with Keep all and the notes behind Details, and no Dismiss', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue({ ...FOUND_VERSION, acceptedFieldIds: [] })
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+    // The form had places of its own, so the ones Brownie found are more beside them.
+    expect(stripText(page)).toBe('Brownie found 3 more places to fill in. Check the ones marked Found by Brownie.')
+    expect(strip(page).classes()).toContain('form-strip--found')
+    expect(hasButton(page, 'Keep all the places Brownie found', 'section.form-strip')).toBe(true)
+    expect(hasButton(page, 'Details about this document', 'section.form-strip')).toBe(true)
+    // The line is needed while places are unchecked, so it is not dismissed; keeping them is how it goes.
+    expect(hasButton(page, 'Dismiss the notes about this document')).toBe(false)
+    expect(await axe(page.element)).toHaveNoViolations()
+  })
+
+  it('says a form found entirely by Brownie has that many places, not that many more', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue({
+      ...MINUTES_TEMPLATE_VERSION,
+      fields: MINUTES_TEMPLATE_VERSION.fields.map((field) => ({ ...field, origin: 'FOUND_BY_BROWNIE' as const })),
+      acceptedFieldIds: [],
+    })
+    const page = await mountPage()
+
+    expect(stripText(page)).toMatch(/^Brownie found \d+ places to fill in\. Check the ones marked Found by Brownie\.$/)
+  })
+
+  it('keeps every place from the line and leaves the notes on it, moving focus to its next button', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    vi.mocked(keepFillSpots).mockResolvedValue(undefined)
+    const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+    await press(page, 'Keep all the places Brownie found', 'section.form-strip')
+
+    expect(stripText(page)).toBe('About this document: 2 notes.')
+    expect(strip(page).classes()).not.toContain('form-strip--found')
+    expect(window.document.activeElement).toBe(buttonNamed(page, 'Details about this document', 'section.form-strip')!.element)
+  })
+
+  it('marks each place Brownie found and nobody has kept yet, in words that are also in its description', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    const page = await mountPage()
+
+    expect(marked(page)).toEqual(['edit-meeting.location', 'edit-meeting.decisions'])
+    const location = byId(page, 'edit-meeting.location')
+    const badge = page.get('.fill-spot__found')
+    expect(badge.text()).toBe('Found by Brownie')
+    expect(badge.attributes('aria-hidden')).toBe('true')
+    const description = (location.attributes('aria-describedby') ?? '').split(' ').map((id) => window.document.getElementById(id)?.textContent ?? '')
+    expect(description.join(' ')).toContain('Found by Brownie; check that this is the right place.')
+    expect(stripText(page)).toBe('2 of the 3 places Brownie found are not checked yet. Check the ones marked Found by Brownie.')
+    expect(await axe(page.element)).toHaveNoViolations()
+  })
+
+  it('keeps a place from the bar about it: it tells the server, says so, and the mark goes', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    vi.mocked(keepFillSpot).mockResolvedValue(undefined)
+    const page = await mountPage()
+    await selectSpot(page, 'edit-meeting.location')
+
+    expect(norm(selectionBar(page).get('.selection-bar__found').text())).toBe('Found by Brownie Check that this is the right place.')
+    expect(await axe(page.element)).toHaveNoViolations()
+    await press(page, 'Keep this fill spot', 'section.selection-bar')
+
+    expect(keepFillSpot).toHaveBeenCalledWith(7, 1, 'meeting.location')
+    expect(liveRegion(page).text()).toBe('Kept Where we met.')
+    expect(marked(page)).toEqual(['edit-meeting.decisions'])
+    expect(hasButton(page, 'Keep this fill spot', 'section.selection-bar')).toBe(false)
+    // Its button has gone; the bar it was in keeps the focus.
+    expect(window.document.activeElement).toBe(selectionBar(page).element)
+    expect(stripText(page)).toBe('1 of the 3 places Brownie found is not checked yet. Check the one marked Found by Brownie.')
+  })
+
+  it('offers nothing to keep for a place the form had, or one already kept', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    const page = await mountPage()
+
+    await selectSpot(page, 'edit-meeting.title')
+    expect(selectionBar(page).find('.selection-bar__found').exists()).toBe(false)
+    expect(hasButton(page, 'Keep this fill spot', 'section.selection-bar')).toBe(false)
+    await selectSpot(page, 'edit-meeting.attendees')
+    expect(selectionBar(page).find('.selection-bar__found').exists()).toBe(false)
+    expect(hasButton(page, 'Keep this fill spot', 'section.selection-bar')).toBe(false)
+  })
+
+  it('keeps every place still marked in one request, and the line and the marks go', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    vi.mocked(keepFillSpots).mockResolvedValue(undefined)
+    const page = await mountPage()
+
+    await press(page, 'Keep all the places Brownie found')
+
+    expect(keepFillSpots).toHaveBeenCalledWith(7, 1, ['meeting.location', 'meeting.decisions'])
+    expect(liveRegion(page).text()).toBe('Kept all 2 places Brownie found.')
+    expect(strip(page).exists()).toBe(false)
+    expect(marked(page)).toEqual([])
+    expect(window.document.activeElement?.id).toBe('document-pane')
+  })
+
+  it('says why a place could not be kept, and leaves its mark', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_VERSION)
+    vi.mocked(keepFillSpots).mockRejectedValue(
+      new ApiRequestError(503, { status: 503, title: 't', code: 'DATABASE_UNAVAILABLE', detail: 'Brownie is briefly unavailable.', correlationId: 'c', fields: [], recoveryActions: [] }),
+    )
+    const page = await mountPage()
+
+    await press(page, 'Keep all the places Brownie found')
+
+    expect(notices(page).get('[role="alert"]').text()).toBe(
+      'Could not keep the places Brownie found, so none was kept. Brownie is briefly unavailable.',
+    )
+    expect(marked(page)).toEqual(['edit-meeting.location', 'edit-meeting.decisions'])
+    expect(strip(page).exists()).toBe(true)
+  })
+
+  it('shows no marks and no line for a form whose places all came with it', async () => {
+    const page = await mountPage()
+
+    expect(marked(page)).toEqual([])
+    expect(strip(page).exists()).toBe(false)
+  })
+
+  describe("the Rules card's About this form", () => {
+    const NOTICES = [
+      { code: 'TRACKED_CHANGES_AND_COMMENTS', count: 2, detail: null },
+      { code: 'SPOTS_FOUND', count: 3, detail: null },
+    ]
+    const about = (page: Page) => buttonNamed(page, 'About this form', 'section.rules-card')
+    /** The version as a server that keeps the upload's notices sends it. */
+    const withNotices = (version: TemplateVersionResponse, preparationNotices: typeof NOTICES | undefined): TemplateVersionResponse =>
+      ({ ...version, preparationNotices }) as TemplateVersionResponse
+
+    it('says again, whenever the document is opened, what the upload the form came from changed and found', async () => {
+      vi.mocked(getTemplateVersion).mockResolvedValue(withNotices({ ...FOUND_VERSION, acceptedFieldIds: [...FOUND_IDS] }, NOTICES))
+      const page = await mountPage()
+
+      const button = about(page)!
+      expect(button.attributes('aria-expanded')).toBe('false')
+      expect(button.attributes('aria-controls')).toBe('about-this-form')
+      expect((page.get('#about-this-form').element as HTMLElement).style.display).toBe('none')
+      await press(page, 'About this form', 'section.rules-card')
+
+      expect(button.attributes('aria-expanded')).toBe('true')
+      expect(page.get('#about-this-form').findAll('li').map((item) => item.text())).toEqual([
+        "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged.",
+        // Every place it found is kept, so none is said to be marked.
+        'Brownie found 3 places to fill in.',
+      ])
+      expect(await axe(page.element)).toHaveNoViolations()
+    })
+
+    it('shows the notes in one place at a time: the line over the page folds its Details away while it is open', async () => {
+      vi.mocked(getTemplateVersion).mockResolvedValue(withNotices(FOUND_VERSION, NOTICES))
+      const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+      const details = () => buttonNamed(page, 'Details about this document', 'section.form-strip')
+      await press(page, 'Details about this document', 'section.form-strip')
+      expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('')
+
+      await press(page, 'About this form', 'section.rules-card')
+      expect((page.get('#about-this-form').element as HTMLElement).style.display).toBe('')
+      expect(details()).toBeUndefined()
+      expect(page.find('#form-notes-list').exists()).toBe(false)
+      expect(await axe(page.element)).toHaveNoViolations()
+
+      await press(page, 'About this form', 'section.rules-card')
+      expect(details()!.attributes('aria-expanded')).toBe('false')
+      expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('none')
+    })
+
+    it('leaves the count to the line over the page while places are still to check', async () => {
+      vi.mocked(getTemplateVersion).mockResolvedValue(withNotices(FOUND_VERSION, NOTICES))
+      const page = await mountPage()
+      await press(page, 'About this form', 'section.rules-card')
+
+      expect(page.get('#about-this-form').findAll('li').map((item) => item.text())).toEqual([
+        "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged.",
+      ])
+    })
+
+    it.each([
+      ['a version made before the notes were kept', undefined],
+      ['a version whose upload had nothing to say', []],
+    ])('is not offered for %s', async (_case, preparationNotices) => {
+      vi.mocked(getTemplateVersion).mockResolvedValue(withNotices(MINUTES_TEMPLATE_VERSION, preparationNotices))
+      const page = await mountPage()
+
+      expect(about(page)).toBeUndefined()
+    })
   })
 })
