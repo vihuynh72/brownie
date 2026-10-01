@@ -38,8 +38,9 @@ import java.util.List;
  * flipped. {@code model} is fixed by configuration (see {@code
  * application.yml}), never by anything in a {@link ModelRequest} -- a
  * request can never select a different, unevaluated model. Every request
- * asks for strict JSON-Schema-constrained output and disables provider-
- * side response storage.
+ * asks for strict JSON-Schema-constrained output, disables provider-side
+ * response storage, and names its reasoning effort from configuration
+ * rather than leaving it to whatever the model defaults to.
  *
  * <p>The exception mapping and response interpretation below were built by
  * decompiling the exact pinned versions of {@code spring-ai-openai} and its
@@ -62,12 +63,23 @@ class OpenAiModelGateway implements ModelGateway {
     // so there is no reason to depend on that shared, Spring-managed bean.
     private static final ObjectMapper JSON_SYNTAX_CHECK = new ObjectMapper();
 
+    // The efforts the provider documents. A setting outside them would be
+    // refused by the provider on every request, so it is refused here
+    // instead, when the process starts, where the mistake is seen at once.
+    private static final List<String> REASONING_EFFORTS = List.of("none", "minimal", "low", "medium", "high", "xhigh", "max");
+
     private final ChatModel chatModel;
     private final String model;
+    private final String reasoningEffort;
 
-    OpenAiModelGateway(ChatModel chatModel, String model) {
+    OpenAiModelGateway(ChatModel chatModel, String model, String reasoningEffort) {
+        if (reasoningEffort == null || !REASONING_EFFORTS.contains(reasoningEffort)) {
+            throw new IllegalArgumentException("The model reasoning effort \"" + reasoningEffort
+                    + "\" is not one the provider accepts. Use one of: " + String.join(", ", REASONING_EFFORTS) + ".");
+        }
         this.chatModel = chatModel;
         this.model = model;
+        this.reasoningEffort = reasoningEffort;
     }
 
     @Override
@@ -102,12 +114,18 @@ class OpenAiModelGateway implements ModelGateway {
                 .build();
         return OpenAiChatOptions.builder()
                 .model(model)
-                // Not maxTokens(): confirmed by a real API call, not assumed,
-                // that gpt-5.4-mini-2026-03-17 rejects the classic max_tokens
-                // parameter outright ("Unsupported parameter: 'max_tokens' is
-                // not supported with this model. Use 'max_completion_tokens'
-                // instead.") -- the newer GPT-5-class parameter name.
+                // Not maxTokens(): the provider refuses the classic max_tokens
+                // parameter for its reasoning models ("Unsupported parameter:
+                // 'max_tokens' is not supported with this model. Use
+                // 'max_completion_tokens' instead.", confirmed by a real call),
+                // and max_completion_tokens is the one it documents for them.
+                // That cap counts the model's hidden reasoning as well as the
+                // reply, so a model left to reason by default could spend the
+                // whole cap thinking and return a reply cut off mid-JSON. Each
+                // caller's cap was sized for a reply written without reasoning,
+                // which is what the default effort of "none" asks for.
                 .maxCompletionTokens(request.maxOutputTokens())
+                .reasoningEffort(reasoningEffort)
                 .store(false)
                 .responseFormat(responseFormat)
                 .build();
