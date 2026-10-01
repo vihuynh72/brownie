@@ -50,6 +50,14 @@ class DriveSaveProposalsTest {
         ExportReceipt bothWithoutPdf = receipt(ExportFormat.BOTH, false);
         assertTrue(exportOffers(bothWithoutPdf, WORD_FILE));
         assertFalse(exportOffers(bothWithoutPdf, PDF_FILE));
+
+        // A PDF form's export is its PDF alone: there is no Word file to save or convert.
+        ExportReceipt pdfForm = new ExportReceipt(12, 7, 42, 9, 2, 4, 3, null, null, 14L, "b".repeat(64), ExportFormat.PDF, 3,
+                OffsetDateTime.of(2026, 9, 28, 10, 0, 0, 0, ZoneOffset.UTC));
+        assertFalse(exportOffers(pdfForm, WORD_FILE));
+        assertTrue(exportOffers(pdfForm, PDF_FILE));
+        assertFalse(exportOffers(pdfForm, GOOGLE_DOC));
+        assertFalse(pdfForm.isCompletePair());
     }
 
     @Test
@@ -106,7 +114,7 @@ class DriveSaveProposalsTest {
     }
 
     private static ExportReceipt receipt(ExportFormat format, boolean pdfMade) {
-        return new ExportReceipt(12, 7, 42, 9, 2, 4, 3, 13, "a".repeat(64),
+        return new ExportReceipt(12, 7, 42, 9, 2, 4, 3, 13L, "a".repeat(64),
                 pdfMade ? 14L : null, pdfMade ? "b".repeat(64) : null, format, 3,
                 OffsetDateTime.of(2026, 9, 28, 10, 0, 0, 0, ZoneOffset.UTC));
     }
