@@ -36,7 +36,7 @@ const PRACTICES: DataPracticesResponse = {
   unusedFileHours: 6,
   auditRecordDays: 90,
   modelProvider: 'OpenAI',
-  modelName: 'gpt-5.4-mini-2026-03-17',
+  modelName: 'gpt-6-luna',
   supportContact: 'data@example.org',
 }
 
@@ -128,10 +128,34 @@ describe('YourDataView', () => {
     expect(wrapper.text()).toContain('loses its contents after 2 days')
     expect(wrapper.text()).toContain('any more is removed after 6 hours')
     expect(wrapper.text()).toContain('kept for 90 days')
-    expect(wrapper.text()).toContain('OpenAI (gpt-5.4-mini-2026-03-17)')
+    expect(wrapper.text()).toContain('OpenAI (gpt-6-luna)')
     expect(wrapper.text()).toContain('PDF, TXT, up to 10 MB each')
     expect(wrapper.text()).toContain('8 requests to the model')
     expect(wrapper.text()).toContain('Ask data@example.org.')
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
+  it('says that an uploaded form is read by the model only where this Brownie does that, and that nothing else is sent', async () => {
+    const promise = 'Nothing is sent until you ask.'
+    const upload =
+      'When you upload a form, its text is sent to the same service, so Brownie can find the places to fill in and name them. Nothing else is sent until you ask.'
+
+    let wrapper = await mountPage()
+    let text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain(`is sent to OpenAI (gpt-6-luna) to get an answer. ${promise}`)
+    expect(text).not.toContain('When you upload a form')
+    wrapper.unmount()
+
+    vi.mocked(getDataPractices).mockResolvedValue({ ...PRACTICES, formTextSentToModel: false })
+    wrapper = await mountPage()
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain(promise)
+    wrapper.unmount()
+
+    vi.mocked(getDataPractices).mockResolvedValue({ ...PRACTICES, formTextSentToModel: true })
+    wrapper = await mountPage()
+    text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain(`is sent to OpenAI (gpt-6-luna) to get an answer. ${upload}`)
+    expect(text).not.toContain(promise)
     expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
   })
 

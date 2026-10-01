@@ -1,5 +1,7 @@
 package io.github.vihuynh72.brownie.api.validation;
 
+import io.github.vihuynh72.brownie.core.compile.PdfTemplateFill;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersionRepository;
 import io.github.vihuynh72.brownie.api.document.docx.PoiDocxMetadataSanitizer;
 import io.github.vihuynh72.brownie.api.document.render.PdfBoxPageRasterDiffer;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
@@ -44,10 +46,13 @@ class ValidationConfig {
             DocumentRenderer documentRenderer,
             TemplateBaselineRenderRepository templateBaselineRenderRepository,
             PageRasterDiffer pageRasterDiffer,
-            ValidationRepository validationRepository) {
+            ValidationRepository validationRepository,
+            PdfTemplateFill pdfTemplateFill,
+            PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository) {
         return new ValidationService(
                 revisionService, templateRepository, ruleRepository, sourceSpanRepository, artifactService,
                 templateFiller, docxMetadataSanitizer, docxStructuralExtractor, documentRenderer,
-                templateBaselineRenderRepository, pageRasterDiffer, validationRepository);
+                templateBaselineRenderRepository, pageRasterDiffer, validationRepository, pdfTemplateFill,
+                pdfFormExtractionVersionRepository);
     }
 }

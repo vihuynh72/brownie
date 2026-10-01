@@ -1,6 +1,9 @@
 package io.github.vihuynh72.brownie.ai.openai;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientAsync;
 import io.micrometer.observation.ObservationRegistry;
@@ -24,6 +27,7 @@ import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,9 +44,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class OpenAiModelGatewayTest {
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private WireMockServer wireMock;
     private OpenAIClient client;
     private OpenAIClientAsync asyncClient;
+    private OpenAiChatModel chatModel;
     private ModelGateway gateway;
 
     @BeforeEach
@@ -90,12 +97,12 @@ class OpenAiModelGatewayTest {
                 ObservationRegistry.NOOP,
                 null,
                 List.of());
-        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+        chatModel = OpenAiChatModel.builder()
                 .openAiClient(client)
                 .openAiClientAsync(asyncClient)
                 .options(OpenAiChatOptions.builder().model("gpt-test").build())
                 .build();
-        gateway = new OpenAiModelGateway(chatModel, "gpt-test");
+        gateway = new OpenAiModelGateway(chatModel, "gpt-test", "none");
     }
 
     @AfterEach
@@ -125,6 +132,64 @@ class OpenAiModelGatewayTest {
         assertThat(success.content()).isEqualTo("{\"decision\":\"approved\"}");
         assertThat(success.usage().inputTokens()).isEqualTo(11);
         assertThat(success.usage().outputTokens()).isEqualTo(4);
+    }
+
+    /**
+     * What goes over the wire, read back from the request the stub received
+     * rather than from the options object that was meant to produce it. The
+     * reasoning effort is the configured one; the reply is strict JSON and
+     * not stored; the output cap is sent under the name reasoning models
+     * accept; and nothing a reasoning model refuses (temperature, the
+     * classic max_tokens) is sent at all.
+     */
+    @Test
+    void theRequestNamesTheConfiguredModelAndEffortAsksForStrictJsonAndSendsNothingAReasoningModelRefuses() throws Exception {
+        stubSuccessfulReply();
+
+        gateway.complete(request());
+
+        JsonNode body = onlyRequestBody();
+        assertThat(body.path("model").asText()).isEqualTo("gpt-test");
+        assertThat(body.path("reasoning_effort").asText()).isEqualTo("none");
+        assertThat(body.path("store").isBoolean()).isTrue();
+        assertThat(body.path("store").booleanValue()).isFalse();
+        assertThat(body.path("response_format").path("type").asText()).isEqualTo("json_schema");
+        assertThat(body.path("response_format").path("json_schema").path("strict").isBoolean()).isTrue();
+        assertThat(body.path("response_format").path("json_schema").path("strict").booleanValue()).isTrue();
+        assertThat(body.path("response_format").path("json_schema").path("schema").path("required").get(0).asText())
+                .isEqualTo("decision");
+        assertThat(body.path("max_completion_tokens").isIntegralNumber()).isTrue();
+        assertThat(body.path("max_completion_tokens").asInt()).isEqualTo(64);
+        assertThat(body.has("temperature")).as("temperature is never sent").isFalse();
+        assertThat(body.has("max_tokens")).as("the classic output cap is never sent").isFalse();
+        assertThat(body.has("top_p")).isFalse();
+        assertThat(body.has("tools")).isFalse();
+    }
+
+    /** The effort comes from configuration, not from this class: another configured value is what is sent. */
+    @Test
+    void aDifferentConfiguredEffortIsSentAsConfigured() throws Exception {
+        stubSuccessfulReply();
+
+        new OpenAiModelGateway(chatModel, "gpt-test", "low").complete(request());
+
+        assertThat(onlyRequestBody().path("reasoning_effort").asText()).isEqualTo("low");
+    }
+
+    /** A mistyped or empty setting would be refused by the provider on every request, so the process refuses it when it starts. */
+    @Test
+    void anEffortTheProviderDoesNotAcceptIsRefusedBeforeAnyRequest() {
+        assertThatThrownBy(() -> new OpenAiModelGateway(chatModel, "gpt-test", "lowest"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("\"lowest\"")
+                .hasMessageContaining("none, minimal, low, medium, high, xhigh, max");
+        assertThatThrownBy(() -> new OpenAiModelGateway(chatModel, "gpt-test", ""))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new OpenAiModelGateway(chatModel, "gpt-test", "None"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new OpenAiModelGateway(chatModel, "gpt-test", null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(wireMock.getAllServeEvents()).isEmpty();
     }
 
     @Test
@@ -224,7 +289,7 @@ class OpenAiModelGatewayTest {
                     .openAiClientAsync(unreachableAsyncClient)
                     .options(OpenAiChatOptions.builder().model("gpt-test").build())
                     .build();
-            ModelGateway unreachableGateway = new OpenAiModelGateway(unreachableModel, "gpt-test");
+            ModelGateway unreachableGateway = new OpenAiModelGateway(unreachableModel, "gpt-test", "none");
 
             assertThatThrownBy(() -> unreachableGateway.complete(request()))
                     .isInstanceOf(ModelTransportException.class)
@@ -233,6 +298,20 @@ class OpenAiModelGatewayTest {
             unreachableClient.close();
             unreachableAsyncClient.close();
         }
+    }
+
+    private void stubSuccessfulReply() {
+        wireMock.stubFor(post(urlPathEqualTo("/chat/completions"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody(chatCompletionJson("""
+                                {"role":"assistant","content":"{\\"decision\\":\\"approved\\"}"}""", "stop"))));
+    }
+
+    private JsonNode onlyRequestBody() throws Exception {
+        List<LoggedRequest> sent = wireMock.findAll(postRequestedFor(urlPathEqualTo("/chat/completions")));
+        assertThat(sent).hasSize(1);
+        return JSON.readTree(sent.get(0).getBodyAsString());
     }
 
     private static String chatCompletionJson(String messageJson, String finishReason) {

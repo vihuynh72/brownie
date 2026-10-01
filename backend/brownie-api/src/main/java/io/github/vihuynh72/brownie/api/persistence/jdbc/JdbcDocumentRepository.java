@@ -21,6 +21,7 @@ import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.LockState;
 import io.github.vihuynh72.brownie.core.revision.ReviewState;
 import io.github.vihuynh72.brownie.core.revision.ValidationState;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,10 +58,11 @@ class JdbcDocumentRepository implements DocumentRepository {
     private static final String DOCUMENT_COLUMNS =
             "id, workspace_id, title, template_id, template_version_id, current_revision_id, created_at";
     private static final String REVISION_COLUMNS =
-            "id, workspace_id, document_id, revision_number, parent_revision_id, content, content_hash, actor_user_id, edit_reason, created_at";
+            "id, workspace_id, document_id, template_version_id, revision_number, parent_revision_id, content, content_hash, "
+                    + "actor_user_id, edit_reason, created_at";
     private static final String QUALIFIED_REVISION_COLUMNS =
-            "r.id, r.workspace_id, r.document_id, r.revision_number, r.parent_revision_id, r.content, r.content_hash, "
-                    + "r.actor_user_id, r.edit_reason, r.created_at";
+            "r.id, r.workspace_id, r.document_id, r.template_version_id, r.revision_number, r.parent_revision_id, r.content, "
+                    + "r.content_hash, r.actor_user_id, r.edit_reason, r.created_at";
     private static final String IDEMPOTENCY_COLUMNS =
             "id, workspace_id, actor_user_id, operation, idempotency_key, request_hash, command_id, created_at";
     private static final String DOCUMENT_MUTATION_RECEIPT_COLUMNS =
@@ -89,7 +91,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             return Optional.empty();
         }
         requireMatchingHash(existing.get(), commandType, idempotencyKey, requestHash);
-        return Optional.of(mutationResultFor(existing.get()));
+        return Optional.of(mutationResultFor(existing.get(), true));
     }
 
     @Override
@@ -110,8 +112,16 @@ class JdbcDocumentRepository implements DocumentRepository {
         DocumentIdempotencyReservation reservation = reserveIdempotency(
                 workspaceId, userId, DocumentCommandType.CREATE, idempotencyKey, requestHash);
         if (!reservation.created()) {
-            return mutationResultFor(reservation.record());
+            return mutationResultFor(reservation.record(), true);
         }
+        // An Undo takes the template's current version back only while no other document is on the version it
+        // leaves, holding the template's row while it looks. Holding the row too while a document lands on a version
+        // makes that look wait for this document instead of missing it.
+        jdbcTemplate.query(
+                "SELECT 1 FROM template WHERE workspace_id = ? AND id = ? FOR SHARE",
+                (rs, rowNum) -> rs.getInt(1),
+                workspaceId,
+                templateId);
         List<Long> documentIds = jdbcTemplate.queryForList(
                 """
                 INSERT INTO document (workspace_id, title, template_id, template_version_id)
@@ -120,6 +130,11 @@ class JdbcDocumentRepository implements DocumentRepository {
                     SELECT 1
                     FROM template_version
                     WHERE workspace_id = ? AND template_id = ? AND id = ? AND status = 'ACTIVATED'
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM template
+                    WHERE workspace_id = ? AND id = ? AND trashed_at IS NOT NULL
                 )
                 RETURNING id
                 """,
@@ -130,8 +145,15 @@ class JdbcDocumentRepository implements DocumentRepository {
                 templateVersionId,
                 workspaceId,
                 templateId,
-                templateVersionId);
+                templateVersionId,
+                workspaceId,
+                templateId);
         if (documentIds.isEmpty()) {
+            // The service checked both before getting here; a template moved to the Trash Bin in between is told
+            // apart from a version that is not there, so the refusal names what the person can do about it.
+            if (isTrashed(workspaceId, templateId)) {
+                throw new TemplateTrashedException();
+            }
             throw new DocumentTemplateVersionUnavailableException(templateId, templateVersionId);
         }
         long documentId = documentIds.getFirst();
@@ -155,7 +177,7 @@ class JdbcDocumentRepository implements DocumentRepository {
         insertEvidence(workspaceId, documentId, initialRevisionId, initialEvidence);
         insertFieldStates(workspaceId, documentId, initialRevisionId, initialFieldStates);
         createMutationReceipt(reservation.record(), documentId, initialRevisionId);
-        return mutationResultFor(reservation.record());
+        return mutationResultFor(reservation.record(), false);
     }
 
     @Override
@@ -243,6 +265,7 @@ class JdbcDocumentRepository implements DocumentRepository {
             CanonicalRequestHash requestHash,
             long documentId,
             long expectedRevisionId,
+            Long templateVersionId,
             DocumentContent content,
             Map<String, List<Long>> evidence,
             Map<FieldItemRef, FieldState> fieldStates,
@@ -251,7 +274,7 @@ class JdbcDocumentRepository implements DocumentRepository {
         DocumentIdempotencyReservation reservation = reserveIdempotency(
                 workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
         if (!reservation.created()) {
-            return mutationResultFor(reservation.record());
+            return mutationResultFor(reservation.record(), true);
         }
         LockedDocument document = jdbcTemplate.query(
                         "SELECT document_id, current_revision_id FROM lock_document_current_revision(?, ?)",
@@ -286,11 +309,13 @@ class JdbcDocumentRepository implements DocumentRepository {
                 .map(number -> number + 1)
                 .orElseThrow(() -> new IllegalStateException(
                         "Document " + documentId + " points at missing revision " + expectedRevisionId + "."));
+        // A null version is filled in by the database with the document's own, so an ordinary edit stays on it.
         long revisionId = jdbcTemplate.queryForObject(
                 """
                 INSERT INTO document_revision
-                    (workspace_id, document_id, revision_number, parent_revision_id, content, content_hash, actor_user_id, edit_reason)
-                VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?)
+                    (workspace_id, document_id, revision_number, parent_revision_id, content, content_hash, actor_user_id, edit_reason,
+                     template_version_id)
+                VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, CAST(? AS bigint))
                 RETURNING id
                 """,
                 Long.class,
@@ -301,11 +326,16 @@ class JdbcDocumentRepository implements DocumentRepository {
                 toJson(content),
                 DocumentContentHasher.sha256Hex(content),
                 userId,
-                editReason);
+                editReason,
+                templateVersionId);
         if (!advanceCurrentRevision(workspaceId, documentId, expectedRevisionId, revisionId)) {
             long actualCurrentRevisionId = currentRevisionId(workspaceId, documentId);
             if (actualCurrentRevisionId != expectedRevisionId) {
                 throw new DocumentRevisionConflictException(documentId, expectedRevisionId, actualCurrentRevisionId);
+            }
+            if (templateVersionId != null) {
+                // The routine moves a document only to an activated version of its own template.
+                throw new DocumentTemplateVersionUnavailableException(templateIdOf(workspaceId, documentId), templateVersionId);
             }
             throw new IllegalStateException(
                     "Document " + documentId + " rejected revision " + revisionId + " as its direct next revision.");
@@ -313,7 +343,7 @@ class JdbcDocumentRepository implements DocumentRepository {
         insertEvidence(workspaceId, documentId, revisionId, evidence);
         insertFieldStates(workspaceId, documentId, revisionId, fieldStates);
         createMutationReceipt(reservation.record(), documentId, revisionId);
-        return mutationResultFor(reservation.record());
+        return mutationResultFor(reservation.record(), false);
     }
 
     private DocumentIdempotencyReservation reserveIdempotency(
@@ -394,7 +424,8 @@ class JdbcDocumentRepository implements DocumentRepository {
                 record.requestHash().value());
     }
 
-    private DocumentMutationResult mutationResultFor(DocumentIdempotencyRecord record) {
+    /** The result the record's receipt names; {@code replayed} when it was written for an earlier request than this one. */
+    private DocumentMutationResult mutationResultFor(DocumentIdempotencyRecord record, boolean replayed) {
         DocumentMutationReceipt receipt = jdbcTemplate.query(
                         "SELECT " + DOCUMENT_MUTATION_RECEIPT_COLUMNS
                                 + " FROM document_command_receipt WHERE workspace_id = ? AND idempotency_record_id = ?",
@@ -426,7 +457,8 @@ class JdbcDocumentRepository implements DocumentRepository {
                 document,
                 revision,
                 receipt.requestHash(),
-                receipt.acceptedAt());
+                receipt.acceptedAt(),
+                replayed);
     }
 
     private boolean advanceCurrentRevision(
@@ -451,6 +483,20 @@ class JdbcDocumentRepository implements DocumentRepository {
             throw new IllegalStateException("Document " + documentId + " has no revision selected by its current pointer.");
         }
         return currentRevisionId;
+    }
+
+    private long templateIdOf(long workspaceId, long documentId) {
+        Long templateId = jdbcTemplate.queryForObject(
+                "SELECT template_id FROM document WHERE workspace_id = ? AND id = ?", Long.class, workspaceId, documentId);
+        return templateId == null ? 0 : templateId;
+    }
+
+    private boolean isTrashed(long workspaceId, long templateId) {
+        return Boolean.TRUE.equals(jdbcTemplate.query(
+                "SELECT trashed_at IS NOT NULL FROM template WHERE workspace_id = ? AND id = ?",
+                rs -> rs.next() && rs.getBoolean(1),
+                workspaceId,
+                templateId));
     }
 
     private Document mapDocument(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
@@ -482,6 +528,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                 rs.getLong("id"),
                 rs.getLong("workspace_id"),
                 rs.getLong("document_id"),
+                rs.getLong("template_version_id"),
                 rs.getInt("revision_number"),
                 hasNoParent ? null : parentRevisionId,
                 content,
@@ -499,6 +546,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                 revision.id(),
                 revision.workspaceId(),
                 revision.documentId(),
+                revision.templateVersionId(),
                 revision.revisionNumber(),
                 revision.parentRevisionId(),
                 revision.content(),
@@ -517,6 +565,7 @@ class JdbcDocumentRepository implements DocumentRepository {
                 revision.id(),
                 revision.workspaceId(),
                 revision.documentId(),
+                revision.templateVersionId(),
                 revision.revisionNumber(),
                 revision.parentRevisionId(),
                 revision.content(),

@@ -240,6 +240,18 @@ describe('where saving is offered', () => {
     expect(choices(noConversion)).toEqual(['WORD_FILE', 'PDF_FILE'])
   })
 
+  it('offers no Word file and no Google Doc for a PDF form, whose export is a PDF and nothing else', async () => {
+    const pdfForm = receipt({ format: 'PDF', docxArtifactId: null, docxSha256: null, isCompletePair: false })
+    const wrapper = await mountPanel({ receipt: pdfForm })
+    expect(choices(wrapper)).toEqual(['PDF_FILE'])
+    expect(text(wrapper)).not.toContain('Google Doc')
+
+    // Even an export that names no PDF offers nothing made from a Word file it does not have.
+    const neither = await mountPanel({ receipt: { ...pdfForm, pdfArtifactId: null, pdfSha256: null } })
+    expect(choices(neither)).toEqual([])
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
   it('shows what approving would do, and saves nothing until it is approved, with the hash of what was shown', async () => {
     vi.mocked(proposeDriveSave).mockResolvedValue(action())
     const wrapper = await mountPanel()
@@ -411,7 +423,7 @@ describe('what the review of this panel found', () => {
     const wrapper = await mountPanel({ receipt: null })
 
     expect(wrapper.find('form').exists()).toBe(false)
-    expect(text(wrapper)).toContain('Validate, approve and export this version of the document to save it to Google Drive.')
+    expect(text(wrapper)).toContain('Once this version is approved and exported, it can be saved to Google Drive.')
     expect(buttonNamed(wrapper, `Ask Google what happened to ${FILE}`).exists()).toBe(true)
   })
 
@@ -670,6 +682,13 @@ describe('adding this version to a Google Doc a save made', () => {
     vi.mocked(getCapabilities).mockResolvedValue(capabilities(['DRIVE_SAVE_FILE', 'DRIVE_SAVE_AS_GOOGLE_DOC']))
     const notOffered = await mountPanel()
     expect(notOffered.findAll('button').some((button) => button.text().startsWith("Add this version's text"))).toBe(false)
+  })
+
+  it('is not offered with the export of a PDF form, which has no Word file to take the text from', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['DRIVE_SAVE_FILE', 'DRIVE_SAVE_AS_GOOGLE_DOC', 'GOOGLE_DOC_APPEND']))
+    vi.mocked(listActions).mockResolvedValue([converted()])
+    const wrapper = await mountPanel({ receipt: receipt({ format: 'PDF', docxArtifactId: null, docxSha256: null, isCompletePair: false }) })
+    expect(wrapper.findAll('button').some((button) => button.text().startsWith("Add this version's text"))).toBe(false)
   })
 
   it('never offers for approval an addition it cannot state in full', async () => {

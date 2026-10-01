@@ -23,6 +23,9 @@ import java.util.Optional;
  * here would risk shipping bytes different from what was actually
  * reviewed and approved, defeating the entire point of binding export to
  * one exact manifest.
+ *
+ * <p>A PDF template's manifest names a filled PDF and no Word file, so only
+ * a PDF export is offered for it, and its receipt names the PDF alone.
  */
 public class ExportService {
 
@@ -50,6 +53,9 @@ public class ExportService {
         ValidationManifest manifest = requireManifest(workspaceId, userId, documentId, validationManifestId);
         requireCurrent(document, manifest);
         requireNoBlockingFindings(manifest);
+        if (manifest.docxArtifactId() == null && format != ExportFormat.PDF) {
+            throw new ExportFormatNotOfferedException(format);
+        }
         return exportApprovalRepository.save(
                 workspaceId, userId, documentId, manifest.revisionId(), manifest.templateVersionId(), manifest.id(), format);
     }
@@ -75,11 +81,18 @@ public class ExportService {
         requireCurrent(document, manifest);
         requireNoBlockingFindings(manifest);
 
-        Artifact docxArtifact = requireMatchingArtifact(workspaceId, userId, manifest.docxArtifactId(), manifest.docxSha256());
+        Long docxArtifactId = null;
+        String docxSha256 = null;
+        // A receipt names the Word file whenever there is one, whatever the format, because it is what the PDF was made from.
+        // A PDF template has none: its PDF is filled directly.
+        if (manifest.docxArtifactId() != null) {
+            Artifact docxArtifact = requireMatchingArtifact(workspaceId, userId, manifest.docxArtifactId(), manifest.docxSha256());
+            docxArtifactId = docxArtifact.id();
+            docxSha256 = docxArtifact.sha256();
+        }
         Long pdfArtifactId = null;
         String pdfSha256 = null;
         // What was approved is what is exported: someone who approved the Word file alone is not also handed a PDF.
-        // A receipt always names the Word file, whatever the format, because it is what the PDF was made from.
         if (manifest.pdfArtifactId() != null && approval.format() != ExportFormat.DOCX) {
             Artifact pdfArtifact = requireMatchingArtifact(workspaceId, userId, manifest.pdfArtifactId(), manifest.pdfSha256());
             pdfArtifactId = pdfArtifact.id();
@@ -88,7 +101,7 @@ public class ExportService {
 
         return exportRepository.save(
                 workspaceId, userId, documentId, manifest.revisionId(), manifest.templateVersionId(), approval.id(), manifest.id(),
-                docxArtifact.id(), docxArtifact.sha256(), pdfArtifactId, pdfSha256, approval.format());
+                docxArtifactId, docxSha256, pdfArtifactId, pdfSha256, approval.format());
     }
 
     /** Like the receipt below, answers only for a document that is still there; one in the trash has nothing to show. */

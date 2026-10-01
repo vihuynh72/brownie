@@ -20,7 +20,6 @@ async function mountView(component: typeof ChatView) {
     history: createWebHistory(),
     routes: [
       { path: '/', component: stub },
-      { path: '/documents/new', component: stub },
       { path: '/documents/:id', component: stub },
     ],
   })
@@ -68,7 +67,11 @@ describe('ChatView', () => {
     const rows = wrapper.findAll('.chat__row')
     expect(rows[0]!.attributes('href')).toBe('/documents/2')
     expect(rows[1]!.attributes('href')).toBe('/documents/1')
-    expect(wrapper.find('a[href="/documents/new"]').exists()).toBe(true)
+    // A new document starts from Home or from My Templates; there is no page of its own to link to.
+    expect(wrapper.get('.chat__start').text().replace(/\s+/g, ' ')).toBe(
+      'To start a new one, upload a Word form on Home, or choose a template under My Templates.',
+    )
+    expect(wrapper.get('.chat__start a').attributes('href')).toBe('/')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 

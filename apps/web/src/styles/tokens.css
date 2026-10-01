@@ -1,9 +1,9 @@
 /*
  * Shared design tokens. Colors are the warm-paper palette with measured
- * contrast ratios (main text on paper 13.95:1, main text on honey 6.66:1,
- * secondary text on paper 5.10:1 -- all comfortably above WCAG AA for
- * normal text). White text on honey fails that threshold, so honey is
- * always paired with --color-text, never a light foreground.
+ * contrast ratios (main text on paper 12.94:1, main text on honey 6.66:1,
+ * secondary text on paper 4.74:1 -- all above WCAG AA for normal text).
+ * White text on honey fails that threshold, so honey is always paired
+ * with --color-text, never a light foreground.
  *
  * --color-honey-soft is used as a text background too (badges, and the
  * revision-history "changed" row highlight): main text on honey-soft is
@@ -53,25 +53,47 @@
 }
 
 :root {
-  --color-paper: #fbfaf6;
+  /* The design's own page color, a shade warmer than white paper so the white sheet and cards lift off it. */
+  --color-paper: #f5f1ea;
+  /* A step deeper than paper: the track of a two-way switch, and the number tile of a numbered choice. */
+  --color-paper-deep: #efe9e0;
   --color-surface: #ffffff;
   --color-text: #2a2924;
   --color-text-secondary: #6e6b61;
   /*
-   * Secondary text is measured against paper (5.10:1) and has almost no
-   * margin left: on the sidebar it falls to 4.43:1 and on the cocoa wash a
-   * row takes on hover, to 4.38:1 -- both under WCAG AA's 4.5:1, and both
+   * Secondary text is measured against paper (4.74:1) and has almost no
+   * margin left: on the sidebar it falls to 4.34:1 and on the cocoa wash a
+   * row takes on hover, to 4.00:1 -- both under WCAG AA's 4.5:1, and both
    * found by scanning the running page rather than by reading the palette.
    * This darker grey is the same hue and clears it everywhere it is used:
-   * 6.40:1 on paper, 5.56:1 on the sidebar, 5.49:1 on the hover wash.
+   * 5.94:1 on paper, 5.44:1 on the sidebar, 5.01:1 on the hover wash.
    */
   --color-text-muted: #5f5c53;
   --color-honey: #d9a82e;
   --color-honey-soft: #fff2be;
+  /*
+   * An empty fill spot: a faint honey tint with a light dashed edge, quiet enough that a page full of
+   * gaps still reads as a page. The spot is told apart by its bracketed placeholder text, which keeps
+   * 6.30:1 in muted grey on this tint; the edge only adds to it.
+   */
+  --color-honey-faint: #fff8e3;
+  --color-honey-line: #d3c9ad;
   --color-success: #3e6b50;
   --color-error: #b33a2b;
   --color-focus: #2a6f9b;
   --color-border: #e4e1d6;
+  /*
+   * The design's quiet outline, lighter than --color-border: around a card that sits on paper (the
+   * Rules card, a source card, a list of choices) and a read-only chip, never as the only edge of a
+   * control someone has to find.
+   */
+  --color-hairline: #e6e1d8;
+  /* The track of the rail beside the page, and the thumb of a thin scroll bar. */
+  --color-track: #e4ddd1;
+  --color-scrollbar: #8f8a80;
+  /* What the person said in the chat: a light grey bubble, the design's own, with main text at 13.37:1. */
+  --color-bubble: #f5f5f5;
+  --color-bubble-border: #d9d9d9;
 
   /* 4.80:1 against white: the action color, safe for a white button label. */
   --color-cocoa: #96684a;
@@ -79,13 +101,14 @@
   --color-cocoa-strong: #7e5639;
   /* The design's own lighter cocoa, used only behind decorative glyphs. */
   --color-cocoa-tile: #ac7f5e;
-  /* A cocoa wash for the selected navigation row; main text on it is 11.4:1. */
-  --color-cocoa-wash: #f1e7df;
+  /* A cocoa wash for the selected navigation row and a hovered control; main text on it is 10.92:1. It
+     is deep enough to show on the sidebar, which is itself only a shade off paper. */
+  --color-cocoa-wash: #e9ddd2;
 
-  /* The sidebar sits a shade deeper than paper so the two regions read apart
+  /* The sidebar sits a shade deeper and rosier than paper so the two regions read apart
      without a hard divider. Its quieter text uses --color-text-muted, not
      --color-text-secondary, for the reason recorded on that token. */
-  --color-sidebar: #f1ece2;
+  --color-sidebar: #f1e6dd;
   --color-sidebar-border: #e2dcd0;
 
   --space-1: 0.25rem;
@@ -96,6 +119,8 @@
   --space-6: 2rem;
   --space-8: 3rem;
 
+  /* Captions, chips and the page's status line: the smallest type, always in main or muted text. */
+  --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;
   --font-size-base: 1rem;
   --font-size-lg: 1.25rem;
@@ -104,11 +129,13 @@
   --font-size-display: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
 
   --control-height: 2.5rem;
+  /* The side of a square icon control (see .icon-button); a finger gets more room, set below. */
+  --icon-button-size: 2rem;
   --radius: 0.5rem;
   --radius-pill: 999px;
 
   /* How wide the docked sidebar is, and how far the main region sits from it. */
-  --sidebar-width: 15rem;
+  --sidebar-width: 16.25rem;
 
   /* Motion: short enough to feel like a response rather than an effect.
      Both are set to an imperceptible duration under prefers-reduced-motion
@@ -220,7 +247,12 @@ textarea {
   border-color: var(--color-cocoa);
 }
 
-.button:disabled {
+/*
+ * A button that is busy or not ready yet but keeps the focus it holds says so with aria-disabled
+ * rather than the disabled attribute (which would drop that focus); it looks the same either way.
+ */
+.button:disabled,
+.button[aria-disabled='true'] {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -234,8 +266,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-inline-size: 2rem;
-  min-block-size: 2rem;
+  min-inline-size: var(--icon-button-size);
+  min-block-size: var(--icon-button-size);
   padding: var(--space-1);
   border: 1px solid transparent;
   border-radius: var(--radius);
@@ -254,9 +286,8 @@ textarea {
 
 /* A finger needs more room than a mouse pointer does. */
 @media (pointer: coarse) {
-  .icon-button {
-    min-inline-size: 2.75rem;
-    min-block-size: 2.75rem;
+  :root {
+    --icon-button-size: 2.75rem;
   }
 }
 
@@ -293,6 +324,33 @@ textarea {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/*
+ * A small turning ring beside words that say something is under way. The words carry the meaning; the ring
+ * only shows that it is still going, so under a reduced-motion preference it stands still.
+ */
+.activity-indicator {
+  display: inline-block;
+  flex: none;
+  inline-size: 0.875em;
+  block-size: 0.875em;
+  border: 2px solid color-mix(in srgb, var(--color-cocoa) 25%, transparent);
+  border-block-start-color: var(--color-cocoa);
+  border-radius: 50%;
+  animation: activity-turn 0.9s linear infinite;
+}
+
+@keyframes activity-turn {
+  to {
+    rotate: 1turn;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-indicator {
+    animation: none;
+  }
 }
 
 /* The skip link is hidden until a keyboard reaches it, then sits on top of the page so it can be seen and used. */

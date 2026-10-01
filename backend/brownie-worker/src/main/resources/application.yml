@@ -91,10 +91,15 @@ brownie:
     global-monthly-limit-usd: ${BROWNIE_MODEL_MONTHLY_USD_LIMIT:15.00}
   ai:
     openai:
-      # The one evaluated snapshot this gateway is fixed to -- must match
-      # brownie-api's own identical default, since both call the same
-      # model gateway adapter.
-      model: ${BROWNIE_OPENAI_MODEL:gpt-5.4-mini-2026-03-17}
+      # As in brownie-api, and it must be the same value there: both call
+      # the same model gateway and charge the same usage ledger, and the
+      # model must have a price in ModelPricing or the worker refuses to
+      # start. Going back to the model Brownie was first evaluated on is
+      # setting BROWNIE_OPENAI_MODEL=gpt-5.4-mini-2026-03-17 for both.
+      model: ${BROWNIE_OPENAI_MODEL:gpt-6-luna}
+      # As in brownie-api: "none" keeps each request's output cap for the
+      # reply itself rather than for hidden reasoning.
+      reasoning-effort: ${BROWNIE_OPENAI_REASONING_EFFORT:none}
 
 logging:
   structured:

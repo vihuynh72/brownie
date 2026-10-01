@@ -1,0 +1,748 @@
+{
+  "about": [
+    "Worked examples of converting a box on a PDF page between the ways a page is measured.",
+    "box, point: points on the page as stored (before its rotation), origin at the crop box's top-left corner, Y down.",
+    "userSpace: the PDF's own coordinates, Y up: the box's lower-left and upper-right corners.",
+    "displayed, displayedPoint: the page as a viewer shows it, turned clockwise by its rotation, origin at the top-left of what is shown, Y down.",
+    "uprightFrame: the transform [a b c d e f] from a frame whose origin is the box's bottom-left corner as displayed (X to the displayed right, Y displayed up) into user space, and that frame's width and height.",
+    "The server and the web app are both tested against this file."
+  ],
+  "cases": [
+    {
+      "name": "Letter page, turned 0 degrees, box 1",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 0,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 72,
+        "lly": 674,
+        "urx": 272,
+        "ury": 692
+      },
+      "displayed": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "uprightFrame": {
+        "a": 1,
+        "b": 0,
+        "c": 0,
+        "d": 1,
+        "e": 72,
+        "f": 674,
+        "width": 200,
+        "height": 18
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 82,
+        "y": 105
+      }
+    },
+    {
+      "name": "Letter page, turned 0 degrees, box 2",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 0,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 300,
+        "lly": 232,
+        "urx": 420,
+        "ury": 292
+      },
+      "displayed": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "uprightFrame": {
+        "a": 1,
+        "b": 0,
+        "c": 0,
+        "d": 1,
+        "e": 300,
+        "f": 232,
+        "width": 120,
+        "height": 60
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 310,
+        "y": 505
+      }
+    },
+    {
+      "name": "Letter page, turned 90 degrees, box 1",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 90,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 72,
+        "lly": 674,
+        "urx": 272,
+        "ury": 692
+      },
+      "displayed": {
+        "x": 674,
+        "y": 72,
+        "width": 18,
+        "height": 200
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": 1,
+        "c": -1,
+        "d": 0,
+        "e": 272,
+        "f": 674,
+        "width": 18,
+        "height": 200
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 687,
+        "y": 82
+      }
+    },
+    {
+      "name": "Letter page, turned 90 degrees, box 2",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 90,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 300,
+        "lly": 232,
+        "urx": 420,
+        "ury": 292
+      },
+      "displayed": {
+        "x": 232,
+        "y": 300,
+        "width": 60,
+        "height": 120
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": 1,
+        "c": -1,
+        "d": 0,
+        "e": 420,
+        "f": 232,
+        "width": 60,
+        "height": 120
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 287,
+        "y": 310
+      }
+    },
+    {
+      "name": "Letter page, turned 180 degrees, box 1",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 180,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 72,
+        "lly": 674,
+        "urx": 272,
+        "ury": 692
+      },
+      "displayed": {
+        "x": 340,
+        "y": 674,
+        "width": 200,
+        "height": 18
+      },
+      "uprightFrame": {
+        "a": -1,
+        "b": 0,
+        "c": 0,
+        "d": -1,
+        "e": 272,
+        "f": 692,
+        "width": 200,
+        "height": 18
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 530,
+        "y": 687
+      }
+    },
+    {
+      "name": "Letter page, turned 180 degrees, box 2",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 180,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 300,
+        "lly": 232,
+        "urx": 420,
+        "ury": 292
+      },
+      "displayed": {
+        "x": 192,
+        "y": 232,
+        "width": 120,
+        "height": 60
+      },
+      "uprightFrame": {
+        "a": -1,
+        "b": 0,
+        "c": 0,
+        "d": -1,
+        "e": 420,
+        "f": 292,
+        "width": 120,
+        "height": 60
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 302,
+        "y": 287
+      }
+    },
+    {
+      "name": "Letter page, turned 270 degrees, box 1",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 270,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 72,
+        "lly": 674,
+        "urx": 272,
+        "ury": 692
+      },
+      "displayed": {
+        "x": 100,
+        "y": 340,
+        "width": 18,
+        "height": 200
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": -1,
+        "c": 1,
+        "d": 0,
+        "e": 72,
+        "f": 692,
+        "width": 18,
+        "height": 200
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 105,
+        "y": 530
+      }
+    },
+    {
+      "name": "Letter page, turned 270 degrees, box 2",
+      "cropBox": {
+        "llx": 0,
+        "lly": 0,
+        "width": 612,
+        "height": 792
+      },
+      "rotation": 270,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 300,
+        "lly": 232,
+        "urx": 420,
+        "ury": 292
+      },
+      "displayed": {
+        "x": 500,
+        "y": 192,
+        "width": 60,
+        "height": 120
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": -1,
+        "c": 1,
+        "d": 0,
+        "e": 300,
+        "f": 292,
+        "width": 60,
+        "height": 120
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 505,
+        "y": 302
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 0 degrees, box 1",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 0,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 108,
+        "lly": 624,
+        "urx": 308,
+        "ury": 642
+      },
+      "displayed": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "uprightFrame": {
+        "a": 1,
+        "b": 0,
+        "c": 0,
+        "d": 1,
+        "e": 108,
+        "f": 624,
+        "width": 200,
+        "height": 18
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 82,
+        "y": 105
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 0 degrees, box 2",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 0,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 336,
+        "lly": 182,
+        "urx": 456,
+        "ury": 242
+      },
+      "displayed": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "uprightFrame": {
+        "a": 1,
+        "b": 0,
+        "c": 0,
+        "d": 1,
+        "e": 336,
+        "f": 182,
+        "width": 120,
+        "height": 60
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 310,
+        "y": 505
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 90 degrees, box 1",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 90,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 108,
+        "lly": 624,
+        "urx": 308,
+        "ury": 642
+      },
+      "displayed": {
+        "x": 574,
+        "y": 72,
+        "width": 18,
+        "height": 200
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": 1,
+        "c": -1,
+        "d": 0,
+        "e": 308,
+        "f": 624,
+        "width": 18,
+        "height": 200
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 587,
+        "y": 82
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 90 degrees, box 2",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 90,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 336,
+        "lly": 182,
+        "urx": 456,
+        "ury": 242
+      },
+      "displayed": {
+        "x": 132,
+        "y": 300,
+        "width": 60,
+        "height": 120
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": 1,
+        "c": -1,
+        "d": 0,
+        "e": 456,
+        "f": 182,
+        "width": 60,
+        "height": 120
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 187,
+        "y": 310
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 180 degrees, box 1",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 180,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 108,
+        "lly": 624,
+        "urx": 308,
+        "ury": 642
+      },
+      "displayed": {
+        "x": 268,
+        "y": 574,
+        "width": 200,
+        "height": 18
+      },
+      "uprightFrame": {
+        "a": -1,
+        "b": 0,
+        "c": 0,
+        "d": -1,
+        "e": 308,
+        "f": 642,
+        "width": 200,
+        "height": 18
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 458,
+        "y": 587
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 180 degrees, box 2",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 180,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 336,
+        "lly": 182,
+        "urx": 456,
+        "ury": 242
+      },
+      "displayed": {
+        "x": 120,
+        "y": 132,
+        "width": 120,
+        "height": 60
+      },
+      "uprightFrame": {
+        "a": -1,
+        "b": 0,
+        "c": 0,
+        "d": -1,
+        "e": 456,
+        "f": 242,
+        "width": 120,
+        "height": 60
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 230,
+        "y": 187
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 270 degrees, box 1",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 270,
+      "box": {
+        "x": 72,
+        "y": 100,
+        "width": 200,
+        "height": 18
+      },
+      "userSpace": {
+        "llx": 108,
+        "lly": 624,
+        "urx": 308,
+        "ury": 642
+      },
+      "displayed": {
+        "x": 100,
+        "y": 268,
+        "width": 18,
+        "height": 200
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": -1,
+        "c": 1,
+        "d": 0,
+        "e": 108,
+        "f": 642,
+        "width": 18,
+        "height": 200
+      },
+      "point": {
+        "x": 82,
+        "y": 105
+      },
+      "displayedPoint": {
+        "x": 105,
+        "y": 458
+      }
+    },
+    {
+      "name": "crop box starting at (36, 50), turned 270 degrees, box 2",
+      "cropBox": {
+        "llx": 36,
+        "lly": 50,
+        "width": 540,
+        "height": 692
+      },
+      "rotation": 270,
+      "box": {
+        "x": 300,
+        "y": 500,
+        "width": 120,
+        "height": 60
+      },
+      "userSpace": {
+        "llx": 336,
+        "lly": 182,
+        "urx": 456,
+        "ury": 242
+      },
+      "displayed": {
+        "x": 500,
+        "y": 120,
+        "width": 60,
+        "height": 120
+      },
+      "uprightFrame": {
+        "a": 0,
+        "b": -1,
+        "c": 1,
+        "d": 0,
+        "e": 336,
+        "f": 242,
+        "width": 60,
+        "height": 120
+      },
+      "point": {
+        "x": 310,
+        "y": 505
+      },
+      "displayedPoint": {
+        "x": 505,
+        "y": 230
+      }
+    }
+  ]
+}

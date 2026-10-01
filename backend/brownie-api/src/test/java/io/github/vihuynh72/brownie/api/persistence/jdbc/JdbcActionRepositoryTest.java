@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.action.ActionAttempt;
 import io.github.vihuynh72.brownie.core.action.ActionFailure;
 import io.github.vihuynh72.brownie.core.action.ActionRepository;
@@ -52,13 +55,8 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -90,7 +88,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcActionRepositoryTest {
 
     private static final String API_PASSWORD = "brownie_api_local_only";
@@ -98,20 +96,14 @@ class JdbcActionRepositoryTest {
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final int LEASE = 180;
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword("postgres_bootstrap_only")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
     }
@@ -188,7 +180,7 @@ class JdbcActionRepositoryTest {
                         + " VALUES (" + fixture.workspaceId + ", " + action.id() + ", 1, 'EXECUTE', now(), now() + interval '3 minutes')")) {
             assertThatThrownBy(() -> asApi(fixture.userId, statement)).as(statement).hasMessageContaining("permission denied");
         }
-        try (Connection worker = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD);
+        try (Connection worker = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD);
                 PreparedStatement select = worker.prepareStatement("SELECT count(*) FROM action_request")) {
             assertThatThrownBy(select::executeQuery).hasMessageContaining("permission denied");
         }
@@ -589,7 +581,8 @@ class JdbcActionRepositoryTest {
     private boolean waitingOnALock() {
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(
-                        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%purge_trashed_document%'");
+                        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%purge_trashed_document%'"
+                                + " AND datname = current_database()");
                 ResultSet rs = statement.executeQuery()) {
             rs.next();
             return rs.getLong(1) > 0;
@@ -837,10 +830,6 @@ class JdbcActionRepositoryTest {
     }
 
     private static Connection ownerConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 }

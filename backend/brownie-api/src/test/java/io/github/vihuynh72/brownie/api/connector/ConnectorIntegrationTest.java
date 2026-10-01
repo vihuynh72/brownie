@@ -3,6 +3,9 @@ package io.github.vihuynh72.brownie.api.connector;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import io.github.vihuynh72.brownie.api.connector.google.GoogleConsentRequests;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.connector.ConnectionReconnectRequiredException;
 import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.connector.ConnectorService;
@@ -41,16 +44,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.web.util.UriComponentsBuilder;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -95,7 +93,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "brownie.connectors.google.client-id=stand-in-client.apps.googleusercontent.com",
         "brownie.connectors.google.client-secret=stand-in-client-secret-value",
         "brownie.connectors.token-key-id=test-key"})
-@Testcontainers
+@DockerTest
 @ExtendWith(OutputCaptureExtension.class)
 class ConnectorIntegrationTest {
 
@@ -111,20 +109,14 @@ class ConnectorIntegrationTest {
     private static final WireMockServer GOOGLE = startedGoogle();
     private static final String TOKEN_KEY = randomKey();
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword("postgres_bootstrap_only")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
         registry.add("brownie.connectors.token-key", () -> TOKEN_KEY);
@@ -452,7 +444,7 @@ class ConnectorIntegrationTest {
         startConsentAndAnswer(owner, "DRIVE_FILES", null);
         long connectionId = count("SELECT id FROM connector_connection WHERE workspace_id = ?", owner.workspaceId());
 
-        try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+        try (Connection api = DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD)) {
             api.setAutoCommit(false);
             actAs(api, stranger.userId());
             assertThat(countOn(api, "SELECT count(*) FROM connector_connection WHERE id = " + connectionId)).as("invisible to anyone else").isZero();
@@ -493,7 +485,7 @@ class ConnectorIntegrationTest {
                     .hasMessageContaining("connector_connection_token_shape");
         }
 
-        try (Connection worker = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
+        try (Connection worker = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
             assertThatThrownBy(() -> worker.prepareStatement("SELECT token_ciphertext FROM connector_connection").executeQuery())
                     .as("the worker never reads a token").isInstanceOf(SQLException.class).hasMessageContaining("permission denied");
         }
@@ -574,7 +566,7 @@ class ConnectorIntegrationTest {
                 .as("forgetting it again changes nothing").isEmpty();
         assertThat(resourceGrantRepository.findOpen(member.workspaceId(), member.userId(), connectionId)).isEmpty();
 
-        try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+        try (Connection api = DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD)) {
             api.setAutoCommit(false);
             actAs(api, member.userId());
             assertThat(api.prepareStatement("UPDATE connector_resource_grant SET revoked_at = NULL, revoked_reason = NULL"
@@ -727,7 +719,7 @@ class ConnectorIntegrationTest {
     }
 
     private static Connection ownerConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
     private static long count(String sql, long parameter) throws SQLException {
@@ -748,10 +740,6 @@ class ConnectorIntegrationTest {
                 return rs.getString(1);
             }
         }
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     private static WireMockServer startedGoogle() {

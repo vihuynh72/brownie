@@ -12,7 +12,8 @@ import java.util.Objects;
  * -- a real, honestly-represented partial result, the same nullable-pair
  * shape {@link io.github.vihuynh72.brownie.core.validation.ValidationManifest}
  * already uses, never a claim that both formats succeeded when only one
- * did.
+ * did. {@code docxArtifactId}/{@code docxSha256} are null for a PDF
+ * template's export, which is a PDF and nothing else.
  */
 public record ExportReceipt(
         long id,
@@ -22,7 +23,7 @@ public record ExportReceipt(
         long templateVersionId,
         long exportApprovalId,
         long validationManifestId,
-        long docxArtifactId,
+        Long docxArtifactId,
         String docxSha256,
         Long pdfArtifactId,
         String pdfSha256,
@@ -31,15 +32,21 @@ public record ExportReceipt(
         OffsetDateTime exportedAt) {
 
     public ExportReceipt {
-        Objects.requireNonNull(docxSha256, "docxSha256");
+        if ((docxArtifactId == null) != (docxSha256 == null)) {
+            throw new IllegalArgumentException("docxArtifactId and docxSha256 must be both present or both absent.");
+        }
         if ((pdfArtifactId == null) != (pdfSha256 == null)) {
             throw new IllegalArgumentException("pdfArtifactId and pdfSha256 must be both present or both absent.");
+        }
+        if (docxArtifactId == null && pdfArtifactId == null) {
+            throw new IllegalArgumentException("An export receipt names at least one file.");
         }
         Objects.requireNonNull(format, "format");
         Objects.requireNonNull(exportedAt, "exportedAt");
     }
 
+    /** Whether the export holds both the Word file and the PDF. */
     public boolean isCompletePair() {
-        return pdfArtifactId != null;
+        return docxArtifactId != null && pdfArtifactId != null;
     }
 }

@@ -90,7 +90,7 @@ class CompilationController {
             long revisionId,
             long templateId,
             long templateVersionId,
-            long docxArtifactId,
+            Long docxArtifactId,
             String docxSha256,
             long pdfArtifactId,
             String pdfSha256,

@@ -54,12 +54,16 @@ import io.github.vihuynh72.brownie.core.artifact.UnsupportedArtifactTypeExceptio
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.export.BlockingValidationFindingsException;
 import io.github.vihuynh72.brownie.core.export.ExportArtifactIntegrityException;
+import io.github.vihuynh72.brownie.core.export.ExportFormatNotOfferedException;
 import io.github.vihuynh72.brownie.core.export.ExportNotApprovedException;
 import io.github.vihuynh72.brownie.core.export.ExportReceiptNotFoundException;
 import io.github.vihuynh72.brownie.core.export.StaleExportApprovalException;
 import io.github.vihuynh72.brownie.core.document.NotDocxArtifactException;
+import io.github.vihuynh72.brownie.core.document.NotExtractableMediaTypeException;
 import io.github.vihuynh72.brownie.core.document.NotPdfArtifactException;
 import io.github.vihuynh72.brownie.core.document.NotPlainTextArtifactException;
+import io.github.vihuynh72.brownie.core.document.PdfFormNotFillableException;
+import io.github.vihuynh72.brownie.core.document.UnusablePdfFormException;
 import io.github.vihuynh72.brownie.core.evidence.InvalidEvidenceLocatorException;
 import io.github.vihuynh72.brownie.core.example.NoComparableFieldBindingsException;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanNotFoundException;
@@ -94,11 +98,27 @@ import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineIntegrityException;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
+import io.github.vihuynh72.brownie.core.template.TemplateLayoutUnavailableException;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
+import io.github.vihuynh72.brownie.core.template.TemplateFieldNotFoundException;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
+import io.github.vihuynh72.brownie.core.prepare.ConversionFormatDisabledException;
+import io.github.vihuynh72.brownie.core.prepare.ConverterUnavailableException;
+import io.github.vihuynh72.brownie.core.prepare.FillableFormFailedException;
+import io.github.vihuynh72.brownie.core.prepare.FillableFormNotFoundException;
+import io.github.vihuynh72.brownie.core.prepare.NotAFillableFormException;
 import io.github.vihuynh72.brownie.core.validation.ValidationManifestNotFoundException;
+import io.github.vihuynh72.brownie.core.prepare.FillSpotPlacementException;
+import io.github.vihuynh72.brownie.core.revision.DocumentAlreadyOnTemplateVersionException;
+import io.github.vihuynh72.brownie.core.revision.FillSpotLockedException;
+import io.github.vihuynh72.brownie.core.template.DocumentTemplateVersionMovedException;
+import io.github.vihuynh72.brownie.core.template.FillSpotBaselineFailedException;
+import io.github.vihuynh72.brownie.core.template.FillSpotChangeInvalidException;
+import io.github.vihuynh72.brownie.core.template.FillSpotNotPlacedException;
+import io.github.vihuynh72.brownie.core.template.TemplateVersionMovedOnException;
 import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -209,7 +229,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             DocumentNotFoundException.class, JobNotFoundException.class, CompilationNotFoundException.class,
             ValidationManifestNotFoundException.class, ExportNotApprovedException.class,
             ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
-            RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class})
+            RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class,
+            FillableFormNotFoundException.class, TemplateFieldNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -236,12 +257,28 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONTENT_TOO_LARGE, request);
     }
 
+    /**
+     * The reason is what the browser words the refusal from: a spreadsheet
+     * is told it is one, a locked file how to unlock it, a file that fetches
+     * content from the internet why that is refused.
+     */
     @ExceptionHandler(UnsupportedArtifactTypeException.class)
     public ResponseEntity<Object> handleUnsupportedArtifactType(UnsupportedArtifactTypeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
         problem.setTitle("Unsupported Media Type");
         problem.setDetail(ex.getMessage());
         enrich(problem, "UNSUPPORTED_MEDIA_TYPE");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    /** An accepted word-processing file that is read only through a Word working copy made from it, which comes first. */
+    @ExceptionHandler(NotExtractableMediaTypeException.class)
+    public ResponseEntity<Object> handleNotExtractableMediaType(NotExtractableMediaTypeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NEEDS_FILLABLE_COPY");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
     }
 
@@ -331,6 +368,31 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
     }
 
+    /**
+     * The version is there but its file cannot be drawn as a page. A page
+     * that asked for it falls back to listing the fields, so this is its own
+     * code rather than a generic failure.
+     */
+    @ExceptionHandler(TemplateLayoutUnavailableException.class)
+    public ResponseEntity<Object> handleTemplateLayoutUnavailable(TemplateLayoutUnavailableException ex, WebRequest request) {
+        log.warn("A template layout could not be built: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("This template's file could not be drawn as a page.");
+        enrich(problem, "TEMPLATE_LAYOUT_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** The template is there and so is its version, but it is in the Trash Bin; restoring it is what lets a document be started from it. */
+    @ExceptionHandler(TemplateTrashedException.class)
+    public ResponseEntity<Object> handleTemplateTrashed(TemplateTrashedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "TEMPLATE_TRASHED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
     @ExceptionHandler(TemplateVersionStateConflictException.class)
     public ResponseEntity<Object> handleTemplateVersionStateConflict(TemplateVersionStateConflictException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
@@ -378,6 +440,100 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         enrich(problem, "FIELD_LOCKED");
         problem.setProperty("fieldId", ex.fieldId());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** Another correction of the same form got there first; versions stay one straight line, so this one is made again on top of it. */
+    @ExceptionHandler(TemplateVersionMovedOnException.class)
+    public ResponseEntity<Object> handleTemplateVersionMovedOn(TemplateVersionMovedOnException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This form changed while you were working. Reload it and make the change again.");
+        enrich(problem, "TEMPLATE_VERSION_MOVED_ON");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** Fill spots are only changed from the form's newest version; the page offers the move first. */
+    @ExceptionHandler(DocumentTemplateVersionMovedException.class)
+    public ResponseEntity<Object> handleDocumentTemplateVersionMoved(DocumentTemplateVersionMovedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This document is on an older version of its form. Move it to the newest version first.");
+        enrich(problem, "DOCUMENT_TEMPLATE_VERSION_MOVED");
+        problem.setProperty("templateLatestVersionId", ex.currentTemplateVersionId());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(DocumentAlreadyOnTemplateVersionException.class)
+    public ResponseEntity<Object> handleDocumentAlreadyOnTemplateVersion(DocumentAlreadyOnTemplateVersionException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This document is already on that version of its form.");
+        enrich(problem, "DOCUMENT_ALREADY_ON_VERSION");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /**
+     * A place on the page that changed since it was chosen is a conflict to
+     * reload from; a place a spot cannot go is the request's own problem, and
+     * {@code reason} says which (a link, a field Word works out, a header or
+     * footer, the repeating part, a protected part), so the page can say it in
+     * words.
+     */
+    @ExceptionHandler(FillSpotPlacementException.class)
+    public ResponseEntity<Object> handleFillSpotPlacement(FillSpotPlacementException ex, WebRequest request) {
+        if (ex.reason() == FillSpotPlacementException.Reason.ANCHOR_STALE) {
+            ProblemDetail stale = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+            stale.setTitle("Conflict");
+            stale.setDetail("The form changed since you chose the place. Choose it again.");
+            enrich(stale, "FILL_SPOT_ANCHOR_STALE");
+            return handleExceptionInternal(ex, stale, new HttpHeaders(), HttpStatus.CONFLICT, request);
+        }
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "FILL_SPOT_PLACE_NOT_ALLOWED");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler(FillSpotNotPlacedException.class)
+    public ResponseEntity<Object> handleFillSpotNotPlaced(FillSpotNotPlacedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("A value could never be written there, so the fill spot was not added. Choose another place.");
+        enrich(problem, "FILL_SPOT_PLACE_NOT_ALLOWED");
+        problem.setProperty("reason", "NOT_REACHABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler(FillSpotLockedException.class)
+    public ResponseEntity<Object> handleFillSpotLocked(FillSpotLockedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("This change would remove a value you locked. Unlock it first if you mean to remove it.");
+        enrich(problem, "FILL_SPOT_LOCKED");
+        problem.setProperty("fieldId", ex.fieldId());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(FillSpotChangeInvalidException.class)
+    public ResponseEntity<Object> handleFillSpotChangeInvalid(FillSpotChangeInvalidException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "FILL_SPOT_CHANGE_INVALID");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** The same proof activation asks for, failed: documents are never moved to a form that does not print its values faithfully. */
+    @ExceptionHandler(FillSpotBaselineFailedException.class)
+    public ResponseEntity<Object> handleFillSpotBaselineFailed(FillSpotBaselineFailedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("The form would not print correctly with this change, so it was not made.");
+        enrich(problem, "FILL_SPOT_WOULD_NOT_PRINT");
+        problem.setProperty("fields", ex.failedFieldIds());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
     /** Restoring what was already deleted for good, or deleting what was already restored: the entry exists, but it is no longer open. */
@@ -428,6 +584,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unprocessable Entity");
         problem.setDetail(ex.getMessage());
         enrich(problem, "BLOCKING_VALIDATION_FINDINGS");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** The format asked for is not offered for this document: a PDF form is exported as a PDF only. */
+    @ExceptionHandler(ExportFormatNotOfferedException.class)
+    public ResponseEntity<Object> handleExportFormatNotOffered(ExportFormatNotOfferedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "EXPORT_FORMAT_NOT_OFFERED");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
@@ -591,6 +757,38 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Unprocessable Entity");
         problem.setDetail(ex.getMessage());
         enrich(problem, "SOURCE_NOT_EXTRACTABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * A PDF offered as a form cannot be filled at all (locked, signed, a
+     * kind of form Brownie cannot fill, or carrying programs or files): the
+     * message says what to do, and {@code reason} says which it is.
+     */
+    @ExceptionHandler(UnusablePdfFormException.class)
+    public ResponseEntity<Object> handleUnusablePdfForm(UnusablePdfFormException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "PDF_FORM_NOT_FILLABLE");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /**
+     * The filler's own guard. Reading the form refuses all of these first,
+     * so this is reached only when filling fails once the file is opened
+     * again (too large or damaged): it is answered as that refusal would
+     * be, in the same words and with its reason, and logged.
+     */
+    @ExceptionHandler(PdfFormNotFillableException.class)
+    public ResponseEntity<Object> handlePdfFormNotFillable(PdfFormNotFillableException ex, WebRequest request) {
+        log.warn("A PDF form could not be filled ({}): {}", ex.reason(), ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(UnusablePdfFormException.messageFor(ex.reason()));
+        enrich(problem, "PDF_FORM_NOT_FILLABLE");
+        problem.setProperty("reason", ex.reason().name());
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
@@ -983,6 +1181,55 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         enrich(problem, "RENDERER_BUSY");
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.RETRY_AFTER, "10");
+        return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
+    /**
+     * The file is not one this server makes fillable: a plain-text file is
+     * no form. The code says which kind of file it is not.
+     */
+    @ExceptionHandler(NotAFillableFormException.class)
+    public ResponseEntity<Object> handleNotAFillableForm(NotAFillableFormException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, ex.code().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    /** This server has switched converting the file's format off; the same file is refused until that changes. */
+    @ExceptionHandler(ConversionFormatDisabledException.class)
+    public ResponseEntity<Object> handleConversionFormatDisabled(ConversionFormatDisabledException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        problem.setTitle("Unsupported Media Type");
+        problem.setDetail("Files of this kind cannot be opened on this server right now. Save it as a Word document and upload that.");
+        enrich(problem, "FORMAT_DISABLED");
+        problem.setProperty("format", ex.format().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNSUPPORTED_MEDIA_TYPE, request);
+    }
+
+    /** The file was accepted but no fillable copy could be made of it; the reason is what the person is told. */
+    @ExceptionHandler(FillableFormFailedException.class)
+    public ResponseEntity<Object> handleFillableFormFailed(FillableFormFailedException ex, WebRequest request) {
+        log.warn("No fillable copy could be made: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Content");
+        problem.setDetail("This file could not be made ready to fill. Nothing was changed.");
+        enrich(problem, "FILLABLE_FORM_FAILED");
+        problem.setProperty("reason", ex.reason().name());
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** Nothing is known about the file: the converter could not be run, and it may work again shortly. */
+    @ExceptionHandler(ConverterUnavailableException.class)
+    public ResponseEntity<Object> handleConverterUnavailable(ConverterUnavailableException ex, WebRequest request) {
+        log.warn("The converter could not be run: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Service Unavailable");
+        problem.setDetail("Files of this kind cannot be opened right now. Nothing was changed; try again shortly.");
+        enrich(problem, "CONVERTER_UNAVAILABLE");
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "30");
         return handleExceptionInternal(ex, problem, headers, HttpStatus.SERVICE_UNAVAILABLE, request);
     }
 

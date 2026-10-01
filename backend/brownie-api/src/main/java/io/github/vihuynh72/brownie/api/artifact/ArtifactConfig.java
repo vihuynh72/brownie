@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.artifact;
 
+import io.github.vihuynh72.brownie.api.document.docx.PoiCompoundFileProbe;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
@@ -24,6 +25,9 @@ class ArtifactConfig {
             BlobStore blobStore,
             MalwareScanner malwareScanner,
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes) {
-        return new ArtifactService(artifactRepository, blobStore, malwareScanner, maxUploadBytes, ABANDONED_UPLOAD_TTL);
+        // Word 97-2003 files and their encrypted or foreign relatives share one container, which only the document
+        // package's reader can open far enough to tell apart.
+        return new ArtifactService(
+                artifactRepository, blobStore, malwareScanner, maxUploadBytes, ABANDONED_UPLOAD_TTL, new PoiCompoundFileProbe());
     }
 }

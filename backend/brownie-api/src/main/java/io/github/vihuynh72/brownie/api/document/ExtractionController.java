@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingExce
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
 import io.github.vihuynh72.brownie.core.document.DocxFeatureFinding;
+import io.github.vihuynh72.brownie.core.document.DocxFeatureReport;
 import io.github.vihuynh72.brownie.core.document.ExtractionResult;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionNotFoundException;
@@ -97,7 +98,9 @@ class ExtractionController {
 
     /**
      * One combined response shape for every format: {@code
-     * unsupportedFeatures} is populated only for a DOCX result, {@code
+     * unsupportedFeatures} (what stopped the read) and {@code
+     * keptAsIsFeatures} (what the file keeps as it is, beside a complete
+     * read) are populated only for a DOCX result, {@code
      * unsupportedReason}/{@code pages} only for a PDF one, {@code
      * normalizedTextLength} only for a plain-text one -- the same
      * per-format-optional-field convention {@code Artifact} itself already
@@ -116,7 +119,8 @@ class ExtractionController {
             String unsupportedDetail,
             List<PageResponse> pages,
             Integer normalizedTextLength,
-            String failureReason) {
+            String failureReason,
+            List<FeatureFindingResponse> keptAsIsFeatures) {
         static ExtractionResponse from(ExtractionResult result) {
             return switch (result) {
                 case ExtractionResult.Docx docx -> fromDocx(docx.version());
@@ -126,12 +130,12 @@ class ExtractionController {
         }
 
         private static ExtractionResponse fromDocx(ExtractionVersion version) {
-            List<FeatureFindingResponse> findings = version.featureReport() == null
-                    ? List.of()
-                    : version.featureReport().findings().stream().map(FeatureFindingResponse::from).toList();
+            DocxFeatureReport report = version.featureReport() == null ? DocxFeatureReport.empty() : version.featureReport();
+            List<FeatureFindingResponse> refused = report.refused().stream().map(FeatureFindingResponse::from).toList();
+            List<FeatureFindingResponse> keptAsIs = report.keptAsIs().stream().map(FeatureFindingResponse::from).toList();
             return new ExtractionResponse(
-                    version.id(), "DOCX", version.parserVersion(), version.status().name(), findings, null, null, List.of(), null,
-                    version.failureReason());
+                    version.id(), "DOCX", version.parserVersion(), version.status().name(), refused, null, null, List.of(), null,
+                    version.failureReason(), keptAsIs);
         }
 
         private static ExtractionResponse fromPdf(PdfExtractionVersion version) {
@@ -148,7 +152,8 @@ class ExtractionController {
                     version.unsupportedDetail(),
                     pages,
                     null,
-                    version.failureReason());
+                    version.failureReason(),
+                    List.of());
         }
 
         private static ExtractionResponse fromPlainText(PlainTextExtractionVersion version) {
@@ -164,7 +169,8 @@ class ExtractionController {
                     null,
                     List.of(),
                     normalizedTextLength,
-                    version.failureReason());
+                    version.failureReason(),
+                    List.of());
         }
     }
 }

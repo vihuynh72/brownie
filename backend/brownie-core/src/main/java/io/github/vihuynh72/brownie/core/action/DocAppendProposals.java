@@ -81,6 +81,10 @@ public class DocAppendProposals {
             throw new ActionNotProposableException(ActionNotProposableException.Reason.EXPORT_STALE,
                     "The document changed after it was last exported.");
         }
+        // A PDF form's export has no Word file, and the text added to a Doc is read from the filled Word file.
+        if (receipt.docxArtifactId() == null) {
+            throw invalid("Adding to a Google Doc works for Word forms.");
+        }
         ActionRequest target = actionService.find(workspaceId, userId, targetActionId)
                 .filter(action -> action.type() == ActionType.DRIVE_SAVE_AS_GOOGLE_DOC
                         && action.state() == ActionState.SUCCEEDED

@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.generation;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.generation.CancellationSignal;
@@ -23,24 +26,15 @@ import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -59,53 +53,37 @@ import static org.assertj.core.api.Assertions.assertThat;
  * to coax a real model into them on purpose.
  *
  * <p>Skips itself cleanly, the same as {@code ExtractionIntegrationTest},
- * when no real-looking {@code BROWNIE_OPENAI_API_KEY} is present.
+ * when no real-looking {@code BROWNIE_OPENAI_API_KEY} is present, before
+ * it starts anything.
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
+@EnabledIf(
+        value = "hasRealApiKey",
+        disabledReason = "BROWNIE_OPENAI_API_KEY is not set to a real-looking key; skipping the real-model eval.")
 class ExtractionAdversarialIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
         if (hasRealApiKey()) {
             String realKey = System.getenv("BROWNIE_OPENAI_API_KEY");
             registry.add("spring.ai.openai.api-key", () -> realKey);
         }
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     private static boolean hasRealApiKey() {
@@ -121,6 +99,10 @@ class ExtractionAdversarialIntegrationTest {
 
     @Autowired
     private ExtractionService extractionService;
+
+    /** The rates of whichever model this run is configured to call, so an evaluation of another model is budgeted at its own price. */
+    @Autowired
+    private ModelPricing modelPricing;
 
     @Autowired
     private UserIdentityRepository userIdentityRepository;
@@ -228,8 +210,8 @@ class ExtractionAdversarialIntegrationTest {
         return finalized.id();
     }
 
-    private static UsageBudget freshBudget() {
-        return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+    private UsageBudget freshBudget() {
+        return new UsageBudget(UsageLimits.defaultRunLimits(), modelPricing);
     }
 
     private static TemplateVersion flowingMinutesTemplateVersion(long workspaceId) {

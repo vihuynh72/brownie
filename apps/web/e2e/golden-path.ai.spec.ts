@@ -1,12 +1,14 @@
 import { test, expect } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
+import { startDocumentFromSidebar } from './documents'
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 
 /**
- * The real thing: create a document, attach a real source, run the actual
- * grounded-extraction model call through a real running brownie-worker,
- * apply and accept the result, then validate, approve, and export -- the
+ * The real thing: start a document from a template in the sidebar, attach a real source, ask Brownie in
+ * words to fill it, run the actual grounded-extraction model call through a
+ * real running brownie-worker, approve what it found, then check, approve
+ * and export through the Export window -- the
  * complete journey the rest of this suite deliberately stops short of,
  * because this one spends a small amount of real money on a real OpenAI
  * call every time it runs. Not part of `npm run test:e2e`'s default
@@ -34,64 +36,59 @@ competition by 2026-03-10.
 test('a real document goes from empty to a real, exported DOCX/PDF through the actual AI-fill path', async ({ page }, testInfo) => {
   test.setTimeout(120_000)
 
-  await page.goto('/documents/new')
-  await page.getByLabel('Template', { exact: true }).selectOption({ label: 'Flowing meeting minutes' })
-  const title = `E2E golden path ${Date.now()}`
-  await page.getByLabel('Title', { exact: true }).fill(title)
-  await page.getByRole('button', { name: 'Create document' }).click()
-  await page.waitForURL(/\/documents\/\d+$/)
+  await startDocumentFromSidebar(page, 'Flowing meeting minutes')
 
+  // A source is added from Brownie's panel: the + beside the message box opens the upload.
+  await page.getByRole('button', { name: 'Add a source' }).click()
   await page.setInputFiles('#attach-source', {
     name: 'transcript.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from(TRANSCRIPT, 'utf-8'),
   })
-  await expect(page.getByText(/^transcript\.txt/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.source-card').getByText('transcript.txt', { exact: true })).toBeVisible({ timeout: 15_000 })
 
-  await page.getByRole('tab', { name: 'Assist' }).click()
-  await page.getByRole('button', { name: 'Try grounded extraction' }).click()
-  // Cancel appears once the server has accepted the run, so the run exists before the reload below.
-  await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible({ timeout: 15_000 })
+  // Asked in words, as the owner's design has it: Brownie reads the transcript.
+  await page.getByLabel('How may I help you?').fill('fill this from the transcript')
+  await page.getByLabel('How may I help you?').press('Enter')
+  // Stop appears once the server has accepted the reading, so it exists before the reload below.
+  await expect(page.getByRole('button', { name: 'Stop reading' })).toBeVisible({ timeout: 15_000 })
 
-  // A reload while the run is in flight must not strand it: the workspace
-  // finds the document's sources and its latest run on the server again
-  // and carries on polling from there, rather than from tab state.
+  // A reload while the reading is in flight must not strand it: the workspace finds the
+  // document's sources and its latest run on the server again and carries on from there.
   await page.reload()
-  await expect(page.getByText(/^transcript\.txt/)).toBeVisible({ timeout: 15_000 })
-  await page.getByRole('tab', { name: 'Assist' }).click()
-  await expect(page.getByRole('button', { name: 'Apply to document' })).toBeVisible({ timeout: 90_000 })
+  await expect(page.locator('.source-card').getByText('transcript.txt', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('button', { name: 'Show what I found' })).toBeVisible({ timeout: 90_000 })
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
-  await page.getByRole('button', { name: 'Apply to document' }).click()
-  await expect(page.getByText('Proposed changes')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(/Weekly Robotics Club Sync/i)).toBeVisible()
-  await expect(page.getByText(/action items? proposed/i)).toBeVisible()
+  await page.getByRole('button', { name: 'Show what I found' }).click()
+  const proposal = page.locator('.proposal')
+  await expect(proposal.getByText('Here is what I found in transcript.txt:')).toBeVisible({ timeout: 15_000 })
+  await expect(proposal.getByText(/Weekly Robotics Club Sync/i)).toBeVisible()
+  await expect(proposal.getByText(/^Row 1:/)).toBeVisible()
 
-  await page.getByRole('button', { name: 'Accept and update document' }).click()
-  await expect(page.getByText('Applied to the document.')).toBeVisible({ timeout: 15_000 })
+  await page.getByRole('button', { name: /I approve, fill it in/ }).click()
+  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in \d+ values?\./)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByLabel(/^Meeting title/)).toHaveValue(/Weekly Robotics Club Sync/i)
 
-  // A value Assist filled carries its evidence: the marker opens the cited passage from the transcript.
-  await page.getByRole('button', { name: 'Evidence for meeting.title' }).click()
+  // A value Brownie filled carries its evidence: the bar about the fill spot opens the cited passage.
+  await page.getByLabel(/^Meeting title/).focus()
+  await page.getByRole('button', { name: /^Where it came from/ }).click()
   const evidence = page.locator('#evidence-meeting\\.title')
   await expect(evidence).toContainText('From transcript.txt', { timeout: 15_000 })
   await expect(evidence).toContainText(/Weekly Robotics Club Sync/)
 
-  await page.getByRole('tab', { name: 'Checks' }).click()
-  await page.getByRole('button', { name: 'Validate this revision' }).click()
-  await expect(page.getByText('Ready to export')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('button', { name: 'Approve for export' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export' })
+  await expect(dialog.getByText('Ready to export.')).toBeVisible({ timeout: 60_000 })
+  await expect(dialog.getByRole('button', { name: 'Approve and export' })).toBeEnabled()
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
-  await page.getByRole('button', { name: 'Approve for export' }).click()
-  const exportButton = page.getByRole('button', { name: 'Export', exact: true })
-  await expect(exportButton).toBeVisible({ timeout: 15_000 })
-  await exportButton.click()
-
-  await expect(page.getByText('Both files exported.', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await dialog.getByRole('button', { name: 'Approve and export' }).click()
+  await expect(dialog.getByText('Both files exported.', { exact: true })).toBeVisible({ timeout: 60_000 })
   let exportedText = ''
   for (const format of ['DOCX', 'PDF'] as const) {
-    const link = page.getByRole('link', { name: `Download ${format}`, exact: true })
+    const link = dialog.getByRole('link', { name: format === 'DOCX' ? 'Download Word file (.docx)' : 'Download PDF', exact: true })
     await expect(link).toBeVisible()
     const downloadPromise = page.waitForEvent('download')
     await link.click()

@@ -105,6 +105,10 @@ public class DriveSaveProposals {
                     "The document changed after it was last exported.");
         }
         boolean pdf = kind == Kind.PDF_FILE;
+        if (!pdf && receipt.docxArtifactId() == null) {
+            throw new ActionNotProposableException(ActionNotProposableException.Reason.FORMAT_NOT_EXPORTED,
+                    "This is a PDF form, so Brownie saves it as a PDF. It does not turn it into a Word file or a Google Doc.");
+        }
         if (!exportOffers(receipt, kind)) {
             throw new ActionNotProposableException(ActionNotProposableException.Reason.FORMAT_NOT_EXPORTED,
                     "The latest export did not include this format.");
@@ -113,7 +117,7 @@ public class DriveSaveProposals {
             throw new ActionNotProposableException(ActionNotProposableException.Reason.HIDDEN_CHARACTERS,
                     "The document's title holds characters that reorder it or cannot be seen.");
         }
-        long artifactId = pdf ? receipt.pdfArtifactId() : receipt.docxArtifactId();
+        Long artifactId = pdf ? receipt.pdfArtifactId() : receipt.docxArtifactId();
         String expectedSha256 = pdf ? receipt.pdfSha256() : receipt.docxSha256();
         long limit = kind == Kind.GOOGLE_DOC ? MAX_CONVERSION_BYTES : MAX_FILE_BYTES;
         ExportedFile exported = readExported(workspaceId, userId, artifactId, expectedSha256, limit);
@@ -164,13 +168,14 @@ public class DriveSaveProposals {
     /**
      * Whether an export offers the file a save would send, exactly as its
      * download links do: the PDF when one was made for a PDF export, and the
-     * Word file unless the export was of the PDF alone and that PDF was made.
-     * A conversion is made from the Word file, so it goes with it.
+     * Word file when there is one, unless the export was of the PDF alone
+     * and that PDF was made. A conversion is made from the Word file, so it
+     * goes with it; a PDF form's export has no Word file at all.
      */
     static boolean exportOffers(ExportReceipt receipt, Kind kind) {
         return kind == Kind.PDF_FILE
                 ? receipt.pdfArtifactId() != null && receipt.format() != ExportFormat.DOCX
-                : receipt.format() != ExportFormat.PDF || receipt.pdfArtifactId() == null;
+                : receipt.docxArtifactId() != null && (receipt.format() != ExportFormat.PDF || receipt.pdfArtifactId() == null);
     }
 
     private record ExportedFile(long bytes, String sha256, String md5) {

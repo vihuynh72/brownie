@@ -9,6 +9,7 @@ import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
 import io.github.vihuynh72.brownie.core.revision.DocumentTemplateVersionUnavailableException;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStatus;
@@ -28,6 +29,11 @@ import java.io.InputStream;
  * its own; real implementations are supplied by whichever module wires
  * this up, the same dependency-inversion shape {@code
  * DocumentExtractionService} already establishes.
+ *
+ * <p>A PDF template is compiled into a PDF only: its source is filled with
+ * the PDF filler, the output is checked by reading it back, and the filled
+ * PDF is stored the way any generated file is. There is no Word file and no
+ * renderer; the compilation records the filler in the renderer's place.
  */
 public class CompilationService {
 
@@ -37,6 +43,7 @@ public class CompilationService {
     private final TemplateFiller templateFiller;
     private final DocumentRenderer documentRenderer;
     private final CompilationRepository compilationRepository;
+    private final PdfTemplateFill pdfTemplateFill;
 
     public CompilationService(
             RevisionService revisionService,
@@ -44,13 +51,15 @@ public class CompilationService {
             ArtifactService artifactService,
             TemplateFiller templateFiller,
             DocumentRenderer documentRenderer,
-            CompilationRepository compilationRepository) {
+            CompilationRepository compilationRepository,
+            PdfTemplateFill pdfTemplateFill) {
         this.revisionService = revisionService;
         this.templateRepository = templateRepository;
         this.artifactService = artifactService;
         this.templateFiller = templateFiller;
         this.documentRenderer = documentRenderer;
         this.compilationRepository = compilationRepository;
+        this.pdfTemplateFill = pdfTemplateFill;
     }
 
     public CompilationManifest compile(long workspaceId, long userId, long documentId, long revisionId) {
@@ -58,14 +67,23 @@ public class CompilationService {
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         DocumentRevision revision = revisionService.findRevision(workspaceId, userId, documentId, revisionId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
+        // The revision's own version, not the document's: a document can have moved to another version since.
         TemplateVersion templateVersion = templateRepository
-                .findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
-                .orElseThrow(() -> new DocumentTemplateVersionUnavailableException(document.templateId(), document.templateVersionId()));
+                .findVersion(workspaceId, userId, document.templateId(), revision.templateVersionId())
+                .orElseThrow(() -> new DocumentTemplateVersionUnavailableException(document.templateId(), revision.templateVersionId()));
         if (templateVersion.status() != TemplateVersionStatus.ACTIVATED) {
-            throw new DocumentTemplateVersionUnavailableException(document.templateId(), document.templateVersionId());
+            throw new DocumentTemplateVersionUnavailableException(document.templateId(), revision.templateVersionId());
         }
 
         byte[] templateBytes = readTemplateBytes(workspaceId, userId, templateVersion.sourceArtifactId());
+        if (templateVersion.kind() == TemplateKind.PDF) {
+            PdfTemplateFill.Result result = pdfTemplateFill.fill(templateBytes, templateVersion.fieldDefinitions(), revision.content());
+            Artifact pdfArtifact = artifactService.storeGenerated(
+                    workspaceId, userId, "form-" + documentId + "-r" + revision.revisionNumber() + ".pdf", result.filled().bytes());
+            return compilationRepository.save(
+                    workspaceId, userId, documentId, revisionId, document.templateId(), templateVersion.id(), null, null,
+                    pdfArtifact.id(), pdfArtifact.sha256(), pdfTemplateFill.fillerVersion(), result.integrityFindings());
+        }
         FilledDocument filled = templateFiller.fill(templateBytes, templateVersion.fieldDefinitions(), revision.content());
         Artifact docxArtifact = storeGenerated(
                 workspaceId, userId, "minutes-" + documentId + "-r" + revision.revisionNumber() + ".docx", filled.docxBytes());

@@ -6,8 +6,22 @@ export type DocumentResponse = components['schemas']['DocumentResponse']
 export type CreateDocumentRequest = components['schemas']['CreateDocumentRequest']
 export type TemplateResponse = components['schemas']['TemplateResponse']
 export type TemplateVersionResponse = components['schemas']['TemplateVersionResponse']
+export type PreparationNoticeRequest = components['schemas']['PreparationNoticeRequest']
+export type TemplateLayoutResponse = components['schemas']['TemplateLayoutResponse']
+export type TemplateLayoutPartResponse = components['schemas']['TemplateLayoutPartResponse']
+export type TemplateLayoutBlockResponse = components['schemas']['TemplateLayoutBlockResponse']
+export type TemplateLayoutRowResponse = components['schemas']['TemplateLayoutRowResponse']
+export type TemplateLayoutCellResponse = components['schemas']['TemplateLayoutCellResponse']
+export type TemplateLayoutInlineResponse = components['schemas']['TemplateLayoutInlineResponse']
+export type TemplateLayoutStyleResponse = components['schemas']['TemplateLayoutStyleResponse']
+export type PdfLayoutResponse = components['schemas']['PdfLayoutResponse']
+export type BoxSuggestionRequest = components['schemas']['BoxSuggestionRequest']
+export type BoxSuggestionResponse = components['schemas']['BoxSuggestionResponse']
 export type ArtifactResponse = components['schemas']['ArtifactResponse']
 export type ExtractionResponse = components['schemas']['ExtractionResponse']
+export type FillableFormResponse = components['schemas']['FillableFormResponse']
+export type FillableFormSpot = components['schemas']['FillableFormSpot']
+export type PreparationNoticeResponse = components['schemas']['PreparationNoticeResponse']
 export type SnapshotResponse = components['schemas']['SnapshotResponse']
 export type DocumentSourceResponse = components['schemas']['DocumentSourceResponse']
 export type GenerationRunResponse = components['schemas']['GenerationRunResponse']
@@ -22,6 +36,12 @@ export type QuestionResponse = components['schemas']['QuestionResponse']
 export type PatchProposalResponse = components['schemas']['PatchProposalResponse']
 export type PatchAcceptResponse = components['schemas']['PatchAcceptResponse']
 export type DocumentRevisionResponse = components['schemas']['DocumentRevisionResponse']
+export type RestoreRevisionResponse = components['schemas']['RestoreRevisionResponse']
+export type DocxAnchor = components['schemas']['DocxAnchor']
+export type PdfPageAnchor = components['schemas']['PdfPageAnchor']
+export type FillSpotChangeRequest = components['schemas']['FillSpotChangeRequest']
+export type FillSpotsResponse = components['schemas']['FillSpotsResponse']
+export type TemplateVersionMoveResponse = components['schemas']['TemplateVersionMoveResponse']
 export type FieldValueResponse = components['schemas']['FieldValueResponse']
 export type FieldStateResponse = components['schemas']['FieldStateResponse']
 export type FieldDefinitionResponse = components['schemas']['FieldDefinitionResponse']
@@ -79,13 +99,26 @@ export class ApiRequestError extends Error {
    * asked for is gone, and which pages act on (by removing a row, say).
    */
   readonly routeMissing: boolean
+  /**
+   * How many seconds the server asked to be left alone before the same
+   * request is tried again (its Retry-After header, when it gave one as a
+   * number of seconds); null when it did not say.
+   */
+  readonly retryAfterSeconds: number | null
 
-  constructor(status: number, problem: ApiError | undefined) {
+  constructor(status: number, problem: ApiError | undefined, retryAfterSeconds: number | null = null) {
     super(problem?.detail ?? problem?.title ?? `Request failed with status ${status}`)
     this.status = status
     this.problem = problem
     this.routeMissing = status === 404 && NO_SUCH_ROUTE.test(problem?.detail ?? '')
+    this.retryAfterSeconds = retryAfterSeconds
   }
+}
+
+/** A Retry-After header given as whole seconds; the date form, which Brownie never sends, reads as none. */
+function retryAfterSeconds(response: Response): number | null {
+  const value = response.headers.get('retry-after')?.trim() ?? ''
+  return /^\d{1,6}$/.test(value) ? Number(value) : null
 }
 
 let sessionEndedListener: (() => void) | null = null
@@ -163,7 +196,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (response.status === 401 && path !== '/api/v1/me' && path !== '/logout') {
       sessionEndedListener?.()
     }
-    throw new ApiRequestError(response.status, isJson ? (payload as ApiError) : undefined)
+    throw new ApiRequestError(response.status, isJson ? (payload as ApiError) : undefined, retryAfterSeconds(response))
   }
   return payload as T
 }
@@ -334,6 +367,7 @@ export function getDocument(workspaceId: number, documentId: number): Promise<Do
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}`)
 }
 
+/** Refused with 409 TEMPLATE_TRASHED while the template is in the Trash Bin. */
 export function createDocument(
   workspaceId: number,
   idempotencyKey: string,
@@ -346,8 +380,33 @@ export function createDocument(
   })
 }
 
+/** The templates new documents are started from: every one not in the Trash Bin, oldest first. */
 export function listTemplates(workspaceId: number): Promise<TemplateResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/templates`)
+}
+
+/**
+ * The Trash Bin, the most recently trashed first. A server that predates it
+ * ignores the question and answers with its whole template list, none of
+ * which says when it was trashed; the answer is returned as it is, so the
+ * page can tell that older server's list from a Trash Bin and say so.
+ */
+export function listTrashedTemplates(workspaceId: number): Promise<TemplateResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates?trashed=true`)
+}
+
+/**
+ * Moves the template to the Trash Bin. Documents already made from it keep
+ * working; trashing it again answers with it unchanged. A server that
+ * predates the Trash Bin answers 404 with `routeMissing`.
+ */
+export function trashTemplate(workspaceId: number, templateId: number): Promise<TemplateResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/trash`, { method: 'POST' })
+}
+
+/** Takes the template back out of the Trash Bin; restoring it again answers with it unchanged. */
+export function restoreTemplate(workspaceId: number, templateId: number): Promise<TemplateResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/restore`, { method: 'POST' })
 }
 
 export function getTemplateVersion(
@@ -356,6 +415,35 @@ export function getTemplateVersion(
   versionId: number,
 ): Promise<TemplateVersionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}`)
+}
+
+/**
+ * The version's document as a page, with a fill spot wherever the filler
+ * writes a value. A server that predates this route answers 404 with
+ * `routeMissing`, and one that cannot read the template's file answers 422
+ * TEMPLATE_LAYOUT_UNAVAILABLE; either way the caller can still list the
+ * fields without a page.
+ */
+export function getTemplateLayout(workspaceId: number, templateId: number, versionId: number): Promise<TemplateLayoutResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}/layout`)
+}
+
+/**
+ * Where a box goes on a PDF template's page for a person who pointed at a
+ * place (`point`, in points on the page as stored, top-left origin) or chose
+ * a line (`lineIndex`): its box, the style of the words beside it, and the
+ * label they suggest. Deterministic; nothing is kept.
+ */
+export function suggestBox(
+  workspaceId: number,
+  templateId: number,
+  versionId: number,
+  body: BoxSuggestionRequest,
+): Promise<BoxSuggestionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}/box-suggestion`, {
+    method: 'POST',
+    body,
+  })
 }
 
 export function allocateUpload(workspaceId: number, filename: string): Promise<ArtifactResponse> {
@@ -383,6 +471,20 @@ export function completeUpload(workspaceId: number, artifactId: number): Promise
 
 export function extractArtifact(workspaceId: number, artifactId: number): Promise<ExtractionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/artifacts/${artifactId}/extraction`, { method: 'POST' })
+}
+
+/**
+ * Makes an uploaded form ready to fill: a clean Word copy with its places to fill found and named. Asking again for
+ * the same upload answers with the same copy, so a retry after a dropped connection is safe. It can take a while for
+ * a converted file, and can answer 503 RENDERER_BUSY or CONVERTER_UNAVAILABLE, which are worth retrying shortly.
+ */
+export function makeFillableForm(workspaceId: number, artifactId: number): Promise<FillableFormResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/artifacts/${artifactId}/fillable-form`, { method: 'POST' })
+}
+
+/** What an earlier makeFillableForm made of this upload; a 404 means nothing has been made yet. */
+export function getFillableForm(workspaceId: number, artifactId: number): Promise<FillableFormResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/artifacts/${artifactId}/fillable-form`)
 }
 
 export function attachSource(workspaceId: number, artifactId: number): Promise<SnapshotResponse> {
@@ -538,13 +640,29 @@ export function setFieldLock(
   })
 }
 
-export function createTemplateDraft(workspaceId: number, displayName: string, sourceArtifactId: number): Promise<TemplateDraftResponse> {
+/**
+ * Opens a new template's draft from an uploaded file. `preparationNotices` are the upload step's notes about the
+ * file (`FillableFormResponse.notices`), kept with the template so they can be shown again; left out or null, none
+ * are kept, and the request is the same as for a server from before notes were kept (which ignores them anyway).
+ */
+export function createTemplateDraft(
+  workspaceId: number,
+  displayName: string,
+  sourceArtifactId: number,
+  preparationNotices?: readonly PreparationNoticeRequest[] | null,
+): Promise<TemplateDraftResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates`, {
     method: 'POST',
-    body: { displayName, sourceArtifactId },
+    body: preparationNotices == null
+      ? { displayName, sourceArtifactId }
+      : { displayName, sourceArtifactId, preparationNotices },
   })
 }
 
+/**
+ * The fields the server suggests from the draft's content controls. A server
+ * from before `untaggedContentControlCount` leaves it out, which means 0.
+ */
 export function getDraftCandidateBindings(workspaceId: number, templateId: number): Promise<CandidateBindingReportResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/draft/candidate-bindings`)
 }
@@ -561,14 +679,32 @@ export function replaceDraftBindings(
   })
 }
 
+/** `allowNoPlaces` lets a draft with no fields activate, for a form opened with no places found. */
 export function activateTemplateVersion(
   workspaceId: number,
   templateId: number,
   expectedVersionNumber: number,
+  options: { allowNoPlaces?: boolean } = {},
 ): Promise<TemplateVersionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions`, {
     method: 'POST',
-    body: { expectedVersionNumber },
+    body: options.allowNoPlaces ? { expectedVersionNumber, allowNoPlaces: true } : { expectedVersionNumber },
+  })
+}
+
+/** Says a spot Brownie found is right, so it is no longer marked as found. Keeping it again changes nothing. */
+export function keepFillSpot(workspaceId: number, templateId: number, fieldId: string): Promise<void> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/fields/${encodeURIComponent(fieldId)}/review`, {
+    method: 'PUT',
+    body: { decision: 'KEPT' },
+  })
+}
+
+/** Keeps several found spots at once: all are kept, or, if one cannot be, none is. */
+export function keepFillSpots(workspaceId: number, templateId: number, fieldIds: string[]): Promise<void> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/field-reviews`, {
+    method: 'POST',
+    body: { fieldIds },
   })
 }
 
@@ -616,6 +752,70 @@ export function getDocumentRevision(
   revisionId: number,
 ): Promise<DocumentRevisionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}`)
+}
+
+/**
+ * Undo: a new revision with an earlier revision's content, except that every
+ * locked field keeps its current value; those fields come back in
+ * `keptLockedFieldIds`. Refused with 412 when expectedRevisionId is no longer
+ * current, so it never lands on a change the caller has not seen.
+ */
+export function restoreRevision(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+  expectedRevisionId: number,
+  idempotencyKey: string,
+  editReason?: string,
+): Promise<RestoreRevisionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/restore`, {
+    method: 'POST',
+    body: editReason === undefined ? { expectedRevisionId } : { expectedRevisionId, editReason },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
+/**
+ * Adds, renames or takes away fill spots, or on a PDF form adds, moves or
+ * restyles a box (send every box moved in one editing session together: it
+ * makes one version): the form gets a new version with the change and the
+ * document moves to it keeping its values. Refused with
+ * 412 when expectedRevisionId is no longer current, and with 409 when the
+ * document is not on templateVersionId (move it to the newest version first)
+ * or the form changed meanwhile. Undo restores `previousRevisionId`.
+ */
+export function changeFillSpots(
+  workspaceId: number,
+  documentId: number,
+  expectedRevisionId: number,
+  templateVersionId: number,
+  changes: FillSpotChangeRequest[],
+  idempotencyKey: string,
+): Promise<FillSpotsResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/fill-spots`, {
+    method: 'POST',
+    body: { expectedRevisionId, templateVersionId, changes },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
+/**
+ * Moves the document to another version of its form, usually the newest one
+ * (`templateLatestVersionId`), keeping every value that version has a fill
+ * spot for; the values it drops come back in `droppedFieldIds`.
+ */
+export function moveDocumentToTemplateVersion(
+  workspaceId: number,
+  documentId: number,
+  expectedRevisionId: number,
+  templateVersionId: number,
+  idempotencyKey: string,
+): Promise<TemplateVersionMoveResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/template-version`, {
+    method: 'POST',
+    body: { expectedRevisionId, templateVersionId },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
 }
 
 export function validateDocument(
@@ -687,21 +887,36 @@ export function artifactDownloadUrl(workspaceId: number, artifactId: number): st
   return `/api/v1/workspaces/${workspaceId}/uploads/${artifactId}/download`
 }
 
-/** What a typed Assist request would do, and to what -- no side effects. */
-export function interpretAssist(workspaceId: number, documentId: number, text: string): Promise<AssistInterpretationResponse> {
-  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/assist/interpret`, { method: 'POST', body: { text } })
+/** A place on the page sent with an Assist request: where "here" is, or the line chosen from its choices. */
+export type AssistPageAnchor = DocxAnchor | PdfPageAnchor
+
+/** What a typed Assist request would do, and to what -- no side effects. `pageAnchor` is the place selected on the page, if any. */
+export function interpretAssist(
+  workspaceId: number,
+  documentId: number,
+  text: string,
+  pageAnchor?: AssistPageAnchor | null,
+): Promise<AssistInterpretationResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/assist/interpret`, {
+    method: 'POST',
+    body: pageAnchor ? { text, pageAnchor } : { text },
+  })
 }
 
-/** Executes the interpreted request against the revision on screen; a change or rewrite comes back as a proposal to accept. */
+/**
+ * Executes the interpreted request against the revision on screen; a change or rewrite comes back as a
+ * proposal to accept, while a fill spot added, renamed or taken away is done at once (`spotChange`).
+ */
 export function executeAssist(
   workspaceId: number,
   documentId: number,
   text: string,
   expectedRevisionId: number,
+  pageAnchor?: AssistPageAnchor | null,
 ): Promise<AssistExecutionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/assist/execute`, {
     method: 'POST',
-    body: { text, expectedRevisionId },
+    body: pageAnchor ? { text, expectedRevisionId, pageAnchor } : { text, expectedRevisionId },
   })
 }
 

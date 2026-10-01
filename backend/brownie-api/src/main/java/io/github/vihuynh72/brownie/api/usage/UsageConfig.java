@@ -36,8 +36,8 @@ class UsageConfig {
     }
 
     @Bean
-    UsageService usageService(MemberUsageRepository usageRepository, MonthlyUsageLimits monthlyUsageLimits) {
+    UsageService usageService(MemberUsageRepository usageRepository, MonthlyUsageLimits monthlyUsageLimits, ModelPricing modelPricing) {
         // The cheapest request the application makes is an Assist rewrite: a short prompt and at most 400 tokens back.
-        return new UsageService(usageRepository, monthlyUsageLimits, ModelPricing.gpt5Mini().estimateCost(1, 400));
+        return new UsageService(usageRepository, monthlyUsageLimits, modelPricing.estimateCost(1, 400));
     }
 }

@@ -1,5 +1,7 @@
 package io.github.vihuynh72.brownie.api;
 
+import io.github.vihuynh72.brownie.core.prepare.RulesOnlySpotNamer;
+import io.github.vihuynh72.brownie.core.prepare.SpotNamer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -41,5 +43,11 @@ class BrownieApiApplicationTests {
     @Test
     void theTestSupportRouteDoesNotExistWithoutItsToken() {
         assertThat(context.containsBean("testSupportAuthController")).isFalse();
+    }
+
+    /** This profile's model key is not real, so an upload here must never try to send a form's text to the model. */
+    @Test
+    void theRulesNameThePlacesFoundInAFormHere() {
+        assertThat(context.getBean(SpotNamer.class)).isInstanceOf(RulesOnlySpotNamer.class);
     }
 }

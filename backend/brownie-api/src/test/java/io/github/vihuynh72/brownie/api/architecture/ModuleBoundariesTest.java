@@ -311,7 +311,8 @@ class ModuleBoundariesTest {
     void nothingThatHandlesModelOutputCanReachAnActionEvenIndirectly() {
         noClasses().that().resideInAnyPackage(
                         "io.github.vihuynh72.brownie.ai..", "io.github.vihuynh72.brownie.core.assist..",
-                        "io.github.vihuynh72.brownie.core.generation..", "io.github.vihuynh72.brownie.api.generation..")
+                        "io.github.vihuynh72.brownie.core.generation..", "io.github.vihuynh72.brownie.api.generation..",
+                        "io.github.vihuynh72.brownie.core.prepare..")
                 .should().transitivelyDependOnClassesThat().resideInAPackage("io.github.vihuynh72.brownie.core.action..")
                 .check(production);
     }

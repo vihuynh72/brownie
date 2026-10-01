@@ -3,6 +3,9 @@ package io.github.vihuynh72.brownie.worker.retention;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import io.github.vihuynh72.brownie.core.retention.ArtifactRetentionSweeper;
 import io.github.vihuynh72.brownie.core.retention.DeletionSweeper;
+import io.github.vihuynh72.brownie.worker.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.worker.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.worker.testinfra.TestDatabase;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -11,11 +14,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -42,30 +40,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class RetentionSweepIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_worker");
         registry.add("spring.datasource.password", () -> WORKER_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
         // The scheduled passes must not race this test's own direct calls.
         registry.add("brownie.worker.generation.enabled", () -> "false");
         registry.add("brownie.worker.retention.deletion-sweep.enabled", () -> "false");
@@ -73,15 +61,11 @@ class RetentionSweepIntegrationTest {
         registry.add("brownie.worker.retention.ledger-maintenance.enabled", () -> "false");
     }
 
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
-    }
-
     /** The worker owns no migrations; its tests apply the API's folder directly, as the other worker tests do. */
     @BeforeAll
     static void migrateSchema() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
+                .dataSource(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
                 .locations("filesystem:" + Path.of("").toAbsolutePath().getParent().resolve("brownie-api/src/main/resources/db/migration"))
                 .load()
                 .migrate();
@@ -262,6 +246,49 @@ class RetentionSweepIntegrationTest {
     }
 
     /**
+     * A form's working copy is what its template is built on, but the upload
+     * it was made from is what the person gave, so it stays for as long as a
+     * template uses the copy. A copy nothing was built on is swept like any
+     * other unused generated file, with its original, and the record of how
+     * it was made goes with it so asking again makes a fresh copy.
+     */
+    @Test
+    void anOriginalStaysWhileItsWorkingCopyBacksATemplateAndAnUnusedCopyIsSweptWithItsRecord() throws Exception {
+        Fixture inUse = seedDocumentWithACompiledFile();
+        long workspaceId = inUse.workspaceId();
+        long keptOriginal;
+        long unusedOriginal;
+        long unusedCopy;
+        long unusedDerivation;
+        String old = "now() - interval '2 days'";
+        try (Connection connection = ownerConnection()) {
+            keptOriginal = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            insertDerivation(connection, workspaceId, inUse.userId(), keptOriginal, inUse.templateArtifactId());
+            unusedOriginal = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            unusedCopy = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            unusedDerivation = insertDerivation(connection, workspaceId, inUse.userId(), unusedOriginal, unusedCopy);
+        }
+        for (long artifactId : List.of(keptOriginal, unusedOriginal, unusedCopy)) {
+            writeBlob(blobKey(artifactId));
+        }
+
+        artifactRetentionSweeper.sweepOnce(64);
+
+        assertThat(text("SELECT status FROM artifact WHERE id = ?", keptOriginal)).isEqualTo("READY");
+        assertThat(blobStore.sizeOf(blobKey(keptOriginal))).isPresent();
+        assertThat(text("SELECT status FROM artifact WHERE id = ?", inUse.templateArtifactId())).isEqualTo("READY");
+        assertThat(count("SELECT count(*) FROM artifact_derivation WHERE source_artifact_id = ?", keptOriginal)).isEqualTo(1);
+
+        for (long artifactId : List.of(unusedOriginal, unusedCopy)) {
+            assertThat(text("SELECT status || ':' || rejection_reason FROM artifact WHERE id = ?", artifactId))
+                    .as("artifact %d", artifactId)
+                    .isEqualTo("REJECTED:UNREFERENCED_EXPIRED");
+            assertThat(blobStore.sizeOf(blobKey(artifactId))).as("bytes of artifact %d", artifactId).isEmpty();
+        }
+        assertThat(count("SELECT count(*) FROM artifact_derivation WHERE id = ?", unusedDerivation)).isZero();
+    }
+
+    /**
      * A reservation nobody closed belongs to a process that died mid-call.
      * Nobody knows whether the provider served it, so it is kept at its full
      * amount, never dropped; one that is merely recent is somebody's call
@@ -431,12 +458,21 @@ class RetentionSweepIntegrationTest {
         return artifactId;
     }
 
+    private static long insertDerivation(Connection connection, long workspaceId, long userId, long sourceId, long outputId)
+            throws SQLException {
+        return insertReturningId(connection, """
+                INSERT INTO artifact_derivation (workspace_id, source_artifact_id, output_artifact_id, kind, recipe_version,
+                                                 source_format, spot_naming, created_by_user_id)
+                VALUES (%d, %d, %d, 'PREPARED', 'fillable-form-v1/fixture', 'DOCX', 'RULES', %d) RETURNING id
+                """.formatted(workspaceId, sourceId, outputId, userId));
+    }
+
     private void writeBlob(String objectKey) throws Exception {
         blobStore.writeAndDigest(objectKey, new ByteArrayInputStream("fixture".getBytes(StandardCharsets.UTF_8)), 1024);
     }
 
     private static Connection ownerConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
     private static long insertReturningId(Connection connection, String sql) throws SQLException {

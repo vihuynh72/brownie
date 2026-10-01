@@ -4,8 +4,9 @@ import java.time.OffsetDateTime;
 
 /**
  * One immutable extraction attempt against one artifact under one parser
- * version. COMPLETE carries a graph and an empty feature report;
- * UNSUPPORTED carries a non-empty feature report and no graph; FAILED
+ * version. COMPLETE carries a graph and a feature report holding only what
+ * the document keeps as it is (empty before graph version 3); UNSUPPORTED
+ * carries a feature report with at least one refused finding and no graph; FAILED
  * carries neither, only {@code failureReason}. Extraction is a pure
  * function of an artifact's immutable bytes and the extractor's own
  * version, so exactly one row ever exists per (artifact, parserVersion)

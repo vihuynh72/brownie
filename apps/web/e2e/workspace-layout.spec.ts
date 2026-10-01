@@ -1,18 +1,15 @@
 import { test, expect, type Page } from '@playwright/test'
+import { startDocumentFromSidebar } from './documents'
 
 /**
- * The workspace at the widths a review found it broken at: a laptop with a
- * side panel open (1126px), a phone (406px), and the default desktop with
- * the preview pane open. Nothing may scroll the page sideways, every
- * inspector tab must sit inside the viewport, and the action-item row
- * controls must be the thing under the pointer, not the preview card.
+ * The workspace at the widths that matter: a laptop with the sidebar open
+ * (1126px), a phone (406px), and a wide desktop (1440px). Nothing may scroll
+ * the page sideways; where the document and Brownie's panel cannot sit side
+ * by side a switch shows one at a time; and the bar about a selected row is
+ * the thing under the pointer, not the page beneath it.
  */
 async function openADocumentWithARow(page: Page): Promise<void> {
-  await page.goto('/documents/new')
-  await page.getByLabel('Template', { exact: true }).selectOption({ label: 'Flowing meeting minutes' })
-  await page.getByLabel('Title', { exact: true }).fill(`E2E layout ${Date.now()}`)
-  await page.getByRole('button', { name: 'Create document' }).click()
-  await page.waitForURL(/\/documents\/\d+$/)
+  await startDocumentFromSidebar(page, 'Flowing meeting minutes')
   await expect(page.getByLabel(/^Meeting title/)).toBeVisible({ timeout: 15_000 })
   await page.getByRole('button', { name: 'Add row' }).click()
 }
@@ -22,46 +19,62 @@ async function expectNoSidewaysScroll(page: Page): Promise<void> {
   expect(overflow, 'page must not be wider than the viewport').toBeLessThanOrEqual(0)
 }
 
-async function expectTabsInsideViewport(page: Page): Promise<void> {
+async function expectInsideViewport(page: Page, name: string, box: { x: number; width: number } | null): Promise<void> {
   const width = await page.evaluate(() => window.innerWidth)
-  for (const name of ['Assist', 'Rules', 'Sources', 'Checks', 'History']) {
-    const box = await page.getByRole('tab', { name }).boundingBox()
-    expect(box, `${name} tab has a box`).not.toBeNull()
-    expect(box!.x + box!.width, `${name} tab ends inside the viewport`).toBeLessThanOrEqual(width + 1)
-  }
+  expect(box, `${name} has a box`).not.toBeNull()
+  expect(box!.x + box!.width, `${name} ends inside the viewport`).toBeLessThanOrEqual(width + 1)
 }
 
-test('at a laptop-with-side-panel width the workspace fits and every tab is reachable', async ({ page }) => {
+test('at a laptop width with the sidebar open, the document and Brownie sit side by side and nothing overflows', async ({ page }) => {
   await page.setViewportSize({ width: 1126, height: 800 })
   await openADocumentWithARow(page)
   await expectNoSidewaysScroll(page)
-  await expectTabsInsideViewport(page)
+  await expect(page.getByLabel('How may I help you?')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Brownie', exact: true })).toBeHidden()
+  await expectInsideViewport(page, 'Export', await page.getByRole('button', { name: 'Export', exact: true }).boundingBox())
 })
 
-test('at phone width the tab strip wraps instead of running off the screen', async ({ page }) => {
+test('at phone width a switch shows the document or Brownie, one at a time, without running off the screen', async ({ page }) => {
   await page.setViewportSize({ width: 406, height: 800 })
   await openADocumentWithARow(page)
-  await page.getByRole('button', { name: 'Show details' }).click()
   await expectNoSidewaysScroll(page)
-  await expectTabsInsideViewport(page)
+  await expect(page.getByLabel('How may I help you?')).toBeHidden()
+
+  await page.getByRole('button', { name: 'Brownie', exact: true }).click()
+  await expect(page.getByLabel('How may I help you?')).toBeVisible()
+  await expect(page.getByLabel(/^Meeting title/)).toBeHidden()
+  await expectNoSidewaysScroll(page)
+  await expectInsideViewport(page, 'Send', await page.getByRole('button', { name: 'Send', exact: true }).boundingBox())
+
+  await page.getByRole('button', { name: 'Document', exact: true }).click()
+  await expect(page.getByLabel(/^Meeting title/)).toBeVisible()
+  await expectInsideViewport(page, 'Export', await page.getByRole('button', { name: 'Export', exact: true }).boundingBox())
 })
 
-test('with the preview open on a desktop, the action-item controls are the thing under the pointer', async ({ page }) => {
+test('on a wide desktop, the bar about a selected row is the thing under the pointer, and removing the row works', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openADocumentWithARow(page)
-  if ((await page.getByRole('button', { name: 'Show preview' }).count()) > 0) {
-    await page.getByRole('button', { name: 'Show preview' }).click()
-  }
-  await expect(page.getByRole('heading', { name: 'Preview' })).toBeVisible()
   await expectNoSidewaysScroll(page)
+  await page.getByLabel('Action item task, row 1', { exact: true }).focus()
   const remove = page.getByRole('button', { name: 'Remove row 1' })
-  await remove.scrollIntoViewIfNeeded()
+  await expect(remove).toBeVisible()
   const box = (await remove.boundingBox())!
   const hit = await page.evaluate(
     ([x, y]) => (document.elementFromPoint(x, y) as HTMLElement | null)?.closest('button')?.textContent?.trim() ?? null,
     [box.x + box.width / 2, box.y + box.height / 2],
   )
-  expect(hit).toBe('Remove')
+  expect(hit).toBe('Remove row 1')
   await remove.click()
-  await expect(page.getByLabel('Action item task, row 1')).toHaveCount(0)
+  await expect(page.getByLabel('Action item task, row 1', { exact: true })).toHaveCount(0)
+})
+
+test('where the document scrolls on its own, the scroll keys move it once it has focus', async ({ page }) => {
+  await page.setViewportSize({ width: 1372, height: 620 })
+  await openADocumentWithARow(page)
+  const pane = page.getByRole('region', { name: 'Document area' })
+  await pane.focus()
+  await page.keyboard.press('PageDown')
+  await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  // The page itself stays put: only the document moved.
+  expect(await page.evaluate(() => window.scrollY)).toBe(0)
 })

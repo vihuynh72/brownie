@@ -190,4 +190,26 @@ class RulePayloadValidatorTest {
                 new RulePayload.ProtectedRegion(new FieldBindingTarget.ContentControlTag("duplicate.tag")));
         assertEquals(RuleProblemReason.UNSUPPORTED_TARGET, problems.get(0).reason());
     }
+
+    @Test
+    void aProtectedRegionOnAPlaceOnAPdfIsRefused() {
+        var box = new FieldBindingTarget.PageBox(1, 72, 72, 100, 14, io.github.vihuynh72.brownie.core.document.PdfTextStyle.DEFAULT, false,
+                io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy.SHRINK_TO_FIT);
+        for (FieldBindingTarget target : List.of(new FieldBindingTarget.AcroFormField("fullName"), box)) {
+            var problems = RulePayloadValidator.validate(FIELDS, graph(), new RuleScope.WholeTemplate(), new RulePayload.ProtectedRegion(target));
+            assertEquals(1, problems.size());
+            assertEquals(RuleProblemReason.UNSUPPORTED_TARGET, problems.get(0).reason());
+        }
+    }
+
+    /** A PDF template has no Word structure, so no protected region can hold on one, whatever it names. */
+    @Test
+    void anyProtectedRegionOnATemplateWithNoWordStructureIsRefusedAndOtherRulesStillHold() {
+        var problems = RulePayloadValidator.validate(FIELDS, null, new RuleScope.WholeTemplate(),
+                new RulePayload.ProtectedRegion(new FieldBindingTarget.ContentControlTag("meeting.title")));
+        assertEquals(RuleProblemReason.UNSUPPORTED_TARGET, problems.get(0).reason());
+
+        assertTrue(RulePayloadValidator.validate(FIELDS, null, new RuleScope.WholeTemplate(),
+                new RulePayload.RequiredFields(List.of("meeting.title"))).isEmpty());
+    }
 }

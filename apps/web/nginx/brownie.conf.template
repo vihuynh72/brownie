@@ -107,6 +107,20 @@ server {
     location /assets/ {
         root /usr/share/nginx/html;
         include /etc/nginx/brownie-security-headers.conf;
+        # The PDF viewer's worker is a JavaScript module named .mjs, which the
+        # image's own list of types does not know. Sent as
+        # application/octet-stream beside nosniff, a browser refuses to start
+        # it and no preview is ever drawn. A types block here replaces the
+        # inherited list, so the standard list is included again beside it.
+        # The viewer's decoders for scanned pages are WebAssembly, which a
+        # browser compiles as it streams in only when it is sent as
+        # application/wasm; that is said here too rather than trusted to the
+        # image's list.
+        include /etc/nginx/mime.types;
+        types {
+            application/javascript mjs;
+            application/wasm wasm;
+        }
         expires 1y;
         add_header Cache-Control "public, immutable" always;
         access_log off;

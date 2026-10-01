@@ -211,7 +211,7 @@ class JdbcRuleRepository implements RuleRepository {
                 rs.getObject("created_at", OffsetDateTime.class));
     }
 
-    private static Map<String, Object> scopeToMap(RuleScope scope) {
+    static Map<String, Object> scopeToMap(RuleScope scope) {
         return switch (scope) {
             case RuleScope.WholeTemplate() -> Map.of("kind", "WHOLE_TEMPLATE");
             case RuleScope.SingleField(String fieldId) -> Map.of("kind", "SINGLE_FIELD", "fieldId", fieldId);
@@ -226,7 +226,7 @@ class JdbcRuleRepository implements RuleRepository {
         };
     }
 
-    private static Map<String, Object> payloadToMap(RulePayload payload) {
+    static Map<String, Object> payloadToMap(RulePayload payload) {
         return switch (payload) {
             case RulePayload.RequiredFields(List<String> fieldIds) -> Map.of("kind", "REQUIRED_FIELDS", "fieldIds", fieldIds);
             case RulePayload.MaxTextLength(String fieldId, int maxCharacters) ->
@@ -259,6 +259,11 @@ class JdbcRuleRepository implements RuleRepository {
                         map.put("part", part.name());
                         map.put("nodeId", nodeId);
                     }
+                    // Rule validation refuses a protected region on a PDF before anything is stored.
+                    case FieldBindingTarget.AcroFormField ignored ->
+                            throw new IllegalArgumentException("A protected region never names a place on a PDF.");
+                    case FieldBindingTarget.PageBox ignored ->
+                            throw new IllegalArgumentException("A protected region never names a place on a PDF.");
                 }
                 yield map;
             }

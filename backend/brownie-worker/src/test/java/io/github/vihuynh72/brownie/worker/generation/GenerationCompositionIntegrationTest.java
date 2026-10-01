@@ -10,6 +10,9 @@ import io.github.vihuynh72.brownie.core.job.WorkerId;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
 import io.github.vihuynh72.brownie.core.model.ModelUsage;
+import io.github.vihuynh72.brownie.worker.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.worker.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.worker.testinfra.TestDatabase;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -22,11 +25,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -50,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * composable field (here {@code meeting.decisions}) with {@code
  * CompositionService} rather than trusting extraction's own more literal
  * first pass at it, then publishing the composed result -- a separate
- * test file (own Postgres/Azurite/Flyway fixtures, mirroring {@code
+ * test file (own database, storage account and Flyway run, mirroring {@code
  * GenerationExtractionJobProcessorIntegrationTest}'s own established
  * shape) specifically so its own fake model gateway can distinguish an
  * extraction call from a composition call by request content without
@@ -58,42 +56,28 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 @Import(GenerationCompositionIntegrationTest.FakeModelGatewayConfig.class)
 class GenerationCompositionIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_worker");
         registry.add("spring.datasource.password", () -> WORKER_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
         registry.add("brownie.worker.generation.enabled", () -> "false");
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     @BeforeAll
     static void migrateSchema() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
+                .dataSource(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
                 .locations("filesystem:" + apiMigrationPath())
                 .load()
                 .migrate();
@@ -145,7 +129,7 @@ class GenerationCompositionIntegrationTest {
         long jobId;
         String bundleHash;
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             userId = insertUser(connection);
             workspaceId = insertWorkspace(connection, userId);
             insertMembership(connection, workspaceId, userId);
@@ -179,7 +163,7 @@ class GenerationCompositionIntegrationTest {
 
         processor.process(leasedJob);
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("SUCCEEDED");
 
             long artifactId = publishedArtifactId(connection, jobId, "extraction-result");

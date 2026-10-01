@@ -3,6 +3,9 @@ package io.github.vihuynh72.brownie.api.generation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
@@ -33,16 +36,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -69,47 +64,27 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "spring.autoconfigure.exclude=")
-@Testcontainers
+@DockerTest
 @Import(AssistIntegrationTest.FakeModelGatewayConfig.class)
 class AssistIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String ISSUER = "https://issuer-assist";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(org.testcontainers.utility.DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     static final AtomicInteger MODEL_CALLS = new AtomicInteger();
@@ -125,6 +100,9 @@ class AssistIntegrationTest {
                     case AssistService.REWRITE_PROMPT_VERSION -> "{\"value\":\"Spring planning\"}";
                     case AssistService.EXPLAIN_PROMPT_VERSION ->
                             "{\"explanation\":\"The meeting date is required and is still empty; type the date in the Meeting date field.\"}";
+                    // A line the model was never offered: the answer must be refused, not used.
+                    case AssistService.PLACE_PROMPT_VERSION ->
+                            "{\"lineId\":\"L999\",\"placement\":\"END_OF_LINE\",\"text\":null,\"label\":\"Company\",\"type\":\"TEXT\"}";
                     default -> throw new AssertionError("Unexpected prompt version " + request.promptVersion());
                 };
                 return new ModelCompletion.Success(reply, new ModelUsage(40, 12));
@@ -167,7 +145,7 @@ class AssistIntegrationTest {
         JsonNode none = interpret(session, workspaceId, documentId, "write me a poem about the club");
         assertThat(none.get("kind").asText()).isEqualTo("NONE");
         assertThat(none.get("executable").asBoolean()).isFalse();
-        assertThat(none.get("help")).hasSize(4);
+        assertThat(none.get("help")).hasSize(7);
         mockMvc.perform(post(assistPath(workspaceId, documentId) + "/execute").cookie(session).with(csrf())
                         .contentType("application/json")
                         .content("{\"text\":\"write me a poem about the club\",\"expectedRevisionId\":" + revisionId + "}"))
@@ -226,7 +204,7 @@ class AssistIntegrationTest {
         // An explanation needs a validated revision; then it covers the finding it names.
         JsonNode unvalidated = interpret(session, workspaceId, documentId, "explain this finding");
         assertThat(unvalidated.get("executable").asBoolean()).isFalse();
-        assertThat(unvalidated.get("summary").asText()).contains("Validate this revision first");
+        assertThat(unvalidated.get("summary").asText()).contains("Open Export to check this version first");
         mockMvc.perform(post("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/validate")
                         .cookie(session).with(csrf())
                         .header("Idempotency-Key", UUID.randomUUID().toString())
@@ -250,6 +228,70 @@ class AssistIntegrationTest {
         mockMvc.perform(post(assistPath(intruderWorkspaceId, documentId) + "/interpret").cookie(intruderSession).with(csrf())
                         .contentType("application/json").content("{\"text\":\"change meeting title to Mine\"}"))
                 .andExpect(status().isNotFound());
+    }
+
+    /**
+     * Renaming and taking away a spot are applied at once, and the answer
+     * says what Undo restores; adding one where the words cannot be found,
+     * or "here" with nothing selected, is refused before anything runs; a
+     * model answer naming a line it was not offered changes nothing.
+     */
+    @Test
+    void fillSpotRequestsAreAppliedAtOnceOrRefusedInWords() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-assist-spots");
+        long workspaceId = ensureWorkspace("subject-assist-spots").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-spots").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode flowing = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long firstVersionId = flowing.get("currentActiveVersionId").asLong();
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), firstVersionId);
+        long revisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode rename = interpret(session, workspaceId, documentId, "rename the meeting location to Venue");
+        assertThat(rename.get("kind").asText()).isEqualTo("RENAME_FILL_SPOT");
+        assertThat(rename.get("executable").asBoolean()).isTrue();
+        assertThat(rename.get("usesModel").asBoolean()).isFalse();
+        JsonNode renamed = execute(session, workspaceId, documentId, "rename the meeting location to Venue", revisionId);
+        // The chat words a change as the page does after the same change.
+        assertThat(renamed.get("summary").asText())
+                .isEqualTo("Renamed the fill spot Meeting location to Venue. New documents from this form will use the new name too.");
+        JsonNode renameChange = renamed.get("spotChange");
+        assertThat(renameChange.get("fieldId").asText()).isEqualTo("meeting.location");
+        assertThat(renameChange.get("label").asText()).isEqualTo("Venue");
+        assertThat(renameChange.get("previousRevisionId").asLong()).isEqualTo(revisionId);
+        assertThat(renameChange.get("templateVersionId").asLong()).isNotEqualTo(firstVersionId);
+        long renamedRevisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode removed = execute(session, workspaceId, documentId, "remove the fill spot for venue", renamedRevisionId);
+        assertThat(removed.get("kind").asText()).isEqualTo("REMOVE_FILL_SPOT");
+        assertThat(removed.get("summary").asText()).isEqualTo(
+                "Removed the fill spot Venue. Its value stays in the version history. New documents from this form will not have it.");
+        assertThat(removed.get("spotChange").get("fieldId").asText()).isEqualTo("meeting.location");
+        assertThat(removed.get("spotChange").get("previousRevisionId").asLong()).isEqualTo(renamedRevisionId);
+        long removedRevisionId = currentRevisionId(session, workspaceId, documentId);
+
+        JsonNode here = interpret(session, workspaceId, documentId, "add a fill spot for Company here");
+        assertThat(here.get("kind").asText()).isEqualTo("ADD_FILL_SPOT");
+        assertThat(here.get("executable").asBoolean()).isFalse();
+        assertThat(here.get("summary").asText()).contains("Select the place on the page first");
+        JsonNode nowhere = interpret(session, workspaceId, documentId, "add a fill spot for Company after \"words that are not in this form\"");
+        assertThat(nowhere.get("executable").asBoolean()).isFalse();
+        assertThat(nowhere.get("summary").asText()).contains("I could not find");
+
+        int callsBefore = MODEL_CALLS.get();
+        JsonNode byWords = interpret(session, workspaceId, documentId, "add a fill spot for Company after the organization");
+        assertThat(byWords.get("executable").asBoolean()).isTrue();
+        assertThat(byWords.get("usesModel").asBoolean()).isTrue();
+        assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore);
+        JsonNode notPlaced = execute(session, workspaceId, documentId, "add a fill spot for Company after the organization", removedRevisionId);
+        assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore + 1);
+        assertThat(notPlaced.get("summary").asText()).startsWith("I could not tell where that goes.");
+        assertThat(notPlaced.get("spotChange").isNull()).isTrue();
+        assertThat(currentRevisionId(session, workspaceId, documentId)).isEqualTo(removedRevisionId);
     }
 
     private JsonNode interpret(Cookie session, long workspaceId, long documentId, String text) throws Exception {

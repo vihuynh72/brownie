@@ -59,31 +59,38 @@ public record ExtractionInputBundle(List<BundledField> fields, List<BundledExcer
      * Just enough of a {@link FieldDefinition} for prompting and parsing --
      * {@code requiredness} genuinely affects the prompt text a model sees
      * ({@link ExtractionPromptBuilder} labels a field "required" or
-     * "optional"), but a binding target never does; deliberately omitted
-     * rather than carried as a value nothing downstream of this bundle
-     * ever reads. {@code existingValueText} is the document's own current
-     * value for this field at the moment extraction started, as plain
-     * comparison text -- {@code null} when the field had no value yet, or
-     * is not a scalar.
+     * "optional"), and so does {@code label}, the field's stored name
+     * ({@code null} when it has none), which tells a model what a field
+     * such as {@code spot.3} is for; a binding target never does,
+     * deliberately omitted rather than carried as a value nothing
+     * downstream of this bundle ever reads. {@code existingValueText} is
+     * the document's own current value for this field at the moment
+     * extraction started, as plain comparison text -- {@code null} when the
+     * field had no value yet, or is not a scalar. A bundle written before
+     * labels existed has no {@code label} at all, which reads as {@code
+     * null}.
      */
     public record BundledField(
-            String fieldId, FieldType type, FieldCardinality cardinality, FieldRequiredness requiredness, String existingValueText) {
+            String fieldId, FieldType type, FieldCardinality cardinality, FieldRequiredness requiredness, String existingValueText,
+            String label) {
         static BundledField from(FieldDefinition field, DocumentContent existingContent) {
             var existing = existingContent.fields().get(field.fieldId());
             String existingValueText = existing == null ? null : existing.asPlainText();
-            return new BundledField(field.fieldId(), field.type(), field.cardinality(), field.requiredness(), existingValueText);
+            return new BundledField(
+                    field.fieldId(), field.type(), field.cardinality(), field.requiredness(), existingValueText, field.label());
         }
 
         /**
          * Reconstructs a {@link FieldDefinition} for callers (the
          * extraction prompt builder and response parser) that only ever
          * read {@code fieldId}/{@code type}/{@code cardinality}/{@code
-         * requiredness} -- this placeholder {@link
+         * requiredness}/{@code label} -- this placeholder {@link
          * FieldBindingTarget.ContentControlTag} must never be trusted as
          * this field's real template binding.
          */
         public FieldDefinition toFieldDefinitionForPromptingOnly() {
-            return new FieldDefinition(fieldId, type, cardinality, requiredness, new FieldBindingTarget.ContentControlTag(fieldId));
+            return new FieldDefinition(
+                    fieldId, type, cardinality, requiredness, new FieldBindingTarget.ContentControlTag(fieldId), label, null, null, null);
         }
     }
 

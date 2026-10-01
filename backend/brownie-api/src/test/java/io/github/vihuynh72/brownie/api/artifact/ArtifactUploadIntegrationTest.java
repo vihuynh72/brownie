@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.api.artifact;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStateConflictException;
@@ -30,17 +33,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -55,6 +49,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -69,49 +64,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = {"spring.autoconfigure.exclude=", "brownie.artifacts.max-upload-bytes=2000"})
-@Testcontainers
+@DockerTest
 class ArtifactUploadIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE =
-            new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     // A plain, local instance rather than an autowired bean: this Boot
@@ -640,7 +611,8 @@ class ArtifactUploadIntegrationTest {
                         .cookie(owner)
                         .with(csrf())
                         .content(binary))
-                .andExpect(status().isUnsupportedMediaType());
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.reason").value("NOT_A_DOCUMENT"));
     }
 
     @Test
@@ -657,15 +629,77 @@ class ArtifactUploadIntegrationTest {
                         .cookie(owner)
                         .with(csrf())
                         .content(plainZip))
-                .andExpect(status().isUnsupportedMediaType());
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.reason").value("NOT_A_DOCUMENT"));
     }
 
+    /** The least a package needs to be a Word document: its main part, named by its relationships and typed by its manifest. */
     private static byte[] minimalOoxmlPackage() throws java.io.IOException {
         return zipOf(java.util.Map.of(
                 "[Content_Types].xml",
-                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>",
+                "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                        + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                        + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                        + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument"
+                        + ".wordprocessingml.document.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"word/document.xml\"/></Relationships>",
                 "word/document.xml",
                 "<w:document/>"));
+    }
+
+    /** A workbook renamed .docx is told it is a spreadsheet, and recorded as any other unsupported file. */
+    @Test
+    void aRefusalCarriesTheReasonAPersonIsToldAgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-workbook-upload");
+        long workspaceId = workspaceIdFor("subject-workbook-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        byte[] workbook = zipOf(java.util.Map.of(
+                "[Content_Types].xml",
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\""
+                        + " ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
+                "_rels/.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
+                        + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+                        + " Target=\"xl/workbook.xml\"/></Relationships>",
+                "xl/workbook.xml",
+                "<workbook/>"));
+        mockMvc.perform(put(
+                                "/api/v1/workspaces/{workspaceId}/uploads/{artifactId}/content",
+                                workspaceId,
+                                artifactId)
+                        .cookie(owner)
+                        .with(csrf())
+                        .content(workbook))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"))
+                .andExpect(jsonPath("$.reason").value("SPREADSHEET"));
+
+        Artifact rejected = artifactRepository.find(workspaceId, userIdFor("subject-workbook-upload"), artifactId).orElseThrow();
+        assertThat(rejected.status()).isEqualTo(ArtifactStatus.REJECTED);
+        assertThat(rejected.rejectionReason()).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    /** RTF is its own format now, accepted and scanned like any upload, and read only through a Word copy made from it. */
+    @Test
+    void anRtfFileIsAcceptedAsRtfButNotReadForStructureAgainstRealAzurite() throws Exception {
+        Cookie owner = loginAndGetSessionCookie("subject-rtf-upload");
+        long workspaceId = workspaceIdFor("subject-rtf-upload");
+        long artifactId = allocate(owner, workspaceId);
+
+        JsonNode uploaded = uploadContent(owner, workspaceId, artifactId,
+                "{\\rtf1\\ansi {\\fonttbl {\\f0 Times;}} Name: ________\\par}".getBytes(StandardCharsets.US_ASCII));
+        assertThat(uploaded.get("detectedMediaType").asText()).isEqualTo("RTF");
+        assertThat(complete(owner, workspaceId, artifactId).get("status").asText()).isEqualTo("READY");
+
+        mockMvc.perform(post("/api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/extraction", workspaceId, artifactId)
+                        .cookie(owner)
+                        .with(csrf()))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("NEEDS_FILLABLE_COPY"));
     }
 
     private static byte[] zipOf(java.util.Map<String, String> entries) throws java.io.IOException {

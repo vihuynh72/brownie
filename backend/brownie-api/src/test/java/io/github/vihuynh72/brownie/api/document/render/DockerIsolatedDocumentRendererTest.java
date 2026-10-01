@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.api.document.render;
 
 import io.github.vihuynh72.brownie.api.document.docx.PoiTemplateFiller;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
 import io.github.vihuynh72.brownie.core.compile.FilledDocument;
 import io.github.vihuynh72.brownie.core.compile.RenderedPdf;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code brownie-spike-renderer:pinned} image to already exist; skipped
  * environments (no Docker) will fail loudly rather than silently pass.
  */
+@DockerTest
 class DockerIsolatedDocumentRendererTest {
 
     private final PoiTemplateFiller filler = new PoiTemplateFiller();

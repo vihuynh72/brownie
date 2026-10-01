@@ -13,7 +13,9 @@ import java.util.Objects;
  * Export approval binds to this manifest's own {@code id}, not to the
  * revision alone, so a later, different validation run of the same
  * revision id can never be silently substituted for the one actually
- * reviewed.
+ * reviewed. A PDF template's run fills a PDF and nothing else, so its
+ * {@code docxArtifactId}/{@code docxSha256} are null and its PDF is
+ * always there.
  */
 public record ValidationManifest(
         long id,
@@ -22,7 +24,7 @@ public record ValidationManifest(
         long revisionId,
         long templateId,
         long templateVersionId,
-        long docxArtifactId,
+        Long docxArtifactId,
         String docxSha256,
         Long pdfArtifactId,
         String pdfSha256,
@@ -30,9 +32,14 @@ public record ValidationManifest(
         OffsetDateTime createdAt) {
 
     public ValidationManifest {
-        Objects.requireNonNull(docxSha256, "docxSha256");
+        if ((docxArtifactId == null) != (docxSha256 == null)) {
+            throw new IllegalArgumentException("docxArtifactId and docxSha256 must be both present or both absent.");
+        }
         if ((pdfArtifactId == null) != (pdfSha256 == null)) {
             throw new IllegalArgumentException("pdfArtifactId and pdfSha256 must be both present or both absent.");
+        }
+        if (docxArtifactId == null && pdfArtifactId == null) {
+            throw new IllegalArgumentException("A validation manifest names at least one file.");
         }
         findings = List.copyOf(findings);
         Objects.requireNonNull(createdAt, "createdAt");

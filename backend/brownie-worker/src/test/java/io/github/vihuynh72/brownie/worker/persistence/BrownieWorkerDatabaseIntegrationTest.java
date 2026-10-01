@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.worker.persistence;
 
+import io.github.vihuynh72.brownie.worker.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.worker.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.worker.testinfra.TestDatabase;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -8,10 +11,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
@@ -35,25 +34,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class BrownieWorkerDatabaseIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final String CONFIGURATION_HASH = "c".repeat(64);
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_worker");
         registry.add("spring.datasource.password", () -> WORKER_PASSWORD);
     }
@@ -61,18 +53,11 @@ class BrownieWorkerDatabaseIntegrationTest {
     @BeforeAll
     static void migrateSchema() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
+                .dataSource(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
                 .locations("filesystem:" + apiMigrationPath())
                 .target("20")
                 .load()
                 .migrate();
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     private static Path apiMigrationPath() {
@@ -212,6 +197,6 @@ class BrownieWorkerDatabaseIntegrationTest {
     }
 
     private static Connection migrationConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 }
