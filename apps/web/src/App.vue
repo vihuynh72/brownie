@@ -142,7 +142,8 @@ onBeforeUnmount(() => {
   <a class="visually-hidden skip-link" href="#main-content">Skip to main content</a>
 
   <div class="shell" :class="{ 'shell--drawer': !docked }">
-    <AppSidebar ref="sidebarRef" :open="sidebarOpen" :docked="docked" @close="closeSidebar" />
+    <!-- It asks to be opened when something the person started in it ends while it is closed, such as a refused file. -->
+    <AppSidebar ref="sidebarRef" :open="sidebarOpen" :docked="docked" @close="closeSidebar" @open="openSidebar" />
 
     <!-- Only ever present while the drawer is: a tap anywhere on the dimmed page closes it. -->
     <div v-if="!docked && sidebarOpen" class="shell__scrim" @click="closeSidebar" />
