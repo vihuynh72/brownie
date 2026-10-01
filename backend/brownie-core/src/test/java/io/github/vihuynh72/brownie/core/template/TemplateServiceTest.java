@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.InputStream;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -391,6 +392,48 @@ class TemplateServiceTest {
                 TemplateNotFoundException.class, () -> service.replaceDraftBindings(WORKSPACE_ID, USER_ID, 999L, 1, List.of()));
     }
 
+    @Test
+    void aTrashedTemplateLeavesTheListButStaysInTheTrashBinAndInWhatProvisioningSees() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+        Template kept = service.createDraft(WORKSPACE_ID, USER_ID, "Kept", SOURCE_ARTIFACT_ID);
+        Template first = service.createDraft(WORKSPACE_ID, USER_ID, "Trashed first", SOURCE_ARTIFACT_ID);
+        Template second = service.createDraft(WORKSPACE_ID, USER_ID, "Trashed second", SOURCE_ARTIFACT_ID);
+
+        Template trashed = service.trash(WORKSPACE_ID, USER_ID, first.id());
+        service.trash(WORKSPACE_ID, USER_ID, second.id());
+
+        assertTrue(trashed.trashedAt() != null);
+        assertEquals(List.of(kept.id()), service.findAll(WORKSPACE_ID, USER_ID).stream().map(Template::id).toList());
+        assertEquals(
+                List.of(second.id(), first.id()),
+                service.findTrashed(WORKSPACE_ID, USER_ID).stream().map(Template::id).toList());
+        assertEquals(
+                List.of(kept.id(), first.id(), second.id()),
+                service.findAllIncludingTrashed(WORKSPACE_ID, USER_ID).stream().map(Template::id).toList());
+    }
+
+    @Test
+    void trashingAndRestoringAgainChangeNothingAndAMissingTemplateIsNotFound() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));
+        TemplateService service = new TemplateService(new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), new FakePassingTemplateBaselineRenderer(), new FakeTemplateBaselineRenderRepository());
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Club Minutes", SOURCE_ARTIFACT_ID);
+
+        Template trashed = service.trash(WORKSPACE_ID, USER_ID, template.id());
+        Template trashedAgain = service.trash(WORKSPACE_ID, USER_ID, template.id());
+        Template restored = service.restore(WORKSPACE_ID, USER_ID, template.id());
+        Template restoredAgain = service.restore(WORKSPACE_ID, USER_ID, template.id());
+
+        assertEquals(trashed, trashedAgain);
+        assertEquals(null, restored.trashedAt());
+        assertEquals(restored, restoredAgain);
+        assertEquals(List.of(template.id()), service.findAll(WORKSPACE_ID, USER_ID).stream().map(Template::id).toList());
+        assertThrows(TemplateNotFoundException.class, () -> service.trash(WORKSPACE_ID, USER_ID, 999L));
+        assertThrows(TemplateNotFoundException.class, () -> service.restore(WORKSPACE_ID, USER_ID, 999L));
+    }
+
     private static FieldDefinition field(String fieldId, FieldBindingTarget binding) {
         return new FieldDefinition(fieldId, FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED, binding);
     }
@@ -545,7 +588,7 @@ class TemplateServiceTest {
         public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
             long templateId = templateIds.getAndIncrement();
             long versionId = versionIds.getAndIncrement();
-            templates.put(templateId, new Template(templateId, workspaceId, displayName, TemplateStatus.DRAFT, null, OffsetDateTime.now()));
+            templates.put(templateId, new Template(templateId, workspaceId, displayName, TemplateStatus.DRAFT, null, OffsetDateTime.now(), null));
             versions.put(
                     versionId,
                     new TemplateVersion(
@@ -562,7 +605,39 @@ class TemplateServiceTest {
 
         @Override
         public List<Template> findAll(long workspaceId, long userId) {
-            return templates.values().stream().filter(t -> t.workspaceId() == workspaceId).toList();
+            return templates.values().stream().filter(t -> t.workspaceId() == workspaceId).sorted(Comparator.comparing(Template::id)).toList();
+        }
+
+        @Override
+        public List<Template> findTrashed(long workspaceId, long userId) {
+            return findAll(workspaceId, userId).stream()
+                    .filter(t -> t.trashedAt() != null)
+                    .sorted(Comparator.comparing(Template::trashedAt).thenComparing(Template::id).reversed())
+                    .toList();
+        }
+
+        @Override
+        public Template trash(long workspaceId, long userId, long templateId) {
+            Template template = find(workspaceId, userId, templateId).orElseThrow(() -> new TemplateNotFoundException(templateId));
+            if (template.trashedAt() == null) {
+                template = withTrashedAt(template, OffsetDateTime.now());
+                templates.put(templateId, template);
+            }
+            return template;
+        }
+
+        @Override
+        public Template restore(long workspaceId, long userId, long templateId) {
+            Template template = find(workspaceId, userId, templateId).orElseThrow(() -> new TemplateNotFoundException(templateId));
+            template = withTrashedAt(template, null);
+            templates.put(templateId, template);
+            return template;
+        }
+
+        private static Template withTrashedAt(Template template, OffsetDateTime trashedAt) {
+            return new Template(
+                    template.id(), template.workspaceId(), template.displayName(), template.status(), template.currentActiveVersionId(),
+                    template.createdAt(), trashedAt);
         }
 
         @Override
@@ -604,7 +679,7 @@ class TemplateServiceTest {
                     templateId,
                     new Template(
                             template.id(), template.workspaceId(), template.displayName(), TemplateStatus.ACTIVE, activated.id(),
-                            template.createdAt()));
+                            template.createdAt(), template.trashedAt()));
             return activated;
         }
 

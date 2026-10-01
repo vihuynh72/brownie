@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.document.DocumentPart;
 import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
@@ -28,6 +31,7 @@ import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
@@ -37,13 +41,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -65,37 +64,23 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcDocumentRepositoryTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     @Autowired
@@ -216,6 +201,40 @@ class JdbcDocumentRepositoryTest {
                         content("September minutes", LocalDate.of(2026, 9, 1)),
                         Map.of(),
                         "initial draft"));
+    }
+
+    /**
+     * The service refuses a trashed template before it gets here, but a
+     * template trashed after that check is refused by the insert itself.
+     * Nothing is kept, not even the idempotency key, so the same key starts
+     * the document once the template is restored.
+     */
+    @Test
+    void createFromATrashedTemplateIsRefusedWithoutARowAndTheSameKeyWorksAfterRestore() throws SQLException {
+        UserIdentity user = newUser("create-trashed");
+        Workspace workspace = workspaceRepository.ensurePersonalWorkspace(user.id());
+        TemplateVersion templateVersion = newActiveTemplate(workspace.id(), user.id());
+        IdempotencyKey idempotencyKey = key("create-from-trashed");
+        CanonicalRequestHash requestHash = hash("create-from-trashed-body");
+        templateRepository.trash(workspace.id(), user.id(), templateVersion.templateId());
+
+        assertThrows(
+                TemplateTrashedException.class,
+                () -> createDirectly(workspace.id(), user.id(), idempotencyKey, requestHash, templateVersion));
+
+        assertThat(countAsMember(user.id(), "SELECT count(*) FROM document WHERE workspace_id = " + workspace.id()))
+                .isZero();
+        assertThat(countAsMember(user.id(), "SELECT count(*) FROM idempotency_record WHERE workspace_id = " + workspace.id()))
+                .isZero();
+
+        templateRepository.restore(workspace.id(), user.id(), templateVersion.templateId());
+        DocumentMutationResult created = createDirectly(workspace.id(), user.id(), idempotencyKey, requestHash, templateVersion);
+
+        assertThat(created.document().templateId()).isEqualTo(templateVersion.templateId());
+        assertThat(countAsMember(user.id(), "SELECT count(*) FROM document WHERE workspace_id = " + workspace.id()))
+                .isEqualTo(1);
+        assertThat(countAsMember(user.id(), "SELECT count(*) FROM idempotency_record WHERE workspace_id = " + workspace.id()))
+                .isEqualTo(1);
     }
 
     @Test
@@ -403,7 +422,7 @@ class JdbcDocumentRepositoryTest {
 
         assertThat(documentRepository.find(workspace.id(), nonmember.id(), document.id())).isEmpty();
 
-        try (Connection worker = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
+        try (Connection worker = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
             assertThrows(SQLException.class, () -> {
                 try (PreparedStatement statement = worker.prepareStatement("SELECT id FROM document WHERE id = ?")) {
                     statement.setLong(1, document.id());
@@ -635,6 +654,27 @@ class JdbcDocumentRepositoryTest {
                 content("September minutes", LocalDate.of(2026, 9, 1)),
                 Map.of(),
                 "initial draft").document();
+    }
+
+    /** Straight to the repository, past the service's own Trash Bin check. */
+    private DocumentMutationResult createDirectly(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            TemplateVersion templateVersion) {
+        return documentRepository.createIdempotently(
+                workspaceId,
+                userId,
+                idempotencyKey,
+                requestHash,
+                "Minutes",
+                templateVersion.templateId(),
+                templateVersion.id(),
+                content("September minutes", LocalDate.of(2026, 9, 1)),
+                Map.of(),
+                Map.of(),
+                "initial draft");
     }
 
     private TemplateVersion newActiveTemplate(long workspaceId, long userId) {
