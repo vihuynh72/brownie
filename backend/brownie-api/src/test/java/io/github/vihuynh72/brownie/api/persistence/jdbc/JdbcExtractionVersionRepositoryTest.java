@@ -94,6 +94,24 @@ class JdbcExtractionVersionRepositoryTest {
         assertThat(reloaded).isEqualTo(saved);
     }
 
+    /** A complete extraction stores what the document keeps as it is in the same column an unsupported one stores its reasons in. */
+    @Test
+    void completeExtractionRoundTripsWhatTheDocumentKeepsAsItIs() {
+        long userId = newUser("subject-kept").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        long artifactId = insertArtifact(workspaceId, userId);
+        DocxFeatureReport keptAsIs = new DocxFeatureReport(List.of(
+                new DocxFeatureFinding(UnsupportedDocxFeature.FLOATING_SHAPE, "word/document.xml, p3", "a text box"),
+                DocxFeatureFinding.field(UnsupportedDocxFeature.DYNAMIC_FIELD, "word/footer1.xml, p0", "PAGE")));
+
+        ExtractionVersion saved = extractionVersionRepository.saveComplete(workspaceId, userId, artifactId, "v1", sampleGraph(), keptAsIs);
+
+        assertThat(saved.status()).isEqualTo(ExtractionStatus.COMPLETE);
+        assertThat(saved.featureReport()).isEqualTo(keptAsIs);
+        assertThat(saved.featureReport().isSupported()).isTrue();
+        assertThat(saved.featureReport().keptAsIs().get(1).fieldKeyword()).isEqualTo("PAGE");
+    }
+
     @Test
     void unsupportedExtractionRoundTripsTheFeatureReportExactly() {
         long userId = newUser("subject-unsupported").id();

@@ -120,6 +120,28 @@ class ExtractionIntegrationTest {
         assertThat(latestResponse.get("id").asLong()).isEqualTo(extractResponse.get("id").asLong());
     }
 
+    /** A table inside a table and a page number no longer stop the read; the response names them as kept as they are. */
+    @Test
+    void aDocxThatKeepsSomethingAsItIsIsCompleteAndSaysWhat() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-extraction-kept");
+        long workspaceId = ensureWorkspace("https://issuer-extraction-integration", "subject-extraction-kept").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxKeepingATableInATableAndAPageNumber(), "kept.docx");
+
+        JsonNode extractResponse = readJson(mockMvc.perform(post(extractionPath(workspaceId, artifactId)).cookie(session).with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(extractResponse.get("status").asText()).isEqualTo("COMPLETE");
+        assertThat(extractResponse.get("parserVersion").asText()).isEqualTo("brownie-docx-graph-v3+poi-5.5.1");
+        assertThat(extractResponse.get("unsupportedFeatures")).isEmpty();
+        List<String> kept = new java.util.ArrayList<>();
+        extractResponse.get("keptAsIsFeatures").forEach(finding -> kept.add(finding.get("feature").asText()));
+        assertThat(kept).containsExactlyInAnyOrder("NESTED_TABLE", "DYNAMIC_FIELD");
+
+        JsonNode latestResponse =
+                readJson(mockMvc.perform(get(extractionPath(workspaceId, artifactId)).cookie(session)).andExpect(status().isOk()).andReturn());
+        assertThat(latestResponse.get("keptAsIsFeatures")).isEqualTo(extractResponse.get("keptAsIsFeatures"));
+    }
+
     @Test
     void aRealPdfIsUploadedExtractedAndReadBackAsCompleteWithPageDetail() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-extraction-pdf");
@@ -214,6 +236,23 @@ class ExtractionIntegrationTest {
     private static byte[] minimalDocxBytes() throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
             doc.createParagraph().createRun().setText("Meeting called to order.");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    private static byte[] docxKeepingATableInATableAndAPageNumber() throws Exception {
+        try (XWPFDocument doc = new XWPFDocument()) {
+            var outer = doc.createTable(1, 1);
+            var cell = outer.getRow(0).getCell(0);
+            try (var cursor = cell.getParagraphs().get(0).getCTP().newCursor()) {
+                cell.insertNewTbl(cursor);
+            }
+            var footer = doc.createFooter(org.apache.poi.wp.usermodel.HeaderFooterType.DEFAULT);
+            var pageNumber = footer.createParagraph().getCTP().addNewFldSimple();
+            pageNumber.setInstr(" PAGE ");
+            pageNumber.addNewR().addNewT().setStringValue("1");
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
             return out.toByteArray();
