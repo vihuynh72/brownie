@@ -193,12 +193,23 @@ brownie:
       port: ${BROWNIE_CLAMAV_PORT:3310}
   ai:
     openai:
-      # The one evaluated snapshot this gateway is fixed to -- a code-level
-      # architecture decision, not a per-machine secret, so it defaults
-      # here rather than requiring every environment to set it. Changing
-      # it is a deliberate, recorded decision, never something a caller's
-      # request can select (see OpenAiModelGateway).
-      model: ${BROWNIE_OPENAI_MODEL:gpt-5.4-mini-2026-03-17}
+      # The model every request is sent to: a product decision, not a
+      # per-machine secret, so it defaults here rather than requiring every
+      # environment to set it, and a caller's request can never choose
+      # another (see OpenAiModelGateway). The provider offers this model
+      # under its name only, with no dated snapshot, so its behaviour can
+      # change under the same name; every generation run and every row of
+      # the usage ledger records the name it was sent under. The model must
+      # have a price in ModelPricing, or the application refuses to start.
+      # brownie-worker must be given the same value. Going back to the
+      # model Brownie was first evaluated on is setting
+      # BROWNIE_OPENAI_MODEL=gpt-5.4-mini-2026-03-17 for both.
+      model: ${BROWNIE_OPENAI_MODEL:gpt-6-luna}
+      # How much hidden reasoning the model does before it answers. Each
+      # request's output cap counts that reasoning as well as the reply, and
+      # the caps were sized for replies written with none, so "none" keeps
+      # every cap for the reply itself. The same value in brownie-worker.
+      reasoning-effort: ${BROWNIE_OPENAI_REASONING_EFFORT:none}
   connectors:
     # A person connecting their Google account so that Brownie can read a file
     # or a calendar event they choose. Off until the client id is set; with it
