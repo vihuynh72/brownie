@@ -59,7 +59,35 @@ BROWNIE_DB_USERNAME=brownie_worker BROWNIE_DB_PASSWORD=brownie_worker_local_only
 After pulling or changing code, stop both, run `./mvnw -q -DskipTests
 clean install` again, and start both. A page that answers "the Brownie
 server that answered is older than this page" means the API was not
-restarted; reloading the page cannot fix that.
+restarted; reloading the page cannot fix that. Restart the worker in the
+same step as the API, never later: an older worker cannot always read
+what a newer API hands it. A reading from sources started through the
+API now carries each field's name, for example, and an older worker
+refuses that input (`GENERATION_BUNDLE_UNREADABLE`), tries the run again
+and finally gives up on it.
+
+Previews, checks before export, and turning a .doc, .rtf, .odt, .ott or
+.pages file into a Word copy all run in a throwaway LibreOffice container
+started from the renderer image, `brownie-spike-renderer:pinned` unless
+`BROWNIE_RENDER_IMAGE` names another. Build it before the first start,
+and build it again whenever anything under `spike/docx-binding/render`
+changes:
+
+```sh
+docker build -t brownie-spike-renderer:pinned spike/docx-binding/render
+```
+
+The image turns macros off, never loads a Word file's macro code and
+never updates a document's links (`brownie-hardening.xcd`), and it carries
+the Carlito and Caladea fonts, which take the same space as Calibri and
+Cambria, so a converted or rendered Word file keeps its line breaks. A
+tag built before those were added still runs but has neither: nothing
+checks for them at start-up, so rebuild it. `docker image history
+brownie-spike-renderer:pinned` shows a `COPY brownie-hardening.xcd` step
+in an image that has them. If you set `BROWNIE_RENDER_EXPECTED_IMAGE_ID`,
+set it to the new image's id after a rebuild (`docker image inspect
+--format '{{.Id}}' brownie-spike-renderer:pinned`), or the API refuses to
+run the new image.
 
 `Web server failed to start. Port 8081 was already in use.` means an older
 API is still running, often from a terminal that has since been closed.
@@ -212,7 +240,8 @@ to a Google Doc, an unknown outcome Google later shows never happened. The new
 file goes at the top of My Drive, shared with no one, and is read back: an
 exact file must match the approved size and checksum; for a Google Doc, Brownie
 reports how many of the filled-in values it finds in the converted text, never
-that the layout survived.
+that the layout survived. A PDF form is exported as a PDF only, so for one
+Brownie saves the PDF and offers neither a Word file nor a Google Doc.
 
 When Google's answer is lost, the action says its outcome is unknown and is
 never sent again by itself. `POST .../actions/{id}/reconcile` asks Google what
@@ -337,7 +366,11 @@ character and a token and a half per character of anything else, plus the
 most it may write back. `brownie-api` refuses an Assist rewrite, and a new
 extraction run whose first request would not fit, with
 `429 USAGE_LIMIT_REACHED`, and says which allowance; a replay of a start
-it already accepted still gets that start's receipt. `brownie-worker` ends
+it already accepted still gets that start's receipt. Naming the places
+Brownie finds in an uploaded form is charged the same way, to the person
+who uploaded it, but it never stops the upload: when an allowance would be
+passed, or the model cannot be reached, Brownie names those places by its
+own rules instead. `brownie-worker` ends
 a run with a usage code instead of retrying it. `GET
 /api/v1/workspaces/{id}/usage` reports a workspace's own month and only
 whether the shared allowance is used up, never what anyone else spent. A
@@ -471,8 +504,9 @@ started by hand.
 the public face, the API, the worker, and the virus scanner -- beside a
 managed PostgreSQL server that has no public address, two blob storage
 accounts, a key vault, a container registry and a log workspace. Rendering
-stays what it already is: the API starts a throwaway container per render,
-with no network, a read-only root and a memory limit, and throws it away. That
+stays what it already is: the API starts a throwaway container per render
+(and per file it converts to Word), with no network, a read-only root and a
+memory limit, and throws it away. That
 is why this is a machine rather than a managed container platform, which gives
 a container no runtime of its own to do that with.
 
@@ -550,7 +584,11 @@ database with the new image before anything serves it, so a failed migration
 leaves the running release untouched; then it replaces the containers, waits
 for them to be healthy, issues or renews the certificate, and checks the
 result from outside. If the check fails it puts the previous images back. The
-same workflow's `rollback` choice does that on demand.
+same workflow's `rollback` choice does that on demand. The API and the worker
+are always replaced together, and must be: an older worker cannot always read
+what a newer API hands it (see Run). The renderer image is published with the
+others, so a change to `spike/docx-binding/render` reaches the machine the
+same way, and the deployment pins the API to the image it pulled.
 
 **Who can sign in.** The identity provider's own sign-up is open to anyone who
 reaches the address, so a deployed Brownie requires an invitation:
@@ -609,15 +647,23 @@ psql -U brownie_migration -d brownie -x -c "SELECT * FROM pilot_summary(30)"
 
 **What an upload must be.** A file is classified by its bytes, never by
 its name or a declared type, and is quarantined until it has been scanned.
-A Word package is walked before any parser sees it: at most 500 parts and
-200 MiB expanded; no part named twice (two readers could otherwise
-disagree about which one is the document, and part names differ only by
-case); no part that declares a document type, which is the door to entity
-expansion and external entities; no part nested more than 256 elements
-deep; no package that has expanded more than 200 to 1 past 8 MiB, asked
-both of the package as a whole and of the parts that each expanded that far
-added together (so that neither something incompressible put in front, nor
-cutting the same content into many small parts, hides it); and no
+A PDF is known by its signature, a Word 97-2003 file (.doc, .dot) by what
+its compound file says about itself, and an RTF file by its opening; a
+spreadsheet, a presentation, or a file locked with a password or by rights
+management is refused, and the refusal says which of those it is. A
+package (Word's .docx, .dotx, .docm and .dotm, OpenDocument's .odt and
+.ott, and a Pages file, all ZIP archives) is walked before any parser sees
+it: at most 500 parts and 200 MiB expanded; no part named twice (two
+readers could otherwise disagree about which one is the document, and part
+names differ only by case); no part that declares a document type, which
+is the door to entity expansion and external entities (the one exception
+is the manifest of an OpenDocument file written by OpenOffice 2, which
+names its document type and is accepted only with nothing declared inside
+it); no part nested more than 256 elements deep; no package that has
+expanded more than 200 to 1 past 8 MiB, asked both of the package as a
+whole and of the parts that each expanded that far added together (so that
+neither something incompressible put in front, nor cutting the same
+content into many small parts, hides it); and no
 relationship that points at something on a network other than as an
 ordinary hyperlink, which is how a document asks whoever opens it to fetch
 a remote template or object. What counts as local is a short list (a
@@ -635,21 +681,36 @@ not taken from what the file declares), and then under a budget that is
 charged as the reading goes: every time a page's content, a form or a
 font is about to be opened it is first expanded with nothing kept, and its
 size counted, so a form drawn a thousand times costs a thousand times.
-Past 128 MiB in total, two million characters, or 250,000 characters on
-one page, the whole file is refused, with the reason recorded, and none of
-it is kept. The rendered PDF that comes back from the sandbox is read under
+Past 128 MiB in total, two million characters, 250,000 characters on
+one page, or 50,000 values set out for one drawing instruction (the PDF
+library holds them all, arrays built whole, until the instruction comes,
+so each page and form is read once beforehand to count them), the whole
+file is refused, with the reason recorded, and none of it is kept. The rendered PDF that comes back from the sandbox is read under
 the same budget. What this does not bound is the PDF library opening the
 file in the first place: the file's own index may be compressed, and the
 library expands that in memory before anything here can count it. Uploads
 are limited to 10 MiB, by signed-in people only, which is what stands in
-front of that today.
+front of that today. A PDF uploaded as a form to fill is read under the
+same budget, with at most 1,000 fields, and is refused when it is locked
+(even by a password that only restricts what may be done with it),
+signed, an XFA form, or when it starts another program, carries files
+inside it, or runs a script by itself (when it or one of its pages opens,
+for example); filling any of those in would either break it or mean
+trusting what it does. A file with more than 10,000 actions and outline
+entries is refused as too large, since what lies past them is not looked
+at.
 
 **What one person may ask for in a minute.** Counted per signed-in person
 (per address for anyone not signed in, an IPv6 address by its first 64
 bits), in this process's memory, which is
 the right size for one API instance: 30 requests that start paid model
-work, 30 that start a render, 120 upload requests, 60 that make Brownie call
-Google on the person's behalf (reads included, because Google answers
+work, 30 that start a render (making an uploaded form ready to fill,
+`POST .../artifacts/{a}/fillable-form`, and changing a document's fill
+spots, `POST .../documents/{d}/fill-spots`, count as renders; working out
+where a box on a PDF page would go counts with the other changes, because
+it reads the whole page), 120 upload requests, 60
+that make Brownie call Google on the person's behalf (reads included,
+because Google answers
 Brownie's one registration for everyone), 300 other changes, 1,200
 reads, and 120 of anything when not signed in
 (`brownie.rate-limit.per-minute.*`; `brownie.rate-limit.enabled=false`
@@ -666,16 +727,53 @@ and it keeps its own, larger limit. Form bodies, which the server reads
 itself, are held to the same size by the server's own setting, and
 multipart bodies are not accepted at all, since no route takes one.
 
-**Renders.** At most two renders run at once (`brownie.render.max-concurrent`);
-others wait their turn, in order, for up to 20 seconds
-(`brownie.render.max-wait`) and are then answered `503 RENDERER_BUSY`.
-The renderer's image is looked up once per render and run by its content
-address, which is also written into the record of what produced the
-output; set `brownie.render.expected-image-id` to a `sha256:` id and no
-other image is ever run. What the sandbox leaves behind is read as if the
-sandbox had been taken over: a symbolic link is never followed, only a
-plain file is accepted, no more than the quota is read, and it has to
-begin like a PDF.
+**Renders.** At most two renders run at once (`brownie.render.max-concurrent`),
+and converting a file to Word takes one of the same two turns; others wait
+their turn, in order, for up to 20 seconds (`brownie.render.max-wait`) and
+are then answered `503 RENDERER_BUSY`, which Home's upload waits out and
+asks again, twice at most. The model call that names the places in a form
+never holds a turn. The renderer's image is looked up once per render and
+run by its content address, which is also written into the record of what
+produced the output; set `brownie.render.expected-image-id` to a `sha256:`
+id and no other image is ever run. What the sandbox leaves behind is read
+as if the sandbox had been taken over: a symbolic link is never followed,
+only a plain file is accepted, no more than the quota is read, and it has
+to begin like a PDF.
+
+**Files made from other files.** A .doc, .dot, .rtf, .odt, .ott or .pages
+file is filled through a Word copy that LibreOffice makes in the same
+throwaway container as a render (above): the same image, content address,
+staging directory and limits, no network, 60 seconds at most. The format
+is named on the command line, never guessed from the bytes; the output
+must be one plain file of at most 20 MiB
+(`brownie.convert.output-max-bytes`) that begins like a ZIP package, with
+nothing else left beside it; and it is then as untrusted as an upload:
+inspected, made into Brownie's clean working copy, and inspected and
+scanned again before it is stored. The file the person uploaded is kept as
+it was. `brownie.convert.enabled-formats` lists the formats that may be
+converted at all (`WORD_97`, `WORD_95`, `RTF`, `ODT`, `ODT_TEMPLATE`,
+`PAGES`): leave one out, for example when a flaw is published in its
+reader, and files of that format are refused before they reach it; a name
+it does not know stops the API at start-up. A Word file that needs no
+converting gets the same clean working copy, stored the same way.
+
+**Naming the places found.** With `brownie.fill-spots.model` at `enabled`
+(`BROWNIE_FILL_SPOTS_MODEL`; the default), the text of an uploaded form
+goes to the model as soon as it is uploaded, with no further question, so
+that the model can say which of the places Brownie found are meant to be
+filled in and name them; a PDF's own fields are named the same way. Home
+says so under its upload button, and the "Your data" page says which of the
+two settings is in use. Only a Word form whose places are all its own named
+content controls, and a scanned PDF, send nothing. Each part of a form is
+one request (at most about 10,000 tokens and 150 places), charged as
+described under "Model allowance" above, and at most four are made for one
+form (`brownie.fill-spots.max-model-calls`); what is left over, and any
+part whose answer is refused, cut short or unreadable, is named by
+Brownie's own rules. An answer can only keep, name and type places Brownie
+offered: it never edits the file, which Brownie does itself. `disabled`
+keeps the text on the server and names every place by the rules; the test
+profile always runs that way, and any other value stops the API at
+start-up.
 
 **Repeats.** Approving again what is already the document's latest
 approval, or exporting the same approval a second time, answers with the
@@ -737,7 +835,7 @@ content error until a sign-in repairs the built-in templates.
 
 ### Coverage and the paid golden path
 
-The default run (`npm run test:e2e`) covers template teaching, the empty-
+The default run (`npm run test:e2e`) covers uploading a form, the empty-
 document export safety gate, a document filled in entirely by hand and
 exported (`manual-editing.spec.ts` reads the typed values back out of the
 downloaded DOCX), and `session-and-recovery.spec.ts`: real sign-out (the
@@ -745,10 +843,35 @@ server must answer 401 afterwards, and the page continues to the identity
 provider's end-session URL, with that external hop stubbed), recovery from a
 failed identity request, and a Word form whose upload fails, explained on
 Home where it was chosen with nothing made. The latter two inject server
-failures with `page.route`; none makes a model call. `upload-a-form.spec.ts`
-uploads a tagged Word form from Home and lands in its new document, and shows
-that a PDF and a Word file without content controls are refused in plain
-words with nothing added to My Templates.
+failures with `page.route` and make no model call.
+
+`upload-a-form.spec.ts` uploads four files from Home: a Word form whose
+places are its own content controls, which lands in its new document; a
+Word letter with a blank and no controls, which opens with the place
+Brownie found marked "Found by Brownie" until "Keep all" clears the mark; a
+PDF form with fields of its own, which opens with those fields to fill; and
+a text file, which is refused in plain words with nothing added to My
+Templates. `upload-a-pdf-form.spec.ts` fills that PDF form's fields, one
+in Vietnamese, exports it (a PDF and nothing else) and reads the values
+back out of the downloaded file's own fields. `draw-a-box.spec.ts` takes a
+PDF whose blanks are only printed, draws one box with the pointer, places
+another from the keyboard and moves it, and finds both values in the
+exported PDF's text. `fill-in-here.spec.ts` adds two fill spots to an open
+Word document, one with "Fill in here" beside words selected on the page
+and one entirely from the keyboard with "Add a fill spot", opens the
+right-click menu on the page's text in between, and finds both values in
+the exported Word file. The PDF specs read the exported file with PDF.js
+and use the forms in `fixtures/public/pdf/`; `fill-in-here.spec.ts` reads
+its Word file with `unzip`, as `manual-editing.spec.ts` does.
+
+Those uploads are real, so with the API's default settings every form in
+which Brownie finds places is sent to the model to name them: the plain
+letter, the fillable PDF (twice) and the flat PDF, four small requests and
+a fraction of a cent for the whole default run, recorded in the ledger
+like any other. The tagged Word form and the text file send nothing. To
+make no model call at all, start the API the suite talks to with
+`BROWNIE_FILL_SPOTS_MODEL=disabled`, and Brownie's own rules name the
+places instead.
 
 `trash-and-deletion.spec.ts` takes one document through its whole removal:
 off the home list into the Trash Bin, its own address answering 404, back
@@ -781,22 +904,89 @@ text/layout fidelity.
 
 ### Deliberate E2E boundaries
 
-The free success-path specs do not drive grounded extraction, because it needs
-a real `BROWNIE_OPENAI_API_KEY` call and a running `brownie-worker` process.
-Content-control-tag detection during template teaching is deterministic DOCX
-structure parsing, so `template-teaching.spec.ts` can exercise that flow
-without a model call.
+The default success-path specs do not drive grounded extraction, because it
+needs a real `BROWNIE_OPENAI_API_KEY` call and a running `brownie-worker`
+process.
+Reading a Word form's own content controls on upload is deterministic DOCX
+structure parsing, so `upload-a-form.spec.ts` can exercise that flow without
+a model call.
 
-Home's "Upload your documents" takes the form to fill: a Word (.docx) file
-whose content controls mark where values go. The browser uploads it, has it
-scanned and read, lets Brownie learn it as a template from its own control
-tags (the same steps as teaching one by hand, every suggested field
-accepted), activates it, starts a document from it and opens that document;
-the template also joins My Templates. A PDF, another kind of file, or a Word
-file without content controls is refused on Home in words, and nothing
-half-made is left listed. Pressing a template under My Templates starts a new
-document from it at once, named after the template and the day, and opens it;
-the + beside My Templates is where a template is taught by hand.
+Home's "Upload your documents" takes the form to fill in whatever format it
+came: Word (.docx, .dotx, .docm, .dotm, and the older .doc and .dot), RTF,
+OpenDocument (.odt, .ott), Pages, or PDF. The list comes from `GET
+/api/v1/capabilities` (`formFileTypes`), with the web app's own copy of it
+for an older server; either way the server decides what a file is from its
+bytes. One status line says what is happening ("Opening your Pages file and
+finding where the values go…"). The browser uploads the file and has it
+scanned, then one request, `POST .../artifacts/{a}/fillable-form`, makes it
+ready to fill, and asking again for the same upload answers with what was
+made the first time:
+
+- A Word file is filled as it is. A .doc, .dot, .rtf, .odt, .ott or .pages
+  file is first turned into a Word copy in the sandbox (see "Files made
+  from other files" above) and filled as Word; nothing is ever written
+  back in its own format. A file from a recent version of Pages converts
+  only in part and can lose some of its layout, so exporting it from Pages
+  as Word gives a better copy.
+- Either way Brownie fills a clean working copy, and the file as uploaded
+  is kept unchanged. The copy has tracked changes accepted and comments
+  left out; it leaves out macros, a digital signature (filling the file in
+  would break it anyway), links to things outside the file and editing
+  restrictions; parts that fetch or work out their own text are frozen to
+  the text they showed; and an embedded file becomes a picture of itself
+  unless it is a plain spreadsheet, Word document, slide show or drawing
+  with no macros, controls or files of its own inside it. Of the formats
+  from before 2007 only a Word 97-2003 document can be checked for that,
+  so any other older file always becomes a picture.
+  Floating shapes, tables inside tables and fields such as page numbers
+  are kept as they are. Each of these gets one line in the document's
+  "About this document" note, which stays until it is dismissed.
+- A PDF with fields of its own is filled in those fields and stays
+  fillable; its check boxes, radio buttons and lists are left for the
+  person to set in a PDF reader. A PDF whose blanks are only printed gets
+  boxes over the page where Brownie finds them. Each found box has a dashed
+  outline instead of the words "Found by Brownie", so the form's own text
+  stays readable; the words are still in the box's description, and the
+  outline goes the same way the Word mark does (below). A scanned PDF gets
+  no places, because Brownie does not read scans: the person draws the
+  boxes.
+
+In a Word file, the places are the form's own content controls (one with
+no usable name is given one) and the blanks Brownie finds: runs of
+underscores or dots, underlined space, a tab that draws a line, a
+bracketed prompt such as "[Company]", a form's own text box or merge field,
+a label ending its line with a colon, and an empty table cell with a label
+beside or above it. Only the main text and its top-level tables count;
+signature lines, check boxes, and blanks in headers, footers or text boxes
+are left alone, each with its line in the note. The places found are named
+(by the model or by Brownie's own rules; see "Naming the places found"
+above), become named content controls in the working copy at once, with no
+list to confirm first, and every one Brownie added carries the words "Found
+by Brownie" beside it, which a screen reader also hears as part of the
+spot's description. "Looks right" in the bar about a spot, or "Keep all" on
+the banner above the page, removes the mark; keeping is recorded on the
+template (`PUT .../templates/{t}/fields/{fieldId}/review` and `POST
+.../templates/{t}/field-reviews`), so it holds for every later document and
+version of the form. A place Brownie made and nobody filled prints the
+form's own blank ("________") in the export, so the form can still be
+completed by hand.
+
+From there every place is accepted as found: the template is drafted, with
+what the server noticed about the file kept on it, activated, and joins My
+Templates, and a document is started from it and opened. A form in which nothing was
+found still opens, and says how to add a place. What is still refused, in
+words that say why and what to do: a file locked with a password or by
+rights management; a spreadsheet or a presentation; something that is not
+a document, or is damaged; a Word file that asks to fetch something from
+the internet when it is opened; and a PDF that is locked, signed, an XFA
+form, or that starts other programs, carries files inside it or runs
+scripts. Nothing half-made is left listed. A Pages document saved as a
+package (a folder on a Mac) cannot be uploaded by a browser, and Home says
+how to save it as one file. Pressing a template under My Templates starts a
+new document from it at once, named after the template and the day, and
+opens it. The + beside My Templates uploads a form the same way and stops
+once it is in My Templates, with a "Start a document" action beside the
+sentence that says it was added.
 
 A document's page draws the template's own text with a highlighted fill spot
 wherever a value goes, read from the template file itself (`GET
@@ -821,17 +1011,69 @@ accepted rules of the document's template version; `GET /api/v1/capabilities`
 reports the upload limit and supported formats, which every upload control
 shows before a file is chosen.
 
+A person can also change where values go, on the open document, and each
+change is made at once, with Undo. To add a place with the pointer, select
+words on the page and press "Fill in here" beside them, or right-click the
+page's text and choose it from Brownie's menu there (Shift with the
+right-click still opens the browser's own; the ContextMenu key or
+Shift+F10 opens Brownie's at a selection). From the keyboard, "Add a fill
+spot" beside "Next empty spot" opens a dialog that asks which line, where
+in the line (at its end, say, or in place of its blank) and what the place
+is called. In the chat, `add a fill spot for Company after "Company:"` does
+the same, and `add a fill spot for Company here` uses what is selected on
+the page. Rename… and Remove… sit in the bar about a spot, and the chat
+takes "rename" and "remove" too. Every change (`POST
+.../documents/{d}/fill-spots`, with an `Idempotency-Key`) makes a new
+version of the form and moves the document to it with its values, checking
+that the form still prints correctly, which takes a few seconds for a Word
+form. Whatever was typed is saved first. A place cannot go inside a link,
+a field Word works out, a header or footer, a repeating table row, or a
+part of the form kept as it is, and nothing is taken away while it holds a
+locked value; each refusal says why. New documents from the form get the
+change. Another document already open on the same form says "This form has
+a newer version" and what it changes, and moves to it only when the person
+chooses "Move this document to it" (`POST
+.../documents/{d}/template-version`). Undo on the page, or the Undo beside
+the chat's report, puts the document back on the version it was on before
+the change.
+
+A PDF form's page is the PDF itself, drawn page by page with PDF.js, with
+each place laid over where it prints; under "Text on this page" the words
+of each page are there as text for anyone who cannot see the picture. On
+top of "Add a fill spot" (which there asks for the page and the line the
+box goes next to), "Draw a box" lets the person drag a new box across the
+page, and "Edit boxes" moves and resizes the boxes Brownie or the person
+made (the arrow keys move a box by 1 point, or 10 with Shift, and Alt with
+an arrow key changes its size; Done makes all of it one change). The PDF's
+own fields stay where the form puts them. A box asks for its name, whether
+it holds text or a date, the text size, and what to do when the text is
+too long: "Make the text smaller to fit (down to 6 pt)", chosen at first,
+or "Stop me before export". Text that would still not fit at 6 points
+stops the export and asks for shorter text or a bigger box. Values are
+written with the Liberation fonts bundled in the API; a character those
+fonts do not have, or a script that joins its letters or runs right to
+left, is reported before export rather than drawn wrong. The check before
+export reads every value back out of the filled file and compares the rest
+of each page with the form as uploaded.
+
 Brownie's panel beside the page takes a few bounded requests in words: fill
 the document from the attached sources, change a field to a value, shorten
-or rewrite a text field, explain a validation finding. `POST
-.../assist/interpret` reads the text into one command and reports its scope
-(the field and what it holds, or the finding) without doing anything; `POST
-.../assist/execute` then runs exactly that against the revision on screen.
-Filling from sources runs the grounded extraction and asks its questions in
-the chat; a change or a rewrite comes back as a proposal; either way nothing
-changes until the person approves the proposal. An explanation is text, and
-free text is answered with what Brownie can do. Only reading a source,
-rewrite and explain call the model.
+or rewrite a text field, explain a validation finding, and add, rename or
+remove a fill spot. `POST .../assist/interpret` reads the text into one
+command and reports its scope (the field and what it holds, or the
+finding) without doing anything; `POST .../assist/execute` then runs
+exactly that against the revision on screen. Filling from sources runs the
+grounded extraction and asks its questions in the chat; a change or a
+rewrite comes back as a proposal; either way nothing changes until the
+person approves the proposal. A fill spot change is the exception: it is
+made at once, and its report in the chat carries an Undo. An explanation is
+text, and free text is answered with what Brownie can do. Reading a
+source, rewrite and explain call the model, and so does adding a fill spot
+when the person neither quotes the words it goes after nor selects a place:
+one small request (`assist-place-spot-v1`) chooses among the form's lines,
+and its answer is used only when it names a line it was offered and words
+really on that line. Outside the chat, only naming the places in an
+uploaded form calls the model (see "Naming the places found" above).
 
 The print preview draws the latest compiled PDF of the document with PDF.js
 (`pdfjs-dist`), page by page; it picks up whatever compilation already exists
@@ -847,7 +1089,11 @@ the current version, lists anything that blocks it with a way back to the
 fill spot, and approves and exports in the chosen format (Word, PDF, or
 both) in one step, then offers the downloads, the device's own share sheet
 where the browser can share files, and saving to Google Drive or adding a
-calendar event where those are set up.
+calendar event where those are set up. A document made from a PDF form is
+exported as a PDF only, with the form's own fields still fillable: the
+window says so and offers no choice, and approving a Word file for one
+answers `422 EXPORT_FORMAT_NOT_OFFERED`. A form uploaded in another format
+is exported as Word or PDF, never in its own format.
 
 ### Automated accessibility scans
 
@@ -864,14 +1110,20 @@ screen-reader testing by a person.
 `./mvnw -B clean verify` in `backend/` runs every module's tests. Most of
 `brownie-api`'s and `brownie-worker`'s tests start real Postgres, Azurite, and
 ClamAV containers through Testcontainers, so Docker must be running, and the
-compile, validation, and export tests render through the pinned isolated
-LibreOffice image, which a fresh clone has to build once first:
+compile, validation, export, conversion and upload tests run the pinned
+isolated LibreOffice image, which has to be built before the first run and
+again whenever `spike/docx-binding/render` changes:
 
 ```sh
 docker build -t brownie-spike-renderer:pinned spike/docx-binding/render
 ```
 
 CI builds that same image on every run before it runs the backend suite.
+The conversion tests check that the image turns macros off and never
+updates links, so an image built before those settings were added fails
+them, which is the reminder to rebuild it. They and the upload tests run
+whichever image `BROWNIE_RENDER_IMAGE` names, so a rebuilt image can be
+tried under another tag first.
 Use `clean` rather than a bare `test`: the multi-module build does not
 reliably notice a dependency module's stale compiled classes, and an
 incremental run can fail on code that is actually correct.
@@ -880,8 +1132,25 @@ Each test JVM starts one Postgres, one Azurite and one ClamAV container and
 shares them: every test class gets a database of its own, copied from the
 migrated `brownie` template database in a few milliseconds, and an Azurite
 account of its own, so classes stay as isolated as when each started its own
-containers. A full `clean verify` takes about four minutes. For a quick check
-while working, `./mvnw -o -B test -DexcludedGroups=docker` runs every test
-that needs no Docker (about 840 of them, in well under a minute); a class
+containers. A full `clean verify` takes five to six minutes. For a quick
+check while working, `./mvnw -o -B test -DexcludedGroups=docker` runs every
+test that needs no Docker (about 1,300 of them, in under a minute); a class
 that needs Docker says so with `@DockerTest`, and the full run, which CI
 does, still runs everything.
+
+The tests that ask the real model whether a prompt works (reading sources,
+naming the places found in a form, placing a fill spot from the chat's
+words) run only when `BROWNIE_OPENAI_API_KEY` holds a real key, and skip
+themselves otherwise. A shell that loaded `.env` has that key, so a full
+run from it makes real, paid requests; run it from a shell without the key
+when that is not what you want.
+
+The sample forms the tests and the browser specs upload are committed, so
+nothing needs making before a run. The Word-family ones in
+`fixtures/public/forms/` (.doc, .rtf, .odt, .ott and .docx of each) are
+made from the flat OpenDocument sources beside them by
+`./scripts/make-word-family-fixtures.sh`, inside the renderer image; run it
+again only after changing a source. The PDFs in `fixtures/public/pdf/` are
+made by the builders in `PublicPdfFixturesTest`, which fails when a
+committed file no longer holds what its builder makes; the command that
+writes them again is in that class.
