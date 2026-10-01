@@ -9,14 +9,19 @@ import io.github.vihuynh72.brownie.core.compile.DocumentRenderer;
 import io.github.vihuynh72.brownie.core.compile.DocxMetadataSanitizer;
 import io.github.vihuynh72.brownie.core.compile.FilledDocument;
 import io.github.vihuynh72.brownie.core.compile.GeneratedArtifactUnavailableException;
+import io.github.vihuynh72.brownie.core.compile.PdfTemplateFill;
 import io.github.vihuynh72.brownie.core.compile.RenderedPdf;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillProblemReason;
 import io.github.vihuynh72.brownie.core.compile.TemplateFiller;
 import io.github.vihuynh72.brownie.core.document.DocxExtractionOutcome;
+import io.github.vihuynh72.brownie.core.document.DocxFeatureReport;
 import io.github.vihuynh72.brownie.core.document.DocxParseException;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralExtractor;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersion;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.document.PdfFormGraph;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanRepository;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
@@ -33,6 +38,7 @@ import io.github.vihuynh72.brownie.core.rule.RuleRevision;
 import io.github.vihuynh72.brownie.core.rule.RuleRevisionStatus;
 import io.github.vihuynh72.brownie.core.template.BaselineRenderResult;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineRenderRepository;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStatus;
@@ -69,6 +75,14 @@ import java.util.Optional;
  * dimension, in one new revision {@link RevisionService#applyValidationResults}
  * appends -- the manifest this method returns names that new revision, not
  * whatever revision the caller passed in.
+ *
+ * <p>A PDF template runs the same checks on the revision's own content
+ * (requiredness, content rules, evidence), then fills its PDF with the PDF
+ * filler, reads the output back ({@link DocumentValidator#checkPdfFill}),
+ * and draws the uploaded PDF and the filled one to compare them everywhere
+ * except the places filled ({@link PageRasterDiffer#compareMasked}). The
+ * form as uploaded is what the filled PDF must match outside those places,
+ * so no baseline render is needed; there is no Word file to check or keep.
  */
 public class ValidationService {
 
@@ -84,6 +98,8 @@ public class ValidationService {
     private final TemplateBaselineRenderRepository templateBaselineRenderRepository;
     private final PageRasterDiffer pageRasterDiffer;
     private final ValidationRepository validationRepository;
+    private final PdfTemplateFill pdfTemplateFill;
+    private final PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository;
 
     public ValidationService(
             RevisionService revisionService,
@@ -97,7 +113,9 @@ public class ValidationService {
             DocumentRenderer documentRenderer,
             TemplateBaselineRenderRepository templateBaselineRenderRepository,
             PageRasterDiffer pageRasterDiffer,
-            ValidationRepository validationRepository) {
+            ValidationRepository validationRepository,
+            PdfTemplateFill pdfTemplateFill,
+            PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository) {
         this.revisionService = revisionService;
         this.templateRepository = templateRepository;
         this.ruleRepository = ruleRepository;
@@ -110,6 +128,8 @@ public class ValidationService {
         this.templateBaselineRenderRepository = templateBaselineRenderRepository;
         this.pageRasterDiffer = pageRasterDiffer;
         this.validationRepository = validationRepository;
+        this.pdfTemplateFill = pdfTemplateFill;
+        this.pdfFormExtractionVersionRepository = pdfFormExtractionVersionRepository;
     }
 
     public ValidationManifest validate(
@@ -123,11 +143,12 @@ public class ValidationService {
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         DocumentRevision revision = revisionService.findRevision(workspaceId, userId, documentId, expectedRevisionId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
+        // The revision's own version, not the document's: a document can have moved to another version since.
         TemplateVersion templateVersion = templateRepository
-                .findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
-                .orElseThrow(() -> new DocumentTemplateVersionUnavailableException(document.templateId(), document.templateVersionId()));
+                .findVersion(workspaceId, userId, document.templateId(), revision.templateVersionId())
+                .orElseThrow(() -> new DocumentTemplateVersionUnavailableException(document.templateId(), revision.templateVersionId()));
         if (templateVersion.status() != TemplateVersionStatus.ACTIVATED) {
-            throw new DocumentTemplateVersionUnavailableException(document.templateId(), document.templateVersionId());
+            throw new DocumentTemplateVersionUnavailableException(document.templateId(), revision.templateVersionId());
         }
 
         List<RuleRevision> acceptedRules = ruleRepository.findByTemplateVersion(workspaceId, userId, templateVersion.id())
@@ -141,16 +162,22 @@ public class ValidationService {
         findings.addAll(checkEvidenceReferences(workspaceId, userId, revision));
 
         byte[] templateBytes = readArtifactBytes(workspaceId, userId, templateVersion.sourceArtifactId());
+        if (templateVersion.kind() == TemplateKind.PDF) {
+            Artifact pdfArtifact = validatePdf(workspaceId, userId, document, revision, templateVersion, templateBytes, findings);
+            return saveManifest(
+                    workspaceId, userId, idempotencyKey, requestHash, document, revision, templateVersion, null, pdfArtifact, findings);
+        }
         FilledDocument filled = templateFiller.fill(templateBytes, templateVersion.fieldDefinitions(), revision.content());
         byte[] sanitizedBytes = metadataSanitizer.sanitize(filled.docxBytes());
 
         findings.addAll(DocumentValidator.checkFieldContentInOutput(filled.intendedText(), filled.reopenedBodyText()));
 
         DocxExtractionOutcome filledOutcome = extract(sanitizedBytes);
-        findings.addAll(packageIntegrityFindings(filledOutcome));
+        DocxExtractionOutcome templateOutcome = extract(templateBytes);
+        findings.addAll(packageIntegrityFindings(templateOutcome, filledOutcome));
         DocxStructuralGraph filledGraph = graphOf(filledOutcome);
         if (filledGraph != null) {
-            DocxStructuralGraph templateSourceGraph = graphOf(extract(templateBytes));
+            DocxStructuralGraph templateSourceGraph = graphOf(templateOutcome);
             if (templateSourceGraph != null) {
                 findings.addAll(DocumentValidator.checkProtectedRegions(templateSourceGraph, filledGraph, acceptedRules));
             }
@@ -171,6 +198,7 @@ public class ValidationService {
                     ValidationFindingCode.LAYOUT_COMPARISON_UNAVAILABLE, null,
                     "The filled document could not be re-extracted, so layout comparison against the qualified baseline was not run."));
         } else {
+            // A Word template's baseline always has its Word file; only a PDF template's has none.
             byte[] baselineDocxBytes = readArtifactBytes(workspaceId, userId, baseline.get().docxArtifactId());
             DocxStructuralGraph baselineGraph = graphOf(extract(baselineDocxBytes));
             if (baselineGraph == null) {
@@ -195,17 +223,68 @@ public class ValidationService {
             }
         }
 
+        return saveManifest(
+                workspaceId, userId, idempotencyKey, requestHash, document, revision, templateVersion, docxArtifact, pdfArtifact, findings);
+    }
+
+    /**
+     * Writes every per-field result back onto the revision, then records
+     * the manifest against the new revision that made. Either file may be
+     * missing (no render ran, or a PDF template made no Word file), never
+     * both.
+     */
+    private ValidationManifest saveManifest(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            Document document,
+            DocumentRevision revision,
+            TemplateVersion templateVersion,
+            Artifact docxArtifact,
+            Artifact pdfArtifact,
+            List<ValidationFinding> findings) {
         Map<FieldItemRef, ValidationState> perFieldResults = perFieldValidationStates(revision, findings);
         DocumentMutationResult mutation = revisionService.applyValidationResults(
-                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, perFieldResults,
+                workspaceId, userId, idempotencyKey, requestHash, document.id(), revision.id(), perFieldResults,
                 "Recorded validation results.");
         DocumentRevision validatedRevision = mutation.revision();
 
         return validationRepository.save(
-                workspaceId, userId, documentId, validatedRevision.id(), document.templateId(), templateVersion.id(),
-                docxArtifact.id(), docxArtifact.sha256(),
+                workspaceId, userId, document.id(), validatedRevision.id(), document.templateId(), templateVersion.id(),
+                docxArtifact == null ? null : docxArtifact.id(), docxArtifact == null ? null : docxArtifact.sha256(),
                 pdfArtifact == null ? null : pdfArtifact.id(), pdfArtifact == null ? null : pdfArtifact.sha256(),
                 findings);
+    }
+
+    /**
+     * Fills and checks a PDF template's PDF and compares it with the form as
+     * uploaded outside the places filled, adding what each step found to
+     * {@code findings}. The filled PDF is kept whatever was found, as the
+     * Word path keeps its filled file: export only ever ships it when
+     * nothing blocks.
+     */
+    private Artifact validatePdf(
+            long workspaceId,
+            long userId,
+            Document document,
+            DocumentRevision revision,
+            TemplateVersion templateVersion,
+            byte[] sourceBytes,
+            List<ValidationFinding> findings) {
+        PdfTemplateFill.Result result = pdfTemplateFill.fill(sourceBytes, templateVersion.fieldDefinitions(), revision.content());
+        findings.addAll(DocumentValidator.checkPdfFill(result.findings()));
+        PdfFormGraph graph = pdfFormExtractionVersionRepository
+                .findById(workspaceId, userId, templateVersion.pdfFormExtractionId())
+                .map(PdfFormExtractionVersion::graph)
+                .orElseThrow(() -> new IllegalStateException(
+                        "PDF form reading " + templateVersion.pdfFormExtractionId() + " of template version " + templateVersion.id()
+                                + " no longer exists."));
+        MaskedRasterComparison comparison = pageRasterDiffer.compareMasked(
+                sourceBytes, result.filled().bytes(), DocumentValidator.fillSpotMasks(templateVersion.fieldDefinitions(), graph));
+        findings.addAll(DocumentValidator.checkMaskedRaster(comparison));
+        return storeGenerated(
+                workspaceId, userId, "validated-" + document.id() + "-r" + revision.revisionNumber() + ".pdf", result.filled().bytes());
     }
 
     /** Answers only for a document that is still there: one in the trash has no validation to show, the same as one that never existed. */
@@ -228,16 +307,25 @@ public class ValidationService {
         return findings;
     }
 
-    private List<ValidationFinding> packageIntegrityFindings(DocxExtractionOutcome outcome) {
-        if (outcome instanceof DocxExtractionOutcome.Unsupported(var featureReport)) {
-            return DocumentValidator.checkPackageIntegrity(featureReport);
-        }
-        if (outcome == null) {
+    /**
+     * The filled document is judged against everything today's reader finds
+     * in its template's file: what the template keeps as it is, and, for a
+     * template today's reader refuses although an earlier one took it, what
+     * it refuses. A template that cannot be read at all has nothing the
+     * filled document may keep, so then everything is reported.
+     */
+    private List<ValidationFinding> packageIntegrityFindings(DocxExtractionOutcome templateOutcome, DocxExtractionOutcome filledOutcome) {
+        if (filledOutcome == null) {
             return List.of(new ValidationFinding(
                     ValidationFindingCode.PACKAGE_INTEGRITY_FAILURE, null,
                     "The freshly filled document could not be re-extracted for package integrity checking."));
         }
-        return List.of();
+        DocxFeatureReport template = templateOutcome instanceof DocxExtractionOutcome.Supported supported
+                ? supported.keptAsIs()
+                : templateOutcome instanceof DocxExtractionOutcome.Unsupported unsupported
+                        ? unsupported.featureReport()
+                        : DocxFeatureReport.empty();
+        return DocumentValidator.checkPackageIntegrity(template, filledOutcome);
     }
 
     private DocxExtractionOutcome extract(byte[] bytes) {
@@ -249,7 +337,7 @@ public class ValidationService {
     }
 
     private static DocxStructuralGraph graphOf(DocxExtractionOutcome outcome) {
-        return outcome instanceof DocxExtractionOutcome.Supported(var graph) ? graph : null;
+        return outcome instanceof DocxExtractionOutcome.Supported supported ? supported.graph() : null;
     }
 
     /**

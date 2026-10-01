@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -145,14 +146,16 @@ class PoiDocxStructuralExtractorTest {
         assertUnsupported(DocxFixtures.withComment(), UnsupportedDocxFeature.UNRESOLVED_COMMENT);
     }
 
+    /** Graph version 3 keeps a floating shape as it is: the graph is complete without it, and filling does not touch it. */
     @Test
-    void floatingShapeIsFlaggedUnsupported() throws IOException {
-        assertUnsupported(DocxFixtures.withFloatingShape(), UnsupportedDocxFeature.FLOATING_SHAPE);
+    void floatingShapeIsKeptAsIs() throws IOException {
+        assertKeptAsIs(DocxFixtures.withFloatingShape(), UnsupportedDocxFeature.FLOATING_SHAPE);
     }
 
+    /** Graph version 3 keeps a table inside a table as it is; its inner table has no node ids, as before. */
     @Test
-    void nestedTableIsFlaggedUnsupported() throws IOException {
-        assertUnsupported(DocxFixtures.withNestedTable(), UnsupportedDocxFeature.NESTED_TABLE);
+    void nestedTableIsKeptAsIs() throws IOException {
+        assertKeptAsIs(DocxFixtures.withNestedTable(), UnsupportedDocxFeature.NESTED_TABLE);
     }
 
     @Test
@@ -160,20 +163,36 @@ class PoiDocxStructuralExtractorTest {
         assertUnsupported(DocxFixtures.withLinkedExternalImage(), UnsupportedDocxFeature.LINKED_EXTERNAL_IMAGE);
     }
 
+    /** An object that names no program is not on the allowed list, so it still stops the read, now as an unsafe one. */
     @Test
-    void embeddedObjectIsFlaggedUnsupported() throws IOException {
-        assertUnsupported(DocxFixtures.withEmbeddedObject(), UnsupportedDocxFeature.EMBEDDED_OBJECT);
+    void embeddedObjectOfNoKnownProgramIsFlaggedUnsupported() throws IOException {
+        assertUnsupported(DocxFixtures.withEmbeddedObject(), UnsupportedDocxFeature.UNSAFE_EMBEDDED_OBJECT);
+    }
+
+    /** A merge field is one of a form's own blanks: graph version 3 keeps it as it is, named by its kind of field. */
+    @Test
+    void mergeFieldIsKeptAsIsAsADynamicField() throws IOException {
+        var keptAsIs = assertKeptAsIs(DocxFixtures.withUnsupportedField(), UnsupportedDocxFeature.DYNAMIC_FIELD);
+        assertEquals("MERGEFIELD", keptAsIs.getFirst().fieldKeyword());
     }
 
     @Test
-    void nonPageFieldIsFlaggedUnsupported() throws IOException {
-        assertUnsupported(DocxFixtures.withUnsupportedField(), UnsupportedDocxFeature.UNSUPPORTED_FIELD);
+    void aFieldThatFetchesAnotherFileIsFlaggedUnsupported() throws IOException {
+        assertUnsupported(DocxFixtures.withComplexField(" INCLUDETEXT \"C:\\\\share\\\\clause.docx\" "), UnsupportedDocxFeature.UNSUPPORTED_FIELD);
+        assertUnsupported(DocxFixtures.withComplexField(" DDEAUTO c:\\\\windows\\\\system32\\\\cmd.exe \"/k calc\" "),
+                UnsupportedDocxFeature.UNSUPPORTED_FIELD);
+        assertUnsupported(DocxFixtures.withComplexField(" SOMETHINGUNKNOWN "), UnsupportedDocxFeature.UNSUPPORTED_FIELD);
     }
 
+    /** A page number is supported as before; graph version 3 also names it as a field the file keeps as it is. */
     @Test
     void pageFieldIsNotFlagged() throws IOException {
         DocxExtractionOutcome outcome = extract(DocxFixtures.withPageField());
         assertTrue(outcome instanceof DocxExtractionOutcome.Supported, "expected supported, got " + outcome);
+        var keptAsIs = ((DocxExtractionOutcome.Supported) outcome).keptAsIs().findings();
+        assertEquals(1, keptAsIs.size(), keptAsIs::toString);
+        assertEquals(UnsupportedDocxFeature.DYNAMIC_FIELD, keptAsIs.getFirst().feature());
+        assertEquals("PAGE", keptAsIs.getFirst().fieldKeyword());
     }
 
     @Test
@@ -309,6 +328,190 @@ class PoiDocxStructuralExtractorTest {
         assertNull(placeholder.style().bold());
     }
 
+    // --- graph version 3: what stops the read, and what is kept as it is ---
+
+    /** Graph version 2 saw only insertions and deletions directly in a paragraph; every other tracked change to the words stops the read too. */
+    @Test
+    void everyKindOfTrackedChangeStopsTheRead() throws IOException {
+        String track = " w:id=\"1\" w:author=\"A\"";
+        List<String> bodies = List.of(
+                "<w:p><w:pPr><w:rPr><w:del" + track + "/></w:rPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p><w:p/>",
+                "<w:tbl><w:tr><w:trPr><w:del" + track + "/></w:trPr><w:tc><w:p/></w:tc></w:tr></w:tbl>",
+                "<w:tbl><w:tr><w:trPr><w:ins" + track + "/></w:trPr><w:tc><w:p/></w:tc></w:tr></w:tbl>",
+                "<w:tbl><w:tr><w:tc><w:tcPr><w:cellDel" + track + "/></w:tcPr><w:p/></w:tc></w:tr></w:tbl>",
+                "<w:p><w:moveFrom" + track + "><w:r><w:t>x</w:t></w:r></w:moveFrom></w:p>",
+                "<w:p><w:moveTo" + track + "><w:r><w:t>x</w:t></w:r></w:moveTo></w:p>",
+                "<w:p><w:hyperlink><w:ins" + track + "><w:r><w:t>x</w:t></w:r></w:ins></w:hyperlink></w:p>",
+                "<w:p><w:smartTag w:element=\"x\"><w:del" + track + "><w:r><w:delText>x</w:delText></w:r></w:del></w:smartTag></w:p>");
+        for (String body : bodies) {
+            DocxExtractionOutcome outcome = extract(minimalDocx(body));
+            var report = assertInstanceOf(DocxExtractionOutcome.Unsupported.class, outcome, body).featureReport();
+            assertTrue(report.refused().stream().allMatch(f -> f.feature() == UnsupportedDocxFeature.TRACKED_CHANGES), body);
+        }
+    }
+
+    /**
+     * A tracked change to formatting alone leaves the words as they are, so it is kept as it is: graph version 2
+     * never refused a file for one, and templates made from such files must keep drawing and validating.
+     */
+    @Test
+    void aTrackedFormattingChangeIsKeptAsItIs() throws IOException {
+        String track = " w:id=\"1\" w:author=\"A\"";
+        List<String> bodies = List.of(
+                "<w:p><w:r><w:rPr><w:b/><w:rPrChange" + track + "><w:rPr/></w:rPrChange></w:rPr><w:t>x</w:t></w:r></w:p>",
+                "<w:p><w:pPr><w:jc w:val=\"center\"/><w:pPrChange" + track + "><w:pPr/></w:pPrChange></w:pPr><w:r><w:t>x</w:t></w:r></w:p>",
+                "<w:tbl><w:tr><w:trPr><w:trPrChange" + track + "><w:trPr/></w:trPrChange></w:trPr><w:tc><w:p/></w:tc></w:tr></w:tbl>",
+                "<w:p/><w:sectPr><w:sectPrChange" + track + "><w:sectPr/></w:sectPrChange></w:sectPr>");
+        for (String body : bodies) {
+            var kept = assertKeptAsIs(minimalDocx(body), UnsupportedDocxFeature.TRACKED_FORMATTING_CHANGE);
+            assertTrue(kept.stream().allMatch(f -> f.feature() == UnsupportedDocxFeature.TRACKED_FORMATTING_CHANGE), body);
+        }
+    }
+
+    @Test
+    void aTrackedChangeInAHeaderOrAFootnoteStopsTheReadToo() throws IOException {
+        String deletion = "<w:p><w:del w:id=\"1\" w:author=\"A\"><w:r><w:delText>x</w:delText></w:r></w:del></w:p>";
+        byte[] inHeader = RawDocx.builder()
+                .document("<w:p/><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdHeader\"/></w:sectPr>")
+                .part("word/header1.xml", RawDocx.HEADER_CONTENT_TYPE, RawDocx.wordRoot("hdr", deletion))
+                .documentRelationship("rIdHeader", RawDocx.RELATIONSHIP_TYPE_BASE + "header", "header1.xml", false)
+                .build();
+        byte[] inFootnote = RawDocx.builder()
+                .document("<w:p><w:r><w:footnoteReference w:id=\"1\"/></w:r></w:p>")
+                .part("word/footnotes.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                        RawDocx.wordRoot("footnotes", "<w:footnote w:id=\"1\">" + deletion + "</w:footnote>"))
+                .documentRelationship("rIdNotes", RawDocx.RELATIONSHIP_TYPE_BASE + "footnotes", "footnotes.xml", false)
+                .build();
+
+        var header = assertInstanceOf(DocxExtractionOutcome.Unsupported.class, extract(inHeader)).featureReport().refused();
+        assertEquals("word/header1.xml, p0", header.getFirst().location());
+        var footnote = assertInstanceOf(DocxExtractionOutcome.Unsupported.class, extract(inFootnote)).featureReport().refused();
+        assertEquals("word/footnotes.xml", footnote.getFirst().location());
+    }
+
+    @Test
+    void findingsNameTheTopLevelNodeTheyAreIn() throws IOException {
+        var report = assertInstanceOf(DocxExtractionOutcome.Unsupported.class, extract(minimalDocx(
+                "<w:p/><w:tbl><w:tr><w:tc><w:p><w:del w:id=\"1\" w:author=\"A\"><w:r><w:delText>x</w:delText></w:r></w:del>"
+                        + "</w:p></w:tc></w:tr></w:tbl>"))).featureReport();
+        assertEquals(List.of("word/document.xml, tbl1"), report.refused().stream().map(f -> f.location()).distinct().toList());
+    }
+
+    @Test
+    void aCommentReferenceWithoutACommentsPartStillStopsTheRead() throws IOException {
+        assertUnsupported(minimalDocx("<w:p><w:commentRangeStart w:id=\"0\"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id=\"0\"/>"
+                + "<w:r><w:commentReference w:id=\"0\"/></w:r></w:p>"), UnsupportedDocxFeature.UNRESOLVED_COMMENT);
+    }
+
+    @Test
+    void aFieldIsJudgedByItsWholeInstructionEvenWhenSplitOverRuns() throws IOException {
+        String split = "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText> %s</w:instrText></w:r>"
+                + "<w:r><w:instrText>%s </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+                + "<w:r><w:t>shown</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>";
+        assertUnsupported(minimalDocx(split.formatted("INCLUDE", "TEXT \"a.docx\"")), UnsupportedDocxFeature.UNSUPPORTED_FIELD);
+        var kept = assertKeptAsIs(minimalDocx(split.formatted("PA", "GE")), UnsupportedDocxFeature.DYNAMIC_FIELD);
+        assertEquals("PAGE", kept.getFirst().fieldKeyword());
+    }
+
+    /** A field in a field's code is judged on its own; the outer field keeps its own kind. */
+    @Test
+    void aFieldInsideAnotherFieldsCodeIsJudgedOnItsOwn() throws IOException {
+        String nested = "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText> IF </w:instrText></w:r>"
+                + "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText> DDEAUTO x y </w:instrText></w:r>"
+                + "<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r>"
+                + "<w:r><w:instrText> = 1 \"yes\" \"no\" </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+                + "<w:r><w:t>yes</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>";
+        var report = assertInstanceOf(DocxExtractionOutcome.Unsupported.class, extract(minimalDocx(nested))).featureReport();
+        assertEquals(List.of("DDEAUTO"), report.refused().stream().map(f -> f.fieldKeyword()).toList());
+        assertEquals(List.of("IF"), report.keptAsIs().stream().map(f -> f.fieldKeyword()).toList());
+    }
+
+    @Test
+    void anEmbeddedDocumentOfAnAllowedProgramIsKeptAndAnyOtherObjectStopsTheRead() throws IOException {
+        String object = "<w:p><w:r><w:object><v:shape id=\"s\" style=\"width:10pt;height:10pt\"/>"
+                + "<o:OLEObject Type=\"%s\" ProgID=\"%s\" ShapeID=\"s\"/></w:object></w:r></w:p>";
+        for (String progId : List.of("Excel.Sheet.12", "Excel.Chart.8", "Word.Document.12", "PowerPoint.Slide.12", "Visio.Drawing.15")) {
+            assertKeptAsIs(minimalDocx(object.formatted("Embed", progId)), UnsupportedDocxFeature.EMBEDDED_OBJECT);
+        }
+        for (String progId : List.of("Package", "Equation.3", "Excel.SheetMacroEnabled.12", "Forms.TextBox.1", "Unknown.Thing")) {
+            assertUnsupported(minimalDocx(object.formatted("Embed", progId)), UnsupportedDocxFeature.UNSAFE_EMBEDDED_OBJECT);
+        }
+        assertUnsupported(minimalDocx(object.formatted("Link", "Excel.Sheet.12")), UnsupportedDocxFeature.UNSAFE_EMBEDDED_OBJECT);
+        assertUnsupported(minimalDocx("<w:p><w:r><w:object><v:shape id=\"s\"/><w:control r:id=\"rId9\" w:name=\"TextBox1\"/></w:object></w:r></w:p>"),
+                UnsupportedDocxFeature.UNSAFE_EMBEDDED_OBJECT);
+    }
+
+    /** Word 2010 and later write a text box as a drawing with an older shape as its fallback, both of which the typed accessors miss. */
+    @Test
+    void aFloatingTextBoxIsKeptAsItIsAndAnInlineOldPictureIsNotReported() throws IOException {
+        String textBox = "<w:p><w:r><mc:AlternateContent><mc:Choice Requires=\"wps\"><w:drawing><wp:anchor><wp:extent cx=\"1\" cy=\"1\"/>"
+                + "</wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape id=\"t\" style=\"position: absolute; width:10pt\">"
+                + "<v:textbox><w:txbxContent><w:p><w:r><w:t>boxed</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict>"
+                + "</mc:Fallback></mc:AlternateContent></w:r></w:p>";
+        List<io.github.vihuynh72.brownie.core.document.DocxFeatureFinding> kept = assertKeptAsIs(minimalDocx(textBox), UnsupportedDocxFeature.FLOATING_SHAPE);
+        assertEquals(2, kept.size(), kept::toString);
+
+        DocxExtractionOutcome inline = extract(minimalDocx("<w:p><w:r><w:pict><v:shape id=\"p\" style=\"width:10pt;height:10pt\">"
+                + "<v:imagedata r:id=\"rId9\"/></v:shape></w:pict></w:r></w:p>"));
+        assertTrue(assertInstanceOf(DocxExtractionOutcome.Supported.class, inline).keptAsIs().findings().isEmpty());
+    }
+
+    @Test
+    void aPictureLinkedThroughAnExternalRelationshipStopsTheRead() throws IOException {
+        byte[] linked = RawDocx.builder()
+                .document("<w:p><w:r><w:pict><v:shape id=\"p\" style=\"width:10pt\"><v:imagedata r:id=\"rIdFar\"/></v:shape></w:pict></w:r></w:p>")
+                .documentRelationship("rIdFar", RawDocx.RELATIONSHIP_TYPE_BASE + "image", "file://server/share/logo.png", true)
+                .build();
+        assertUnsupported(linked, UnsupportedDocxFeature.LINKED_EXTERNAL_IMAGE);
+    }
+
+    @Test
+    void aSignatureStopsTheRead() throws IOException {
+        byte[] signed = RawDocx.builder()
+                .document("<w:p/>")
+                .part("_xmlsignatures/origin.sigs", "application/vnd.openxmlformats-package.digital-signature-origin", new byte[0])
+                .packageRelationship("rIdSig", "http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin",
+                        "_xmlsignatures/origin.sigs")
+                .build();
+        assertUnsupported(signed, UnsupportedDocxFeature.PACKAGE_SIGNATURE);
+    }
+
+    /** Graph version 2 searched for a drawing's picture from the start of the part, so every picture after the first named the first one's. */
+    @Test
+    void eachPictureNamesItsOwnRelationship() throws IOException {
+        XWPFDocumentBuilder builder = new XWPFDocumentBuilder();
+        var graph = supported(builder.twoPictures());
+        var first = partOfKind(graph.parts(), DocumentPartKind.MAIN_DOCUMENT).root().children().get(0).children().getFirst();
+        var second = partOfKind(graph.parts(), DocumentPartKind.MAIN_DOCUMENT).root().children().get(1).children().getFirst();
+        assertEquals(StructuralNodeKind.IMAGE, second.kind());
+        assertNotNull(first.imageRelationshipId());
+        assertNotNull(second.imageRelationshipId());
+        assertFalse(first.imageRelationshipId().equals(second.imageRelationshipId()), first + " / " + second);
+    }
+
+    /** Builds a document with two different pictures, each in its own paragraph. */
+    private static final class XWPFDocumentBuilder {
+        byte[] twoPictures() throws IOException {
+            try (var doc = new org.apache.poi.xwpf.usermodel.XWPFDocument()) {
+                for (String name : List.of("one.png", "two.png")) {
+                    var run = doc.createParagraph().createRun();
+                    byte[] png = java.util.Base64.getDecoder().decode(name.startsWith("one")
+                            ? "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                            : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+                    try (var in = new ByteArrayInputStream(png)) {
+                        run.addPicture(in, org.apache.poi.common.usermodel.PictureType.PNG, name,
+                                org.apache.poi.util.Units.pixelToEMU(1), org.apache.poi.util.Units.pixelToEMU(1));
+                    } catch (org.apache.poi.openxml4j.exceptions.InvalidFormatException e) {
+                        throw new IOException(e);
+                    }
+                }
+                var out = new java.io.ByteArrayOutputStream();
+                doc.write(out);
+                return out.toByteArray();
+            }
+        }
+    }
+
     @Test
     void corruptPackageThrowsDocxParseException() {
         assertThrows(DocxParseException.class, () -> extractor.extract(new ByteArrayInputStream(DocxFixtures.corruptPackage())));
@@ -330,6 +533,16 @@ class PoiDocxStructuralExtractorTest {
                 "expected " + expected + " among " + report.findings());
     }
 
+    private List<io.github.vihuynh72.brownie.core.document.DocxFeatureFinding> assertKeptAsIs(byte[] bytes, UnsupportedDocxFeature expected)
+            throws IOException {
+        DocxExtractionOutcome outcome = extract(bytes);
+        assertTrue(outcome instanceof DocxExtractionOutcome.Supported, "expected supported, got " + outcome);
+        var keptAsIs = ((DocxExtractionOutcome.Supported) outcome).keptAsIs();
+        assertTrue(keptAsIs.findings().stream().anyMatch(f -> f.feature() == expected), "expected " + expected + " among " + keptAsIs.findings());
+        assertTrue(keptAsIs.refused().isEmpty());
+        return keptAsIs.findings().stream().filter(f -> f.feature() == expected).toList();
+    }
+
     private DocxExtractionOutcome extract(byte[] bytes) throws IOException {
         return extractor.extract(new ByteArrayInputStream(bytes));
     }
@@ -337,7 +550,7 @@ class PoiDocxStructuralExtractorTest {
     /** The smallest package a reader accepts: a main document holding {@code bodyXml}, and no styles or settings part. */
     private static byte[] minimalDocx(String bodyXml) throws IOException {
         String document = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>" + bodyXml
+                + "<w:document" + RawDocx.NAMESPACES + "><w:body>" + bodyXml
                 + "</w:body></w:document>";
         String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
