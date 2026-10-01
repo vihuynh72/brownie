@@ -13,7 +13,7 @@ public interface ValidationRepository {
             long revisionId,
             long templateId,
             long templateVersionId,
-            long docxArtifactId,
+            Long docxArtifactId,
             String docxSha256,
             Long pdfArtifactId,
             String pdfSha256,

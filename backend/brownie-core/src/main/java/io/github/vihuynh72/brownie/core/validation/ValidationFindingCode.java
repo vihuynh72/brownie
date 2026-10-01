@@ -22,7 +22,7 @@ public enum ValidationFindingCode {
     /** An accepted {@code MaxItemCount} rule's bound repeated field currently holds more items than the rule allows. */
     ITEM_COUNT_EXCEEDED(ValidationSeverity.BLOCKING),
 
-    /** A field's own intended text did not survive into the freshly filled DOCX's reopened body text. */
+    /** A field's own intended text did not survive into the freshly filled DOCX's reopened body text, or, for a PDF template, is not stored in the filled PDF's field or drawn where it belongs. */
     FIELD_CONTENT_NOT_IN_OUTPUT(ValidationSeverity.BLOCKING),
 
     /** Re-extracting the freshly filled DOCX reported an unsupported feature the fill pass itself introduced. */
@@ -47,7 +47,22 @@ public enum ValidationFindingCode {
     LAYOUT_VISUAL_DIFFERENCE_DETECTED(ValidationSeverity.WARNING),
 
     /** A coarse whole-page rasterized comparison could not be produced at all (no qualified baseline render exists, or rendering failed) -- reported rather than silently skipped. */
-    LAYOUT_COMPARISON_UNAVAILABLE(ValidationSeverity.WARNING);
+    LAYOUT_COMPARISON_UNAVAILABLE(ValidationSeverity.WARNING),
+
+    /** A PDF template's value does not fit its place: too long at its own size, or at six points when it may shrink, or longer than the form's field allows. It was not written at all. */
+    FIXED_FIELD_OVERFLOW(ValidationSeverity.BLOCKING),
+
+    /** A PDF template's value was made smaller to fit its place; the message says the size used. */
+    FIELD_TEXT_SHRUNK(ValidationSeverity.INFORMATIONAL),
+
+    /** A PDF template's value holds a character the PDF's fonts cannot print, or a script Brownie cannot write into a PDF yet; the message names the character. It was not written at all. */
+    UNSUPPORTED_CHARACTER(ValidationSeverity.BLOCKING),
+
+    /** Filling a PDF template changed the page somewhere other than the places it fills, or changed another of the form's own fields. */
+    CHANGE_OUTSIDE_FILL_SPOTS(ValidationSeverity.BLOCKING),
+
+    /** A page of a PDF template holds a scanned picture the check could not draw, so that picture was not compared; the text Brownie added was still checked. */
+    PICTURE_NOT_COMPARED(ValidationSeverity.WARNING);
 
     private final ValidationSeverity severity;
 
