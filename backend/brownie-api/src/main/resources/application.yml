@@ -210,6 +210,16 @@ brownie:
       # the caps were sized for replies written with none, so "none" keeps
       # every cap for the reply itself. The same value in brownie-worker.
       reasoning-effort: ${BROWNIE_OPENAI_REASONING_EFFORT:none}
+  fill-spots:
+    # Whether the model reads an uploaded form's text to decide which of the
+    # places Brownie found are meant for filling in, and to name them. Each
+    # part of a form is one request, charged to the person who uploaded it
+    # like an Assist request, and at most max-model-calls of them are made
+    # per form; the rest is named by Brownie's own rules. "disabled" keeps a
+    # form's text on the server and names every place by the rules. The
+    # "Your data" page says which of the two this deployment does.
+    model: ${BROWNIE_FILL_SPOTS_MODEL:enabled}
+    max-model-calls: ${BROWNIE_FILL_SPOTS_MAX_MODEL_CALLS:4}
   connectors:
     # A person connecting their Google account so that Brownie can read a file
     # or a calendar event they choose. Off until the client id is set; with it
@@ -337,6 +347,10 @@ spring:
       # under this profile never make one.
       api-key: sk-test-not-a-real-key
 brownie:
+  # The key above is not real, so nothing here may try to reach the model on
+  # an upload; the rules name the places found in a form instead.
+  fill-spots:
+    model: disabled
   connectors:
     # Off in this profile whatever a developer's shell exports; the tests that
     # need a connection set their own values, pointing at a stand-in Google.

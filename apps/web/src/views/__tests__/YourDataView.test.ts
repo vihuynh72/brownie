@@ -135,6 +135,30 @@ describe('YourDataView', () => {
     expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
   })
 
+  it('says that an uploaded form is read by the model only where this Brownie does that, and that nothing else is sent', async () => {
+    const promise = 'Nothing is sent until you ask.'
+    const upload =
+      'When you upload a form, its text is sent to the same service, so Brownie can find the places to fill in and name them. Nothing else is sent until you ask.'
+
+    let wrapper = await mountPage()
+    let text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain(`is sent to OpenAI (gpt-6-luna) to get an answer. ${promise}`)
+    expect(text).not.toContain('When you upload a form')
+    wrapper.unmount()
+
+    vi.mocked(getDataPractices).mockResolvedValue({ ...PRACTICES, formTextSentToModel: false })
+    wrapper = await mountPage()
+    expect(wrapper.text().replace(/\s+/g, ' ')).toContain(promise)
+    wrapper.unmount()
+
+    vi.mocked(getDataPractices).mockResolvedValue({ ...PRACTICES, formTextSentToModel: true })
+    wrapper = await mountPage()
+    text = wrapper.text().replace(/\s+/g, ' ')
+    expect(text).toContain(`is sent to OpenAI (gpt-6-luna) to get an answer. ${upload}`)
+    expect(text).not.toContain(promise)
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
   it('says what connecting Google keeps and shares, and that deleting everything takes that access back', async () => {
     vi.mocked(getCapabilities).mockResolvedValue({
       maxUploadBytes: 10 * 1024 * 1024,
