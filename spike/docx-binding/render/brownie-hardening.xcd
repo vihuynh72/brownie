@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Settings for every document this image opens, all of which come from people we do not know.
+  Each value is finalized, so nothing layered on top (a user profile, a setting carried by a
+  document) can change it back. Every key below was checked against the schema this LibreOffice
+  7.4 ships in main.xcd.
+
+  - Macros never run: the highest security level, and macro execution switched off outright.
+  - Links from a document that is not in a trusted location are blocked; there is none.
+  - Writer never loads Word's VBA projects, so it has none to run or to write back out.
+  - Writer never updates a document's links while loading it. 0 means "never" in Writer's own
+    code (the NEVER value of its link update modes; 1 asks, 2 always updates), although the
+    schema's description lists the three values the other way round.
+-->
+<oor:data xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:oor="http://openoffice.org/2001/registry">
+  <dependency file="main"/>
+  <oor:component-data oor:package="org.openoffice.Office" oor:name="Common">
+    <node oor:name="Security">
+      <node oor:name="Scripting">
+        <prop oor:name="MacroSecurityLevel" oor:finalized="true">
+          <value>3</value>
+        </prop>
+        <prop oor:name="DisableMacrosExecution" oor:finalized="true">
+          <value>true</value>
+        </prop>
+        <prop oor:name="BlockUntrustedRefererLinks" oor:finalized="true">
+          <value>true</value>
+        </prop>
+      </node>
+    </node>
+  </oor:component-data>
+  <oor:component-data oor:package="org.openoffice.Office" oor:name="Writer">
+    <node oor:name="Filter">
+      <node oor:name="Import">
+        <node oor:name="VBA">
+          <prop oor:name="Load" oor:finalized="true">
+            <value>false</value>
+          </prop>
+          <prop oor:name="Executable" oor:finalized="true">
+            <value>false</value>
+          </prop>
+          <prop oor:name="Save" oor:finalized="true">
+            <value>false</value>
+          </prop>
+        </node>
+      </node>
+    </node>
+    <node oor:name="Content">
+      <node oor:name="Update">
+        <prop oor:name="Link" oor:finalized="true">
+          <value>0</value>
+        </prop>
+      </node>
+    </node>
+  </oor:component-data>
+</oor:data>
