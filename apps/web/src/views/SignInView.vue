@@ -17,7 +17,6 @@ const next = computed(() => (isInAppPath(route.query.next) ? route.query.next : 
 const PURPOSE: Record<string, string> = {
   // Home's upload button sends a signed-out visitor here, and back to Home to choose the file.
   '/': 'to upload your documents and start a new one',
-  '/templates/new': 'to teach Brownie one of your templates',
   '/trash': 'to open your trash bin',
   '/your-data': 'to see what Brownie keeps and for how long',
   '/connections': 'to see and manage the accounts you have connected',

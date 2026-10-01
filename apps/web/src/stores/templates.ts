@@ -24,7 +24,7 @@ export function documentTitleFor(templateName: string, when: Date = new Date()):
 /**
  * The workspace's templates, kept in one place because the sidebar's
  * list stays mounted across every navigation while other screens change
- * what is in it: teaching a template adds one, and restoring one from the
+ * what is in it: uploading a form adds one, and restoring one from the
  * Trash Bin puts it back. Without a shared copy the sidebar would either
  * refetch on every route change or quietly go stale the moment a template
  * is activated. The other way round works the same: the sidebar moves a
