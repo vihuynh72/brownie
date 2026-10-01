@@ -21,6 +21,7 @@ import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.LockState;
 import io.github.vihuynh72.brownie.core.revision.ReviewState;
 import io.github.vihuynh72.brownie.core.revision.ValidationState;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -121,6 +122,11 @@ class JdbcDocumentRepository implements DocumentRepository {
                     FROM template_version
                     WHERE workspace_id = ? AND template_id = ? AND id = ? AND status = 'ACTIVATED'
                 )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM template
+                    WHERE workspace_id = ? AND id = ? AND trashed_at IS NOT NULL
+                )
                 RETURNING id
                 """,
                 Long.class,
@@ -130,8 +136,15 @@ class JdbcDocumentRepository implements DocumentRepository {
                 templateVersionId,
                 workspaceId,
                 templateId,
-                templateVersionId);
+                templateVersionId,
+                workspaceId,
+                templateId);
         if (documentIds.isEmpty()) {
+            // The service checked both before getting here; a template moved to the Trash Bin in between is told
+            // apart from a version that is not there, so the refusal names what the person can do about it.
+            if (isTrashed(workspaceId, templateId)) {
+                throw new TemplateTrashedException();
+            }
             throw new DocumentTemplateVersionUnavailableException(templateId, templateVersionId);
         }
         long documentId = documentIds.getFirst();
@@ -451,6 +464,14 @@ class JdbcDocumentRepository implements DocumentRepository {
             throw new IllegalStateException("Document " + documentId + " has no revision selected by its current pointer.");
         }
         return currentRevisionId;
+    }
+
+    private boolean isTrashed(long workspaceId, long templateId) {
+        return Boolean.TRUE.equals(jdbcTemplate.query(
+                "SELECT trashed_at IS NOT NULL FROM template WHERE workspace_id = ? AND id = ?",
+                rs -> rs.next() && rs.getBoolean(1),
+                workspaceId,
+                templateId));
     }
 
     private Document mapDocument(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {

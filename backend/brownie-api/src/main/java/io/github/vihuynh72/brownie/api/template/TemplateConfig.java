@@ -9,6 +9,7 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.rule.RuleRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineRenderRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineRenderer;
+import io.github.vihuynh72.brownie.core.template.TemplateLayoutService;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import org.springframework.context.annotation.Bean;
@@ -34,5 +35,11 @@ class TemplateConfig {
         return new TemplateService(
                 templateRepository, extractionVersionRepository, docxExtractor, ruleRepository, templateBaselineRenderer,
                 templateBaselineRenderRepository);
+    }
+
+    @Bean
+    TemplateLayoutService templateLayoutService(
+            TemplateRepository templateRepository, ArtifactService artifactService, DocxStructuralExtractor docxExtractor) {
+        return new TemplateLayoutService(templateRepository, artifactService, docxExtractor);
     }
 }

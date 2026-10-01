@@ -80,19 +80,24 @@ public class BuiltInTemplateProvisioningService {
      * this finishes it and creates whichever built-ins are still missing.
      * Without that sign a missing built-in is left missing: the owner may
      * have removed it.
+     *
+     * <p>Templates in the Trash Bin count here like any other. A built-in the
+     * owner moved to the Trash Bin is therefore present, not missing, and is
+     * never created again behind their back; nor does a workspace whose
+     * every template is in the Trash Bin count as one that has none.
      */
     public void ensureBuiltInTemplates(long workspaceId, long userId) {
         // Two sign-ins of the same new person at the same moment (two tabs, two devices) would each find no
         // templates and each create them all. One goes first; the other then finds them there. Within this
         // process only, like the request limits: a second API instance would need this in the database.
         synchronized (TURNS[(int) Math.floorMod(workspaceId, (long) TURNS.length)]) {
-            List<Template> existing = templateService.findAll(workspaceId, userId);
+            List<Template> existing = templateService.findAllIncludingTrashed(workspaceId, userId);
             if (existing.isEmpty()) {
                 provision(workspaceId, userId, BuiltInMinutesTemplateRegistry.all(), new LinkedHashMap<>());
                 return;
             }
             if (finishInterruptedProvisioning(workspaceId, userId, existing)) {
-                existing = templateService.findAll(workspaceId, userId);
+                existing = templateService.findAllIncludingTrashed(workspaceId, userId);
             }
             repairUnreadableBuiltIns(workspaceId, userId, existing);
         }

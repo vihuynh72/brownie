@@ -38,7 +38,8 @@ import java.util.Optional;
 @Repository
 class JdbcTemplateRepository implements TemplateRepository {
 
-    private static final String TEMPLATE_COLUMNS = "id, workspace_id, display_name, status, current_active_version_id, created_at";
+    private static final String TEMPLATE_COLUMNS =
+            "id, workspace_id, display_name, status, current_active_version_id, created_at, trashed_at";
     private static final String VERSION_COLUMNS =
             "id, workspace_id, template_id, version_number, source_artifact_id, extraction_version_id, status, field_definitions, created_at, activated_at";
 
@@ -95,6 +96,45 @@ class JdbcTemplateRepository implements TemplateRepository {
                 "SELECT " + TEMPLATE_COLUMNS + " FROM template WHERE workspace_id = ? ORDER BY created_at, id",
                 this::mapTemplate,
                 workspaceId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Template> findTrashed(long workspaceId, long userId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                "SELECT " + TEMPLATE_COLUMNS + " FROM template WHERE workspace_id = ? AND trashed_at IS NOT NULL"
+                        + " ORDER BY trashed_at DESC, id DESC",
+                this::mapTemplate,
+                workspaceId);
+    }
+
+    /**
+     * Sets the time only while it is unset, so trashing again keeps the time
+     * the template first went to the Trash Bin and the order the Trash Bin
+     * lists it in. Either way the row is read back, which also tells a
+     * template already in the Trash Bin apart from one that is not there.
+     */
+    @Override
+    @Transactional
+    public Template trash(long workspaceId, long userId, long templateId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        jdbcTemplate.update(
+                "UPDATE template SET trashed_at = now() WHERE workspace_id = ? AND id = ? AND trashed_at IS NULL",
+                workspaceId,
+                templateId);
+        return find(workspaceId, userId, templateId).orElseThrow(() -> new TemplateNotFoundException(templateId));
+    }
+
+    @Override
+    @Transactional
+    public Template restore(long workspaceId, long userId, long templateId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        jdbcTemplate.update(
+                "UPDATE template SET trashed_at = NULL WHERE workspace_id = ? AND id = ? AND trashed_at IS NOT NULL",
+                workspaceId,
+                templateId);
+        return find(workspaceId, userId, templateId).orElseThrow(() -> new TemplateNotFoundException(templateId));
     }
 
     @Override
@@ -201,7 +241,8 @@ class JdbcTemplateRepository implements TemplateRepository {
                 rs.getString("display_name"),
                 TemplateStatus.valueOf(rs.getString("status")),
                 noActiveVersion ? null : activeVersionId,
-                rs.getObject("created_at", OffsetDateTime.class));
+                rs.getObject("created_at", OffsetDateTime.class),
+                rs.getObject("trashed_at", OffsetDateTime.class));
     }
 
     private TemplateVersion mapVersion(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
