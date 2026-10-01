@@ -80,11 +80,23 @@ class JdbcExtractionVersionRepository implements ExtractionVersionRepository {
                 .findFirst();
     }
 
+    /**
+     * Overridden here only to carry the transaction: the interface's own
+     * default is not proxied, and without a transaction the tenant setting
+     * and the insert run on different connections, so row-level security
+     * refuses the row.
+     */
     @Override
     @Transactional
     public ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph) {
-        insertIgnoringConflict(
-                workspaceId, userId, artifactId, parserVersion, ExtractionStatus.COMPLETE, DocxFeatureReport.empty(), graph, null);
+        return saveComplete(workspaceId, userId, artifactId, parserVersion, graph, DocxFeatureReport.empty());
+    }
+
+    @Override
+    @Transactional
+    public ExtractionVersion saveComplete(
+            long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph, DocxFeatureReport keptAsIs) {
+        insertIgnoringConflict(workspaceId, userId, artifactId, parserVersion, ExtractionStatus.COMPLETE, keptAsIs, graph, null);
         return requireSaved(workspaceId, userId, artifactId, parserVersion);
     }
 
