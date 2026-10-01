@@ -39,8 +39,10 @@ const props = withDefaults(
     attention?: boolean
     /** An element that says, once for the whole page, which key reaches a spot's review and lock controls. */
     keysHintId?: string
+    /** Brownie found this place itself and the person has not said it is right yet: it carries a "Found by Brownie" badge. */
+    found?: boolean
   }>(),
-  { lockedHint: 'Locked: unlock it to edit.', attention: false, keysHintId: undefined },
+  { lockedHint: 'Locked: unlock it to edit.', attention: false, keysHintId: undefined, found: false },
 )
 
 const emit = defineEmits<{
@@ -61,6 +63,8 @@ const accessibleName = computed(() => {
 const description = computed(() => {
   const state = props.state && props.locked ? { ...props.state, lock: 'EDITABLE' as const } : props.state
   const sentences = fieldStateWords(state).map((word) => `${word}.`)
+  // The badge on the page says it in words; this says the same to someone who cannot see it.
+  if (props.found) sentences.unshift('Found by Brownie; check that this is the right place.')
   if (props.locked) sentences.push(props.lockedHint)
   return sentences.join(' ')
 })
@@ -75,6 +79,17 @@ const shownPlaceholder = computed(() => {
 })
 
 const empty = computed(() => props.value.trim() === '')
+
+/**
+ * How many characters wide a text spot is where the browser cannot size it to its content itself: what
+ * it shows (the value, or the placeholder while empty), from a small minimum up to about a line.
+ */
+const MIN_CHARS = 4
+const MAX_CHARS = 60
+const widthCss = computed(() => {
+  const shown = empty.value ? shownPlaceholder.value : props.value
+  return { '--spot-chars': String(Math.min(MAX_CHARS, Math.max(MIN_CHARS, [...shown].length + 1))) }
+})
 const invalid = computed(() => props.attention || props.state?.validation === 'BLOCKING')
 const classes = computed(() => ({
   'fill-spot--empty': empty.value,
@@ -140,7 +155,7 @@ function onInput(event: Event): void {
       :aria-invalid="invalid ? 'true' : undefined"
       :aria-readonly="locked ? 'true' : undefined"
       :readonly="locked"
-      :style="styleCss"
+      :style="[styleCss, widthCss]"
       @input="onInput"
       @keydown="onKeydown"
       @paste="onPaste"
@@ -187,6 +202,8 @@ function onInput(event: Event): void {
       <path d="M6 11h12v9H6z" />
       <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3" />
     </svg>
+    <!-- Words, not a colour: the control's description already says it, so it is not read twice. -->
+    <span v-if="found" class="fill-spot__found" aria-hidden="true">Found by Brownie</span>
     <span v-if="description" :id="descriptionId" class="visually-hidden">{{ description }}</span>
   </span>
 </template>
@@ -207,7 +224,7 @@ function onInput(event: Event): void {
   display: inline-block;
   box-sizing: border-box;
   vertical-align: top;
-  min-inline-size: 6ch;
+  min-inline-size: 4ch;
   max-inline-size: 100%;
   margin: 0;
   padding: 0 0.25em;
@@ -223,11 +240,13 @@ function onInput(event: Event): void {
 }
 
 /*
- * A text spot grows with what is typed where the browser can size a field to its content, and wraps
- * at the line's width. Elsewhere it is a fixed box that scrolls, which still holds any value.
+ * A text spot is as wide as what it shows, from a small minimum, so a spot added after a label stays on
+ * the label's line where the line has room. Where the browser can size a field to its content it does so
+ * as the person types, and wraps at the line's width; elsewhere the width is worked out from the number of
+ * characters, and a longer value scrolls inside it.
  */
 .fill-spot__control--text {
-  inline-size: 16ch;
+  inline-size: calc(var(--spot-chars, 16) * 1ch + 0.5em + 2px);
   resize: none;
   overflow: auto;
   field-sizing: content;
@@ -299,6 +318,29 @@ function onInput(event: Event): void {
   font-weight: 700;
   line-height: 1;
   color: var(--color-error);
+  pointer-events: none;
+}
+
+/*
+ * A small label after the spot, in the page's plain text face rather than the template's, so it reads as
+ * Brownie's note on the page and not as part of the form. Its edge and its words carry it without colour.
+ */
+.fill-spot__found {
+  display: inline-block;
+  margin-inline-start: 0.3em;
+  padding: 0 0.4em;
+  border: 1px solid var(--color-honey-line);
+  border-radius: var(--radius-pill);
+  background: var(--color-honey-faint);
+  color: var(--color-text);
+  font-family: 'Rubik', system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: 0.1em;
+  white-space: nowrap;
+  text-decoration: none;
   pointer-events: none;
 }
 
