@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A plain, untagged request form led by tables: label/empty-cell pairs under a header row, then an items table. -->
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                 xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+                 xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+                 xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+                 xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+                 office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+  <office:font-face-decls>
+    <style:font-face style:name="Liberation Sans" style:font-family-generic="swiss"/>
+  </office:font-face-decls>
+  <office:styles>
+    <style:default-style style:family="paragraph">
+      <style:paragraph-properties fo:margin-bottom="0.15cm"/>
+      <style:text-properties style:font-name="Liberation Sans" fo:font-size="11pt"/>
+    </style:default-style>
+    <style:style style:name="Title" style:family="paragraph">
+      <style:paragraph-properties fo:text-align="center" fo:margin-bottom="0.4cm"/>
+      <style:text-properties fo:font-size="16pt" fo:font-weight="bold"/>
+    </style:style>
+    <style:style style:name="Heading" style:family="paragraph">
+      <style:paragraph-properties fo:margin-top="0.4cm"/>
+      <style:text-properties fo:font-size="12pt" fo:font-weight="bold"/>
+    </style:style>
+    <style:style style:name="CellHeading" style:family="paragraph">
+      <style:text-properties fo:font-weight="bold"/>
+    </style:style>
+  </office:styles>
+  <office:automatic-styles>
+    <style:style style:name="Details" style:family="table">
+      <style:table-properties style:width="16cm" table:align="left"/>
+    </style:style>
+    <style:style style:name="Details.A" style:family="table-column">
+      <style:table-column-properties style:column-width="5cm"/>
+    </style:style>
+    <style:style style:name="Details.B" style:family="table-column">
+      <style:table-column-properties style:column-width="11cm"/>
+    </style:style>
+    <style:style style:name="Items" style:family="table">
+      <style:table-properties style:width="16cm" table:align="left"/>
+    </style:style>
+    <style:style style:name="Items.A" style:family="table-column">
+      <style:table-column-properties style:column-width="8cm"/>
+    </style:style>
+    <style:style style:name="Items.B" style:family="table-column">
+      <style:table-column-properties style:column-width="2.5cm"/>
+    </style:style>
+    <style:style style:name="Items.C" style:family="table-column">
+      <style:table-column-properties style:column-width="5.5cm"/>
+    </style:style>
+    <style:style style:name="Cell" style:family="table-cell">
+      <style:table-cell-properties fo:border="0.5pt solid #000000" fo:padding="0.15cm"/>
+    </style:style>
+    <style:style style:name="HeaderCell" style:family="table-cell">
+      <style:table-cell-properties fo:background-color="#e6e6e6" fo:border="0.5pt solid #000000" fo:padding="0.15cm"/>
+    </style:style>
+  </office:automatic-styles>
+  <office:body>
+    <office:text>
+      <text:p text:style-name="Title">Equipment Request Form</text:p>
+      <text:p>Use this form to borrow equipment from the club store. Hand it to the store manager at least three days before you need the equipment.</text:p>
+      <table:table table:name="Details" table:style-name="Details">
+        <table:table-column table:style-name="Details.A"/>
+        <table:table-column table:style-name="Details.B"/>
+        <table:table-header-rows>
+          <table:table-row>
+            <table:table-cell table:style-name="HeaderCell" office:value-type="string">
+              <text:p text:style-name="CellHeading">Requester details</text:p>
+            </table:table-cell>
+            <table:table-cell table:style-name="HeaderCell" office:value-type="string">
+              <text:p text:style-name="CellHeading">Please complete</text:p>
+            </table:table-cell>
+          </table:table-row>
+        </table:table-header-rows>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell" office:value-type="string"><text:p>Name</text:p></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell" office:value-type="string"><text:p>Team or department</text:p></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell" office:value-type="string"><text:p>Phone</text:p></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell" office:value-type="string"><text:p>Date needed</text:p></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell" office:value-type="string"><text:p>Return date</text:p></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+      </table:table>
+      <text:p text:style-name="Heading">Items requested</text:p>
+      <table:table table:name="Items" table:style-name="Items">
+        <table:table-column table:style-name="Items.A"/>
+        <table:table-column table:style-name="Items.B"/>
+        <table:table-column table:style-name="Items.C"/>
+        <table:table-header-rows>
+          <table:table-row>
+            <table:table-cell table:style-name="HeaderCell" office:value-type="string"><text:p text:style-name="CellHeading">Item</text:p></table:table-cell>
+            <table:table-cell table:style-name="HeaderCell" office:value-type="string"><text:p text:style-name="CellHeading">Quantity</text:p></table:table-cell>
+            <table:table-cell table:style-name="HeaderCell" office:value-type="string"><text:p text:style-name="CellHeading">What it is for</text:p></table:table-cell>
+          </table:table-row>
+        </table:table-header-rows>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+          <table:table-cell table:style-name="Cell"><text:p/></table:table-cell>
+        </table:table-row>
+      </table:table>
+      <text:p text:style-name="Heading">Approval</text:p>
+      <text:p>Approved by: ______________________________<text:tab/>Date: __/__/____</text:p>
+    </office:text>
+  </office:body>
+</office:document>
