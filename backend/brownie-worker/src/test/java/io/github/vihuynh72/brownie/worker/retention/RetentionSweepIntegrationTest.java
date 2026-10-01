@@ -246,6 +246,49 @@ class RetentionSweepIntegrationTest {
     }
 
     /**
+     * A form's working copy is what its template is built on, but the upload
+     * it was made from is what the person gave, so it stays for as long as a
+     * template uses the copy. A copy nothing was built on is swept like any
+     * other unused generated file, with its original, and the record of how
+     * it was made goes with it so asking again makes a fresh copy.
+     */
+    @Test
+    void anOriginalStaysWhileItsWorkingCopyBacksATemplateAndAnUnusedCopyIsSweptWithItsRecord() throws Exception {
+        Fixture inUse = seedDocumentWithACompiledFile();
+        long workspaceId = inUse.workspaceId();
+        long keptOriginal;
+        long unusedOriginal;
+        long unusedCopy;
+        long unusedDerivation;
+        String old = "now() - interval '2 days'";
+        try (Connection connection = ownerConnection()) {
+            keptOriginal = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            insertDerivation(connection, workspaceId, inUse.userId(), keptOriginal, inUse.templateArtifactId());
+            unusedOriginal = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            unusedCopy = insertArtifact(connection, workspaceId, "READY", null, old, old);
+            unusedDerivation = insertDerivation(connection, workspaceId, inUse.userId(), unusedOriginal, unusedCopy);
+        }
+        for (long artifactId : List.of(keptOriginal, unusedOriginal, unusedCopy)) {
+            writeBlob(blobKey(artifactId));
+        }
+
+        artifactRetentionSweeper.sweepOnce(64);
+
+        assertThat(text("SELECT status FROM artifact WHERE id = ?", keptOriginal)).isEqualTo("READY");
+        assertThat(blobStore.sizeOf(blobKey(keptOriginal))).isPresent();
+        assertThat(text("SELECT status FROM artifact WHERE id = ?", inUse.templateArtifactId())).isEqualTo("READY");
+        assertThat(count("SELECT count(*) FROM artifact_derivation WHERE source_artifact_id = ?", keptOriginal)).isEqualTo(1);
+
+        for (long artifactId : List.of(unusedOriginal, unusedCopy)) {
+            assertThat(text("SELECT status || ':' || rejection_reason FROM artifact WHERE id = ?", artifactId))
+                    .as("artifact %d", artifactId)
+                    .isEqualTo("REJECTED:UNREFERENCED_EXPIRED");
+            assertThat(blobStore.sizeOf(blobKey(artifactId))).as("bytes of artifact %d", artifactId).isEmpty();
+        }
+        assertThat(count("SELECT count(*) FROM artifact_derivation WHERE id = ?", unusedDerivation)).isZero();
+    }
+
+    /**
      * A reservation nobody closed belongs to a process that died mid-call.
      * Nobody knows whether the provider served it, so it is kept at its full
      * amount, never dropped; one that is merely recent is somebody's call
@@ -413,6 +456,15 @@ class RetentionSweepIntegrationTest {
                 finalizedAtSql == null ? "NULL" : finalizedAtSql));
         execute(connection, "UPDATE artifact SET blob_key = '" + blobKey(artifactId) + "' WHERE id = " + artifactId);
         return artifactId;
+    }
+
+    private static long insertDerivation(Connection connection, long workspaceId, long userId, long sourceId, long outputId)
+            throws SQLException {
+        return insertReturningId(connection, """
+                INSERT INTO artifact_derivation (workspace_id, source_artifact_id, output_artifact_id, kind, recipe_version,
+                                                 source_format, spot_naming, created_by_user_id)
+                VALUES (%d, %d, %d, 'PREPARED', 'fillable-form-v1/fixture', 'DOCX', 'RULES', %d) RETURNING id
+                """.formatted(workspaceId, sourceId, outputId, userId));
     }
 
     private void writeBlob(String objectKey) throws Exception {
