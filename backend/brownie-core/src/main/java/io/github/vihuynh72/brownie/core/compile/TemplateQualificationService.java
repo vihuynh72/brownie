@@ -4,12 +4,18 @@ import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStatus;
 import io.github.vihuynh72.brownie.core.artifact.ReadableArtifact;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersion;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.document.PdfFormGraph;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.template.BaselineRenderResult;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
+import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineRenderer;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
+import io.github.vihuynh72.brownie.core.template.TemplateBindingValidator;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 
 import java.io.ByteArrayInputStream;
@@ -35,25 +41,49 @@ import java.util.Map;
  * PoiDocxStructuralExtractor} already uses for {@code
  * DocxStructuralExtractor} -- {@code core.template} depends only on that
  * narrow interface, never on this class or this package.
+ *
+ * <p>A PDF template's baseline is a sample fill with the PDF filler and its
+ * check, the same pair a real PDF compilation runs, and never touches the
+ * Word renderer: the filled sample PDF is the baseline, with no Word file.
+ * Each sample is one short word, cut to the form field's own length limit
+ * where it has one, and a date is the longest a real date is printed in
+ * ("September 30, 2020", as long as any date written out gets), so a
+ * place too small for a real date fails here rather than at the first real
+ * document.
  */
 public class TemplateQualificationService implements TemplateBaselineRenderer {
 
     /** A fixed, deterministic sample date -- never the current date, so a baseline render is exactly reproducible regardless of when it runs. */
     private static final LocalDate SAMPLE_DATE = LocalDate.of(2020, 1, 1);
     private static final int SAMPLE_REPEATED_ITEM_COUNT = 2;
+    private static final String PDF_SAMPLE_TEXT = "Sample";
+    /** The date written out longest: the longest month's name and a two-figure day. */
+    static final LocalDate PDF_SAMPLE_DATE = LocalDate.of(2020, 9, 30);
 
     private final ArtifactService artifactService;
     private final TemplateFiller templateFiller;
     private final DocumentRenderer documentRenderer;
+    private final PdfTemplateFill pdfTemplateFill;
+    private final PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository;
 
-    public TemplateQualificationService(ArtifactService artifactService, TemplateFiller templateFiller, DocumentRenderer documentRenderer) {
+    public TemplateQualificationService(
+            ArtifactService artifactService,
+            TemplateFiller templateFiller,
+            DocumentRenderer documentRenderer,
+            PdfTemplateFill pdfTemplateFill,
+            PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository) {
         this.artifactService = artifactService;
         this.templateFiller = templateFiller;
         this.documentRenderer = documentRenderer;
+        this.pdfTemplateFill = pdfTemplateFill;
+        this.pdfFormExtractionVersionRepository = pdfFormExtractionVersionRepository;
     }
 
     @Override
     public BaselineRenderResult renderBaseline(long workspaceId, long userId, TemplateVersion draftVersion) {
+        if (draftVersion.kind() == TemplateKind.PDF) {
+            return renderPdfBaseline(workspaceId, userId, draftVersion);
+        }
         byte[] templateBytes = readTemplateBytes(workspaceId, userId, draftVersion.sourceArtifactId());
         DocumentContent sample = sampleContent(draftVersion.fieldDefinitions());
         FilledDocument filled = templateFiller.fill(templateBytes, draftVersion.fieldDefinitions(), sample);
@@ -75,6 +105,41 @@ public class TemplateQualificationService implements TemplateBaselineRenderer {
                 .toList();
 
         return new BaselineRenderResult(docxArtifact.id(), pdfArtifact.id(), rendered.rendererVersion(), failedFieldIds);
+    }
+
+    private BaselineRenderResult renderPdfBaseline(long workspaceId, long userId, TemplateVersion draftVersion) {
+        byte[] sourceBytes = readTemplateBytes(workspaceId, userId, draftVersion.sourceArtifactId());
+        PdfFormGraph graph = pdfFormExtractionVersionRepository
+                .findById(workspaceId, userId, draftVersion.pdfFormExtractionId())
+                .map(PdfFormExtractionVersion::graph)
+                .orElseThrow(() -> new IllegalStateException(
+                        "PDF form reading " + draftVersion.pdfFormExtractionId() + " of template version " + draftVersion.id() + " no longer exists."));
+        PdfTemplateFill.Result result = pdfTemplateFill.fill(
+                sourceBytes, draftVersion.fieldDefinitions(), pdfSampleContent(draftVersion.fieldDefinitions(), graph));
+        Artifact pdfArtifact = storeGenerated(
+                workspaceId, userId, "baseline-" + draftVersion.templateId() + "-v" + draftVersion.versionNumber() + ".pdf",
+                result.filled().bytes());
+        return new BaselineRenderResult(null, pdfArtifact.id(), pdfTemplateFill.fillerVersion(), result.failedFieldIds());
+    }
+
+    /** One short sample per field of a PDF template: see this class's javadoc. A list is left as it is for the fill to refuse. */
+    static DocumentContent pdfSampleContent(List<FieldDefinition> fieldDefinitions, PdfFormGraph graph) {
+        Map<String, FieldValue> fields = new LinkedHashMap<>();
+        for (FieldDefinition field : fieldDefinitions) {
+            FieldValue value = sampleValue(field);
+            if (value instanceof FieldValue.TextValue && field.binding() instanceof FieldBindingTarget.AcroFormField(String name)) {
+                Integer maxLen = TemplateBindingValidator.formField(graph, name).map(PdfFormGraph.Field::maxLen).orElse(null);
+                value = new FieldValue.TextValue(maxLen != null && maxLen > 0 && maxLen < PDF_SAMPLE_TEXT.length()
+                        ? PDF_SAMPLE_TEXT.substring(0, maxLen)
+                        : PDF_SAMPLE_TEXT);
+            } else if (value instanceof FieldValue.TextValue) {
+                value = new FieldValue.TextValue(PDF_SAMPLE_TEXT);
+            } else if (value instanceof FieldValue.DateValue) {
+                value = new FieldValue.DateValue(PDF_SAMPLE_DATE);
+            }
+            fields.put(field.fieldId(), value);
+        }
+        return new DocumentContent(fields);
     }
 
     /**
