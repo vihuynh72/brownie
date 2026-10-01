@@ -6,15 +6,29 @@ import { crc32 } from 'node:zlib'
 
 /**
  * Uploading the form to fill, from Home, against the real API: Brownie
- * learns the Word file on the spot, adds it to My Templates, and opens a
- * new document made from it -- and a file it cannot fill is refused in
- * plain words, with nothing left behind. No model call is on this path;
- * learning a form reads its content controls, which is deterministic.
+ * makes the file ready to fill on the spot, finding its places, adds it to
+ * My Templates, and opens a new document made from it -- and a file it
+ * cannot fill is refused in plain words, with nothing left behind. Where
+ * the deployment has the AI service name the places Brownie finds, their
+ * names are its choice, so these tests find a found place by its mark and
+ * name only the places a form marked itself.
  */
 
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 // The built-in table-led minutes: every field a tagged content control, its action items the last row of a table.
 const TAGGED_FORM = fileURLToPath(new URL('../../../fixtures/public/templates/table-led-meeting-minutes.docx', import.meta.url))
+// A one-page PDF with fields of its own to type in, among them "Full name", and check boxes and a signature field.
+const FILLABLE_PDF = fileURLToPath(new URL('../../../fixtures/public/pdf/fillable-application.pdf', import.meta.url))
+
+/** Leaves the shared test workspace's My Templates as it found it: a template this test made goes to the Trash Bin. */
+async function trashTemplatesNamed(page: Page, name: string): Promise<void> {
+  const workspaceId = (await (await page.request.get('/api/v1/me')).json()).memberships[0].workspaceId
+  const templates = (await (await page.request.get(`/api/v1/workspaces/${workspaceId}/templates`)).json()) as { id: number; displayName: string }[]
+  const xsrf = (await page.context().cookies()).find((cookie) => cookie.name === 'XSRF-TOKEN')?.value ?? ''
+  for (const template of templates.filter((candidate) => candidate.displayName === name)) {
+    await page.request.post(`/api/v1/workspaces/${workspaceId}/templates/${template.id}/trash`, { headers: { 'X-XSRF-TOKEN': xsrf } })
+  }
+}
 
 async function chooseForm(page: Page, file: { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
   const chooser = page.waitForEvent('filechooser')
@@ -22,7 +36,7 @@ async function chooseForm(page: Page, file: { name: string; mimeType: string; bu
   await (await chooser).setFiles(file)
 }
 
-test('a Word form uploaded from Home is learned, added to My Templates, and opened as a new document', async ({ page, context }) => {
+test('a Word form uploaded from Home is learned, added to My Templates, and opened as a new document', async ({ page }) => {
   // Learning a form renders it once through the isolated renderer before it is ready.
   test.setTimeout(90_000)
   const name = `E2E uploaded minutes ${Date.now()}`
@@ -65,41 +79,101 @@ test('a Word form uploaded from Home is learned, added to My Templates, and open
   await expect(page.getByLabel('Action item task, row 1', { exact: true })).toHaveCount(0)
   expect(asked).toBe('You have unsaved changes on this document. Leave anyway?')
 
-  // Leaves the shared test workspace's My Templates as it found it: the learned template goes to the Trash Bin.
-  const workspaceId = (await (await context.request.get('/api/v1/me')).json()).memberships[0].workspaceId
-  const templates = (await (await context.request.get(`/api/v1/workspaces/${workspaceId}/templates`)).json()) as { id: number; displayName: string }[]
-  const xsrf = (await context.cookies()).find((cookie) => cookie.name === 'XSRF-TOKEN')?.value ?? ''
-  for (const template of templates.filter((candidate) => candidate.displayName === name)) {
-    await context.request.post(`/api/v1/workspaces/${workspaceId}/templates/${template.id}/trash`, { headers: { 'X-XSRF-TOKEN': xsrf } })
-  }
+  await trashTemplatesNamed(page, name)
 })
 
-test('a PDF, and a Word file with no content controls, are refused on Home in plain words, and nothing is added', async ({ page }) => {
-  const allocations: string[] = []
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/uploads')) allocations.push(request.url())
-  })
+test('a form added with the + beside My Templates is listed there, and starts a document only when asked', async ({ page }) => {
+  test.setTimeout(90_000)
+  const name = `E2E added minutes ${Date.now()}`
+  await page.goto('/')
+  const sidebar = page.locator('#app-sidebar')
+  const add = sidebar.getByRole('button', { name: 'Add a template from a file', exact: true })
+  await expect(add).toBeVisible({ timeout: 15_000 })
+
+  const chooser = page.waitForEvent('filechooser')
+  await add.click()
+  await (await chooser).setFiles({ name: `${name}.docx`, mimeType: DOCX_TYPE, buffer: await readFile(TAGGED_FORM) })
+
+  // The same steps as Home, said in the sidebar; it ends at the template, with no document opened.
+  await expect(sidebar.getByText(`Added "${name}" to My Templates.`)).toBeVisible({ timeout: 60_000 })
+  await expect(page).toHaveURL(/\/$/)
+  await expect(sidebar.getByRole('button', { name, exact: true })).toBeVisible()
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+
+  await sidebar.getByRole('button', { name: `Start a document from ${name}`, exact: true }).click()
+  await page.waitForURL(/\/documents\/\d+$/, { timeout: 30_000 })
+  await expect(page.locator('.workspace-title')).toHaveText(new RegExp(`^${name}, `), { timeout: 15_000 })
+  await expect(page.getByLabel(/^Meeting title/)).toBeVisible({ timeout: 15_000 })
+
+  await trashTemplatesNamed(page, name)
+})
+
+test('a Word file with a blank and no content controls opens with the place Brownie found, marked until it is kept', async ({ page }) => {
+  test.setTimeout(90_000)
+  const name = `E2E plain letter ${Date.now()}`
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'Upload your documents', exact: true })).toBeVisible({ timeout: 15_000 })
+
+  await chooseForm(page, { name: `${name}.docx`, mimeType: DOCX_TYPE, buffer: wordFileWithoutContentControls() })
+
+  await page.waitForURL(/\/documents\/\d+$/, { timeout: 60_000 })
+  await expect(page.locator('.workspace-title')).toHaveText(new RegExp(`^${name}, `), { timeout: 15_000 })
+  // What Brownie found is news in one line over the page, not an error.
+  const strip = page.getByRole('region', { name: 'About this document' })
+  await expect(strip.locator('.form-strip__text')).toHaveText('Brownie found 1 place to fill in. Check the one marked Found by Brownie.')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  // The blank on the line is the place, marked in words beside it, and in view without scrolling.
+  await expect(page.locator('.fill-spot__found')).toHaveText(['Found by Brownie'])
+  await expect(page.locator('.fill-spot__found')).toBeInViewport()
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+
+  // Kept, the mark goes, and stays gone for the next document made from the form. The upload had nothing else
+  // to say, so the line goes with its button, and focus moves on to the document.
+  await strip.getByRole('button', { name: 'Keep all the places Brownie found' }).click()
+  await expect(page.locator('.fill-spot__found')).toHaveCount(0)
+  await expect(strip).toHaveCount(0)
+  await expect(page.locator('#document-pane')).toBeFocused()
+
+  await trashTemplatesNamed(page, name)
+})
+
+test('a PDF form uploaded from Home opens with its own fields to fill', async ({ page }) => {
+  test.setTimeout(90_000)
+  const name = `E2E membership application ${Date.now()}`
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'Upload your documents', exact: true })).toBeVisible({ timeout: 15_000 })
+
+  await chooseForm(page, { name: `${name}.pdf`, mimeType: 'application/pdf', buffer: await readFile(FILLABLE_PDF) })
+
+  await page.waitForURL(/\/documents\/\d+$/, { timeout: 60_000 })
+  await expect(page.locator('.workspace-title')).toHaveText(new RegExp(`^${name}, `), { timeout: 15_000 })
+  // The form's own fields keep the names the form gives them, and carry no mark: nothing about them needs checking.
+  await expect(page.getByLabel(/^Full name/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.fill-spot__found')).toHaveCount(0)
+  // The notes about the upload wait behind Details, so the form's first fields stay in view.
+  const strip = page.getByRole('region', { name: 'About this document' })
+  await strip.getByRole('button', { name: 'Details about this document' }).click()
+  await expect(strip.getByRole('listitem').filter({ hasText: 'It leaves the check boxes and lists for you to set in your PDF reader.' })).toBeVisible()
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+
+  await trashTemplatesNamed(page, name)
+})
+
+test('a file that is not a document is refused on Home in plain words, and nothing is added', async ({ page }) => {
   await page.goto('/')
   const upload = page.getByRole('button', { name: 'Upload your documents', exact: true })
   await expect(upload).toBeVisible({ timeout: 15_000 })
 
-  // A PDF is offered by the file chooser, so the person is told why it cannot be filled; nothing is sent.
-  await chooseForm(page, { name: 'Membership form.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n') })
-  await expect(page.getByRole('alert')).toHaveText('Brownie can fill Word (.docx) forms. It cannot fill a PDF.')
-  expect(allocations).toHaveLength(0)
-  await expect(upload).toBeFocused()
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
-
-  // A real Word file goes all the way to the server, which finds nowhere in it to write a value.
-  const name = `E2E plain letter ${Date.now()}`
-  await chooseForm(page, { name: `${name}.docx`, mimeType: DOCX_TYPE, buffer: wordFileWithoutContentControls() })
+  // The chooser does not offer plain text, but a file can still be dropped or picked by name; the server judges its bytes.
+  const name = `E2E notes ${Date.now()}`
+  await chooseForm(page, { name: `${name}.txt`, mimeType: 'text/plain', buffer: Buffer.from('Just some notes from the meeting.') })
   await expect(page.getByRole('alert')).toHaveText(
-    "Brownie found no content control with a tag in this Word file, and the tag is how Brownie knows which value goes where, so Brownie cannot fill it. In Word's Developer tab, add a content control where each value goes and give each one a tag under Properties, then upload the file again.",
+    'This file is not a document Brownie can fill in. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.',
     { timeout: 30_000 },
   )
-  expect(allocations).toHaveLength(1)
   await expect(page).toHaveURL(/\/$/)
   await expect(upload).not.toHaveAttribute('aria-disabled', 'true')
+  await expect(upload).toBeFocused()
 
   // Nothing half-made shows: not in the sidebar, and not as a usable template on the server either.
   await expect(page.locator('#app-sidebar').getByRole('button', { name, exact: true })).toHaveCount(0)
@@ -112,8 +186,8 @@ test('a PDF, and a Word file with no content controls, are refused on Home in pl
 })
 
 /**
- * The smallest Word file there is: one paragraph of text and no content
- * controls. Written as an uncompressed zip here, so the suite needs no zip
+ * The smallest Word file there is: one paragraph of text with a blank to
+ * fill, and no content controls. Written as an uncompressed zip here, so the suite needs no zip
  * tool and no binary fixture that says the same thing.
  */
 function wordFileWithoutContentControls(): Buffer {
