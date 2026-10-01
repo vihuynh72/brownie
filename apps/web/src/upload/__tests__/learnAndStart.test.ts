@@ -1,8 +1,16 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { resetCapabilitiesCache } from '@/capabilities'
 import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
-import { uniqueName, learnFormAndStartDocument, nameOf, type LearnStep } from '@/upload/learnAndStart'
+import {
+  learnFormAndStartDocument,
+  learnFormAsTemplate,
+  learnStepWords,
+  nameOf,
+  uniqueName,
+  type LearnStep,
+  type StepDetail,
+} from '@/upload/learnAndStart'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -12,9 +20,8 @@ vi.mock('@/api/client', async () => {
     allocateUpload: vi.fn(),
     uploadArtifactContent: vi.fn(),
     completeUpload: vi.fn(),
-    extractArtifact: vi.fn(),
+    makeFillableForm: vi.fn(),
     createTemplateDraft: vi.fn(),
-    getDraftCandidateBindings: vi.fn(),
     getTemplateLayout: vi.fn(),
     replaceDraftBindings: vi.fn(),
     activateTemplateVersion: vi.fn(),
@@ -31,15 +38,16 @@ import {
   completeUpload,
   createDocument,
   createTemplateDraft,
-  extractArtifact,
   getCapabilities,
-  getDraftCandidateBindings,
   getTemplateLayout,
   listTemplates,
   listTrashedTemplates,
+  makeFillableForm,
   replaceDraftBindings,
   uploadArtifactContent,
-  type CandidateBindingReportResponse,
+  type ArtifactResponse,
+  type FillableFormResponse,
+  type FillableFormSpot,
   type TemplateVersionResponse,
 } from '@/api/client'
 
@@ -51,39 +59,67 @@ function wordFile(name = 'Club minutes.docx', size = 2048): File {
   return file
 }
 
-function problem(status: number, detail: string, code = 'X') {
-  return { status, title: 't', code, detail, correlationId: 'c', fields: [], recoveryActions: [] }
+function problem(status: number, detail: string, code = 'X', extra: Record<string, unknown> = {}) {
+  return { status, title: 't', code, detail, correlationId: 'c', fields: [], recoveryActions: [], ...extra }
 }
 
 function version(versionNumber: number, status: 'DRAFT' | 'ACTIVATED' = 'DRAFT'): TemplateVersionResponse {
   return {
-    id: 40 + versionNumber, templateId: 42, versionNumber, sourceArtifactId: 5, extractionVersionId: 9, status, fields: [],
+    id: 40 + versionNumber, templateId: 42, versionNumber, sourceArtifactId: 6, extractionVersionId: 9, status, fields: [],
     createdAt: '2026-09-29T10:00:00Z', activatedAt: status === 'ACTIVATED' ? '2026-09-29T10:01:00Z' : null,
   }
 }
 
-const TWO_FIELDS: CandidateBindingReportResponse = {
-  candidates: [
-    { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', contentControlTag: 'meeting.title' },
-    { fieldId: 'action.item.due', type: 'DATE', cardinality: 'REPEATED', contentControlTag: 'action.item.due' },
-  ],
-  ambiguousContentControlTags: [],
+function spot(fieldId: string, overrides: Partial<FillableFormSpot> = {}): FillableFormSpot {
+  return {
+    fieldId, label: null, type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL',
+    binding: { kind: 'CONTENT_CONTROL_TAG', tag: fieldId }, origin: 'FORM', docxControl: 'ORIGINAL', blankText: null,
+    namedBy: 'RULES', requiredHint: false, suggestedType: null, foundAs: 'EXISTING_TAGGED_CONTROL',
+    ...overrides,
+  }
 }
 
-/** Every request answers the way a real server does for a tagged Word form. */
-function serverLearnsTheForm(): void {
+/** A Word form with a control of its own, a place Brownie found and filled in a blank for, and a repeated date. */
+const WORD_SPOTS: FillableFormSpot[] = [
+  spot('meeting.title'),
+  spot('company.name', {
+    label: 'Company name', origin: 'FOUND_BY_BROWNIE', docxControl: 'INSERTED_BY_BROWNIE', blankText: '________',
+    namedBy: 'MODEL', requiredHint: true, suggestedType: 'TEXT', foundAs: 'UNDERSCORES',
+  }),
+  spot('action.item.due', { type: 'DATE', cardinality: 'REPEATED' }),
+]
+
+function wordForm(overrides: Partial<FillableFormResponse> = {}): FillableFormResponse {
+  return {
+    kind: 'DOCX', sourceArtifactId: 5, templateSourceArtifactId: 6, sourceFormat: 'DOCX', converted: false,
+    extraction: { id: 9, status: 'COMPLETE', parserVersion: 'p', keptAsIs: [] },
+    spots: WORD_SPOTS,
+    notices: [
+      { code: 'TRACKED_CHANGES_AND_COMMENTS', count: 2, detail: null },
+      { code: 'SPOTS_FOUND', count: 3, detail: null },
+    ],
+    spotNaming: 'MODEL', rulesOnlyReason: null,
+    ...overrides,
+  }
+}
+
+function artifact(status: ArtifactResponse['status'], detectedMediaType: ArtifactResponse['detectedMediaType'], name: string): ArtifactResponse {
+  return { id: 5, status, detectedMediaType, displayFilename: name }
+}
+
+/** Every request answers the way a real server does for a Word form it made ready to fill. */
+function serverMakesTheFormReady(): void {
   vi.mocked(getCapabilities).mockResolvedValue({
     maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30,
   })
-  vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'Club minutes.docx' })
-  vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'UPLOADING', detectedMediaType: 'DOCX', displayFilename: 'Club minutes.docx' })
-  vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', detectedMediaType: 'DOCX', displayFilename: 'Club minutes.docx' })
-  vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+  vi.mocked(allocateUpload).mockResolvedValue(artifact('UPLOADING', null, 'Club minutes.docx'))
+  vi.mocked(uploadArtifactContent).mockResolvedValue(artifact('UPLOADING', 'DOCX', 'Club minutes.docx'))
+  vi.mocked(completeUpload).mockResolvedValue(artifact('READY', 'DOCX', 'Club minutes.docx'))
+  vi.mocked(makeFillableForm).mockResolvedValue(wordForm())
   vi.mocked(createTemplateDraft).mockResolvedValue({
     template: { id: 42, displayName: 'Club minutes', status: 'DRAFT', currentActiveVersionId: null, createdAt: '2026-09-29T10:00:00Z' },
     draftVersion: version(1),
   })
-  vi.mocked(getDraftCandidateBindings).mockResolvedValue(TWO_FIELDS)
   vi.mocked(replaceDraftBindings).mockResolvedValue(version(2))
   vi.mocked(getTemplateLayout).mockResolvedValue({ templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: [] })
   vi.mocked(activateTemplateVersion).mockResolvedValue(version(2, 'ACTIVATED'))
@@ -102,10 +138,21 @@ function serverLearnsTheForm(): void {
   } as Awaited<ReturnType<typeof createDocument>>)
 }
 
+/** The server found the file to be `mediaType` once it had the bytes. */
+function uploadIs(mediaType: ArtifactResponse['detectedMediaType'], name: string): void {
+  vi.mocked(allocateUpload).mockResolvedValue(artifact('UPLOADING', null, name))
+  vi.mocked(uploadArtifactContent).mockResolvedValue(artifact('UPLOADING', mediaType, name))
+  vi.mocked(completeUpload).mockResolvedValue(artifact('READY', mediaType, name))
+}
+
 async function run(file: File = wordFile()) {
   const steps: LearnStep[] = []
-  const outcome = await learnFormAndStartDocument(7, file, (step) => steps.push(step))
-  return { outcome, steps }
+  const details: [LearnStep, StepDetail][] = []
+  const outcome = await learnFormAndStartDocument(7, file, (step, detail) => {
+    steps.push(step)
+    details.push([step, detail])
+  })
+  return { outcome, steps, details }
 }
 
 function refusal(outcome: Awaited<ReturnType<typeof learnFormAndStartDocument>>): string {
@@ -113,34 +160,66 @@ function refusal(outcome: Awaited<ReturnType<typeof learnFormAndStartDocument>>)
   return outcome.message
 }
 
+/** Lets every request the flow has already been answered carry it on to its next wait. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 100; turn++) await Promise.resolve()
+}
+
+/** Moves the fake clock on, then lets the flow carry on from there. */
+async function wait(milliseconds: number): Promise<void> {
+  vi.advanceTimersByTime(milliseconds)
+  await settle()
+}
+
+const TRACKED_NOTE = "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged."
+
 describe('learnFormAndStartDocument', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     resetCapabilitiesCache()
     vi.clearAllMocks()
-    serverLearnsTheForm()
+    serverMakesTheFormReady()
   })
 
-  it("learns every content control the server suggests, as it suggests it, and opens a document named after the file and the day", async () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('makes the form ready, keeps every place as the server found it, and opens a document named after the file and the day', async () => {
     const { outcome, steps } = await run()
 
-    expect(outcome).toEqual({ ok: true, documentId: 77, name: 'Club minutes', note: null })
-    expect(steps).toEqual(['uploading', 'checking', 'learning', 'preparing', 'opening'])
+    expect(outcome).toEqual({
+      ok: true,
+      documentId: 77,
+      name: 'Club minutes',
+      // The page says how many places Brownie found, so the notes do not say it again.
+      notes: [TRACKED_NOTE],
+    })
+    expect(steps).toEqual(['uploading', 'checking', 'preparing-copy', 'learning', 'preparing', 'opening'])
     expect(allocateUpload).toHaveBeenCalledWith(7, 'Club minutes.docx')
-    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes', 5)
+    expect(makeFillableForm).toHaveBeenCalledWith(7, 5)
+    // The template is made from Brownie's clean copy, not from the upload itself, and keeps what the server noticed.
+    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes', 6, wordForm().notices)
+    // How a place was found is not sent; its name, who put it there and the form's own blank are.
     expect(replaceDraftBindings).toHaveBeenCalledWith(7, 42, 1, [
       { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL', binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'meeting.title' } },
+      {
+        fieldId: 'company.name', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL',
+        binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'company.name' },
+        label: 'Company name', origin: 'FOUND_BY_BROWNIE', docxControl: 'INSERTED_BY_BROWNIE', blankText: '________',
+      },
       { fieldId: 'action.item.due', type: 'DATE', cardinality: 'REPEATED', requiredness: 'OPTIONAL', binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'action.item.due' } },
     ])
     expect(getTemplateLayout).toHaveBeenCalledWith(7, 42, 42)
     expect(replaceDraftBindings).toHaveBeenCalledTimes(1)
+    // Places were found, so the form activates as any other does.
     expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
     expect(createDocument).toHaveBeenCalledWith(7, expect.any(String), {
       title: documentTitleFor('Club minutes'),
       templateId: 42,
       templateVersionId: 42,
       fields: {},
-      initialRevisionReason: 'Created from a Word form uploaded on Home.',
+      initialRevisionReason: 'Created from a form uploaded on Home.',
     })
   })
 
@@ -168,6 +247,18 @@ describe('learnFormAndStartDocument', () => {
     expect(useTemplatesStore().status).toBe('loaded')
   })
 
+  /** The copy Brownie made has a name of its own; the person knows the form by the file they chose. */
+  it("names the template and the document after the file the person chose, not Brownie's copy of it", async () => {
+    uploadIs('ODT', 'Lease agreement.odt')
+    vi.mocked(makeFillableForm).mockResolvedValue(wordForm({ sourceFormat: 'ODT', converted: true, templateSourceArtifactId: 12 }))
+
+    const { outcome } = await run(new File(['odt'], 'Lease agreement.odt'))
+
+    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Lease agreement', 12, expect.any(Array))
+    expect(outcome).toMatchObject({ ok: true, name: 'Lease agreement' })
+    expect(createDocument).toHaveBeenCalledWith(7, expect.any(String), expect.objectContaining({ title: documentTitleFor('Lease agreement') }))
+  })
+
   /** Uploading the same form again adds a second template; its name tells it apart from the first. */
   it('names a form uploaded again beside one already learned apart from it', async () => {
     vi.mocked(listTemplates).mockReset()
@@ -178,7 +269,7 @@ describe('learnFormAndStartDocument', () => {
 
     const { outcome } = await run()
 
-    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes (3)', 5)
+    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes (3)', 6, expect.any(Array))
     expect(outcome).toMatchObject({ ok: true, name: 'Club minutes (3)' })
     expect(uniqueName('Club minutes', [])).toBe('Club minutes')
   })
@@ -200,20 +291,278 @@ describe('learnFormAndStartDocument', () => {
   })
 
   it.each([
-    ['a PDF by its name', new File(['%PDF'], 'form.pdf', { type: '' })],
-    ['a PDF by its type', new File(['%PDF'], 'scan', { type: 'application/pdf' })],
-  ])('says plainly that a PDF cannot be filled, and sends nothing (%s)', async (_case, file) => {
-    const { outcome, steps } = await run(file)
+    ['DOCX', 'Club minutes.docx', 'Finding where the values go…'],
+    ['DOC', 'Club minutes.doc', 'Opening your Word 97-2003 file and finding where the values go…'],
+    ['RTF', 'Club minutes.rtf', 'Opening your RTF file and finding where the values go…'],
+    ['ODT', 'Club minutes.odt', 'Opening your OpenDocument file and finding where the values go…'],
+    ['PAGES', 'Club minutes.pages', 'Opening your Pages file and finding where the values go…'],
+    ['PDF', 'Club minutes.pdf', 'Reading your PDF and finding where the values go…'],
+  ] as const)('says what kind of file it is opening, by what the server found in the bytes (%s)', async (mediaType, name, words) => {
+    uploadIs(mediaType, name)
 
-    expect(refusal(outcome)).toBe('Brownie can fill Word (.docx) forms. It cannot fill a PDF.')
-    expect(steps).toEqual([])
-    expect(allocateUpload).not.toHaveBeenCalled()
+    const { details } = await run(new File(['bytes'], name))
+
+    const [, detail] = details.find(([step]) => step === 'preparing-copy')!
+    expect(detail).toEqual({ mediaType, waiting: false })
+    expect(learnStepWords('preparing-copy', detail)).toBe(words)
   })
 
-  it('asks for a .docx file when the chosen one is something else, and sends nothing', async () => {
+  /** A PDF is filled as a PDF: its own fields, or boxes on its pages; nothing is drawn as a Word page to check. */
+  it('opens a PDF form with its own fields and the boxes Brownie found, and says what it leaves to the person', async () => {
+    uploadIs('PDF', 'Membership form.pdf')
+    const pdfSpots: FillableFormSpot[] = [
+      spot('member.name', {
+        label: 'Member name', binding: { kind: 'ACROFORM_FIELD', acroFormField: 'member.name' }, docxControl: null, foundAs: null,
+      }),
+      spot('joined.on', {
+        label: 'Joined on', type: 'DATE', origin: 'FOUND_BY_BROWNIE', docxControl: null, foundAs: null,
+        binding: { kind: 'PAGE_BOX', pageBox: { page: 1, x: 72, y: 144, width: 120, height: 14, multiline: false, overflow: 'SHRINK_TO_FIT' } },
+      }),
+    ]
+    vi.mocked(makeFillableForm).mockResolvedValue({
+      kind: 'PDF', sourceArtifactId: 5, templateSourceArtifactId: 5, sourceFormat: 'PDF', converted: false,
+      extraction: { id: 31, status: 'COMPLETE', parserVersion: 'pdf', keptAsIs: [] },
+      spots: pdfSpots,
+      notices: [
+        { code: 'SPOTS_FOUND', count: 2, detail: null },
+        { code: 'PDF_FIELDS_LEFT', count: 3, detail: null },
+      ],
+      spotNaming: 'RULES', rulesOnlyReason: 'DISABLED',
+    })
+
+    const { outcome, steps } = await run(new File(['%PDF'], 'Membership form.pdf', { type: 'application/pdf' }))
+
+    expect(outcome).toEqual({
+      ok: true,
+      documentId: 77,
+      name: 'Membership form',
+      notes: ["Brownie will fill 1 of this form's fields. It leaves the check boxes and lists for you to set in your PDF reader."],
+    })
+    expect(steps).toEqual(['uploading', 'checking', 'preparing-copy', 'learning', 'preparing', 'opening'])
+    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Membership form', 5, [
+      { code: 'SPOTS_FOUND', count: 2, detail: null },
+      { code: 'PDF_FIELDS_LEFT', count: 3, detail: null },
+    ])
+    expect(replaceDraftBindings).toHaveBeenCalledWith(7, 42, 1, [
+      {
+        fieldId: 'member.name', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL', label: 'Member name',
+        binding: { kind: 'ACROFORM_FIELD', acroFormField: 'member.name' },
+      },
+      {
+        fieldId: 'joined.on', type: 'DATE', cardinality: 'SCALAR', requiredness: 'OPTIONAL', label: 'Joined on', origin: 'FOUND_BY_BROWNIE',
+        binding: { kind: 'PAGE_BOX', pageBox: { page: 1, x: 72, y: 144, width: 120, height: 14, multiline: false, overflow: 'SHRINK_TO_FIT' } },
+      },
+    ])
+    expect(getTemplateLayout).not.toHaveBeenCalled()
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
+  })
+
+  /** Nothing found is no reason to stop: the document opens with no places, and the note says how to add one. */
+  it('opens a form with no places found, activating it as one with none', async () => {
+    vi.mocked(makeFillableForm).mockResolvedValue(wordForm({ spots: [], notices: [{ code: 'NO_SPOTS_FOUND', count: 0, detail: null }] }))
+    vi.mocked(activateTemplateVersion).mockResolvedValue(version(1, 'ACTIVATED'))
+
+    const { outcome } = await run()
+
+    expect(outcome).toEqual({
+      ok: true,
+      documentId: 77,
+      name: 'Club minutes',
+      notes: ['Brownie did not find any blanks. Choose Add a fill spot, or select a place on the page and choose Fill in here.'],
+    })
+    expect(replaceDraftBindings).not.toHaveBeenCalled()
+    expect(getTemplateLayout).not.toHaveBeenCalled()
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 1, { allowNoPlaces: true })
+    expect(createDocument).toHaveBeenCalledWith(7, expect.any(String), expect.objectContaining({ templateVersionId: 41 }))
+  })
+
+  /** Every render slot was taken: the step says it is waiting, waits as long as the server asked (never past 10 s), and asks again. */
+  it('waits for a free moment and asks again, twice, when the server is too busy to start', async () => {
+    vi.useFakeTimers()
+    vi.mocked(makeFillableForm)
+      .mockRejectedValueOnce(new ApiRequestError(503, problem(503, 'Too many documents are being prepared right now.', 'RENDERER_BUSY'), 3))
+      .mockRejectedValueOnce(new ApiRequestError(503, problem(503, 'Too many documents are being prepared right now.', 'RENDERER_BUSY'), 30))
+      .mockResolvedValueOnce(wordForm())
+
+    const running = run()
+    await settle()
+    expect(makeFillableForm).toHaveBeenCalledTimes(1)
+    await wait(2_999)
+    expect(makeFillableForm).toHaveBeenCalledTimes(1)
+    await wait(1)
+    expect(makeFillableForm).toHaveBeenCalledTimes(2)
+    // Asked to wait 30 s, it waits its own longest, 10 s.
+    await wait(9_999)
+    expect(makeFillableForm).toHaveBeenCalledTimes(2)
+    await wait(1)
+    const { outcome, details } = await running
+
+    expect(outcome.ok).toBe(true)
+    expect(makeFillableForm).toHaveBeenCalledTimes(3)
+    const said = details.filter(([step]) => step === 'preparing-copy').map(([, detail]) => learnStepWords('preparing-copy', detail))
+    expect(said).toEqual([
+      'Finding where the values go…',
+      'Waiting for a free moment…',
+      'Finding where the values go…',
+      'Waiting for a free moment…',
+      'Finding where the values go…',
+    ])
+  })
+
+  it("stops after two more tries and gives the server's own words, adding nothing", async () => {
+    vi.useFakeTimers()
+    vi.mocked(makeFillableForm).mockRejectedValue(
+      new ApiRequestError(503, problem(503, 'Too many documents are being prepared right now. Nothing was changed; try again shortly.', 'RENDERER_BUSY')),
+    )
+
+    const running = run()
+    await settle()
+    await wait(10_000)
+    await wait(10_000)
+    const { outcome } = await running
+
+    expect(refusal(outcome)).toBe(
+      'Could not open "Club minutes.docx". Too many documents are being prepared right now. Nothing was changed; try again shortly.',
+    )
+    expect(makeFillableForm).toHaveBeenCalledTimes(3)
+    expect(createTemplateDraft).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'plain text',
+      'PLAIN_TEXT',
+      new ApiRequestError(415, problem(415, 'x', 'NOT_A_WORD_PROCESSING_DOCUMENT')),
+      'This file is not a document Brownie can fill in. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.',
+    ],
+    [
+      'a format this server does not convert',
+      'PAGES',
+      new ApiRequestError(415, problem(415, 'x', 'FORMAT_DISABLED', { format: 'PAGES' })),
+      'This Brownie does not open Pages files right now. Open the file, save it as a Word document (.docx) and upload that.',
+    ],
+    [
+      'an old Word file that would not open',
+      'DOC',
+      new ApiRequestError(422, problem(422, 'x', 'FILLABLE_FORM_FAILED', { reason: 'CANNOT_OPEN' })),
+      'Brownie could not open this Word 97-2003 file. Open it in Word and save it as a Word document (.docx), then upload that.',
+    ],
+    [
+      'a Pages file that would not open',
+      'PAGES',
+      new ApiRequestError(422, problem(422, 'x', 'FILLABLE_FORM_FAILED', { reason: 'CANNOT_OPEN' })),
+      'Brownie could not open this Pages file. Open it in Pages and save it as a Word document (.docx) (File > Export To > Word), then upload that.',
+    ],
+    [
+      'a damaged file',
+      'DOCX',
+      new ApiRequestError(422, problem(422, 'x', 'FILLABLE_FORM_FAILED', { reason: 'DAMAGED' })),
+      'Brownie could not read this file. It may be damaged: open it, save it again, and upload it again.',
+    ],
+    [
+      'a conversion that took too long',
+      'RTF',
+      new ApiRequestError(422, problem(422, 'x', 'FILLABLE_FORM_FAILED', { reason: 'TIMED_OUT' })),
+      'Opening this RTF file took too long, so Brownie stopped. Try again, or open it, save it as a Word document (.docx) and upload that.',
+    ],
+    [
+      'a converter that could not run',
+      'ODT',
+      new ApiRequestError(503, problem(503, 'x', 'CONVERTER_UNAVAILABLE'), 30),
+      'Brownie cannot open OpenDocument files right now. Try again in a few minutes, or open the file, save it as a Word document (.docx) and upload that.',
+    ],
+  ] as const)('says why %s cannot be made ready to fill, and adds nothing', async (_case, mediaType, error, sentence) => {
+    uploadIs(mediaType, 'Form')
+    vi.mocked(makeFillableForm).mockRejectedValue(error)
+
+    const { outcome } = await run(new File(['bytes'], 'Form'))
+
+    expect(refusal(outcome)).toBe(sentence)
+    expect(makeFillableForm).toHaveBeenCalledTimes(1)
+    expect(createTemplateDraft).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'ENCRYPTED',
+      'This PDF is locked with a password or protection settings, so Brownie cannot fill it without removing that protection. Save an unlocked copy and upload that.',
+    ],
+    ['SIGNED', 'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.'],
+    ['XFA', 'This PDF is a kind of form Brownie cannot fill. Open it in Adobe Acrobat Reader, print it to a new PDF, and upload that copy.'],
+    ['LAUNCH_ACTION', 'This PDF tries to start other programs when it is opened, so Brownie does not accept it. Print it to a new PDF and upload that copy.'],
+    ['EMBEDDED_FILES', 'This PDF has other files attached inside it, so Brownie does not accept it. Save a copy without the attached files and upload that.'],
+    ['DOCUMENT_JAVASCRIPT', 'This PDF runs scripts when it is opened, so Brownie does not accept it. Print it to a new PDF and upload that copy.'],
+    ['DAMAGED', 'Brownie could not read this PDF. It may be damaged: open it, save it again, and upload it again.'],
+    ['TOO_LARGE', 'This PDF has more pages or fields than Brownie can fill in one form. Upload a shorter PDF, such as just the pages to fill in.'],
+  ])('says in plain words why a PDF cannot be filled (%s)', async (reason, sentence) => {
+    uploadIs('PDF', 'Form.pdf')
+    vi.mocked(makeFillableForm).mockRejectedValue(new ApiRequestError(422, problem(422, 'x', 'PDF_FORM_NOT_FILLABLE', { reason })))
+
+    const { outcome } = await run(new File(['%PDF'], 'Form.pdf', { type: 'application/pdf' }))
+
+    expect(refusal(outcome)).toBe(sentence)
+    expect(createTemplateDraft).not.toHaveBeenCalled()
+  })
+
+  it('gives the same words when a PDF is refused as the template is made from it', async () => {
+    uploadIs('PDF', 'Form.pdf')
+    vi.mocked(makeFillableForm).mockResolvedValue(wordForm({ kind: 'PDF', sourceFormat: 'PDF', templateSourceArtifactId: 5 }))
+    vi.mocked(createTemplateDraft).mockRejectedValue(new ApiRequestError(422, problem(422, 'x', 'PDF_FORM_NOT_FILLABLE', { reason: 'SIGNED' })))
+
+    const { outcome } = await run(new File(['%PDF'], 'Form.pdf', { type: 'application/pdf' }))
+
+    expect(refusal(outcome)).toBe('This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.')
+  })
+
+  it('tells a server that cannot open forms yet apart from a refused file', async () => {
+    vi.mocked(makeFillableForm).mockRejectedValue(
+      new ApiRequestError(404, problem(404, 'No static resource api/v1/workspaces/7/artifacts/5/fillable-form.', 'NOT_FOUND')),
+    )
+
+    const { outcome } = await run()
+
+    expect(refusal(outcome)).toMatch(/^Could not open "Club minutes.docx"\. The Brownie server that answered is older than this page and does not have a way to open forms yet\./)
+  })
+
+  /** The chooser only suggests: a file with a name this page does not know is still the server's to judge. */
+  it('sends a file of a kind it does not know to the server, which judges it by its bytes', async () => {
+    uploadIs('PLAIN_TEXT', 'notes.txt')
+    vi.mocked(makeFillableForm).mockRejectedValue(new ApiRequestError(415, problem(415, 'x', 'NOT_A_WORD_PROCESSING_DOCUMENT')))
+
     const { outcome } = await run(new File(['notes'], 'notes.txt', { type: 'text/plain' }))
 
-    expect(refusal(outcome)).toBe('Brownie can fill Word (.docx) forms. Choose a .docx file.')
+    expect(allocateUpload).toHaveBeenCalledWith(7, 'notes.txt')
+    expect(refusal(outcome)).toBe(
+      'This file is not a document Brownie can fill in. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.',
+    )
+  })
+
+  it.each([
+    ['SPREADSHEET', 'This is a spreadsheet, not a document. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.'],
+    ['PASSWORD_PROTECTED', "This file is locked with a password, so Brownie can't open it. Open it, remove the password, save it, and upload it again."],
+    [
+      undefined,
+      'Brownie can fill Word (.docx, .doc), RTF, OpenDocument (.odt) and Pages documents, and PDF forms. It could not recognize this file as any of them.',
+    ],
+  ])('words a file refused on upload by the reason the server gives (%s)', async (reason, sentence) => {
+    vi.mocked(uploadArtifactContent).mockRejectedValue(
+      new ApiRequestError(415, problem(415, 'Refused.', 'UNSUPPORTED_MEDIA_TYPE', reason ? { reason } : {})),
+    )
+
+    const { outcome } = await run()
+
+    expect(refusal(outcome)).toBe(sentence)
+    expect(completeUpload).not.toHaveBeenCalled()
+  })
+
+  it('says how to export a Pages document a browser could only send as an empty package, and sends nothing', async () => {
+    const { outcome, steps } = await run(new File([], 'Lease.pages'))
+
+    expect(refusal(outcome)).toBe(
+      "This Pages document is saved as a package, which a browser can't upload. In Pages, choose File > Export To > Word " +
+        'and upload that file, or choose File > Advanced > Change File Type > Single File.',
+    )
+    expect(steps).toEqual([])
     expect(allocateUpload).not.toHaveBeenCalled()
   })
 
@@ -233,163 +582,21 @@ describe('learnFormAndStartDocument', () => {
     expect(refusal(outcome)).toBe('Could not upload "Big form.docx". The upload exceeds 10 MB.')
   })
 
-  it('says a file named .docx that is not a Word file inside cannot be opened', async () => {
-    vi.mocked(uploadArtifactContent).mockRejectedValue(
-      new ApiRequestError(415, problem(415, 'Content does not match any supported media type or package signature.', 'UNSUPPORTED_MEDIA_TYPE')),
-    )
-
-    const { outcome } = await run(wordFile('old form.docx'))
-
-    expect(refusal(outcome)).toBe(
-      'Brownie can fill Word (.docx) forms, and it could not open this file as one. Choose a .docx file saved from Word.',
-    )
-    expect(completeUpload).not.toHaveBeenCalled()
-  })
-
-  it('goes by what the server found in the bytes: a PDF with a Word name is still a PDF', async () => {
-    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'UPLOADING', detectedMediaType: 'PDF', displayFilename: 'form.docx' })
-
-    const { outcome } = await run(wordFile('form.docx'))
-
-    expect(refusal(outcome)).toBe('Brownie can fill Word (.docx) forms. It cannot fill a PDF.')
-    expect(completeUpload).not.toHaveBeenCalled()
-  })
-
   it.each([
-    [{ status: 'REJECTED' as const, rejectionReason: 'MALWARE_DETECTED' }, 'Brownie did not accept "Club minutes.docx": the malware scan flagged it.'],
-    [{ status: 'REJECTED' as const, rejectionReason: 'DECOMPRESSION_LIMIT_EXCEEDED' }, 'Brownie did not accept "Club minutes.docx": it unpacks to far more than Brownie accepts.'],
-    [{ status: 'SCANNING' as const, rejectionReason: null }, 'Brownie could not finish checking "Club minutes.docx". Try again in a minute.'],
-  ])('says why the scan did not accept the file (%#)', async (answer, sentence) => {
-    vi.mocked(completeUpload).mockResolvedValue({ id: 5, displayFilename: 'Club minutes.docx', ...answer })
+    ['MALWARE_DETECTED', 'Brownie did not accept "Club minutes.docx": the malware scan flagged it.'],
+    ['RIGHTS_PROTECTED', "This file is protected by your organization's rights management, so Brownie can't open it."],
+  ])('says why the check refused the file (%s), and goes no further', async (rejectionReason, sentence) => {
+    vi.mocked(completeUpload).mockResolvedValue({ ...artifact('REJECTED', 'DOCX', 'Club minutes.docx'), rejectionReason })
 
-    const { outcome, steps } = await run()
+    const { outcome } = await run()
 
     expect(refusal(outcome)).toBe(sentence)
-    expect(steps).toEqual(['uploading', 'checking'])
-    expect(createTemplateDraft).not.toHaveBeenCalled()
+    expect(makeFillableForm).not.toHaveBeenCalled()
   })
 
-  it('names what in the Word file Brownie cannot keep, once each, when the reader will not read it', async () => {
-    vi.mocked(extractArtifact).mockResolvedValue({
-      status: 'UNSUPPORTED',
-      unsupportedFeatures: [
-        { feature: 'TRACKED_CHANGES', location: 'body', detail: 'x' },
-        { feature: 'TRACKED_CHANGES', location: 'body', detail: 'y' },
-        { feature: 'UNRESOLVED_COMMENT', location: 'body', detail: 'z' },
-        { feature: 'SOMETHING_NEW', location: 'body', detail: 'w' },
-      ],
-    } as Awaited<ReturnType<typeof extractArtifact>>)
-
-    const { outcome } = await run()
-
-    expect(refusal(outcome)).toBe(
-      'Brownie cannot fill "Club minutes.docx" because it has tracked changes and comments. Remove those in Word, then upload the file again.',
-    )
-    expect(createTemplateDraft).not.toHaveBeenCalled()
-  })
-
-  it('says a Word file that could not be read at all may be damaged', async () => {
-    vi.mocked(extractArtifact).mockResolvedValue({ status: 'FAILED', failureReason: 'PARSE_ERROR' })
-
-    const { outcome } = await run()
-
-    expect(refusal(outcome)).toBe(
-      'Brownie could not read "Club minutes.docx". The file may be damaged: open it in Word, save it again, and upload it again.',
-    )
-  })
-
-  it('explains that a Word file with no content controls cannot be filled, and adds nothing to My Templates', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ candidates: [], ambiguousContentControlTags: [] })
-
-    const { outcome } = await run()
-
-    expect(refusal(outcome)).toBe(
-      'Brownie found no content control with a tag in this Word file, and the tag is how Brownie knows which value goes where, ' +
-        "so Brownie cannot fill it. In Word's Developer tab, add a content control where each value goes and give each one a tag " +
-        'under Properties, then upload the file again.',
-    )
-    expect(replaceDraftBindings).not.toHaveBeenCalled()
-    expect(activateTemplateVersion).not.toHaveBeenCalled()
-    // Read once, for the names already taken; My Templates is never refreshed for a form that was not learned.
-    expect(listTemplates).toHaveBeenCalledTimes(1)
-  })
-
-  /** Content controls are there, so "it has none" would be untrue: the trouble is that they cannot be told apart. */
-  it('says so when every content control shares its tag with another', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ candidates: [], ambiguousContentControlTags: ['client.name'] })
-
-    const { outcome } = await run()
-
-    expect(refusal(outcome)).toContain('Every content control in this Word file shares its tag with another one')
-    expect(refusal(outcome)).not.toContain('has no content controls')
-  })
-
-  it('learns the rest of the form and says which shared tags it left out', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ ...TWO_FIELDS, ambiguousContentControlTags: ['client.name', 'client.city'] })
-
-    const { outcome } = await run()
-
-    expect(outcome.ok).toBe(true)
-    expect(outcome.ok && outcome.note).toBe(
-      'Brownie did not learn "client.name" and "client.city". Each of those tags is on more than one content control in the form, ' +
-        'so Brownie cannot tell which one a value belongs in. To fill them, give each content control a tag of its own in Word and upload the form again.',
-    )
-  })
-
-  it.each([
-    [
-      1,
-      'Brownie did not learn 1 content control that has no tag; it stays as it is in the form. ' +
-        "To fill it, give it a tag under Properties in Word's Developer tab and upload the form again.",
-    ],
-    [
-      3,
-      'Brownie did not learn 3 content controls that have no tag; they stay as they are in the form. ' +
-        "To fill them, give each one a tag under Properties in Word's Developer tab and upload the form again.",
-    ],
-  ])('learns the tagged controls and says how many without a tag it left as they are (%i)', async (count, note) => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ ...TWO_FIELDS, untaggedContentControlCount: count })
-
-    const { outcome } = await run()
-
-    expect(outcome).toEqual({ ok: true, documentId: 77, name: 'Club minutes', note })
-  })
-
-  it('puts the untagged note after the note about shared tags', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({
-      ...TWO_FIELDS,
-      ambiguousContentControlTags: ['client.name'],
-      untaggedContentControlCount: 2,
-    })
-
-    const { outcome } = await run()
-
-    expect(outcome.ok && outcome.note).toBe(
-      'Brownie did not learn "client.name". That tag is on more than one content control in the form, so Brownie cannot tell which ' +
-        'one a value belongs in. To fill it, give each content control a tag of its own in Word and upload the form again. ' +
-        'Brownie did not learn 2 content controls that have no tag; they stay as they are in the form. ' +
-        "To fill them, give each one a tag under Properties in Word's Developer tab and upload the form again.",
-    )
-  })
-
-  /** Content controls without a tag cannot be learned, so a form with only those is still refused as having none with a tag. */
-  it('still refuses a form whose content controls all have no tag', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ candidates: [], ambiguousContentControlTags: [], untaggedContentControlCount: 4 })
-
-    const { outcome } = await run()
-
-    expect(refusal(outcome)).toContain('Brownie found no content control with a tag in this Word file')
-    expect(replaceDraftBindings).not.toHaveBeenCalled()
-  })
-
-  /**
-   * The filler never writes into a header or footer, and a field bound to a
-   * control there stops the whole form from activating; the page the server
-   * draws for the draft names those fields, and they are left out.
-   */
-  it('leaves out a content control outside the body of the form, and says which', async () => {
+  it('leaves out a place outside the main text of a Word form, and says which by its name', async () => {
     vi.mocked(getTemplateLayout).mockResolvedValue({
-      templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: ['action.item.due'],
+      templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: ['company.name'],
     })
     vi.mocked(replaceDraftBindings).mockResolvedValueOnce(version(2)).mockResolvedValueOnce(version(3))
     vi.mocked(activateTemplateVersion).mockResolvedValue(version(3, 'ACTIVATED'))
@@ -397,34 +604,33 @@ describe('learnFormAndStartDocument', () => {
     const { outcome } = await run()
 
     expect(replaceDraftBindings).toHaveBeenLastCalledWith(7, 42, 2, [
-      { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL', binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'meeting.title' } },
+      expect.objectContaining({ fieldId: 'meeting.title' }),
+      expect.objectContaining({ fieldId: 'action.item.due' }),
     ])
     expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 3)
-    expect(outcome).toEqual({
-      ok: true,
-      documentId: 77,
-      name: 'Club minutes',
-      note:
-        'Brownie did not learn "action.item.due": it is outside the body of the form, such as in a header or footer, ' +
-        'and Brownie writes values only in the body.',
-    })
+    expect(outcome).toMatchObject({ ok: true })
+    expect(outcome.ok && outcome.notes.at(-1)).toBe(
+      'Brownie left out "Company name": it is outside the main text of the form, such as in a header or footer, and Brownie fills only the main text.',
+    )
   })
 
-  it('refuses a form whose every content control is outside its body', async () => {
+  it('still opens a Word form whose every place is outside its main text, with none', async () => {
     vi.mocked(getTemplateLayout).mockResolvedValue({
-      templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: ['meeting.title', 'action.item.due'],
+      templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: ['meeting.title', 'company.name', 'action.item.due'],
     })
+    vi.mocked(replaceDraftBindings).mockResolvedValueOnce(version(2)).mockResolvedValueOnce(version(3))
+    vi.mocked(activateTemplateVersion).mockResolvedValue(version(3, 'ACTIVATED'))
 
     const { outcome } = await run()
 
-    expect(refusal(outcome)).toBe(
-      'Every content control in this Word file is outside the body of the form, such as in a header or footer, and Brownie ' +
-        'writes values only in the body, so Brownie cannot fill it.',
+    expect(replaceDraftBindings).toHaveBeenLastCalledWith(7, 42, 2, [])
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 3, { allowNoPlaces: true })
+    expect(outcome.ok && outcome.notes.at(-1)).toBe(
+      'Brownie left out "Meeting title", "Company name" and "Action item due": they are outside the main text of the form, such as in a header or footer, and Brownie fills only the main text.',
     )
-    expect(activateTemplateVersion).not.toHaveBeenCalled()
   })
 
-  /** A server older than the page it draws still learns the form; activation is then the only judge. */
+  /** A server older than the page it draws still opens the form; activation is then the only judge. */
   it('goes on without the page when the server cannot draw it', async () => {
     vi.mocked(getTemplateLayout).mockRejectedValue(
       new ApiRequestError(404, problem(404, 'No static resource api/v1/workspaces/7/templates/42/versions/42/layout.', 'NOT_FOUND')),
@@ -436,11 +642,7 @@ describe('learnFormAndStartDocument', () => {
     expect(replaceDraftBindings).toHaveBeenCalledTimes(1)
   })
 
-  /**
-   * The server suggests a repeated value for every control in a table cell,
-   * and then refuses to activate a form laid out as a table of labels and
-   * boxes because only the last row of the first table can repeat.
-   */
+  /** A repeated row the filler cannot find would stop the form; filled as single values, the same places work. */
   it('activates a table-laid-out form with every value single when the server refuses its repeated row', async () => {
     vi.mocked(activateTemplateVersion)
       .mockRejectedValueOnce(
@@ -451,17 +653,18 @@ describe('learnFormAndStartDocument', () => {
 
     const { outcome } = await run()
 
-    expect(outcome).toEqual({ ok: true, documentId: 77, name: 'Club minutes', note: null })
+    expect(outcome).toMatchObject({ ok: true, documentId: 77, name: 'Club minutes' })
     expect(replaceDraftBindings).toHaveBeenLastCalledWith(7, 42, 2, [
-      { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL', binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'meeting.title' } },
-      { fieldId: 'action.item.due', type: 'DATE', cardinality: 'SCALAR', requiredness: 'OPTIONAL', binding: { kind: 'CONTENT_CONTROL_TAG', tag: 'action.item.due' } },
+      expect.objectContaining({ fieldId: 'meeting.title', cardinality: 'SCALAR' }),
+      expect.objectContaining({ fieldId: 'company.name', cardinality: 'SCALAR', label: 'Company name', origin: 'FOUND_BY_BROWNIE' }),
+      expect.objectContaining({ fieldId: 'action.item.due', cardinality: 'SCALAR' }),
     ])
     expect(activateTemplateVersion).toHaveBeenLastCalledWith(7, 42, 3)
     expect(createDocument).toHaveBeenCalledWith(7, expect.any(String), expect.objectContaining({ templateVersionId: 43 }))
   })
 
   it('does not try again with single values when nothing was repeated to begin with', async () => {
-    vi.mocked(getDraftCandidateBindings).mockResolvedValue({ candidates: [TWO_FIELDS.candidates[0]!], ambiguousContentControlTags: [] })
+    vi.mocked(makeFillableForm).mockResolvedValue(wordForm({ spots: [WORD_SPOTS[0]!] }))
     vi.mocked(activateTemplateVersion).mockRejectedValue(
       new ApiRequestError(422, problem(422, 'No content control tagged "meeting.title" was found.', 'TEMPLATE_FILL_BINDING_NOT_FOUND')),
     )
@@ -525,6 +728,82 @@ describe('learnFormAndStartDocument', () => {
 
     expect(refusal(outcome)).toBe('Could not upload "Club minutes.docx". Brownie could not be reached. It may not be running; try again in a minute.')
     expect(refusal(outcome)).not.toContain('502')
+  })
+})
+
+/** The + beside My Templates: the same flow as Home, ending with the template rather than a document. */
+describe('learnFormAsTemplate', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    resetCapabilitiesCache()
+    vi.clearAllMocks()
+    // A list queued for a test that stopped before reading it would otherwise answer this one.
+    vi.mocked(listTemplates).mockReset()
+    serverMakesTheFormReady()
+  })
+
+  it('adds the form to My Templates as Home does, and starts no document', async () => {
+    const steps: LearnStep[] = []
+
+    const outcome = await learnFormAsTemplate(7, wordFile(), (step) => steps.push(step))
+
+    expect(outcome).toEqual({ ok: true, templateId: 42, versionId: 42, name: 'Club minutes', leftOutNote: null })
+    expect(steps).toEqual(['uploading', 'checking', 'preparing-copy', 'learning', 'preparing'])
+    expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes', 6, wordForm().notices)
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
+    expect(createDocument).not.toHaveBeenCalled()
+    // My Templates shows it as soon as it is active.
+    expect(useTemplatesStore().usable.map((template) => template.displayName)).toEqual(['Club minutes'])
+  })
+
+  it('says which places it had to leave out', async () => {
+    vi.mocked(getTemplateLayout).mockResolvedValue({
+      templateId: 42, versionId: 42, parserVersion: 'p', parts: [], unplacedFieldIds: ['company.name'],
+    })
+    vi.mocked(replaceDraftBindings).mockResolvedValueOnce(version(2)).mockResolvedValueOnce(version(3))
+    vi.mocked(activateTemplateVersion).mockResolvedValue(version(3, 'ACTIVATED'))
+
+    const outcome = await learnFormAsTemplate(7, wordFile())
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      versionId: 43,
+      leftOutNote:
+        'Brownie left out "Company name": it is outside the main text of the form, such as in a header or footer, and Brownie fills only the main text.',
+    })
+  })
+
+  it.each([
+    ['a spreadsheet', () => vi.mocked(uploadArtifactContent).mockRejectedValue(new ApiRequestError(415, problem(415, 'x', 'UNSUPPORTED_MEDIA_TYPE', { reason: 'SPREADSHEET' })))],
+    ['a file it cannot open', () => vi.mocked(makeFillableForm).mockRejectedValue(new ApiRequestError(415, problem(415, 'x', 'NOT_A_WORD_PROCESSING_DOCUMENT')))],
+    ['a form it cannot finish learning', () => vi.mocked(activateTemplateVersion).mockRejectedValue(new ApiRequestError(503, undefined))],
+  ])('refuses %s in the same words as Home', async (_case, refuse) => {
+    refuse()
+    const fromHome = await learnFormAndStartDocument(7, wordFile())
+
+    const outcome = await learnFormAsTemplate(7, wordFile())
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome).toEqual({ ok: false, message: refusal(fromHome) })
+    expect(createDocument).not.toHaveBeenCalled()
+  })
+})
+
+describe('learnStepWords', () => {
+  it.each([
+    ['uploading', 'Uploading…'],
+    ['checking', 'Checking the file…'],
+    ['learning', 'Learning the form…'],
+    ['preparing', 'Getting the template ready…'],
+    ['opening', 'Opening your document…'],
+  ] as const)('says %s plainly', (step, words) => {
+    expect(learnStepWords(step, { mediaType: 'DOCX', waiting: false })).toBe(words)
+  })
+
+  it('names no format it does not know, and says when it waits', () => {
+    expect(learnStepWords('preparing-copy', { mediaType: null, waiting: false })).toBe('Finding where the values go…')
+    expect(learnStepWords('preparing-copy', { mediaType: 'DOTX', waiting: false })).toBe('Finding where the values go…')
+    expect(learnStepWords('preparing-copy', { mediaType: 'PAGES', waiting: true })).toBe('Waiting for a free moment…')
   })
 })
 
