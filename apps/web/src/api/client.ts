@@ -6,6 +6,13 @@ export type DocumentResponse = components['schemas']['DocumentResponse']
 export type CreateDocumentRequest = components['schemas']['CreateDocumentRequest']
 export type TemplateResponse = components['schemas']['TemplateResponse']
 export type TemplateVersionResponse = components['schemas']['TemplateVersionResponse']
+export type TemplateLayoutResponse = components['schemas']['TemplateLayoutResponse']
+export type TemplateLayoutPartResponse = components['schemas']['TemplateLayoutPartResponse']
+export type TemplateLayoutBlockResponse = components['schemas']['TemplateLayoutBlockResponse']
+export type TemplateLayoutRowResponse = components['schemas']['TemplateLayoutRowResponse']
+export type TemplateLayoutCellResponse = components['schemas']['TemplateLayoutCellResponse']
+export type TemplateLayoutInlineResponse = components['schemas']['TemplateLayoutInlineResponse']
+export type TemplateLayoutStyleResponse = components['schemas']['TemplateLayoutStyleResponse']
 export type ArtifactResponse = components['schemas']['ArtifactResponse']
 export type ExtractionResponse = components['schemas']['ExtractionResponse']
 export type SnapshotResponse = components['schemas']['SnapshotResponse']
@@ -22,6 +29,7 @@ export type QuestionResponse = components['schemas']['QuestionResponse']
 export type PatchProposalResponse = components['schemas']['PatchProposalResponse']
 export type PatchAcceptResponse = components['schemas']['PatchAcceptResponse']
 export type DocumentRevisionResponse = components['schemas']['DocumentRevisionResponse']
+export type RestoreRevisionResponse = components['schemas']['RestoreRevisionResponse']
 export type FieldValueResponse = components['schemas']['FieldValueResponse']
 export type FieldStateResponse = components['schemas']['FieldStateResponse']
 export type FieldDefinitionResponse = components['schemas']['FieldDefinitionResponse']
@@ -334,6 +342,7 @@ export function getDocument(workspaceId: number, documentId: number): Promise<Do
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}`)
 }
 
+/** Refused with 409 TEMPLATE_TRASHED while the template is in the Trash Bin. */
 export function createDocument(
   workspaceId: number,
   idempotencyKey: string,
@@ -346,8 +355,33 @@ export function createDocument(
   })
 }
 
+/** The templates new documents are started from: every one not in the Trash Bin, oldest first. */
 export function listTemplates(workspaceId: number): Promise<TemplateResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/templates`)
+}
+
+/**
+ * The Trash Bin, the most recently trashed first. A server that predates it
+ * ignores the question and answers with its whole template list, none of
+ * which says when it was trashed; the answer is returned as it is, so the
+ * page can tell that older server's list from a Trash Bin and say so.
+ */
+export function listTrashedTemplates(workspaceId: number): Promise<TemplateResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates?trashed=true`)
+}
+
+/**
+ * Moves the template to the Trash Bin. Documents already made from it keep
+ * working; trashing it again answers with it unchanged. A server that
+ * predates the Trash Bin answers 404 with `routeMissing`.
+ */
+export function trashTemplate(workspaceId: number, templateId: number): Promise<TemplateResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/trash`, { method: 'POST' })
+}
+
+/** Takes the template back out of the Trash Bin; restoring it again answers with it unchanged. */
+export function restoreTemplate(workspaceId: number, templateId: number): Promise<TemplateResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/restore`, { method: 'POST' })
 }
 
 export function getTemplateVersion(
@@ -356,6 +390,17 @@ export function getTemplateVersion(
   versionId: number,
 ): Promise<TemplateVersionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}`)
+}
+
+/**
+ * The version's document as a page, with a fill spot wherever the filler
+ * writes a value. A server that predates this route answers 404 with
+ * `routeMissing`, and one that cannot read the template's file answers 422
+ * TEMPLATE_LAYOUT_UNAVAILABLE; either way the caller can still list the
+ * fields without a page.
+ */
+export function getTemplateLayout(workspaceId: number, templateId: number, versionId: number): Promise<TemplateLayoutResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions/${versionId}/layout`)
 }
 
 export function allocateUpload(workspaceId: number, filename: string): Promise<ArtifactResponse> {
@@ -545,6 +590,10 @@ export function createTemplateDraft(workspaceId: number, displayName: string, so
   })
 }
 
+/**
+ * The fields the server suggests from the draft's content controls. A server
+ * from before `untaggedContentControlCount` leaves it out, which means 0.
+ */
 export function getDraftCandidateBindings(workspaceId: number, templateId: number): Promise<CandidateBindingReportResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/draft/candidate-bindings`)
 }
@@ -616,6 +665,27 @@ export function getDocumentRevision(
   revisionId: number,
 ): Promise<DocumentRevisionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}`)
+}
+
+/**
+ * Undo: a new revision with an earlier revision's content, except that every
+ * locked field keeps its current value; those fields come back in
+ * `keptLockedFieldIds`. Refused with 412 when expectedRevisionId is no longer
+ * current, so it never lands on a change the caller has not seen.
+ */
+export function restoreRevision(
+  workspaceId: number,
+  documentId: number,
+  revisionId: number,
+  expectedRevisionId: number,
+  idempotencyKey: string,
+  editReason?: string,
+): Promise<RestoreRevisionResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/revisions/${revisionId}/restore`, {
+    method: 'POST',
+    body: editReason === undefined ? { expectedRevisionId } : { expectedRevisionId, editReason },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
 }
 
 export function validateDocument(

@@ -192,6 +192,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo: appends a new revision whose content is revision revisionId's, except that every field explicitly locked now keeps its current value, evidence and state (a lock on any item of any repeated field keeps every repeated field, since their items line up). A field the earlier revision did not have is left without a value. No history is changed. The edit reason defaults to "Restored version N.". */
+        post: operations["restoreDocumentRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/documents/{documentId}/sources": {
         parameters: {
             query?: never;
@@ -541,11 +558,45 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Every template in the workspace (both ACTIVE and DRAFT), in creation order. A caller building a document-creation picker filters to entries with a non-null currentActiveVersionId itself. */
+        /** Every template in the workspace that is not in the Trash Bin (both ACTIVE and DRAFT), in creation order. A caller building a document-creation picker filters to entries with a non-null currentActiveVersionId itself. With trashed=true, only the templates in the Trash Bin instead, the most recently trashed first. */
         get: operations["listTemplates"];
         put?: never;
         /** Creates a new custom template's own draft against an already- extracted DOCX source. Deliberately returns the draft version alongside the template, since a caller needs that version's own number for the very next PUT .../draft/bindings call. */
         post: operations["createTemplateDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Moves the template to the Trash Bin. It leaves the template list and no new document can be started from it, while every document already made from it keeps reading its version, layout and rules, and keeps being edited, filled and exported. Nothing deletes it from the Trash Bin by itself, since those documents depend on it. Trashing a template already there answers with it unchanged. */
+        post: operations["trashTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes the template back out of the Trash Bin, so documents can be started from it again. Restoring a template that is not there answers with it unchanged. */
+        post: operations["restoreTemplate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -612,6 +663,23 @@ export interface paths {
         };
         /** One template version by its own ID, including its field definitions -- read before creating a document against an ACTIVATED version. */
         get: operations["getTemplateVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The version's document as a page: its paragraphs and tables in order with the template's own text and style, and a fill spot wherever the filler writes a field's value. Read afresh from the version's own file on every request; makes no model call and changes nothing. Fill spots appear only in the main document body (the filler never writes into headers or footers), and the repeating row or paragraph is the one the filler copies once per repeated item. */
+        get: operations["getTemplateVersionLayout"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1432,6 +1500,17 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        RestoreRevisionRequest: {
+            /** Format: int64 */
+            expectedRevisionId: number;
+            /** @description Defaults to "Restored version N." when blank or omitted. */
+            editReason?: string | null;
+        };
+        RestoreRevisionResponse: {
+            revision: components["schemas"]["DocumentRevisionResponse"];
+            /** @description Fields that kept their current value because they were locked, sorted by field ID. */
+            keptLockedFieldIds: string[];
+        };
         DocumentResponse: {
             /** Format: int64 */
             id: number;
@@ -1689,6 +1768,11 @@ export interface components {
             currentActiveVersionId?: number | null;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the template was moved to the Trash Bin; null while it is not there. Absent from servers that predate the Trash Bin.
+             */
+            trashedAt?: string | null;
         };
         FieldDefinitionResponse: {
             fieldId: string;
@@ -1721,6 +1805,71 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             activatedAt?: string | null;
+        };
+        TemplateLayoutResponse: {
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            versionId: number;
+            /** @description The extractor that read the file for this response. */
+            parserVersion: string;
+            /** @description MAIN_DOCUMENT first, then HEADER parts, then FOOTER parts, each in document order. */
+            parts: components["schemas"]["TemplateLayoutPartResponse"][];
+            /** @description Fields of this version with no fill spot anywhere in parts (bound to a structural node, or to a tag found nowhere the filler writes), in the version's field order. */
+            unplacedFieldIds: string[];
+        };
+        TemplateLayoutPartResponse: {
+            /** @enum {string} */
+            kind: "MAIN_DOCUMENT" | "HEADER" | "FOOTER";
+            blocks: components["schemas"]["TemplateLayoutBlockResponse"][];
+        };
+        TemplateLayoutBlockResponse: {
+            /** @enum {string} */
+            kind: "PARAGRAPH" | "TABLE";
+            /**
+             * @description PARAGRAPH only; null when the template sets none a page can show.
+             * @enum {string|null}
+             */
+            alignment?: "START" | "CENTER" | "END" | "JUSTIFY" | null;
+            /** @description PARAGRAPH only; the numbering level of a numbered paragraph, else null. */
+            listLevel?: number | null;
+            /** @description PARAGRAPH only; true for the one paragraph the filler copies once per repeated item. Always false for a TABLE. */
+            repeating: boolean;
+            /** @description PARAGRAPH only (an empty paragraph has none); null for a TABLE. */
+            inlines?: components["schemas"]["TemplateLayoutInlineResponse"][] | null;
+            /** @description TABLE only; null for a PARAGRAPH. */
+            rows?: components["schemas"]["TemplateLayoutRowResponse"][] | null;
+        };
+        TemplateLayoutRowResponse: {
+            /** @description True for the one row the filler copies once per repeated item. */
+            repeating: boolean;
+            cells: components["schemas"]["TemplateLayoutCellResponse"][];
+        };
+        TemplateLayoutCellResponse: {
+            blocks: components["schemas"]["TemplateLayoutBlockResponse"][];
+        };
+        TemplateLayoutInlineResponse: {
+            /** @enum {string} */
+            kind: "TEXT" | "FILL_SPOT" | "IMAGE";
+            /** @description TEXT only; the template's own words, every character kept, with neighbouring runs of the same style joined. */
+            text?: string | null;
+            /** @description FILL_SPOT only; the field whose value goes here. */
+            fieldId?: string | null;
+            /** @description FILL_SPOT only; the template's own text inside the control, trimmed; null when it has none. */
+            placeholder?: string | null;
+            /** @description TEXT and FILL_SPOT; null when the template sets none of these properties. For a FILL_SPOT it is the style of the control's first run, which is the formatting a filled value takes. */
+            style?: components["schemas"]["TemplateLayoutStyleResponse"] | null;
+        };
+        /** @description Every property is null when the template never set it, which is not the same as off. */
+        TemplateLayoutStyleResponse: {
+            bold?: boolean | null;
+            italic?: boolean | null;
+            underline?: boolean | null;
+            fontFamily?: string | null;
+            /** @description Half-points, as Word stores them; 22 is 11 pt. */
+            fontSizeHalfPoints?: number | null;
+            /** @description Six hex digits without a leading '#'; null for "auto" or anything else. */
+            colorHex?: string | null;
         };
         CreateTemplateRequest: {
             displayName: string;
@@ -1767,6 +1916,8 @@ export interface components {
         CandidateBindingReportResponse: {
             candidates: components["schemas"]["CandidateFieldBindingResponse"][];
             ambiguousContentControlTags: string[];
+            /** @description How many content controls in the body of the form have no tag, or a tag of only whitespace: none of them is a candidate, and each stays in the form as it is. Absent from servers from before it, which means 0. */
+            untaggedContentControlCount?: number;
         };
         AttachSourceRequest: {
             /** Format: int64 */
@@ -2607,7 +2758,15 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            409: components["responses"]["Conflict"];
+            /** @description The idempotency key was already used for a different request (code CONFLICT), or the template is in the Trash Bin (code TEMPLATE_TRASHED) and has to be restored before a document can be started from it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
             422: components["responses"]["UnprocessableContent"];
         };
     };
@@ -2804,6 +2963,56 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    restoreDocumentRevision: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                revisionId: components["parameters"]["RevisionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description The newly appended revision and the fields that kept their value, or the stable result of an idempotent replay. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreRevisionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The document is not in this workspace (or is in the trash), or revisionId is not one of its revisions. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            409: components["responses"]["Conflict"];
+            /** @description The expected revision is no longer current (code STALE_REVISION, with currentRevisionId). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listDocumentSources: {
@@ -3440,7 +3649,10 @@ export interface operations {
     };
     listTemplates: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description true lists the Trash Bin instead of the templates new documents are started from. */
+                trashed?: boolean;
+            };
             header?: never;
             path: {
                 workspaceId: components["parameters"]["WorkspaceId"];
@@ -3486,6 +3698,54 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    trashTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template, now in the Trash Bin. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    restoreTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template, back in the template list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     getDraftCandidateBindings: {
@@ -3596,6 +3856,41 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    getTemplateVersionLayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+                versionId: components["parameters"]["VersionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The layout. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateLayoutResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The version's file cannot be drawn as a page (code TEMPLATE_LAYOUT_UNAVAILABLE): it no longer reads as a Word document, uses something the extractor does not support, or holds more than 400,000 characters of text. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listRules: {
