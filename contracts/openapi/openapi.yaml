@@ -146,7 +146,15 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: >
+            The idempotency key was already used for a different request
+            (code CONFLICT), or the template is in the Trash Bin (code
+            TEMPLATE_TRASHED) and has to be restored before a document can
+            be started from it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
@@ -307,6 +315,53 @@ paths:
                 $ref: "#/components/schemas/DocumentRevisionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/restore:
+    post:
+      operationId: restoreDocumentRevision
+      summary: >
+        Undo: appends a new revision whose content is revision revisionId's,
+        except that every field explicitly locked now keeps its current
+        value, evidence and state (a lock on any item of any repeated field
+        keeps every repeated field, since their items line up). A field the
+        earlier revision did not have is left without a value. No history
+        is changed. The edit reason defaults to "Restored version N.".
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/RevisionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreRevisionRequest"
+      responses:
+        "200":
+          description: The newly appended revision and the fields that kept their value, or the stable result of an idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreRevisionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: >
+            The document is not in this workspace (or is in the trash), or
+            revisionId is not one of its revisions.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          description: The expected revision is no longer current (code STALE_REVISION, with currentRevisionId).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{workspaceId}/documents/{documentId}/sources:
     get:
@@ -898,11 +953,20 @@ paths:
     get:
       operationId: listTemplates
       summary: >
-        Every template in the workspace (both ACTIVE and DRAFT), in
-        creation order. A caller building a document-creation picker
-        filters to entries with a non-null currentActiveVersionId itself.
+        Every template in the workspace that is not in the Trash Bin (both
+        ACTIVE and DRAFT), in creation order. A caller building a
+        document-creation picker filters to entries with a non-null
+        currentActiveVersionId itself. With trashed=true, only the templates
+        in the Trash Bin instead, the most recently trashed first.
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
+        - name: trashed
+          in: query
+          required: false
+          description: true lists the Trash Bin instead of the templates new documents are started from.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: The workspace's templates.
@@ -938,6 +1002,49 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/trash:
+    post:
+      operationId: trashTemplate
+      summary: >
+        Moves the template to the Trash Bin. It leaves the template list and
+        no new document can be started from it, while every document already
+        made from it keeps reading its version, layout and rules, and keeps
+        being edited, filled and exported. Nothing deletes it from the Trash
+        Bin by itself, since those documents depend on it. Trashing a
+        template already there answers with it unchanged.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      responses:
+        "200":
+          description: The template, now in the Trash Bin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/restore:
+    post:
+      operationId: restoreTemplate
+      summary: >
+        Takes the template back out of the Trash Bin, so documents can be
+        started from it again. Restoring a template that is not there
+        answers with it unchanged.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+      responses:
+        "200":
+          description: The template, back in the template list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/workspaces/{workspaceId}/templates/{templateId}/draft/candidate-bindings:
     get:
@@ -1042,6 +1149,44 @@ paths:
                 $ref: "#/components/schemas/TemplateVersionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/layout:
+    get:
+      operationId: getTemplateVersionLayout
+      summary: >
+        The version's document as a page: its paragraphs and tables in
+        order with the template's own text and style, and a fill spot
+        wherever the filler writes a field's value. Read afresh from the
+        version's own file on every request; makes no model call and
+        changes nothing. Fill spots appear only in the main document body
+        (the filler never writes into headers or footers), and the
+        repeating row or paragraph is the one the filler copies once per
+        repeated item.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/TemplateId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: The layout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateLayoutResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            The version's file cannot be drawn as a page (code
+            TEMPLATE_LAYOUT_UNAVAILABLE): it no longer reads as a Word
+            document, uses something the extractor does not support, or
+            holds more than 400,000 characters of text.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/workspaces/{workspaceId}/templates/{templateId}/rules:
     post:
@@ -3046,6 +3191,32 @@ components:
           type: string
           format: date-time
 
+    RestoreRevisionRequest:
+      type: object
+      required: [expectedRevisionId]
+      properties:
+        expectedRevisionId:
+          type: integer
+          format: int64
+          minimum: 1
+        editReason:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Defaults to "Restored version N." when blank or omitted.
+
+    RestoreRevisionResponse:
+      type: object
+      required: [revision, keptLockedFieldIds]
+      properties:
+        revision:
+          $ref: "#/components/schemas/DocumentRevisionResponse"
+        keptLockedFieldIds:
+          type: array
+          description: Fields that kept their current value because they were locked, sorted by field ID.
+          items:
+            type: string
+
     DocumentResponse:
       type: object
       required: [id, title, templateId, templateVersionId, currentRevisionId, createdAt, currentRevision]
@@ -3516,6 +3687,13 @@ components:
         createdAt:
           type: string
           format: date-time
+        trashedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the template was moved to the Trash Bin; null while it is
+            not there. Absent from servers that predate the Trash Bin.
 
     FieldDefinitionResponse:
       type: object
@@ -3578,6 +3756,153 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    TemplateLayoutResponse:
+      type: object
+      required: [templateId, versionId, parserVersion, parts, unplacedFieldIds]
+      properties:
+        templateId:
+          type: integer
+          format: int64
+        versionId:
+          type: integer
+          format: int64
+        parserVersion:
+          type: string
+          description: The extractor that read the file for this response.
+        parts:
+          type: array
+          description: MAIN_DOCUMENT first, then HEADER parts, then FOOTER parts, each in document order.
+          items:
+            $ref: "#/components/schemas/TemplateLayoutPartResponse"
+        unplacedFieldIds:
+          type: array
+          description: >
+            Fields of this version with no fill spot anywhere in parts (bound
+            to a structural node, or to a tag found nowhere the filler
+            writes), in the version's field order.
+          items:
+            type: string
+
+    TemplateLayoutPartResponse:
+      type: object
+      required: [kind, blocks]
+      properties:
+        kind:
+          type: string
+          enum: [MAIN_DOCUMENT, HEADER, FOOTER]
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateLayoutBlockResponse"
+
+    TemplateLayoutBlockResponse:
+      type: object
+      required: [kind, repeating]
+      properties:
+        kind:
+          type: string
+          enum: [PARAGRAPH, TABLE]
+        alignment:
+          type: string
+          enum: [START, CENTER, END, JUSTIFY]
+          nullable: true
+          description: PARAGRAPH only; null when the template sets none a page can show.
+        listLevel:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: PARAGRAPH only; the numbering level of a numbered paragraph, else null.
+        repeating:
+          type: boolean
+          description: PARAGRAPH only; true for the one paragraph the filler copies once per repeated item. Always false for a TABLE.
+        inlines:
+          type: array
+          nullable: true
+          description: PARAGRAPH only (an empty paragraph has none); null for a TABLE.
+          items:
+            $ref: "#/components/schemas/TemplateLayoutInlineResponse"
+        rows:
+          type: array
+          nullable: true
+          description: TABLE only; null for a PARAGRAPH.
+          items:
+            $ref: "#/components/schemas/TemplateLayoutRowResponse"
+
+    TemplateLayoutRowResponse:
+      type: object
+      required: [repeating, cells]
+      properties:
+        repeating:
+          type: boolean
+          description: True for the one row the filler copies once per repeated item.
+        cells:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateLayoutCellResponse"
+
+    TemplateLayoutCellResponse:
+      type: object
+      required: [blocks]
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateLayoutBlockResponse"
+
+    TemplateLayoutInlineResponse:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [TEXT, FILL_SPOT, IMAGE]
+        text:
+          type: string
+          nullable: true
+          description: TEXT only; the template's own words, every character kept, with neighbouring runs of the same style joined.
+        fieldId:
+          type: string
+          nullable: true
+          description: FILL_SPOT only; the field whose value goes here.
+        placeholder:
+          type: string
+          nullable: true
+          description: FILL_SPOT only; the template's own text inside the control, trimmed; null when it has none.
+        style:
+          allOf:
+            - $ref: "#/components/schemas/TemplateLayoutStyleResponse"
+          nullable: true
+          description: >
+            TEXT and FILL_SPOT; null when the template sets none of these
+            properties. For a FILL_SPOT it is the style of the control's
+            first run, which is the formatting a filled value takes.
+
+    TemplateLayoutStyleResponse:
+      type: object
+      description: Every property is null when the template never set it, which is not the same as off.
+      properties:
+        bold:
+          type: boolean
+          nullable: true
+        italic:
+          type: boolean
+          nullable: true
+        underline:
+          type: boolean
+          nullable: true
+        fontFamily:
+          type: string
+          nullable: true
+        fontSizeHalfPoints:
+          type: integer
+          nullable: true
+          description: Half-points, as Word stores them; 22 is 11 pt.
+        colorHex:
+          type: string
+          pattern: "^[0-9A-Fa-f]{6}$"
+          nullable: true
+          description: Six hex digits without a leading '#'; null for "auto" or anything else.
 
     CreateTemplateRequest:
       type: object
@@ -3684,6 +4009,14 @@ components:
           type: array
           items:
             type: string
+        untaggedContentControlCount:
+          type: integer
+          minimum: 0
+          description: >
+            How many content controls in the body of the form have no tag, or
+            a tag of only whitespace: none of them is a candidate, and each
+            stays in the form as it is. Absent from servers from before it,
+            which means 0.
 
     AttachSourceRequest:
       type: object

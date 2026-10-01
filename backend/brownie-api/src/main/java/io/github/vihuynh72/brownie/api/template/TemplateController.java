@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -37,8 +38,9 @@ import java.util.List;
 
 /**
  * Creates a template draft against an already-extracted DOCX source,
- * replaces its field definitions and bindings, and activates an immutable
- * version. The examples and rule-decision endpoints are not exposed here.
+ * replaces its field definitions and bindings, activates an immutable
+ * version, and moves a template to the Trash Bin and back. The examples and
+ * rule-decision endpoints are not exposed here.
  * Deliberately returns the draft version alongside the template on
  * creation, since a caller needs that version's own number for the very
  * next {@code PUT .../draft/bindings} call.
@@ -61,17 +63,51 @@ class TemplateController {
     }
 
     /**
-     * Every template in the workspace, for a person choosing which one to
-     * start a new document from -- deliberately unfiltered by status
-     * (ACTIVE and DRAFT alike), since a caller building a "manage templates"
-     * view needs both; a caller building only a document-creation picker
-     * filters to {@code currentActiveVersionId != null} itself.
+     * Every template in the workspace that is not in the Trash Bin, for a
+     * person choosing which one to start a new document from --
+     * deliberately unfiltered by status (ACTIVE and DRAFT alike), since a
+     * caller building a "manage templates" view needs both; a caller
+     * building only a document-creation picker filters to {@code
+     * currentActiveVersionId != null} itself. With {@code trashed=true} it
+     * is the Trash Bin instead: only the trashed ones, the most recently
+     * trashed first.
      */
     @GetMapping
-    List<TemplateResponse> findAll(@PathVariable("workspaceId") long workspaceId, @AuthenticationPrincipal OidcUser principal) {
+    List<TemplateResponse> findAll(
+            @PathVariable("workspaceId") long workspaceId,
+            @RequestParam(name = "trashed", defaultValue = "false") boolean trashed,
+            @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
-        return templateService.findAll(workspaceId, userId).stream().map(TemplateResponse::from).toList();
+        List<Template> templates =
+                trashed ? templateService.findTrashed(workspaceId, userId) : templateService.findAll(workspaceId, userId);
+        return templates.stream().map(TemplateResponse::from).toList();
+    }
+
+    /**
+     * Moves the template to the Trash Bin: it leaves the list new documents
+     * are started from, and every document already made from it keeps
+     * working. Trashing it again answers with it unchanged.
+     */
+    @PostMapping("/{templateId}/trash")
+    TemplateResponse trash(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return TemplateResponse.from(templateService.trash(workspaceId, userId, templateId));
+    }
+
+    /** Takes the template back out of the Trash Bin. Restoring it again answers with it unchanged. */
+    @PostMapping("/{templateId}/restore")
+    TemplateResponse restore(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @AuthenticationPrincipal OidcUser principal) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        return TemplateResponse.from(templateService.restore(workspaceId, userId, templateId));
     }
 
     /** One template version by its own ID, so a caller can read an ACTIVATED version's field list before creating a document against it. */
@@ -248,10 +284,12 @@ class TemplateController {
         }
     }
 
-    record TemplateResponse(long id, String displayName, String status, Long currentActiveVersionId, OffsetDateTime createdAt) {
+    record TemplateResponse(
+            long id, String displayName, String status, Long currentActiveVersionId, OffsetDateTime createdAt, OffsetDateTime trashedAt) {
         static TemplateResponse from(Template template) {
             return new TemplateResponse(
-                    template.id(), template.displayName(), template.status().name(), template.currentActiveVersionId(), template.createdAt());
+                    template.id(), template.displayName(), template.status().name(), template.currentActiveVersionId(), template.createdAt(),
+                    template.trashedAt());
         }
     }
 
@@ -332,11 +370,12 @@ class TemplateController {
     }
 
     record CandidateBindingReportResponse(
-            List<CandidateFieldBindingResponse> candidates, List<String> ambiguousContentControlTags) {
+            List<CandidateFieldBindingResponse> candidates, List<String> ambiguousContentControlTags, int untaggedContentControlCount) {
         static CandidateBindingReportResponse from(CandidateBindingReport report) {
             return new CandidateBindingReportResponse(
                     report.candidates().stream().map(CandidateFieldBindingResponse::from).toList(),
-                    report.ambiguousContentControlTags());
+                    report.ambiguousContentControlTags(),
+                    report.untaggedContentControlCount());
         }
     }
 }

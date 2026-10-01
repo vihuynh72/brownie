@@ -94,8 +94,10 @@ import io.github.vihuynh72.brownie.core.source.SourceSnapshotNotFoundException;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
 import io.github.vihuynh72.brownie.core.template.TemplateBaselineIntegrityException;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidationException;
+import io.github.vihuynh72.brownie.core.template.TemplateLayoutUnavailableException;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateSourceNotExtractableException;
+import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateVersionStateConflictException;
 import io.github.vihuynh72.brownie.core.validation.ValidationManifestNotFoundException;
@@ -329,6 +331,31 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setDetail(ex.getMessage());
         enrich(problem, "NOT_FOUND");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    /**
+     * The version is there but its file cannot be drawn as a page. A page
+     * that asked for it falls back to listing the fields, so this is its own
+     * code rather than a generic failure.
+     */
+    @ExceptionHandler(TemplateLayoutUnavailableException.class)
+    public ResponseEntity<Object> handleTemplateLayoutUnavailable(TemplateLayoutUnavailableException ex, WebRequest request) {
+        log.warn("A template layout could not be built: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail("This template's file could not be drawn as a page.");
+        enrich(problem, "TEMPLATE_LAYOUT_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    /** The template is there and so is its version, but it is in the Trash Bin; restoring it is what lets a document be started from it. */
+    @ExceptionHandler(TemplateTrashedException.class)
+    public ResponseEntity<Object> handleTemplateTrashed(TemplateTrashedException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "TEMPLATE_TRASHED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
     }
 
     @ExceptionHandler(TemplateVersionStateConflictException.class)
