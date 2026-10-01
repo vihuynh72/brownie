@@ -256,7 +256,7 @@ class GenerationStartIntegrationTest {
         assertThat(run.get("sourceArtifactId").asLong()).isEqualTo(sourceArtifactId);
         assertThat(run.get("sourceSnapshotId").asLong()).isPositive();
         assertThat(run.get("modelName").asText()).isNotBlank();
-        assertThat(run.get("promptVersion").asText()).isEqualTo("extraction-v1");
+        assertThat(run.get("promptVersion").asText()).isEqualTo("extraction-v2");
         assertThat(run.get("job").get("id").asLong()).isEqualTo(jobId);
         assertThat(run.get("job").get("state").asText()).isEqualTo("QUEUED");
         assertThat(run.get("resultArtifactId").isNull()).isTrue();

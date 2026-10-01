@@ -368,6 +368,26 @@ describe('DocumentPage', () => {
     expect(page.get('tbody td').attributes('colspan')).toBe('3')
   })
 
+  it("names a spot by the form's own label wherever the page names it", () => {
+    const fields: EditableField[] = [
+      { fieldId: 'ho.va.ten', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'REQUIRED', label: 'Họ và tên', origin: 'FOUND_BY_BROWNIE' },
+      { fieldId: 'meeting.title', type: 'TEXT', cardinality: 'SCALAR', requiredness: 'OPTIONAL', label: null },
+      { fieldId: 'spot.2', type: 'TEXT', cardinality: 'REPEATED', requiredness: 'OPTIONAL', label: 'Owner', origin: 'FOUND_BY_BROWNIE' },
+    ]
+    const page = mountPage({
+      layout: null,
+      fields,
+      drafts: { 'ho.va.ten': '', 'meeting.title': '', 'spot.2': ['Ana'] },
+      requiredFieldIds: new Set(['ho.va.ten']),
+    })
+
+    const lines = page.findAll('p.document-page__paragraph')
+    expect(lines.map((line) => line.get('.document-page__field-label').text())).toEqual(['Họ và tên:', 'Meeting title:'])
+    expect(control(page, 'edit-ho.va.ten').attributes('aria-label')).toBe('Họ và tên, required')
+    expect(page.findAll('th').map((th) => th.text())).toEqual(['Owner'])
+    expect(control(page, 'edit-spot.2-0').attributes('aria-label')).toBe('Owner, row 1')
+  })
+
   it('says there is nothing to fill in when there are no fields and no layout', () => {
     const page = mountPage({ layout: null, fields: [], drafts: {} })
     expect(page.text()).toContain('This document has no fill spots.')
@@ -612,6 +632,20 @@ describe('DocumentPage', () => {
     const page = mountPage({ layout: null, layoutState: 'unavailable', rowsLocked: true, lockedFieldIds: new Set(['meeting.date']) })
     expect(await axe(page.element)).toHaveNoViolations()
   })
+
+  /** A place Brownie found itself says so in words beside it; a repeated one says it once, on its first row. */
+  it('marks the places Brownie found in words, a repeated one on its first row only', async () => {
+    const page = mountPage({ foundFieldIds: new Set(['meeting.location', 'action.item.owner']) })
+
+    const marked = page.findAll('.fill-spot__found').map((badge) => badge.element.parentElement!.querySelector('.fill-spot__control')!.id)
+    expect(marked).toEqual(['edit-meeting.location', 'edit-action.item.owner-0'])
+    expect(page.get('.fill-spot__found').text()).toBe('Found by Brownie')
+    expect(control(page, 'edit-meeting.title').element.parentElement!.querySelector('.fill-spot__found')).toBeNull()
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    await page.setProps({ foundFieldIds: new Set<string>() })
+    expect(page.findAll('.fill-spot__found')).toHaveLength(0)
+  })
 })
 
 describe('FillSpot', () => {
@@ -645,6 +679,16 @@ describe('FillSpot', () => {
     const date = mount(FillSpot, { props: { ...base, type: 'DATE', value: '2026-09-28', rowIndex: 2, required: true } }).get('input')
     expect(date.attributes('type')).toBe('date')
     expect(date.attributes('aria-label')).toBe('Meeting location, required, row 3')
+  })
+
+  it('is as wide as what it shows, from a small minimum, where the browser cannot size it to its content', () => {
+    const chars = (props: { value?: string; placeholder?: string }) =>
+      (mount(FillSpot, { props: { ...base, ...props } }).get('textarea').element as HTMLElement).style.getPropertyValue('--spot-chars')
+    // Empty, it shows its placeholder; typed, its value.
+    expect(chars({})).toBe(String('[Meeting location]'.length + 1))
+    expect(chars({ value: 'Hall' })).toBe('5')
+    expect(chars({ value: 'A', placeholder: '[x]' })).toBe('4')
+    expect(chars({ value: 'x'.repeat(200) })).toBe('60')
   })
 
   it('reports focus, and a click on a spot that already has it, so its bar can open again', async () => {

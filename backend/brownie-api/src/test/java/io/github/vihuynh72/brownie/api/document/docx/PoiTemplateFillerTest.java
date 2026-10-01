@@ -2,15 +2,19 @@ package io.github.vihuynh72.brownie.api.document.docx;
 
 import io.github.vihuynh72.brownie.core.compile.FilledDocument;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
+import io.github.vihuynh72.brownie.core.compile.TemplateFillProblemReason;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplate;
 import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
+import io.github.vihuynh72.brownie.core.template.DocxControlOrigin;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
+import io.github.vihuynh72.brownie.core.validation.DocumentValidator;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
@@ -20,6 +24,7 @@ import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTR;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtContentRun;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtPr;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtRun;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STUnderline;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -90,6 +95,24 @@ class PoiTemplateFillerTest {
                 "action.item.owner", new FieldValue.RepeatedTextValue(List.of("Only one owner"))));
 
         assertThrows(TemplateFillException.class, () -> filler.fill(blank, flowing.fields(), content));
+    }
+
+    /** A place on a PDF never reaches a Word file: the Word filler refuses it plainly rather than guessing where it goes. */
+    @Test
+    void aFieldBoundToAPlaceOnAPdfIsRefused() throws IOException {
+        byte[] docx = scalarContentControlDocx("meeting.title");
+        for (FieldBindingTarget target : List.of(
+                new FieldBindingTarget.AcroFormField("fullName"),
+                new FieldBindingTarget.PageBox(1, 72, 72, 100, 14, io.github.vihuynh72.brownie.core.document.PdfTextStyle.DEFAULT, false,
+                        io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy.SHRINK_TO_FIT))) {
+            FieldDefinition field = new FieldDefinition("form.name", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL, target);
+
+            TemplateFillException refused = assertThrows(TemplateFillException.class,
+                    () -> filler.fill(docx, List.of(field), new DocumentContent(Map.of("form.name", new FieldValue.TextValue("Ana")))));
+
+            assertEquals(TemplateFillProblemReason.BINDING_NOT_FOUND, refused.reason());
+            assertTrue(refused.getMessage().contains("place on a PDF"), refused.getMessage());
+        }
     }
 
     /**
@@ -239,6 +262,81 @@ class PoiTemplateFillerTest {
         assertTrue(!documentXml.contains("showingPlcHdr"), "a written control must not say it shows its placeholder: " + documentXml);
         assertTrue(!documentXml.contains("PlaceholderText"), "a written value must not keep the placeholder's style: " + documentXml);
         assertTrue(documentXml.contains("w:val=\"Strong\""), "the form's own run style must be kept: " + documentXml);
+    }
+
+    /**
+     * A spot Brownie found in a form's own blank prints that blank again
+     * while it has no value, in the spot's own formatting, and stays marked
+     * as showing its prompt; the blank is not a value, so the export check
+     * never looks for it. A value, once there, replaces the blank.
+     */
+    @Test
+    void anEmptySpotPrintsTheFormsOwnBlankInItsOwnFormattingAndNothingChecksForIt() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addFoundBlankContentControl(doc.createParagraph(), "company");
+            addFoundBlankContentControl(doc.createParagraph(), "date.of.birth");
+            addFoundBlankContentControl(doc.createParagraph(), "phone");
+            blank = toBytes(doc);
+        }
+        List<FieldDefinition> fields = List.of(
+                foundField("company", FieldType.TEXT, "[Company]"),
+                foundField("date.of.birth", FieldType.DATE, "__________"),
+                foundField("phone", FieldType.TEXT, "  ________  "));
+
+        FilledDocument filled = filler.fill(
+                blank, fields, new DocumentContent(Map.of("date.of.birth", new FieldValue.DateValue(LocalDate.of(1990, 4, 9)))));
+        String documentXml = extractDocumentXml(filled.docxBytes());
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("[Company]"), text);
+        assertTrue(text.contains("April 9, 1990") && !text.contains("__________"), text);
+        assertTrue(documentXml.contains("xml:space=\"preserve\">  ________  <"), "a blank's own spaces must be kept: " + documentXml);
+        assertEquals(3, countOccurrences(documentXml, "<w:u w:val=\"single\"/>"), "every spot keeps its run's underline: " + documentXml);
+        assertEquals(2, countOccurrences(documentXml, "showingPlcHdr"), "a spot showing its blank still shows its prompt: " + documentXml);
+        assertEquals(List.of(), filled.intendedText().get("company"));
+        assertEquals(List.of(), filled.intendedText().get("phone"));
+        assertEquals(List.of("April 9, 1990"), filled.intendedText().get("date.of.birth"));
+        assertEquals(List.of(), DocumentValidator.checkFieldContentInOutput(filled.intendedText(), filled.reopenedBodyText()));
+    }
+
+    /** A blank drawn as underlined tabs is replaced by the answer, and still prints its line when left empty. */
+    @Test
+    void aValueTakesThePlaceOfABlankOfUnderlinedTabsAndAnEmptyOneKeepsTheLine() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            for (String tag : List.of("phone", "email")) {
+                CTSdtRun sdt = doc.createParagraph().getCTP().addNewSdt();
+                sdt.addNewSdtPr().addNewTag().setVal(tag);
+                CTR run = sdt.addNewSdtContent().addNewR();
+                run.addNewRPr().addNewU().setVal(STUnderline.SINGLE);
+                run.addNewTab();
+                run.addNewTab();
+            }
+            blank = toBytes(doc);
+        }
+        List<FieldDefinition> fields = List.of(foundField("phone", FieldType.TEXT, null), foundField("email", FieldType.TEXT, null));
+
+        FilledDocument filled = filler.fill(blank, fields, new DocumentContent(Map.of("phone", new FieldValue.TextValue("555 0100"))));
+        String documentXml = extractDocumentXml(filled.docxBytes());
+
+        assertEquals(2, countOccurrences(documentXml, "<w:tab/>"), "only the empty spot keeps its tabs: " + documentXml);
+        assertTrue(documentXml.contains("<w:u w:val=\"single\"/></w:rPr><w:t>555 0100</w:t>"), documentXml);
+    }
+
+    /** Without a stored blank, an empty spot is written empty, exactly as before blanks existed. */
+    @Test
+    void anEmptySpotWithoutABlankIsWrittenEmpty() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addFoundBlankContentControl(doc.createParagraph(), "company");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(blank, List.of(scalarField("company", FieldType.TEXT)), DocumentContent.empty());
+
+        assertTrue(!filled.reopenedBodyText().contains("________"), filled.reopenedBodyText());
+        assertEquals(List.of(), filled.intendedText().get("company"));
     }
 
     /** A tagged control saved with no content element at all is filled, not a crash. */
@@ -443,6 +541,26 @@ class PoiTemplateFillerTest {
         run.addNewT().setStringValue("Click or tap here to enter text.");
     }
 
+    /** A control as Brownie inserts one around a form's own blank: underlined, showing its prompt, holding the blank. */
+    private static void addFoundBlankContentControl(XWPFParagraph paragraph, String tag) {
+        paragraph.createRun().setText(tag + ": ");
+        CTSdtRun sdt = paragraph.getCTP().addNewSdt();
+        CTSdtPr sdtPr = sdt.addNewSdtPr();
+        sdtPr.addNewTag().setVal(tag);
+        sdtPr.addNewShowingPlcHdr();
+        CTR run = sdt.addNewSdtContent().addNewR();
+        run.addNewRPr().addNewU().setVal(STUnderline.SINGLE);
+        run.addNewT().setStringValue("________");
+    }
+
+    private static int countOccurrences(String text, String part) {
+        int count = 0;
+        for (int at = text.indexOf(part); at >= 0; at = text.indexOf(part, at + part.length())) {
+            count++;
+        }
+        return count;
+    }
+
     private static void addStyledContentControl(XWPFParagraph paragraph, String tag, String runStyle) {
         CTSdtRun sdt = paragraph.getCTP().addNewSdt();
         sdt.addNewSdtPr().addNewTag().setVal(tag);
@@ -479,6 +597,13 @@ class PoiTemplateFillerTest {
         return new FieldDefinition(
                 fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
                 new FieldBindingTarget.ContentControlTag(fieldId));
+    }
+
+    private static FieldDefinition foundField(String fieldId, FieldType type, String blankText) {
+        return new FieldDefinition(
+                fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag(fieldId), null, SpotOrigin.FOUND_BY_BROWNIE,
+                DocxControlOrigin.INSERTED_BY_BROWNIE, blankText);
     }
 
     private static FieldDefinition repeatedField(String fieldId, FieldType type) {

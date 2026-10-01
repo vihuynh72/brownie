@@ -13,6 +13,7 @@ import {
   cssFontFamily,
   describeStyle,
   dominantFillSpotStyle,
+  fieldLabel,
   fieldStateWords,
   fillSpotStyle,
   formatDateLikeExport,
@@ -86,6 +87,19 @@ describe('labelFor', () => {
     expect(labelFor('meeting_title')).toBe('Meeting title')
     expect(labelFor('meeting-date')).toBe('Meeting date')
     expect(labelFor('')).toBe('')
+  })
+})
+
+describe('fieldLabel', () => {
+  it("names a field by the form's own label, in any language", () => {
+    expect(fieldLabel({ fieldId: 'ho.va.ten', label: 'Họ và tên' })).toBe('Họ và tên')
+    expect(fieldLabel({ fieldId: 'spot.3', label: 'Date of birth', origin: 'FOUND_BY_BROWNIE' } as EditableField)).toBe('Date of birth')
+  })
+
+  it('works the name out from the id when there is no label, as an older server sends', () => {
+    expect(fieldLabel({ fieldId: 'meeting.title' })).toBe('Meeting title')
+    expect(fieldLabel({ fieldId: 'meeting.title', label: null })).toBe('Meeting title')
+    expect(fieldLabel({ fieldId: 'meeting.title', label: '   ' })).toBe('Meeting title')
   })
 })
 
@@ -172,6 +186,13 @@ describe('cssFontFamily', () => {
     expect(cssFontFamily(null)).toBeNull()
     expect(cssFontFamily('A'.repeat(65))).toBeNull()
   })
+
+  it('keeps every name of a list a converted copy gives, first choice first, and refuses the list when one name is not plain words', () => {
+    expect(cssFontFamily('Liberation Serif;Times New Roman')).toBe('"Liberation Serif", "Times New Roman", serif')
+    expect(cssFontFamily(' Liberation Sans ; Arial ;')).toBe('"Liberation Sans", "Arial", sans-serif')
+    expect(cssFontFamily('Liberation Serif;url(a)')).toBeNull()
+    expect(cssFontFamily(';')).toBeNull()
+  })
 })
 
 describe('describeStyle', () => {
@@ -187,6 +208,10 @@ describe('describeStyle', () => {
       italic: true,
       underline: true,
     })
+  })
+
+  it('names only the first font of a list a converted copy gives', () => {
+    expect(describeStyle({ fontFamily: 'Liberation Serif;Times New Roman', fontSizeHalfPoints: 24 }).font).toBe('Liberation Serif')
   })
 
   it('says Regular and nothing else for a style it knows nothing about', () => {
@@ -384,6 +409,35 @@ describe('buildPageModel', () => {
     expect(model.footers).toHaveLength(1)
   })
 
+  it("carries where a place can be chosen: each line's node id and hash, and where each piece of text starts", () => {
+    const model = buildPageModel(
+      layoutOf([
+        paragraph([{ ...text('Company: '), anchorStart: 0 }, fillSpot('meeting.title'), { ...text('[ref]'), anchorStart: null, controlNodeId: 'p0/sdt1' }], {
+          nodeId: 'p0',
+          anchorable: true,
+          anchorTextHash: 'hash-p0',
+        }),
+        paragraph([text('Kept apart')], { nodeId: 'p1', anchorable: false, anchorTextHash: 'ignored' }),
+        paragraph([text('Task')], { nodeId: 'p2', anchorable: true, anchorTextHash: 'hash-p2', repeating: true }),
+      ]),
+      FIELDS,
+      1,
+    )
+    const [first, second, repeated] = paragraphs(model.main[0]!.blocks)
+    expect(first).toMatchObject({ nodeId: 'p0', anchorable: true, anchorTextHash: 'hash-p0', repeats: false })
+    expect(first!.inlines[0]).toMatchObject({ kind: 'text', anchorStart: 0, controlNodeId: null })
+    expect(first!.inlines[2]).toMatchObject({ kind: 'text', text: '[ref]', anchorStart: null, controlNodeId: 'p0/sdt1' })
+    expect(second).toMatchObject({ nodeId: 'p1', anchorable: false, anchorTextHash: null })
+    // The part that repeats for each row never takes a spot, whatever a server says.
+    expect(repeated).toMatchObject({ nodeId: 'p2', anchorable: false, anchorTextHash: null, repeats: true })
+  })
+
+  it('takes a paragraph from a server that predates choosing places as one no place can be chosen in', () => {
+    const model = buildPageModel(layoutOf([paragraph([text('Old')])]), [], 0)
+    expect(paragraphs(model.main[0]!.blocks)[0]).toMatchObject({ nodeId: null, anchorable: false, anchorTextHash: null, repeats: false })
+    expect(paragraphs(model.main[0]!.blocks)[0]!.inlines[0]).toMatchObject({ anchorStart: null, controlNodeId: null })
+  })
+
   it('keeps every character of text, drops empty text, and keeps images and blank lines', () => {
     const model = buildPageModel(
       layoutOf([paragraph([text('  spaced   out  '), text(''), { kind: 'IMAGE' }]), paragraph([]), paragraph(null as unknown as [])]),
@@ -400,7 +454,7 @@ describe('buildPageModel', () => {
   it('draws a fill spot this page cannot edit as the template text it keeps', () => {
     const model = buildPageModel(layoutOf([paragraph([fillSpot('unknown.field', '[unknown]'), fillSpot('other.unknown', null)])]), FIELDS, 0)
     expect(paragraphs(model.main[0]!.blocks)[0]!.inlines).toEqual([
-      { kind: 'text', key: 'm0/b0/i0', text: '[unknown]', style: BODY },
+      { kind: 'text', key: 'm0/b0/i0', text: '[unknown]', style: BODY, anchorStart: null, controlNodeId: null },
     ])
   })
 
@@ -471,7 +525,7 @@ describe('buildPageModel', () => {
       const model = buildPageModel(layout, FIELDS.slice(0, 2), 3)
       const rows = (model.main[0]!.blocks[1] as PageTable).rows
       expect(rows).toHaveLength(2)
-      expect(rows[1]!.cells[0]!.paragraphs[0]!.inlines).toEqual([{ kind: 'text', key: 'm0/b1/r1/c0/b0/i0', text: '[task]', style: BODY }])
+      expect(rows[1]!.cells[0]!.paragraphs[0]!.inlines).toEqual([{ kind: 'text', key: 'm0/b1/r1/c0/b0/i0', text: '[task]', style: BODY, anchorStart: null, controlNodeId: null }])
       expect(model.main[0]!.blocks.some((block) => block.kind === 'add-row')).toBe(false)
     })
   })
