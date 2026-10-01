@@ -108,7 +108,8 @@ const kinds = computed<DriveSaveKind[]>(() => {
   const receipt = props.receipt
   if (receipt === null) return []
   const types = offered.value ?? []
-  const wordOffered = receipt.format !== 'PDF' || receipt.pdfArtifactId == null
+  // A PDF form's export has no Word file at all, so neither a Word file nor a Google Doc made from one is offered.
+  const wordOffered = receipt.docxArtifactId != null && (receipt.format !== 'PDF' || receipt.pdfArtifactId == null)
   const choices: DriveSaveKind[] = []
   if (types.includes('DRIVE_SAVE_FILE') && wordOffered) choices.push('WORD_FILE')
   if (types.includes('DRIVE_SAVE_FILE') && receipt.pdfArtifactId != null) choices.push('PDF_FILE')
@@ -150,6 +151,8 @@ function appendable(action: ActionResponse): boolean {
     action.type === 'DRIVE_SAVE_AS_GOOGLE_DOC' &&
     action.state === 'SUCCEEDED' &&
     props.receipt !== null &&
+    // Adding a version's text to a Google Doc is for Word forms; a PDF form's export, which has no Word file, is not one.
+    props.receipt.docxArtifactId != null &&
     (offered.value ?? []).includes('GOOGLE_DOC_APPEND') &&
     connection.value?.state === 'ACTIVE'
   )
