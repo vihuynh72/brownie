@@ -32,13 +32,24 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -111,7 +122,7 @@ class TemplateLayoutIntegrationTest {
 
         assertThat(layout.get("templateId").asLong()).isEqualTo(template[0]);
         assertThat(layout.get("versionId").asLong()).isEqualTo(template[1]);
-        assertThat(layout.get("parserVersion").asText()).isEqualTo("brownie-docx-graph-v2+poi-5.5.1");
+        assertThat(layout.get("parserVersion").asText()).isEqualTo("brownie-docx-graph-v3+poi-5.5.1");
         assertThat(layout.get("unplacedFieldIds")).isEmpty();
         List<String> partKinds = new ArrayList<>();
         layout.get("parts").forEach(part -> partKinds.add(part.get("kind").asText()));
@@ -237,6 +248,80 @@ class TemplateLayoutIntegrationTest {
         mockMvc.perform(get(layoutPath(workspaceId, template[0], template[1])).cookie(session))
                 .andExpect(status().is(422))
                 .andExpect(jsonPath("$.code").value("TEMPLATE_LAYOUT_UNAVAILABLE"));
+    }
+
+    /**
+     * A template made while an earlier reader took its file, from a file
+     * today's reader refuses (here a tracked paragraph mark, as pressing
+     * Enter with Track Changes on leaves): its page is still drawn, from the
+     * reading it was made with, and its documents still validate, because
+     * the filled copy is refused only for what its template already has.
+     */
+    @Test
+    void aTemplateMadeFromAFileTodaysReaderRefusesIsStillDrawnAndItsDocumentsValidate() throws Exception {
+        Cookie session = signInWithBuiltIns("subject-layout-older");
+        long workspaceId = workspaceOf("subject-layout-older");
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-layout-older").orElseThrow().id();
+        long[] template = findTemplate(session, workspaceId, "Flowing meeting minutes");
+        JsonNode version = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates/" + template[0]
+                        + "/versions/" + template[1]).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        String blobKey = artifactRepository.find(workspaceId, userId, version.get("sourceArtifactId").asLong()).orElseThrow().blobKey();
+        byte[] original;
+        try (InputStream in = blobStore.openStream(blobKey)) {
+            original = in.readAllBytes();
+        }
+        byte[] withTrackedMark = withFirstParagraph(original,
+                "<w:p><w:pPr><w:rPr><w:ins w:id=\"9001\" w:author=\"Reviewer\" w:date=\"2020-01-01T00:00:00Z\"/></w:rPr></w:pPr></w:p>");
+        blobStore.delete(blobKey);
+        blobStore.writeNewAndDigest(blobKey, new ByteArrayInputStream(withTrackedMark), withTrackedMark.length);
+
+        mockMvc.perform(get(layoutPath(workspaceId, template[0], template[1])).cookie(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.versionId").value(template[1]));
+
+        String document = "{\"title\":\"Weekly Sync\",\"templateId\":" + template[0] + ",\"templateVersionId\":" + template[1]
+                + ",\"fields\":{\"meeting.title\":{\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"value\":\"Weekly Sync\"}},"
+                + "\"initialRevisionReason\":\"Created for a layout test.\"}";
+        JsonNode created = readJson(mockMvc.perform(post("/api/v1/workspaces/" + workspaceId + "/documents")
+                        .cookie(session).with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content(document))
+                .andExpect(status().isCreated())
+                .andReturn());
+        JsonNode validated = readJson(mockMvc.perform(post("/api/v1/workspaces/" + workspaceId + "/documents/" + created.get("id").asLong()
+                                + "/validate")
+                        .cookie(session).with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"expectedRevisionId\":" + created.get("currentRevision").get("id").asLong() + "}"))
+                .andExpect(status().is2xxSuccessful())
+                .andReturn());
+        List<String> codes = new ArrayList<>();
+        validated.get("findings").forEach(finding -> codes.add(finding.get("code").asText()));
+        assertThat(codes).doesNotContain("PACKAGE_INTEGRITY_FAILURE");
+    }
+
+    /** The same Word file with {@code paragraph} put first in its body. */
+    private static byte[] withFirstParagraph(byte[] docx, String paragraph) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(docx)); ZipOutputStream zip = new ZipOutputStream(out)) {
+            for (ZipEntry entry = in.getNextEntry(); entry != null; entry = in.getNextEntry()) {
+                byte[] content = in.readAllBytes();
+                if (entry.getName().equals("word/document.xml")) {
+                    String xml = new String(content, StandardCharsets.UTF_8);
+                    Matcher body = Pattern.compile("<w:body(?:\\s[^>]*)?>").matcher(xml);
+                    assertThat(body.find()).isTrue();
+                    content = (xml.substring(0, body.end()) + paragraph + xml.substring(body.end())).getBytes(StandardCharsets.UTF_8);
+                }
+                zip.putNextEntry(new ZipEntry(entry.getName()));
+                zip.write(content);
+                zip.closeEntry();
+            }
+        }
+        return out.toByteArray();
     }
 
     private Cookie signInWithBuiltIns(String subject) {

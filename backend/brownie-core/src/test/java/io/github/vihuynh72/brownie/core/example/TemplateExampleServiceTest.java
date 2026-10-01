@@ -11,6 +11,7 @@ import io.github.vihuynh72.brownie.core.document.ExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.ExtractionVersionRepository;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.rule.DateFormatStyle;
 import io.github.vihuynh72.brownie.core.rule.RulePayload;
 import io.github.vihuynh72.brownie.core.rule.RuleProposalEvidence;
@@ -276,7 +277,8 @@ class TemplateExampleServiceTest {
         }
 
         @Override
-        public ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph) {
+        public ExtractionVersion saveComplete(
+                long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph, DocxFeatureReport keptAsIs) {
             throw new UnsupportedOperationException("not needed by TemplateExampleService");
         }
 
@@ -311,7 +313,14 @@ class TemplateExampleServiceTest {
         }
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException("not needed by TemplateExampleService");
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException("not needed by TemplateExampleService");
         }
 
