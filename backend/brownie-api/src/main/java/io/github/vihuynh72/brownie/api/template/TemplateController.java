@@ -4,17 +4,25 @@ import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingExce
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.document.DocumentPart;
 import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
+import io.github.vihuynh72.brownie.core.document.PdfFontFamily;
+import io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy;
+import io.github.vihuynh72.brownie.core.document.PdfTextStyle;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.template.CandidateBindingReport;
 import io.github.vihuynh72.brownie.core.template.CandidateFieldBinding;
+import io.github.vihuynh72.brownie.core.template.DocxControlOrigin;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
+import io.github.vihuynh72.brownie.core.template.FieldIds;
+import io.github.vihuynh72.brownie.core.template.FillSpotReviewService;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.MalformedTemplateRequestException;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
@@ -47,17 +55,20 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/api/v1/workspaces/{workspaceId}/templates")
-class TemplateController {
+public class TemplateController {
 
     private final TemplateService templateService;
+    private final FillSpotReviewService fillSpotReviewService;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     TemplateController(
             TemplateService templateService,
+            FillSpotReviewService fillSpotReviewService,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.templateService = templateService;
+        this.fillSpotReviewService = fillSpotReviewService;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
     }
@@ -119,7 +130,7 @@ class TemplateController {
             @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
-        return TemplateVersionResponse.from(templateService
+        return versionResponse(workspaceId, userId, templateService
                 .findVersion(workspaceId, userId, templateId, versionId)
                 .orElseThrow(() -> new TemplateVersionNotFoundException(templateId, versionId)));
     }
@@ -132,12 +143,15 @@ class TemplateController {
             @RequestBody CreateTemplateRequest request) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
-        Template template = templateService.createDraft(workspaceId, userId, request.displayName(), request.sourceArtifactId());
+        List<PreparationNotice> notices = request.preparationNotices() == null
+                ? null
+                : request.preparationNotices().stream().map(PreparationNoticeRequest::toDomainOrRefuse).toList();
+        Template template = templateService.createDraft(workspaceId, userId, request.displayName(), request.sourceArtifactId(), notices);
         TemplateVersion draft = templateService
                 .findDraftVersion(workspaceId, userId, template.id())
                 .orElseThrow(() -> new IllegalStateException(
                         "Template " + template.id() + " has no draft version immediately after creating it."));
-        return TemplateDraftResponse.from(template, draft);
+        return new TemplateDraftResponse(TemplateResponse.from(template), versionResponse(workspaceId, userId, draft));
     }
 
     @PutMapping("/{templateId}/draft/bindings")
@@ -151,7 +165,7 @@ class TemplateController {
         List<FieldDefinition> fields = request.fields().stream().map(FieldDefinitionRequest::toDomain).toList();
         TemplateVersion updated =
                 templateService.replaceDraftBindings(workspaceId, userId, templateId, request.expectedVersionNumber(), fields);
-        return TemplateVersionResponse.from(updated);
+        return versionResponse(workspaceId, userId, updated);
     }
 
     /**
@@ -199,8 +213,56 @@ class TemplateController {
             @RequestBody ActivateVersionRequest request) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
-        TemplateVersion activated = templateService.activate(workspaceId, userId, templateId, request.expectedVersionNumber());
-        return TemplateVersionResponse.from(activated);
+        TemplateVersion activated = templateService.activate(
+                workspaceId, userId, templateId, request.expectedVersionNumber(), Boolean.TRUE.equals(request.allowNoPlaces()));
+        return versionResponse(workspaceId, userId, activated);
+    }
+
+    /**
+     * A person saying a spot Brownie found is right: the page stops marking
+     * it as found. Keeping it again changes nothing. The review belongs to
+     * the template, so it holds in every later version with the field.
+     */
+    @PutMapping("/{templateId}/fields/{fieldId}/review")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void reviewField(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @PathVariable("fieldId") String fieldId,
+            @AuthenticationPrincipal OidcUser principal,
+            @RequestBody FieldReviewRequest request) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        requireKept(request == null ? null : request.decision());
+        fillSpotReviewService.keep(workspaceId, userId, templateId, List.of(fieldId));
+    }
+
+    /** "Keep all": the same review for several fields at once; all are kept or, if one cannot be, none is. */
+    @PostMapping("/{templateId}/field-reviews")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void reviewFields(
+            @PathVariable("workspaceId") long workspaceId,
+            @PathVariable("templateId") long templateId,
+            @AuthenticationPrincipal OidcUser principal,
+            @RequestBody FieldReviewsRequest request) {
+        long userId = currentUserId(principal);
+        workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        if (request == null || request.fieldIds() == null || request.fieldIds().isEmpty()) {
+            throw new MalformedTemplateRequestException("Name at least one field to keep.");
+        }
+        requireKept(request.decision() == null ? "KEPT" : request.decision());
+        fillSpotReviewService.keep(workspaceId, userId, templateId, List.copyOf(request.fieldIds()));
+    }
+
+    private static void requireKept(String decision) {
+        if (!"KEPT".equals(decision)) {
+            throw new MalformedTemplateRequestException("The only review a spot can have is \"KEPT\".");
+        }
+    }
+
+    private TemplateVersionResponse versionResponse(long workspaceId, long userId, TemplateVersion version) {
+        List<String> kept = fillSpotReviewService.keptFieldIds(workspaceId, userId, version.templateId()).stream().sorted().toList();
+        return TemplateVersionResponse.from(version, kept);
     }
 
     private long currentUserId(OidcUser principal) {
@@ -212,10 +274,44 @@ class TemplateController {
                 .id();
     }
 
-    record CreateTemplateRequest(String displayName, long sourceArtifactId) {
+    /**
+     * {@code preparationNotices} may be left out: what the person was told
+     * when the file was made ready to fill (the upload step's notices, as it
+     * gave them), kept with the template so they can be shown again.
+     */
+    record CreateTemplateRequest(String displayName, long sourceArtifactId, List<PreparationNoticeRequest> preparationNotices) {
     }
 
-    record ActivateVersionRequest(int expectedVersionNumber) {
+    record PreparationNoticeRequest(String code, Integer count, String detail) {
+
+        /** A list may hold a JSON null where a notice should be; that is a malformed request, not a server error. */
+        static PreparationNotice toDomainOrRefuse(PreparationNoticeRequest request) {
+            if (request == null) {
+                throw new MalformedTemplateRequestException("A note about the template's file is missing.");
+            }
+            return request.toDomain();
+        }
+
+        PreparationNotice toDomain() {
+            if (code == null || code.isBlank()) {
+                throw new MalformedTemplateRequestException("A note about the template's file needs a code.");
+            }
+            if (count == null || count < 0) {
+                throw new MalformedTemplateRequestException("A note about the template's file needs a count of zero or more.");
+            }
+            return new PreparationNotice(code, count, detail);
+        }
+    }
+
+    /** {@code allowNoPlaces} lets a draft with no fields activate, for a form opened with no places found; left out, it is false. */
+    record ActivateVersionRequest(int expectedVersionNumber, Boolean allowNoPlaces) {
+    }
+
+    record FieldReviewRequest(String decision) {
+    }
+
+    /** {@code decision} may be left out; the only one there is, is {@code KEPT}. */
+    record FieldReviewsRequest(List<String> fieldIds, String decision) {
     }
 
     record ReplaceBindingsRequest(int expectedVersionNumber, List<FieldDefinitionRequest> fields) {
@@ -223,11 +319,32 @@ class TemplateController {
 
     enum BindingKind {
         CONTENT_CONTROL_TAG,
-        STRUCTURAL_NODE
+        STRUCTURAL_NODE,
+        ACROFORM_FIELD,
+        PAGE_BOX
     }
 
-    /** Only {@code tag} (for CONTENT_CONTROL_TAG) or {@code part}/{@code nodeId} (for STRUCTURAL_NODE) is required, chosen by {@code kind}; the other is ignored. */
-    record BindingRequest(BindingKind kind, String tag, DocumentPartKind part, String nodeId) {
+    /**
+     * Only the part {@code kind} chooses is required and the rest is ignored: {@code tag} for CONTENT_CONTROL_TAG,
+     * {@code part}/{@code nodeId} for STRUCTURAL_NODE, {@code acroFormField} (a PDF form field's full name) for ACROFORM_FIELD,
+     * {@code pageBox} for PAGE_BOX. The upload step gives each spot it finds its binding in this same shape, so a spot can be
+     * sent back as a field as it is.
+     */
+    public record BindingRequest(
+            BindingKind kind, String tag, DocumentPartKind part, String nodeId, String acroFormField, PageBoxBody pageBox) {
+
+        public static BindingRequest from(FieldBindingTarget target) {
+            return switch (target) {
+                case FieldBindingTarget.ContentControlTag(String tag) ->
+                        new BindingRequest(BindingKind.CONTENT_CONTROL_TAG, tag, null, null, null, null);
+                case FieldBindingTarget.StructuralNode(var part, String nodeId) ->
+                        new BindingRequest(BindingKind.STRUCTURAL_NODE, null, part, nodeId, null, null);
+                case FieldBindingTarget.AcroFormField(String name) ->
+                        new BindingRequest(BindingKind.ACROFORM_FIELD, null, null, null, name, null);
+                case FieldBindingTarget.PageBox box -> new BindingRequest(BindingKind.PAGE_BOX, null, null, null, null, PageBoxBody.from(box));
+            };
+        }
+
         FieldBindingTarget toDomain() {
             if (kind == null) {
                 throw new MalformedTemplateRequestException("A field binding requires a kind.");
@@ -245,12 +362,84 @@ class TemplateController {
                     }
                     yield new FieldBindingTarget.StructuralNode(part, nodeId);
                 }
+                case ACROFORM_FIELD -> {
+                    if (acroFormField == null || acroFormField.isEmpty()) {
+                        throw new MalformedTemplateRequestException("An ACROFORM_FIELD binding requires the form field's full name.");
+                    }
+                    yield new FieldBindingTarget.AcroFormField(acroFormField);
+                }
+                case PAGE_BOX -> {
+                    if (pageBox == null) {
+                        throw new MalformedTemplateRequestException("A PAGE_BOX binding requires pageBox.");
+                    }
+                    yield pageBox.toDomain();
+                }
             };
         }
     }
 
+    /**
+     * A box on a PDF page: points, the page as stored (before it is turned), origin at the top-left of the page's visible area,
+     * Y down. {@code style} defaults to an ordinary 11 pt sans-serif, {@code multiline} to false and {@code overflow} to
+     * SHRINK_TO_FIT (make the text smaller, down to 6 pt, when it does not fit; BLOCK stops export instead).
+     */
+    record PageBoxBody(
+            Integer page, Double x, Double y, Double width, Double height, TextStyleBody style, Boolean multiline,
+            PdfOverflowPolicy overflow) {
+
+        static PageBoxBody from(FieldBindingTarget.PageBox box) {
+            return new PageBoxBody(
+                    box.page(), box.x(), box.y(), box.width(), box.height(), TextStyleBody.from(box.style()), box.multiline(),
+                    box.overflow());
+        }
+
+        FieldBindingTarget.PageBox toDomain() {
+            if (page == null || x == null || y == null || width == null || height == null) {
+                throw new MalformedTemplateRequestException("A PAGE_BOX binding requires page, x, y, width and height.");
+            }
+            if (page < 1 || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(width) || !Double.isFinite(height)) {
+                throw new MalformedTemplateRequestException("A PAGE_BOX binding needs a page number from 1 and a box in points.");
+            }
+            PdfTextStyle textStyle = style == null ? PdfTextStyle.DEFAULT : style.toDomain();
+            return new FieldBindingTarget.PageBox(
+                    page, x, y, width, height, textStyle, Boolean.TRUE.equals(multiline),
+                    overflow == null ? PdfOverflowPolicy.SHRINK_TO_FIT : overflow);
+        }
+    }
+
+    /** How text in a box looks: one of three font families, bold or not, and its size in points (4 to 72). */
+    record TextStyleBody(PdfFontFamily font, Boolean bold, Double sizePt) {
+
+        static final double MIN_SIZE_PT = 4;
+        static final double MAX_SIZE_PT = 72;
+
+        static TextStyleBody from(PdfTextStyle style) {
+            return new TextStyleBody(style.family(), style.bold(), style.sizePt());
+        }
+
+        PdfTextStyle toDomain() {
+            double size = sizePt == null ? PdfTextStyle.DEFAULT.sizePt() : sizePt;
+            if (!(size >= MIN_SIZE_PT && size <= MAX_SIZE_PT)) {
+                throw new MalformedTemplateRequestException("A box's text size must be from 4 to 72 points.");
+            }
+            return new PdfTextStyle(font == null ? PdfTextStyle.DEFAULT.family() : font, Boolean.TRUE.equals(bold), size);
+        }
+    }
+
+    /**
+     * {@code label}, {@code origin}, {@code docxControl} and {@code blankText} are optional; a field that leaves them out is
+     * one that came with the form and is named after its ID. A label is stored as {@link FieldIds#normalizeLabel} leaves it.
+     */
     record FieldDefinitionRequest(
-            String fieldId, FieldType type, FieldCardinality cardinality, FieldRequiredness requiredness, BindingRequest binding) {
+            String fieldId,
+            FieldType type,
+            FieldCardinality cardinality,
+            FieldRequiredness requiredness,
+            BindingRequest binding,
+            String label,
+            SpotOrigin origin,
+            DocxControlOrigin docxControl,
+            String blankText) {
         FieldDefinition toDomain() {
             if (fieldId == null || fieldId.isBlank()) {
                 throw new MalformedTemplateRequestException("A field definition requires a non-blank fieldId.");
@@ -259,11 +448,28 @@ class TemplateController {
                 throw new MalformedTemplateRequestException(
                         "Field \"" + fieldId + "\" requires type, cardinality, requiredness, and binding.");
             }
-            return new FieldDefinition(fieldId, type, cardinality, requiredness, binding.toDomain());
+            String storedLabel = FieldIds.normalizeLabel(label);
+            if (label != null && storedLabel == null) {
+                throw new MalformedTemplateRequestException(
+                        "The name of field \"" + fieldId + "\" must be one line of 1 to " + FieldIds.MAX_LABEL_LENGTH
+                                + " characters, with at least one letter or number.");
+            }
+            if (blankText != null && !FieldIds.isValidBlankText(blankText)) {
+                throw new MalformedTemplateRequestException(
+                        "The blank of field \"" + fieldId + "\" must be one line of 1 to " + FieldIds.MAX_BLANK_TEXT_LENGTH
+                                + " characters, with no tabs or other control characters.");
+            }
+            return new FieldDefinition(
+                    fieldId, type, cardinality, requiredness, binding.toDomain(), storedLabel, origin, docxControl, blankText);
         }
     }
 
-    record FieldDefinitionResponse(
+    /**
+     * {@code label}, {@code origin}, {@code docxControl} and {@code blankText} are null exactly when the field has none stored;
+     * {@code acroFormField} and {@code pageBox} are set only for their own binding kind, like {@code tag}, {@code part} and
+     * {@code nodeId}.
+     */
+    public record FieldDefinitionResponse(
             String fieldId,
             String type,
             String cardinality,
@@ -271,16 +477,21 @@ class TemplateController {
             String bindingKind,
             String tag,
             String part,
-            String nodeId) {
-        static FieldDefinitionResponse from(FieldDefinition field) {
-            return switch (field.binding()) {
-                case FieldBindingTarget.ContentControlTag(String tag) -> new FieldDefinitionResponse(
-                        field.fieldId(), field.type().name(), field.cardinality().name(), field.requiredness().name(),
-                        "CONTENT_CONTROL_TAG", tag, null, null);
-                case FieldBindingTarget.StructuralNode(DocumentPartKind part, String nodeId) -> new FieldDefinitionResponse(
-                        field.fieldId(), field.type().name(), field.cardinality().name(), field.requiredness().name(),
-                        "STRUCTURAL_NODE", null, part.name(), nodeId);
-            };
+            String nodeId,
+            String label,
+            String origin,
+            String docxControl,
+            String blankText,
+            String acroFormField,
+            PageBoxBody pageBox) {
+        public static FieldDefinitionResponse from(FieldDefinition field) {
+            String origin = field.origin() == null ? null : field.origin().name();
+            String docxControl = field.docxControl() == null ? null : field.docxControl().name();
+            BindingRequest binding = BindingRequest.from(field.binding());
+            return new FieldDefinitionResponse(
+                    field.fieldId(), field.type().name(), field.cardinality().name(), field.requiredness().name(),
+                    binding.kind().name(), binding.tag(), binding.part() == null ? null : binding.part().name(), binding.nodeId(),
+                    field.label(), origin, docxControl, field.blankText(), binding.acroFormField(), binding.pageBox());
         }
     }
 
@@ -293,34 +504,57 @@ class TemplateController {
         }
     }
 
-    record TemplateVersionResponse(
+    /**
+     * {@code extractionVersionId} is set for a DOCX version and {@code pdfFormExtractionId} for a PDF one, never both;
+     * {@code derivedFromVersionId} is the version this one was made from by correcting a document's fill spots, or null.
+     * {@code preparationNotices} is what the person was told when the template's file was made ready to fill, kept with the
+     * version and carried on to every version made from it; null for a version made before notices were kept.
+     */
+    public record TemplateVersionResponse(
             long id,
             long templateId,
             int versionNumber,
             long sourceArtifactId,
-            long extractionVersionId,
+            String kind,
+            Long extractionVersionId,
+            Long pdfFormExtractionId,
             String status,
             List<FieldDefinitionResponse> fields,
             OffsetDateTime createdAt,
-            OffsetDateTime activatedAt) {
-        static TemplateVersionResponse from(TemplateVersion version) {
+            OffsetDateTime activatedAt,
+            List<String> acceptedFieldIds,
+            Long derivedFromVersionId,
+            List<PreparationNoticeResponse> preparationNotices) {
+        /** {@code acceptedFieldIds} is the template's kept spots, which the page no longer marks as found by Brownie. */
+        public static TemplateVersionResponse from(TemplateVersion version, List<String> acceptedFieldIds) {
             return new TemplateVersionResponse(
                     version.id(),
                     version.templateId(),
                     version.versionNumber(),
                     version.sourceArtifactId(),
+                    version.kind().name(),
                     version.extractionVersionId(),
+                    version.pdfFormExtractionId(),
                     version.status().name(),
                     version.fieldDefinitions().stream().map(FieldDefinitionResponse::from).toList(),
                     version.createdAt(),
-                    version.activatedAt());
+                    version.activatedAt(),
+                    acceptedFieldIds,
+                    version.derivedFromVersionId(),
+                    version.preparationNotices() == null
+                            ? null
+                            : version.preparationNotices().stream().map(PreparationNoticeResponse::from).toList());
+        }
+    }
+
+    public record PreparationNoticeResponse(String code, int count, String detail) {
+
+        static PreparationNoticeResponse from(PreparationNotice notice) {
+            return new PreparationNoticeResponse(notice.code(), notice.count(), notice.detail());
         }
     }
 
     record TemplateDraftResponse(TemplateResponse template, TemplateVersionResponse draftVersion) {
-        static TemplateDraftResponse from(Template template, TemplateVersion draft) {
-            return new TemplateDraftResponse(TemplateResponse.from(template), TemplateVersionResponse.from(draft));
-        }
     }
 
     /** A short, human-scannable stand-in for a node's own content -- never the full text of a large paragraph or table, since this response can otherwise easily dwarf the graph it describes. */
@@ -363,17 +597,21 @@ class TemplateController {
 
     /** Every candidate this codebase's binding kinds can express is a {@code ContentControlTag} -- see {@code FieldBindingCandidateProposer}'s own javadoc for why a candidate is never proposed as a raw {@code StructuralNode}. */
     record CandidateFieldBindingResponse(String fieldId, String type, String cardinality, String contentControlTag) {
-        static CandidateFieldBindingResponse from(CandidateFieldBinding candidate) {
-            String tag = ((FieldBindingTarget.ContentControlTag) candidate.binding()).tag();
-            return new CandidateFieldBindingResponse(candidate.fieldId(), candidate.type().name(), candidate.cardinality().name(), tag);
+        static java.util.Optional<CandidateFieldBindingResponse> from(CandidateFieldBinding candidate) {
+            if (!(candidate.binding() instanceof FieldBindingTarget.ContentControlTag(String tag))) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(
+                    new CandidateFieldBindingResponse(candidate.fieldId(), candidate.type().name(), candidate.cardinality().name(), tag));
         }
     }
 
+    /** A candidate bound any other way than by a tag has no place in this response's shape, so it is left out rather than sent half-described. */
     record CandidateBindingReportResponse(
             List<CandidateFieldBindingResponse> candidates, List<String> ambiguousContentControlTags, int untaggedContentControlCount) {
         static CandidateBindingReportResponse from(CandidateBindingReport report) {
             return new CandidateBindingReportResponse(
-                    report.candidates().stream().map(CandidateFieldBindingResponse::from).toList(),
+                    report.candidates().stream().map(CandidateFieldBindingResponse::from).flatMap(java.util.Optional::stream).toList(),
                     report.ambiguousContentControlTags(),
                     report.untaggedContentControlCount());
         }
