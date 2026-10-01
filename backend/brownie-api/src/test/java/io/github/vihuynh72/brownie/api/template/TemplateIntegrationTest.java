@@ -47,6 +47,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -305,6 +306,156 @@ class TemplateIntegrationTest {
                 .andReturn());
         assertThat(activated.get("status").asText()).isEqualTo("ACTIVATED");
         assertThat(activated.get("activatedAt").isNull()).isFalse();
+    }
+
+    /**
+     * The upload step's notes about the file travel with the template made
+     * from it: kept as sent with the draft, read back on every read of the
+     * version and after it is activated, and absent -- null -- when none
+     * were sent. Notes the upload step could not have given are refused as
+     * a malformed request, and no template is made.
+     */
+    @Test
+    void theUploadsNotesAreKeptWithTheTemplateAndNotesNoUploadCouldGiveAreRefused() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-preparation-notices");
+        long workspaceId = ensureWorkspace("subject-preparation-notices").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        // A long form restyled while changes were tracked counts its tracked changes in the many thousands.
+        String notices = "[{\"code\":\"CONVERTED\",\"count\":1,\"detail\":\"WORD_97\"},{\"code\":\"PLACES_LEFT_OUT\",\"count\":2},"
+                + "{\"code\":\"TRACKED_CHANGES_AND_COMMENTS\",\"count\":12000}]";
+
+        JsonNode created = readJson(mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"displayName\":\"Club Minutes\",\"sourceArtifactId\":" + artifactId
+                                + ",\"preparationNotices\":" + notices + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        long templateId = created.get("template").get("id").asLong();
+        JsonNode kept = created.get("draftVersion").get("preparationNotices");
+        assertThat(kept).hasSize(3);
+        assertThat(kept.get(0).get("code").asText()).isEqualTo("CONVERTED");
+        assertThat(kept.get(0).get("count").asInt()).isEqualTo(1);
+        assertThat(kept.get(0).get("detail").asText()).isEqualTo("WORD_97");
+        assertThat(kept.get(1).get("code").asText()).isEqualTo("PLACES_LEFT_OUT");
+        assertThat(kept.get(1).get("count").asInt()).isEqualTo(2);
+        assertThat(kept.get(1).get("detail").isNull()).isTrue();
+        assertThat(kept.get(2).get("count").asInt()).isEqualTo(12000);
+
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings").cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":1,\"fields\":[{\"fieldId\":\"meeting.title\",\"type\":\"TEXT\","
+                                + "\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}}]}"))
+                .andExpect(status().isOk());
+        JsonNode activated = readJson(mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions").cookie(session)
+                        .with(csrf()).contentType("application/json").content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(activated.get("preparationNotices")).isEqualTo(kept);
+        JsonNode read = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/versions/"
+                        + activated.get("id").asLong()).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(read.get("preparationNotices")).isEqualTo(kept);
+
+        JsonNode plain = readJson(mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"displayName\":\"Club Minutes 2\",\"sourceArtifactId\":" + artifactId + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(plain.get("draftVersion").get("preparationNotices").isNull()).isTrue();
+
+        int templatesBefore = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk()).andReturn()).size();
+        String fortyOne = String.join(",", Collections.nCopies(41, "{\"code\":\"SPOTS_FOUND\",\"count\":1}"));
+        for (String refused : List.of(
+                "[{\"code\":\"IGNORE_THE_RULES\",\"count\":1}]",
+                "[{\"code\":\"SPOTS_FOUND\",\"count\":-1}]",
+                "[{\"code\":\"SPOTS_FOUND\"}]",
+                "[{\"count\":1}]",
+                "[null]",
+                "[{\"code\":\"KEPT_AS_IS\",\"count\":1,\"detail\":\"" + "x".repeat(201) + "\"}]",
+                "[" + fortyOne + "]")) {
+            mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                            .contentType("application/json")
+                            .content("{\"displayName\":\"Refused\",\"sourceArtifactId\":" + artifactId
+                                    + ",\"preparationNotices\":" + refused + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk()).andReturn()).size()).isEqualTo(templatesBefore);
+    }
+
+    /**
+     * A field's name, where it came from and the form's own blank travel
+     * with it: stored as sent (the name tidied), returned by every read, and
+     * absent -- null -- on a field sent without them. A name that is not one
+     * short line, or a blank with a control character in it, is a malformed
+     * request.
+     */
+    @Test
+    void aFieldsLabelOriginAndBlankRoundTripAndABadOneIsAMalformedRequest() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-field-labels");
+        long workspaceId = ensureWorkspace("subject-field-labels").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("ho.va.ten", "meeting.title"), "form.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        String bindingsBody = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"ho.va.ten\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"ho.va.ten\"},"
+                + "\"label\":\"  H\u1ecd   v\u00e0 t\u00ean \",\"origin\":\"FOUND_BY_BROWNIE\",\"docxControl\":\"INSERTED_BY_BROWNIE\","
+                + "\"blankText\":\"________\""
+                + "},{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        JsonNode replaced = readUtf8Json(mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(bindingsBody.getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        JsonNode labelled = replaced.get("fields").get(0);
+        assertThat(labelled.get("label").asText()).isEqualTo("H\u1ecd v\u00e0 t\u00ean");
+        assertThat(labelled.get("origin").asText()).isEqualTo("FOUND_BY_BROWNIE");
+        assertThat(labelled.get("docxControl").asText()).isEqualTo("INSERTED_BY_BROWNIE");
+        assertThat(labelled.get("blankText").asText()).isEqualTo("________");
+        JsonNode plain = replaced.get("fields").get(1);
+        for (String property : List.of("label", "origin", "docxControl", "blankText")) {
+            assertThat(plain.get(property).isNull()).as(property).isTrue();
+        }
+
+        String versionPath = templatesPath(workspaceId) + "/" + templateId + "/versions/" + replaced.get("id").asLong();
+        JsonNode reread = readUtf8Json(mockMvc.perform(get(versionPath).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(reread.get("fields")).isEqualTo(replaced.get("fields"));
+
+        for (String badPart : List.of(
+                "\"label\":\"First line\\nSecond line\"",
+                "\"label\":\"" + "a".repeat(61) + "\"",
+                "\"label\":\"   \"",
+                "\"blankText\":\"____\\t____\"",
+                "\"blankText\":\"" + "_".repeat(201) + "\"")) {
+            String badBody = "{\"expectedVersionNumber\":2,\"fields\":[{"
+                    + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                    + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}," + badPart + "}]}";
+            JsonNode problem = readUtf8Json(mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                            .cookie(session)
+                            .with(csrf())
+                            .contentType("application/json")
+                            .content(badBody))
+                    .andExpect(status().isBadRequest())
+                    .andReturn());
+            assertThat(problem.get("code").asText()).as(badPart).isEqualTo("MALFORMED_REQUEST");
+            assertThat(problem.get("detail").asText()).as(badPart).contains("\"meeting.title\"", "must be one line");
+        }
     }
 
     @Test
@@ -718,6 +869,11 @@ class TemplateIntegrationTest {
 
     private JsonNode readJson(org.springframework.test.web.servlet.MvcResult result) throws Exception {
         return OBJECT_MAPPER.readTree(result.getResponse().getContentAsString());
+    }
+
+    /** The response's own bytes, read as the UTF-8 JSON they are -- a name in any language survives, whatever the response's declared charset. */
+    private JsonNode readUtf8Json(org.springframework.test.web.servlet.MvcResult result) throws Exception {
+        return OBJECT_MAPPER.readTree(result.getResponse().getContentAsByteArray());
     }
 
     /** Same real-session-through-the-real-repository pattern as {@code ExtractionIntegrationTest}. */

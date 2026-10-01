@@ -12,11 +12,13 @@ import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.template.DocxControlOrigin;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
@@ -134,6 +136,53 @@ class JdbcTemplateRepositoryTest {
 
         TemplateVersion reloaded = templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow();
         assertThat(reloaded).isEqualTo(updated);
+    }
+
+    /**
+     * A found field's label, origin, control origin and blank are stored
+     * and read back; a field without them is stored as the very same JSON
+     * every field was stored as before they existed, compared by Postgres
+     * itself as {@code jsonb}.
+     */
+    @Test
+    void labelsOriginsAndBlanksRoundTripAndAFieldWithoutThemIsStoredExactlyAsBefore() throws SQLException {
+        long userId = newUser("subject-labels").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        long artifactId = insertArtifact(workspaceId, userId);
+        long extractionId = insertExtraction(workspaceId, userId, artifactId);
+        Template template = templateRepository.createDraft(workspaceId, userId, "Form", artifactId, extractionId);
+
+        FieldDefinition plain = new FieldDefinition(
+                "meeting.title", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED,
+                new FieldBindingTarget.ContentControlTag("meeting.title"));
+        FieldDefinition found = new FieldDefinition(
+                "ho.va.ten", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag("ho.va.ten"),
+                "H\u1ecd v\u00e0 t\u00ean", SpotOrigin.FOUND_BY_BROWNIE, DocxControlOrigin.INSERTED_BY_BROWNIE, "________");
+
+        TemplateVersion updated = templateRepository.replaceDraftBindings(workspaceId, userId, template.id(), 1, List.of(plain, found));
+
+        assertThat(updated.fieldDefinitions()).containsExactly(plain, found);
+        assertThat(templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow().fieldDefinitions())
+                .containsExactly(plain, found);
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            setLocalContext(connection, userId);
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT field_definitions -> 0 = ?::jsonb, field_definitions -> 1 ->> 'label' FROM template_version WHERE id = ?")) {
+                statement.setString(1, "{\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\","
+                        + "\"requiredness\":\"REQUIRED\",\"bindingKind\":\"CONTENT_CONTROL_TAG\",\"contentControlTag\":\"meeting.title\","
+                        + "\"structuralNodePart\":null,\"structuralNodeId\":null}");
+                statement.setLong(2, updated.id());
+                try (ResultSet row = statement.executeQuery()) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getBoolean(1)).as("a field without the optional parts is stored exactly as before").isTrue();
+                    assertThat(row.getString(2)).isEqualTo("H\u1ecd v\u00e0 t\u00ean");
+                }
+            }
+            connection.rollback();
+        }
     }
 
     @Test
