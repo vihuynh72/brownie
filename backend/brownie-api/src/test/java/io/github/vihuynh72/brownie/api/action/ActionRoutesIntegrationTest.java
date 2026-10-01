@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.action;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.action.ActionRepository;
 import io.github.vihuynh72.brownie.core.action.ActionRequest;
 import io.github.vihuynh72.brownie.core.action.ActionType;
@@ -47,16 +50,11 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -88,27 +86,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "spring.autoconfigure.exclude=")
-@Testcontainers
+@DockerTest
 class ActionRoutesIntegrationTest {
 
     private static final String ISSUER = "https://issuer-action-routes";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword("postgres_bootstrap_only")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(Path.of("").toAbsolutePath().getParent().getParent()
-                            .resolve("infra/local/postgres/init/01-app-roles.sql")), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> "brownie_api_local_only");
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
     }
@@ -327,7 +318,7 @@ class ActionRoutesIntegrationTest {
     }
 
     private static long insertCalendarConnection(long workspaceId, long userId, String accountId) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement insert = owner.prepareStatement(
                         "INSERT INTO connector_connection (workspace_id, user_id, provider, access, account_id, account_email, granted_scopes,"
                                 + " state, token_key_id, token_nonce, token_ciphertext, token_issued_at)"
@@ -346,7 +337,7 @@ class ActionRoutesIntegrationTest {
     }
 
     private static void ownerUpdate(String sql, long parameter) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = owner.prepareStatement(sql)) {
             statement.setLong(1, parameter);
             assertThat(statement.executeUpdate()).isEqualTo(1);
@@ -354,7 +345,7 @@ class ActionRoutesIntegrationTest {
     }
 
     private static long count(String sql, long parameter) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = owner.prepareStatement(sql)) {
             statement.setLong(1, parameter);
             try (ResultSet rs = statement.executeQuery()) {
