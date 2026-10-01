@@ -326,6 +326,33 @@ textarea {
   border: 0;
 }
 
+/*
+ * A small turning ring beside words that say something is under way. The words carry the meaning; the ring
+ * only shows that it is still going, so under a reduced-motion preference it stands still.
+ */
+.activity-indicator {
+  display: inline-block;
+  flex: none;
+  inline-size: 0.875em;
+  block-size: 0.875em;
+  border: 2px solid color-mix(in srgb, var(--color-cocoa) 25%, transparent);
+  border-block-start-color: var(--color-cocoa);
+  border-radius: 50%;
+  animation: activity-turn 0.9s linear infinite;
+}
+
+@keyframes activity-turn {
+  to {
+    rotate: 1turn;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-indicator {
+    animation: none;
+  }
+}
+
 /* The skip link is hidden until a keyboard reaches it, then sits on top of the page so it can be seen and used. */
 .skip-link:focus-visible {
   position: fixed;
