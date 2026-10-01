@@ -40,8 +40,24 @@ public record TemplateLayout(
      * {@code listLevel} is the numbering level of a numbered paragraph and
      * null otherwise. {@code repeating} marks the one paragraph the filler
      * copies once per repeated item.
+     *
+     * <p>{@code nodeId} is the paragraph's node id in the graph of the
+     * layout's {@code parserVersion}. {@code anchorable} says a fill spot can
+     * be added in it: only a paragraph of the body the filler writes into,
+     * outside the row or paragraph that repeats per item, and not a content
+     * control around whole paragraphs. {@code anchorTextHash} is the hash of
+     * its anchor text ({@link ParagraphAnchorText}), which a place chosen in
+     * it sends back so a page that has since changed is refused; null when it
+     * is not anchorable.
      */
-    public record Paragraph(Alignment alignment, Integer listLevel, boolean repeating, List<Inline> inlines) implements Block {
+    public record Paragraph(
+            Alignment alignment,
+            Integer listLevel,
+            boolean repeating,
+            List<Inline> inlines,
+            String nodeId,
+            boolean anchorable,
+            String anchorTextHash) implements Block {
 
         public Paragraph {
             inlines = List.copyOf(inlines);
@@ -74,17 +90,35 @@ public record TemplateLayout(
     public sealed interface Inline permits Text, FillSpot, Image {
     }
 
-    /** The template's own words, exactly as written; {@code style} is null when the template set nothing at all on them. */
-    public record Text(String text, Style style) implements Inline {
+    /**
+     * The template's own words, exactly as written; {@code style} is null
+     * when the template set nothing at all on them.
+     *
+     * <p>In an anchorable paragraph, {@code anchorStart} is where the text
+     * starts in the paragraph's anchor text, in code points, so a place
+     * inside it can be sent back as an offset; text shown from a content
+     * control no field names has none and carries that control's {@code
+     * controlNodeId} instead, since the control itself is what a spot there
+     * would be. Both are null in a paragraph that is not anchorable.
+     */
+    public record Text(String text, Style style, Integer anchorStart, String controlNodeId) implements Inline {
+
+        /** Text that cannot be pointed at: in a header, a footer or a repeating row. */
+        public Text(String text, Style style) {
+            this(text, style, null, null);
+        }
     }
 
     /**
      * Where one field's value goes. {@code placeholder} is what the template
      * itself shows there before anything is filled, and {@code style} is the
      * style of the control's first run, which is the formatting a filled
-     * value takes.
+     * value takes. {@code nodeId} is the control's node id; {@code origin}
+     * and {@code label} are the field's, so a page can say who placed the
+     * spot and name it the way the person does.
      */
-    public record FillSpot(String fieldId, String placeholder, Style style) implements Inline {
+    public record FillSpot(String fieldId, String placeholder, Style style, String nodeId, SpotOrigin origin, String label)
+            implements Inline {
     }
 
     /** A picture the template carries; its bytes stay in the template file. */
