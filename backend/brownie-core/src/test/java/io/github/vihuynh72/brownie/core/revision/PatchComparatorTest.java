@@ -112,7 +112,7 @@ class PatchComparatorTest {
             long id, int revisionNumber, Long parentRevisionId, Map<String, FieldValue> fields, Map<FieldItemRef, FieldState> fieldStates) {
         DocumentContent content = new DocumentContent(fields);
         return new DocumentRevision(
-                id, WORKSPACE_ID, DOCUMENT_ID, revisionNumber, parentRevisionId, content,
+                id, WORKSPACE_ID, DOCUMENT_ID, 12L, revisionNumber, parentRevisionId, content,
                 DocumentContentHasher.sha256Hex(content), 9L, "test revision", OffsetDateTime.now(), Map.of(), fieldStates);
     }
 

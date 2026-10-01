@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.core.evidence.SourceSpan;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpanRepository;
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.revision.Document;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.DocumentContentHasher;
@@ -66,7 +67,7 @@ class ValidationServiceTest {
                 new UnreachableTemplateRepository(),
                 new UnreachableRuleRepository(),
                 new UnreachableSourceSpanRepository(),
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null);
 
         assertThrows(
                 DocumentNotFoundException.class,
@@ -81,7 +82,7 @@ class ValidationServiceTest {
                 new DraftOnlyTemplateRepository(),
                 new UnreachableRuleRepository(),
                 new UnreachableSourceSpanRepository(),
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null);
 
         assertThrows(
                 DocumentTemplateVersionUnavailableException.class,
@@ -108,7 +109,7 @@ class ValidationServiceTest {
                 DOCUMENT_ID, WORKSPACE_ID, "Minutes", TEMPLATE_ID, TEMPLATE_VERSION_ID, REVISION_ID, OffsetDateTime.now());
         private final DocumentContent content = new DocumentContent(Map.of());
         private final DocumentRevision revision = new DocumentRevision(
-                REVISION_ID, WORKSPACE_ID, DOCUMENT_ID, 1, null,
+                REVISION_ID, WORKSPACE_ID, DOCUMENT_ID, TEMPLATE_VERSION_ID, 1, null,
                 content,
                 DocumentContentHasher.sha256Hex(content),
                 USER_ID, "initial draft", OffsetDateTime.now(), Map.of(), Map.of());
@@ -166,7 +167,7 @@ class ValidationServiceTest {
         @Override
         public io.github.vihuynh72.brownie.core.revision.DocumentMutationResult appendRevisionIdempotently(
                 long workspaceId, long userId, IdempotencyKey idempotencyKey, CanonicalRequestHash requestHash, long documentId,
-                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence,
+                long expectedRevisionId, Long templateVersionId, DocumentContent content, Map<String, List<Long>> evidence,
                 Map<io.github.vihuynh72.brownie.core.revision.FieldItemRef, io.github.vihuynh72.brownie.core.revision.FieldState> fieldStates,
                 String editReason) {
             throw new UnsupportedOperationException("must not be reached once the template-version guard has already refused");
@@ -176,7 +177,14 @@ class ValidationServiceTest {
     private static final class UnreachableTemplateRepository implements TemplateRepository {
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException();
         }
 
@@ -238,7 +246,14 @@ class ValidationServiceTest {
                 OffsetDateTime.now(), null);
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException();
         }
 

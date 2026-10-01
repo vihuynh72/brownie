@@ -108,6 +108,26 @@ class ExportServiceTest {
     }
 
     @Test
+    void approveOffersOnlyAPdfForAManifestWithNoWordFile() {
+        RevisionService revisionService = new RevisionService(new FakeDocumentRepository(), null, null);
+        ValidationManifest pdfOnly = new ValidationManifest(
+                MANIFEST_ID, WORKSPACE_ID, DOCUMENT_ID, CURRENT_REVISION_ID, 1L, TEMPLATE_VERSION_ID,
+                null, null, 2L, "b".repeat(64), List.of(), OffsetDateTime.now());
+        RecordingExportApprovalRepository approvals = new RecordingExportApprovalRepository();
+        ExportService service = new ExportService(
+                revisionService, new FixedValidationRepository(pdfOnly), null, approvals, new UnreachableExportRepository());
+
+        for (ExportFormat format : List.of(ExportFormat.DOCX, ExportFormat.BOTH)) {
+            ExportFormatNotOfferedException refused = org.junit.jupiter.api.Assertions.assertThrows(
+                    ExportFormatNotOfferedException.class, () -> service.approve(WORKSPACE_ID, USER_ID, DOCUMENT_ID, MANIFEST_ID, format));
+            assertTrue(refused.format() == format);
+        }
+        assertTrue(!approvals.saved);
+
+        assertTrue(service.approve(WORKSPACE_ID, USER_ID, DOCUMENT_ID, MANIFEST_ID, ExportFormat.PDF).format() == ExportFormat.PDF);
+    }
+
+    @Test
     void exportRefusesBeforeReadingAnyApprovalWhenTheDocumentIsMissing() {
         ExportService service = new ExportService(
                 new RevisionService(new EmptyDocumentRepository(), null, null),
@@ -158,7 +178,7 @@ class ExportServiceTest {
         @Override
         public ValidationManifest save(
                 long workspaceId, long userId, long documentId, long revisionId, long templateId, long templateVersionId,
-                long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, List<ValidationFinding> findings) {
+                Long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, List<ValidationFinding> findings) {
             throw new UnsupportedOperationException();
         }
 
@@ -183,7 +203,7 @@ class ExportServiceTest {
         @Override
         public ValidationManifest save(
                 long workspaceId, long userId, long documentId, long revisionId, long templateId, long templateVersionId,
-                long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, List<ValidationFinding> findings) {
+                Long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, List<ValidationFinding> findings) {
             throw new UnsupportedOperationException();
         }
 
@@ -267,7 +287,7 @@ class ExportServiceTest {
         @Override
         public ExportReceipt save(
                 long workspaceId, long userId, long documentId, long revisionId, long templateVersionId, long exportApprovalId,
-                long validationManifestId, long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, ExportFormat format) {
+                long validationManifestId, Long docxArtifactId, String docxSha256, Long pdfArtifactId, String pdfSha256, ExportFormat format) {
             throw new UnsupportedOperationException("must not be reached once an earlier guard has already refused");
         }
 
@@ -320,7 +340,7 @@ class ExportServiceTest {
         @Override
         public DocumentMutationResult appendRevisionIdempotently(
                 long workspaceId, long userId, IdempotencyKey idempotencyKey, CanonicalRequestHash requestHash, long documentId,
-                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence,
+                long expectedRevisionId, Long templateVersionId, DocumentContent content, Map<String, List<Long>> evidence,
                 Map<FieldItemRef, FieldState> fieldStates, String editReason) {
             throw new UnsupportedOperationException();
         }
@@ -372,7 +392,7 @@ class ExportServiceTest {
         @Override
         public DocumentMutationResult appendRevisionIdempotently(
                 long workspaceId, long userId, IdempotencyKey idempotencyKey, CanonicalRequestHash requestHash, long documentId,
-                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence,
+                long expectedRevisionId, Long templateVersionId, DocumentContent content, Map<String, List<Long>> evidence,
                 Map<FieldItemRef, FieldState> fieldStates, String editReason) {
             throw new UnsupportedOperationException();
         }

@@ -2,12 +2,14 @@ package io.github.vihuynh72.brownie.core.revision;
 
 import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
 import io.github.vihuynh72.brownie.core.template.Template;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
 import io.github.vihuynh72.brownie.core.template.TemplateStatus;
 import io.github.vihuynh72.brownie.core.template.TemplateTrashedException;
@@ -38,6 +40,8 @@ class RevisionServiceTest {
     private static final long USER_ID = 7L;
     private static final long TEMPLATE_ID = 11L;
     private static final long TEMPLATE_VERSION_ID = 12L;
+    /** A later version of the same template: it has no meeting date, and it has a company name. */
+    private static final long SMALLER_VERSION_ID = 13L;
 
     @Test
     void typedEditsAppendAnImmutableChildAndMoveTheCurrentPointer() {
@@ -1104,6 +1108,140 @@ class RevisionServiceTest {
         assertEquals(dateStateBefore, rewritten.fieldStates().get(FieldItemRef.scalar("meeting.date")));
     }
 
+    @Test
+    void movingToAnotherVersionCarriesEveryValueItDefinesAndDropsTheRestAndAReplayAnswersTheSame() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-move"), hash("create-for-move"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of("meeting.title", List.of(601L)), "initial draft")
+                .revision();
+        DocumentRevision reviewed = service.recordReviewDecision(
+                        WORKSPACE_ID, USER_ID, key("review-for-move"), hash("review-for-move"), initial.documentId(),
+                        initial.id(), FieldItemRef.scalar("meeting.title"), ReviewState.ACCEPTED, "accepted the title")
+                .revision();
+
+        TemplateVersionMove move = service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move"), hash("move"), initial.documentId(), reviewed.id(), SMALLER_VERSION_ID,
+                "Removed the fill spot Meeting date.");
+        DocumentRevision moved = move.mutation().revision();
+
+        assertEquals(List.of("meeting.date"), move.droppedFieldIds());
+        assertEquals(TEMPLATE_VERSION_ID, move.previousTemplateVersionId());
+        assertEquals(SMALLER_VERSION_ID, moved.templateVersionId());
+        assertEquals(SMALLER_VERSION_ID, move.mutation().document().templateVersionId());
+        assertEquals(Map.of("meeting.title", new FieldValue.TextValue("September minutes")), moved.content().fields());
+        assertEquals(List.of(601L), moved.evidence().get("meeting.title"));
+        assertEquals(reviewed.fieldStates().get(FieldItemRef.scalar("meeting.title")), moved.fieldStates().get(FieldItemRef.scalar("meeting.title")));
+        assertFalse(moved.fieldStates().containsKey(FieldItemRef.scalar("meeting.date")));
+        assertEquals("Removed the fill spot Meeting date.", moved.editReason());
+
+        TemplateVersionMove replay = service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move"), hash("move"), initial.documentId(), reviewed.id(), SMALLER_VERSION_ID,
+                "Removed the fill spot Meeting date.");
+        assertEquals(moved.id(), replay.mutation().revision().id());
+        assertEquals(move.droppedFieldIds(), replay.droppedFieldIds());
+        assertEquals(TEMPLATE_VERSION_ID, replay.previousTemplateVersionId());
+        assertEquals(3, service.findHistory(WORKSPACE_ID, USER_ID, initial.documentId()).size());
+    }
+
+    @Test
+    void movingIsRefusedWhenALockedValueWouldBeDroppedOrTheDocumentIsAlreadyThere() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-locked-move"), hash("create-for-locked-move"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        DocumentRevision locked = service.setFieldLock(
+                        WORKSPACE_ID, USER_ID, key("lock-date-for-move"), hash("lock-date-for-move"), initial.documentId(),
+                        initial.id(), FieldItemRef.scalar("meeting.date"), LockState.EXPLICITLY_LOCKED, "the date is final")
+                .revision();
+
+        FillSpotLockedException refused = assertThrows(FillSpotLockedException.class, () -> service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move-locked"), hash("move-locked"), initial.documentId(), locked.id(), SMALLER_VERSION_ID,
+                "Removed the fill spot Meeting date."));
+        assertEquals("meeting.date", refused.fieldId());
+        assertThrows(DocumentAlreadyOnTemplateVersionException.class, () -> service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move-same"), hash("move-same"), initial.documentId(), locked.id(), TEMPLATE_VERSION_ID,
+                "Moved nowhere."));
+        assertThrows(DocumentRevisionConflictException.class, () -> service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move-stale"), hash("move-stale"), initial.documentId(), initial.id(), SMALLER_VERSION_ID,
+                "Moved from an old page."));
+        assertThrows(DocumentTemplateVersionUnavailableException.class, () -> service.moveToTemplateVersion(
+                WORKSPACE_ID, USER_ID, key("move-unknown"), hash("move-unknown"), initial.documentId(), locked.id(), 999L,
+                "Moved to a version that is not there."));
+        assertEquals(2, service.findHistory(WORKSPACE_ID, USER_ID, initial.documentId()).size());
+    }
+
+    @Test
+    void restoringAcrossVersionsMovesBackToTheRestoredRevisionsVersionAndDropsWhatItLacksEvenWhenLocked() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-cross-restore"), hash("create-for-cross-restore"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        DocumentRevision moved = service.moveToTemplateVersion(
+                        WORKSPACE_ID, USER_ID, key("move-for-cross-restore"), hash("move-for-cross-restore"), initial.documentId(),
+                        initial.id(), SMALLER_VERSION_ID, "Added a fill spot: Company.")
+                .mutation().revision();
+        DocumentRevision withCompany = service.applyUserEdits(
+                        WORKSPACE_ID, USER_ID, key("company-for-cross-restore"), hash("company-for-cross-restore"), initial.documentId(),
+                        moved.id(), List.of(new DocumentFieldEdit.SetValue("company.name", new FieldValue.TextValue("Acme"))), Map.of(),
+                        "named the company")
+                .revision();
+        DocumentRevision companyLocked = service.setFieldLock(
+                        WORKSPACE_ID, USER_ID, key("lock-company"), hash("lock-company"), initial.documentId(), withCompany.id(),
+                        FieldItemRef.scalar("company.name"), LockState.EXPLICITLY_LOCKED, "the company is final")
+                .revision();
+
+        RevisionRestoreResult undone = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("undo-move"), hash("undo-move"), initial.documentId(), companyLocked.id(), initial.id(), null);
+        DocumentRevision restored = undone.mutation().revision();
+
+        assertEquals(TEMPLATE_VERSION_ID, restored.templateVersionId());
+        assertEquals(TEMPLATE_VERSION_ID, undone.mutation().document().templateVersionId());
+        assertEquals(List.of("company.name"), undone.droppedFieldIds());
+        assertEquals(List.of(), undone.keptLockedFieldIds());
+        assertEquals(initialContent().fields(), restored.content().fields());
+
+        RevisionRestoreResult replay = service.restoreRevision(
+                WORKSPACE_ID, USER_ID, key("undo-move"), hash("undo-move"), initial.documentId(), companyLocked.id(), initial.id(), null);
+        assertEquals(restored.id(), replay.mutation().revision().id());
+        assertEquals(List.of("company.name"), replay.droppedFieldIds());
+    }
+
+    @Test
+    void acceptingAProposalForAFieldTheDocumentsVersionNoLongerHasIsAConflictNotARefusal() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        DocumentRevision initial = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-gone-field"), hash("create-for-gone-field"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .revision();
+        PatchProposal proposal = service.proposePatch(
+                WORKSPACE_ID, USER_ID, initial.documentId(), initial.id(),
+                Map.of("meeting.date", new FieldValue.DateValue(LocalDate.of(2026, 12, 24)),
+                        "meeting.title", new FieldValue.TextValue("December minutes")),
+                Map.of());
+        DocumentRevision moved = service.moveToTemplateVersion(
+                        WORKSPACE_ID, USER_ID, key("move-for-gone-field"), hash("move-for-gone-field"), initial.documentId(),
+                        initial.id(), SMALLER_VERSION_ID, "Removed the fill spot Meeting date.")
+                .mutation().revision();
+
+        PatchAcceptanceResult accepted = service.acceptPatch(
+                WORKSPACE_ID, USER_ID, key("accept-gone-field"), hash("accept-gone-field"), initial.documentId(), proposal.id(),
+                moved.id(), "accepted what still fits");
+
+        assertEquals(PatchFieldStatus.CONFLICT, accepted.comparison().fieldStatuses().get("meeting.date"));
+        assertEquals(PatchFieldStatus.CLEAN, accepted.comparison().fieldStatuses().get("meeting.title"));
+        DocumentRevision applied = accepted.mutation().orElseThrow().revision();
+        assertEquals(new FieldValue.TextValue("December minutes"), applied.content().fields().get("meeting.title"));
+        assertFalse(applied.content().fields().containsKey("meeting.date"));
+        assertEquals(SMALLER_VERSION_ID, applied.templateVersionId());
+    }
+
     private static DocumentContent initialContent() {
         return new DocumentContent(Map.of(
                 "meeting.title", new FieldValue.TextValue("September minutes"),
@@ -1137,8 +1275,35 @@ class RevisionServiceTest {
                 OffsetDateTime.parse("2026-09-01T00:00:00Z"),
                 OffsetDateTime.parse("2026-09-01T00:00:01Z"));
 
+        private final TemplateVersion smallerVersion = new TemplateVersion(
+                SMALLER_VERSION_ID,
+                WORKSPACE_ID,
+                TEMPLATE_ID,
+                2,
+                22L,
+                TemplateKind.DOCX,
+                23L,
+                null,
+                TemplateVersionStatus.ACTIVATED,
+                List.of(
+                        field("meeting.title", FieldType.TEXT, FieldCardinality.SCALAR),
+                        field("company.name", FieldType.TEXT, FieldCardinality.SCALAR),
+                        field("action.tasks", FieldType.TEXT, FieldCardinality.REPEATED),
+                        field("action.item.owner", FieldType.TEXT, FieldCardinality.REPEATED),
+                        field("action.item.due", FieldType.DATE, FieldCardinality.REPEATED)),
+                OffsetDateTime.parse("2026-09-02T00:00:00Z"),
+                OffsetDateTime.parse("2026-09-02T00:00:01Z"),
+                TEMPLATE_VERSION_ID);
+
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException();
         }
 
@@ -1183,9 +1348,13 @@ class RevisionServiceTest {
 
         @Override
         public Optional<TemplateVersion> findVersion(long workspaceId, long userId, long templateId, long versionId) {
-            return workspaceId == WORKSPACE_ID && templateId == TEMPLATE_ID && versionId == TEMPLATE_VERSION_ID
-                    ? Optional.of(version)
-                    : Optional.empty();
+            if (workspaceId != WORKSPACE_ID || templateId != TEMPLATE_ID) {
+                return Optional.empty();
+            }
+            if (versionId == TEMPLATE_VERSION_ID) {
+                return Optional.of(version);
+            }
+            return versionId == SMALLER_VERSION_ID ? Optional.of(smallerVersion) : Optional.empty();
         }
 
         @Override
@@ -1258,6 +1427,7 @@ class RevisionServiceTest {
                     revisionId,
                     workspaceId,
                     documentId,
+                    templateVersionId,
                     1,
                     null,
                     initialContent,
@@ -1325,6 +1495,7 @@ class RevisionServiceTest {
                 CanonicalRequestHash requestHash,
                 long documentId,
                 long expectedRevisionId,
+                Long templateVersionId,
                 DocumentContent content,
                 Map<String, List<Long>> evidence,
                 Map<FieldItemRef, FieldState> fieldStates,
@@ -1339,10 +1510,12 @@ class RevisionServiceTest {
                 throw new DocumentRevisionConflictException(documentId, expectedRevisionId, document.currentRevisionId());
             }
             List<DocumentRevision> history = histories.get(documentId);
+            long versionId = templateVersionId != null ? templateVersionId : document.templateVersionId();
             DocumentRevision revision = new DocumentRevision(
                     revisionIds.incrementAndGet(),
                     workspaceId,
                     documentId,
+                    versionId,
                     history.size() + 1,
                     expectedRevisionId,
                     content,
@@ -1358,7 +1531,7 @@ class RevisionServiceTest {
                     document.workspaceId(),
                     document.title(),
                     document.templateId(),
-                    document.templateVersionId(),
+                    versionId,
                     revision.id(),
                     document.createdAt()));
             return remember(
