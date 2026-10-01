@@ -120,6 +120,7 @@ class JdbcDocumentRepositoryTest {
                 hash("first-edit"),
                 document.id(),
                 initial.id(),
+                null,
                 firstEditContent,
                 Map.of(),
                 Map.of(),
@@ -134,6 +135,7 @@ class JdbcDocumentRepositoryTest {
                         hash("stale-edit"),
                         document.id(),
                         initial.id(),
+                        null,
                         content("stale title", LocalDate.of(2026, 10, 1)),
                         Map.of(),
                         Map.of(),
@@ -181,6 +183,8 @@ class JdbcDocumentRepositoryTest {
         assertThat(replay.commandId()).isEqualTo(first.commandId());
         assertThat(replay.document().id()).isEqualTo(first.document().id());
         assertThat(replay.revision().id()).isEqualTo(first.revision().id());
+        assertThat(first.replayed()).isFalse();
+        assertThat(replay.replayed()).isTrue();
         assertThat(countAsMember(user.id(), "SELECT count(*) FROM document WHERE workspace_id = " + workspace.id()))
                 .isEqualTo(1);
         assertThat(countAsMember(user.id(), "SELECT count(*) FROM document_revision WHERE workspace_id = " + workspace.id()))
@@ -253,6 +257,7 @@ class JdbcDocumentRepositoryTest {
                 firstHash,
                 document.id(),
                 initial.id(),
+                null,
                 content("October minutes", LocalDate.of(2026, 10, 1)),
                 Map.of(),
                 Map.of(),
@@ -264,6 +269,7 @@ class JdbcDocumentRepositoryTest {
                 hash("later-edit-body"),
                 document.id(),
                 first.revision().id(),
+                null,
                 content("November minutes", LocalDate.of(2026, 11, 1)),
                 Map.of(),
                 Map.of(),
@@ -275,6 +281,7 @@ class JdbcDocumentRepositoryTest {
                 firstHash,
                 document.id(),
                 initial.id(),
+                null,
                 content("October minutes", LocalDate.of(2026, 10, 1)),
                 Map.of(),
                 Map.of(),
@@ -282,6 +289,12 @@ class JdbcDocumentRepositoryTest {
 
         assertThat(replay.commandId()).isEqualTo(first.commandId());
         assertThat(replay.revision().id()).isEqualTo(first.revision().id());
+        // Found while writing, as when the same request is still running the first time: what follows the write is not done twice.
+        assertThat(first.replayed()).isFalse();
+        assertThat(later.replayed()).isFalse();
+        assertThat(replay.replayed()).isTrue();
+        assertThat(documentRepository.findMutationResult(workspace.id(), user.id(), DocumentCommandType.EDIT_CONTENT, firstKey, firstHash)
+                .orElseThrow().replayed()).isTrue();
         assertThat(documentRepository.findHistory(workspace.id(), user.id(), document.id()))
                 .extracting(DocumentRevision::id)
                 .containsExactly(initial.id(), first.revision().id(), later.revision().id());
@@ -294,6 +307,7 @@ class JdbcDocumentRepositoryTest {
                         hash("different-first-edit"),
                         document.id(),
                         initial.id(),
+                        null,
                         content("Changed", LocalDate.of(2026, 10, 1)),
                         Map.of(),
                         Map.of(),
@@ -313,6 +327,7 @@ class JdbcDocumentRepositoryTest {
                 hash("pointer-guard-edit"),
                 document.id(),
                 initial.id(),
+                null,
                 content("October minutes", LocalDate.of(2026, 10, 1)),
                 Map.of(),
                 Map.of(),

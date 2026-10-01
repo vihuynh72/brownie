@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.core.compile;
 
+import io.github.vihuynh72.brownie.core.prepare.PreparationNotice;
 import io.github.vihuynh72.brownie.core.revision.Document;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
@@ -50,7 +51,7 @@ class CompilationServiceTest {
         CompilationService service = new CompilationService(
                 new RevisionService(new EmptyDocumentRepository(), new UnreachableTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new UnreachableTemplateRepository(),
-                null, null, null, null);
+                null, null, null, null, null);
 
         assertThrows(DocumentNotFoundException.class, () -> service.compile(WORKSPACE_ID, USER_ID, DOCUMENT_ID, REVISION_ID));
     }
@@ -61,7 +62,7 @@ class CompilationServiceTest {
         CompilationService service = new CompilationService(
                 new RevisionService(documents, new DraftOnlyTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new DraftOnlyTemplateRepository(),
-                null, null, null, null);
+                null, null, null, null, null);
 
         assertThrows(
                 DocumentTemplateVersionUnavailableException.class,
@@ -80,7 +81,7 @@ class CompilationServiceTest {
                 DOCUMENT_ID, WORKSPACE_ID, "Minutes", TEMPLATE_ID, TEMPLATE_VERSION_ID, REVISION_ID, OffsetDateTime.now());
         private final DocumentContent content = new DocumentContent(Map.of());
         private final DocumentRevision revision = new DocumentRevision(
-                REVISION_ID, WORKSPACE_ID, DOCUMENT_ID, 1, null,
+                REVISION_ID, WORKSPACE_ID, DOCUMENT_ID, TEMPLATE_VERSION_ID, 1, null,
                 content,
                 io.github.vihuynh72.brownie.core.revision.DocumentContentHasher.sha256Hex(content),
                 USER_ID, "initial draft", OffsetDateTime.now(), Map.of(), Map.of());
@@ -141,7 +142,7 @@ class CompilationServiceTest {
         public io.github.vihuynh72.brownie.core.revision.DocumentMutationResult appendRevisionIdempotently(
                 long workspaceId, long userId, io.github.vihuynh72.brownie.core.job.IdempotencyKey idempotencyKey,
                 io.github.vihuynh72.brownie.core.job.CanonicalRequestHash requestHash, long documentId,
-                long expectedRevisionId, DocumentContent content, Map<String, List<Long>> evidence,
+                long expectedRevisionId, Long templateVersionId, DocumentContent content, Map<String, List<Long>> evidence,
                 Map<io.github.vihuynh72.brownie.core.revision.FieldItemRef, io.github.vihuynh72.brownie.core.revision.FieldState> fieldStates,
                 String editReason) {
             throw new UnsupportedOperationException();
@@ -151,7 +152,14 @@ class CompilationServiceTest {
     private static final class UnreachableTemplateRepository implements TemplateRepository {
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException();
         }
 
@@ -213,7 +221,14 @@ class CompilationServiceTest {
                 OffsetDateTime.now(), null);
 
         @Override
-        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId) {
+        public Template createDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long extractionVersionId,
+                                    List<PreparationNotice> preparationNotices) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Template createPdfDraft(long workspaceId, long userId, String displayName, long sourceArtifactId, long pdfFormExtractionId,
+                                       List<PreparationNotice> preparationNotices) {
             throw new UnsupportedOperationException();
         }
 
