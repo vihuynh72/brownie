@@ -1,6 +1,6 @@
 import type { RulePayloadRequest, RuleScopeRequest } from '@/api/client'
 
-/** Plain-language rendering of a rule's scope and payload, shared by template teaching and the document's read-only Rules card. */
+/** Plain-language rendering of a rule's scope and payload, for the document's read-only Rules card. */
 export function describeScope(scope: RuleScopeRequest): string {
   if (scope.kind === 'WHOLE_TEMPLATE') return 'Whole template'
   return scope.fieldId ? `Field: ${scope.fieldId}` : 'One field'

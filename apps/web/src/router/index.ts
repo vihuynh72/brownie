@@ -56,10 +56,10 @@ const router = createRouter({
       redirect: { name: 'home', query: {}, hash: '' },
     },
     {
+      // A form becomes a template by uploading it, from Home or from the + beside My Templates, so an old
+      // link to the page that used to teach one goes home too.
       path: '/templates/new',
-      name: 'new-template',
-      component: () => import('@/views/NewTemplateView.vue'),
-      meta: { requiresSession: true },
+      redirect: { name: 'home', query: {}, hash: '' },
     },
     {
       path: '/documents/:documentId',
