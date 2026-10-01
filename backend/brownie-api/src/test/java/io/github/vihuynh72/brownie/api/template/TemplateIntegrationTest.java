@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.api.template;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.rule.EmptyValueResolution;
 import io.github.vihuynh72.brownie.core.rule.RulePayload;
@@ -40,17 +43,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 
@@ -72,49 +67,26 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "spring.autoconfigure.exclude=")
-@Testcontainers
+@DockerTest
 class TemplateIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String ISSUER = "https://issuer-template-integration";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(org.testcontainers.utility.DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     // A plain, local instance, not @Autowired -- see ExtractionIntegrationTest's
@@ -442,6 +414,7 @@ class TemplateIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
         assertThat(candidates.get("ambiguousContentControlTags")).isEmpty();
+        assertThat(candidates.get("untaggedContentControlCount").asInt()).isZero();
         assertThat(candidates.get("candidates")).hasSize(2);
         JsonNode titleCandidate = findCandidate(candidates, "meeting.title");
         assertThat(titleCandidate.get("type").asText()).isEqualTo("TEXT");
@@ -471,6 +444,26 @@ class TemplateIntegrationTest {
                         .contentType("application/json")
                         .content("{\"expectedVersionNumber\":2}"))
                 .andExpect(status().isCreated());
+    }
+
+    /** A content control with no tag, or an empty one, is counted rather than proposed, so the person can be told it stays as it is. */
+    @Test
+    void candidateBindingsCountTheContentControlsWithNoUsableTag() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-untagged-controls");
+        long workspaceId = ensureWorkspace("subject-untagged-controls").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithUntaggedAndEmptyTaggedControls("meeting.title"), "untagged.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        JsonNode candidates = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/draft/candidate-bindings")
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        assertThat(candidates.get("candidates")).hasSize(1);
+        assertThat(findCandidate(candidates, "meeting.title").get("contentControlTag").asText()).isEqualTo("meeting.title");
+        assertThat(candidates.get("ambiguousContentControlTags")).isEmpty();
+        assertThat(candidates.get("untaggedContentControlCount").asInt()).isEqualTo(2);
     }
 
     /** Proves {@code RuleController} for the first time: propose, list, find, and accept a rule through real HTTP against a real draft template. */
@@ -673,18 +666,37 @@ class TemplateIntegrationTest {
 
     /**
      * A real DOCX with one plain, scalar content control (the same shape
-     * {@link #docxWithContentControl} builds) plus a one-row, one-cell
-     * table whose cell holds its own content control -- a real prototype
-     * row, the shape {@link FieldBindingCandidateProposer} infers a {@code
-     * REPEATED} candidate from.
+     * {@link #docxWithContentControl} builds) plus a one-column table: a
+     * heading row, and under it one row whose cell holds its own content
+     * control -- a real prototype row, the shape {@link
+     * FieldBindingCandidateProposer} infers a {@code REPEATED} candidate
+     * from.
      */
     private static byte[] docxWithContentControlAndTableContentControl(String scalarTag, String tableTag) throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
             addContentControlParagraph(doc.createParagraph(), scalarTag);
 
-            XWPFTable table = doc.createTable(1, 1);
-            XWPFTableCell cell = table.getRow(0).getCell(0);
+            XWPFTable table = doc.createTable(2, 1);
+            table.getRow(0).getCell(0).setText("Items");
+            XWPFTableCell cell = table.getRow(1).getCell(0);
             addContentControlParagraph(cell.getParagraphs().get(0), tableTag);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    /** One tagged content control, one with no tag at all (a date picker Word inserted, say), and one whose tag is empty. */
+    private static byte[] docxWithUntaggedAndEmptyTaggedControls(String tag) throws Exception {
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addContentControlParagraph(doc.createParagraph(), tag);
+            CTSdtRun untagged = doc.createParagraph().getCTP().addNewSdt();
+            untagged.addNewSdtPr();
+            untagged.addNewSdtContent().addNewR().addNewT().setStringValue("Pick a date");
+            CTSdtRun emptyTag = doc.createParagraph().getCTP().addNewSdt();
+            emptyTag.addNewSdtPr().addNewTag().setVal("");
+            emptyTag.addNewSdtContent().addNewR().addNewT().setStringValue("Choose one");
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
