@@ -208,7 +208,10 @@ class DockerIsolatedDocumentConverterTest {
                     "--convert-to", "docx:MS Word 2007 XML", "--outdir", "/out", "/in/input.odt");
 
             assertThat(out.resolve("input.docx")).as(log).isRegularFile();
-            String rewritten = Files.readString(settings);
+            // LibreOffice writes the profile back as the sandbox user, readable by that user
+            // alone, so on Linux this process may not open it; the image reads it instead.
+            String rewritten = runInImage(List.of("-v", profile + ":/profile:ro"),
+                    "cat", "/profile/user/registrymodifications.xcu");
             assertThat(rewritten).contains(setting("/org.openoffice.Office.Common/Undo", "Steps") + " oor:op=\"fuse\"><value>42</value>");
             for (String[] hardened : HARDENED_SETTINGS) {
                 assertThat(rewritten).as(hardened[0] + "/" + hardened[1]).doesNotContain(setting(hardened[0], hardened[1]));
