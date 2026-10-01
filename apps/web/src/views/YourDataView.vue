@@ -67,7 +67,7 @@ const refusedFilePeriod = computed(() => hourCount(practices.value?.refusedFileH
 const unusedFilePeriod = computed(() => hourCount(practices.value?.unusedFileHours))
 const auditRecordPeriod = computed(() => dayCount(practices.value?.auditRecordDays))
 
-/** "OpenAI (gpt-5.4-mini)", or null when the server has not said who the model provider is. */
+/** "OpenAI (gpt-6-luna)", or null when the server has not said who the model provider is. */
 const modelLabel = computed(() => {
   const provider = practices.value?.modelProvider
   if (!provider) return null

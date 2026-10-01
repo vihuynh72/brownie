@@ -36,7 +36,7 @@ const PRACTICES: DataPracticesResponse = {
   unusedFileHours: 6,
   auditRecordDays: 90,
   modelProvider: 'OpenAI',
-  modelName: 'gpt-5.4-mini-2026-03-17',
+  modelName: 'gpt-6-luna',
   supportContact: 'data@example.org',
 }
 
@@ -128,7 +128,7 @@ describe('YourDataView', () => {
     expect(wrapper.text()).toContain('loses its contents after 2 days')
     expect(wrapper.text()).toContain('any more is removed after 6 hours')
     expect(wrapper.text()).toContain('kept for 90 days')
-    expect(wrapper.text()).toContain('OpenAI (gpt-5.4-mini-2026-03-17)')
+    expect(wrapper.text()).toContain('OpenAI (gpt-6-luna)')
     expect(wrapper.text()).toContain('PDF, TXT, up to 10 MB each')
     expect(wrapper.text()).toContain('8 requests to the model')
     expect(wrapper.text()).toContain('Ask data@example.org.')

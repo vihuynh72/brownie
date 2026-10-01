@@ -47,9 +47,9 @@ watch(
   <section class="chat">
     <h1 class="chat__title">Chat with Brownie</h1>
     <p>
-      Brownie works on one document at a time. Open a document and its Assist tab takes the same instructions this page
-      would: draft from the sources you attached, change a field to a value, shorten or rewrite a passage, or explain a
-      check that is blocking your export. It shows you what it would change before anything is applied.
+      Brownie works on one document at a time. Open a document and chat with Brownie beside it: fill it from the notes
+      or transcript you attached, change a field to a value, shorten or rewrite a passage, or explain a check that is
+      blocking your export. It shows you what it would change, and nothing is filled in until you approve it.
     </p>
 
     <h2 class="chat__subtitle">Open a document</h2>
@@ -67,10 +67,10 @@ watch(
       </li>
     </ul>
 
-    <RouterLink class="button button--primary chat__start" to="/documents/new">
-      <AppIcon name="upload" :size="18" />
-      <span>Start a new document</span>
-    </RouterLink>
+    <p class="chat__start">
+      To start a new one, upload a Word form on <RouterLink to="/">Home</RouterLink>, or choose a template under My
+      Templates.
+    </p>
   </section>
 </template>
 
@@ -138,9 +138,6 @@ watch(
 }
 
 .chat__start {
-  inline-size: fit-content;
-  margin-block-start: var(--space-4);
-  border-radius: var(--radius-pill);
-  padding-inline: var(--space-5);
+  margin: var(--space-4) 0 0;
 }
 </style>
