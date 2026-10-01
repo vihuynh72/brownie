@@ -19,6 +19,8 @@ import io.github.vihuynh72.brownie.core.revision.LockState;
 import io.github.vihuynh72.brownie.core.revision.ReviewState;
 import io.github.vihuynh72.brownie.core.revision.RevisionRestoreResult;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
+import io.github.vihuynh72.brownie.core.template.Template;
+import io.github.vihuynh72.brownie.core.template.TemplateService;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -49,16 +51,22 @@ import java.util.Map;
 class DocumentController {
 
     private final RevisionService revisionService;
+    private final FillSpotService fillSpotService;
+    private final TemplateService templateService;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     DocumentController(
             RevisionService revisionService,
+            FillSpotService fillSpotService,
+            TemplateService templateService,
             CanonicalRequestHasher canonicalRequestHasher,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.revisionService = revisionService;
+        this.fillSpotService = fillSpotService;
+        this.templateService = templateService;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -213,7 +221,11 @@ class DocumentController {
      * every field a person has locked keeps its current value -- see {@code
      * RevisionService#restoreRevision}. Refused with 412 unless {@code
      * expectedRevisionId} is still current, so a restore never lands on top
-     * of a change its caller has not seen.
+     * of a change its caller has not seen. Restoring across a fill spot
+     * correction moves the document back to that revision's template version
+     * (and the template with it, for a member who may change templates, see
+     * {@code FillSpotService#restoreRevision});
+     * a value that version has no spot for is named in {@code droppedFieldIds}.
      */
     @PostMapping("/{documentId}/revisions/{revisionId}/restore")
     RestoreRevisionResponse restoreRevision(
@@ -225,7 +237,7 @@ class DocumentController {
             @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         requireAccess(userId, workspaceId);
-        RevisionRestoreResult result = revisionService.restoreRevision(
+        RevisionRestoreResult result = fillSpotService.restoreRevision(
                 workspaceId,
                 userId,
                 requireIdempotencyKey(idempotencyKey),
@@ -234,8 +246,10 @@ class DocumentController {
                 documentId,
                 request.requireExpectedRevisionId(),
                 positive(revisionId, "revisionId"),
-                optionalReason(request.editReason()));
-        return new RestoreRevisionResponse(DocumentRevisionResponse.from(result.mutation().revision()), result.keptLockedFieldIds());
+                optionalReason(request.editReason()),
+                workspaceAuthorizationService.grants(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES));
+        return new RestoreRevisionResponse(
+                DocumentRevisionResponse.from(result.mutation().revision()), result.keptLockedFieldIds(), result.droppedFieldIds());
     }
 
     private DocumentResponse documentResponse(long workspaceId, long userId, Document document) {
@@ -243,7 +257,8 @@ class DocumentController {
                         workspaceId, userId, document.id(), document.currentRevisionId())
                 .orElseThrow(() -> new IllegalStateException(
                         "Document " + document.id() + " points to a missing current revision."));
-        return DocumentResponse.from(document, current);
+        Long latest = templateService.find(workspaceId, userId, document.templateId()).map(Template::currentActiveVersionId).orElse(null);
+        return DocumentResponse.from(document, current, latest);
     }
 
     private Document requireDocument(long workspaceId, long userId, long documentId) {
@@ -338,7 +353,7 @@ class DocumentController {
         }
     }
 
-    record RestoreRevisionResponse(DocumentRevisionResponse revision, List<String> keptLockedFieldIds) {
+    record RestoreRevisionResponse(DocumentRevisionResponse revision, List<String> keptLockedFieldIds, List<String> droppedFieldIds) {
     }
 
     record RecordReviewDecisionRequest(long expectedRevisionId, String fieldId, Integer itemIndex, String decision, String editReason) {
@@ -467,27 +482,35 @@ class DocumentController {
         }
     }
 
+    /**
+     * {@code templateLatestVersionId} is the template's current version, the
+     * one new documents start from: when it is not {@code templateVersionId},
+     * the form has a newer version this document can be moved to.
+     */
     record DocumentResponse(
             long id,
             String title,
             long templateId,
             long templateVersionId,
+            Long templateLatestVersionId,
             long currentRevisionId,
             OffsetDateTime createdAt,
             DocumentRevisionResponse currentRevision) {
 
-        static DocumentResponse from(Document document, DocumentRevision currentRevision) {
+        static DocumentResponse from(Document document, DocumentRevision currentRevision, Long templateLatestVersionId) {
             return new DocumentResponse(
                     document.id(),
                     document.title(),
                     document.templateId(),
                     document.templateVersionId(),
+                    templateLatestVersionId,
                     document.currentRevisionId(),
                     document.createdAt(),
                     DocumentRevisionResponse.from(currentRevision));
         }
     }
 
+    /** {@code templateVersionId} is the template version this revision's content was written against. */
     record DocumentRevisionResponse(
             long id,
             int revisionNumber,
@@ -495,7 +518,8 @@ class DocumentController {
             Map<String, FieldValueResponse> fields,
             String contentHash,
             String editReason,
-            OffsetDateTime createdAt) {
+            OffsetDateTime createdAt,
+            long templateVersionId) {
 
         static DocumentRevisionResponse from(DocumentRevision revision) {
             Map<String, FieldValueResponse> fields = new LinkedHashMap<>();
@@ -510,7 +534,8 @@ class DocumentController {
                     Map.copyOf(fields),
                     revision.contentHash(),
                     revision.editReason(),
-                    revision.createdAt());
+                    revision.createdAt(),
+                    revision.templateVersionId());
         }
     }
 
