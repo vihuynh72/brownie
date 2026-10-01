@@ -71,7 +71,15 @@ class RateLimiterTest {
         assertThat(classOf("POST", "/api/v1/workspaces/7/documents/3/validate")).isEqualTo(RateLimitClass.RENDER);
         assertThat(classOf("POST", "/api/v1/workspaces/7/documents/3/export")).isEqualTo(RateLimitClass.RENDER);
         assertThat(classOf("POST", "/api/v1/workspaces/7/documents/3/revisions/9/compile")).isEqualTo(RateLimitClass.RENDER);
+        // Changing fill spots edits the form and renders its sample; moving to another version renders nothing.
+        assertThat(classOf("POST", "/api/v1/workspaces/7/documents/3/fill-spots")).isEqualTo(RateLimitClass.RENDER);
+        assertThat(classOf("POST", "/api/v1/workspaces/7/documents/3/template-version")).isEqualTo(RateLimitClass.WRITE);
         assertThat(classOf("POST", "/api/v1/workspaces/7/templates/2/versions")).isEqualTo(RateLimitClass.RENDER);
+        // Working out where a box goes changes nothing, but loads and reads the form's whole stored reading.
+        assertThat(classOf("POST", "/api/v1/workspaces/7/templates/2/versions/5/box-suggestion")).isEqualTo(RateLimitClass.WRITE);
+        // Making a form fillable converts and reads it in the same sandbox slots rendering uses.
+        assertThat(classOf("POST", "/api/v1/workspaces/7/artifacts/4/fillable-form")).isEqualTo(RateLimitClass.RENDER);
+        assertThat(classOf("GET", "/api/v1/workspaces/7/artifacts/4/fillable-form")).isEqualTo(RateLimitClass.READ);
         assertThat(classOf("POST", "/api/v1/workspaces/7/uploads")).isEqualTo(RateLimitClass.UPLOAD);
         assertThat(classOf("PUT", "/api/v1/workspaces/7/uploads/4/content")).isEqualTo(RateLimitClass.UPLOAD);
         assertThat(classOf("POST", "/api/v1/workspaces/7/artifacts/4/extraction")).isEqualTo(RateLimitClass.UPLOAD);
