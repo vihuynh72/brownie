@@ -29,8 +29,8 @@ import {
  * Google Drive at all.
  *
  * The copy itself is made by the page ({@code copyFile}), not here: this
- * control lives in a tab, and a copy that finishes after the tab was left
- * must still reach the document's list of sources.
+ * control lives in a panel the person can close, and a copy that finishes
+ * after it was closed must still reach the document's list of sources.
  */
 const props = defineProps<{
   workspaceId: number
