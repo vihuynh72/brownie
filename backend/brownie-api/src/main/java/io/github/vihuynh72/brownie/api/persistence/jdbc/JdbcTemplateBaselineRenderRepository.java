@@ -42,7 +42,7 @@ class JdbcTemplateBaselineRenderRepository implements TemplateBaselineRenderRepo
                         "SELECT docx_artifact_id, pdf_artifact_id, renderer_version FROM template_baseline_render "
                                 + "WHERE workspace_id = ? AND template_version_id = ?",
                         (rs, rowNum) -> new BaselineRenderResult(
-                                rs.getLong("docx_artifact_id"), rs.getLong("pdf_artifact_id"), rs.getString("renderer_version"), List.of()),
+                                rs.getObject("docx_artifact_id", Long.class), rs.getLong("pdf_artifact_id"), rs.getString("renderer_version"), List.of()),
                         workspaceId,
                         templateVersionId)
                 .stream()

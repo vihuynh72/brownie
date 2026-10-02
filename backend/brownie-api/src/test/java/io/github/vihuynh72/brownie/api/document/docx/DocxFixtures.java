@@ -227,14 +227,19 @@ final class DocxFixtures {
         return write(doc);
     }
 
-    /** A complex field (fldChar begin/instrText/separate/end) whose instruction is not PAGE. */
+    /** A complex field (fldChar begin/instrText/separate/end) whose instruction is a merge field, one of a form's own blanks. */
     static byte[] withUnsupportedField() throws IOException {
+        return withComplexField(" MERGEFIELD meeting.title ");
+    }
+
+    /** A complex field (fldChar begin/instrText/separate/end) with the given instruction, showing "placeholder". */
+    static byte[] withComplexField(String instruction) throws IOException {
         XWPFDocument doc = new XWPFDocument();
         XWPFParagraph paragraph = doc.createParagraph();
         XWPFRun begin = paragraph.createRun();
         begin.getCTR().addNewFldChar().setFldCharType(STFldCharType.BEGIN);
         XWPFRun instr = paragraph.createRun();
-        instr.getCTR().addNewInstrText().setStringValue(" MERGEFIELD meeting.title ");
+        instr.getCTR().addNewInstrText().setStringValue(instruction);
         XWPFRun sep = paragraph.createRun();
         sep.getCTR().addNewFldChar().setFldCharType(STFldCharType.SEPARATE);
         XWPFRun result = paragraph.createRun();
@@ -253,6 +258,59 @@ final class DocxFixtures {
         fldSimple.setInstr(" PAGE ");
         fldSimple.addNewR().addNewT().setStringValue("1");
         return write(doc);
+    }
+
+    /**
+     * Every place a paragraph or a table can hold something that does not
+     * get a node of its own, beside the things that do: runs directly in a
+     * paragraph, in a hyperlink and in an inline content control; bookmarks,
+     * proofing marks, a smart tag, a custom XML wrapper and a simple field,
+     * which the walk passes over; a content control around a whole
+     * paragraph, in the body, in a table cell and in the header; content
+     * controls around a whole table row and a whole cell; and runs holding
+     * tabs, breaks, a non-breaking hyphen and checkbox symbols between
+     * their text. Written as XML because the library has no way to build
+     * most of these.
+     */
+    static byte[] walkerEdgeCasesDocument() throws IOException {
+        String body = "<w:p>"
+                + "<w:bookmarkStart w:id=\"0\" w:name=\"start\"/>"
+                + "<w:r><w:t xml:space=\"preserve\">Name:</w:t><w:tab/><w:t>here</w:t></w:r>"
+                + "<w:proofErr w:type=\"spellStart\"/>"
+                + "<w:hyperlink r:id=\"rIdLink\"><w:r><w:t>link one</w:t></w:r><w:r><w:t>link two</w:t></w:r></w:hyperlink>"
+                + "<w:proofErr w:type=\"spellEnd\"/>"
+                + "<w:smartTag w:uri=\"urn:example\" w:element=\"place\"><w:r><w:t>Hidden city</w:t></w:r></w:smartTag>"
+                + "<w:customXml w:element=\"note\"><w:r><w:t>hidden custom</w:t></w:r></w:customXml>"
+                + "<w:sdt><w:sdtPr><w:tag w:val=\"client.name\"/></w:sdtPr><w:sdtContent>"
+                + "<w:r><w:t>[client]</w:t></w:r><w:r><w:br/><w:t>second</w:t></w:r></w:sdtContent></w:sdt>"
+                + "<w:fldSimple w:instr=\" PAGE \"><w:r><w:t>1</w:t></w:r></w:fldSimple>"
+                + "<w:bookmarkEnd w:id=\"0\"/>"
+                + "<w:r><w:sym w:font=\"Wingdings\" w:char=\"F0A8\"/><w:t xml:space=\"preserve\"> Yes </w:t>"
+                + "<w:sym w:font=\"Wingdings\" w:char=\"F0FE\"/><w:t xml:space=\"preserve\"> No</w:t></w:r>"
+                + "<w:r><w:t>well</w:t><w:noBreakHyphen/><w:t>known</w:t><w:cr/><w:t>end</w:t>"
+                + "<w:ptab w:relativeTo=\"margin\" w:alignment=\"right\" w:leader=\"none\"/><w:t>x</w:t></w:r>"
+                + "</w:p>"
+                + "<w:sdt><w:sdtPr><w:tag w:val=\"block.one\"/></w:sdtPr><w:sdtContent>"
+                + "<w:p><w:r><w:t>Inside a block control</w:t></w:r></w:p></w:sdtContent></w:sdt>"
+                + "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w=\"2000\"/><w:gridCol w:w=\"2000\"/></w:tblGrid>"
+                + "<w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p>"
+                + "<w:sdt><w:sdtContent><w:p><w:r><w:t>block in cell</w:t></w:r></w:p></w:sdtContent></w:sdt>"
+                + "<w:p><w:r><w:t>A1 second</w:t></w:r></w:p></w:tc>"
+                + "<w:sdt><w:sdtContent><w:tc><w:p><w:r><w:t>cell control</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt>"
+                + "<w:tc><w:p><w:r><w:t>C1</w:t></w:r></w:p></w:tc></w:tr>"
+                + "<w:sdt><w:sdtContent><w:tr><w:tc><w:p><w:r><w:t>row control</w:t></w:r></w:p></w:tc></w:tr></w:sdtContent></w:sdt>"
+                + "<w:tr><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc><w:tc><w:p/></w:tc></w:tr>"
+                + "</w:tbl>"
+                + "<w:p><w:r><w:t>closing</w:t></w:r></w:p>"
+                + "<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdHeader\"/></w:sectPr>";
+        String header = "<w:sdt><w:sdtContent><w:p><w:r><w:t>header control</w:t></w:r></w:p></w:sdtContent></w:sdt>"
+                + "<w:p><w:r><w:t>Header text</w:t><w:tab/><w:t>right</w:t></w:r></w:p>";
+        return RawDocx.builder()
+                .document(body)
+                .part("word/header1.xml", RawDocx.HEADER_CONTENT_TYPE, RawDocx.wordRoot("hdr", header))
+                .documentRelationship("rIdHeader", RawDocx.RELATIONSHIP_TYPE_BASE + "header", "header1.xml", false)
+                .documentRelationship("rIdLink", RawDocx.RELATIONSHIP_TYPE_BASE + "hyperlink", "https://example.com/", true)
+                .build();
     }
 
     /** Bytes that look enough like an OOXML package to be classified as DOCX, but whose main document part is not well-formed XML. */

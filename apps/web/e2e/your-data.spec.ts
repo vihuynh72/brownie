@@ -54,7 +54,7 @@ test('deleting the workspace needs the typed phrase, really deletes it, and ends
   await confirm.click()
 
   // The page that follows is the signed-out one, and it says what just happened.
-  await expect(page.getByRole('status')).toContainText('Your workspace and everything in it was deleted.')
+  await expect(page.getByRole('main').getByRole('status')).toContainText('Your workspace and everything in it was deleted.')
   // Check the server, not the page: the session is over, and it was this person's only way in.
   await expect.poll(async () => (await context.request.get('/api/v1/me')).status()).toBe(401)
   await context.close()

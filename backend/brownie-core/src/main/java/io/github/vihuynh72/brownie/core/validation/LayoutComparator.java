@@ -87,6 +87,11 @@ public final class LayoutComparator {
                     }
                 }
                 case FieldBindingTarget.StructuralNode(var part, String nodeId) -> boundNodes.add(new PartNodeKey(part, nodeId));
+                // A place on a PDF is never part of a Word graph; a PDF template is checked by drawing its pages instead.
+                case FieldBindingTarget.AcroFormField ignored -> {
+                }
+                case FieldBindingTarget.PageBox ignored -> {
+                }
             }
         }
 

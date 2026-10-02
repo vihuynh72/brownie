@@ -2,23 +2,29 @@ package io.github.vihuynh72.brownie.api.document.docx;
 
 import io.github.vihuynh72.brownie.core.compile.FilledDocument;
 import io.github.vihuynh72.brownie.core.compile.TemplateFillException;
+import io.github.vihuynh72.brownie.core.compile.TemplateFillProblemReason;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplate;
 import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
+import io.github.vihuynh72.brownie.core.template.DocxControlOrigin;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
+import io.github.vihuynh72.brownie.core.validation.DocumentValidator;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.junit.jupiter.api.Test;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTP;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTR;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtContentRun;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtPr;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSdtRun;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STUnderline;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -91,6 +97,24 @@ class PoiTemplateFillerTest {
         assertThrows(TemplateFillException.class, () -> filler.fill(blank, flowing.fields(), content));
     }
 
+    /** A place on a PDF never reaches a Word file: the Word filler refuses it plainly rather than guessing where it goes. */
+    @Test
+    void aFieldBoundToAPlaceOnAPdfIsRefused() throws IOException {
+        byte[] docx = scalarContentControlDocx("meeting.title");
+        for (FieldBindingTarget target : List.of(
+                new FieldBindingTarget.AcroFormField("fullName"),
+                new FieldBindingTarget.PageBox(1, 72, 72, 100, 14, io.github.vihuynh72.brownie.core.document.PdfTextStyle.DEFAULT, false,
+                        io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy.SHRINK_TO_FIT))) {
+            FieldDefinition field = new FieldDefinition("form.name", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL, target);
+
+            TemplateFillException refused = assertThrows(TemplateFillException.class,
+                    () -> filler.fill(docx, List.of(field), new DocumentContent(Map.of("form.name", new FieldValue.TextValue("Ana")))));
+
+            assertEquals(TemplateFillProblemReason.BINDING_NOT_FOUND, refused.reason());
+            assertTrue(refused.getMessage().contains("place on a PDF"), refused.getMessage());
+        }
+    }
+
     /**
      * {@code document.createParagraph()} always appends at the document's
      * own absolute end, regardless of where the prototype paragraph it is
@@ -153,6 +177,321 @@ class PoiTemplateFillerTest {
                 "an ordinary value must not be tagged preserve: " + documentXml);
     }
 
+    /**
+     * A real form often holds content controls nobody tagged (a date picker, a check box) beside the
+     * tagged ones; they are not bound to a field and must be left exactly as they are, not stop the
+     * fill.
+     */
+    @Test
+    void untaggedContentControlsBesideTaggedOnesAreLeftAsTheyAre() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph paragraph = doc.createParagraph();
+            addUntaggedContentControl(paragraph, "Pick a date");
+            addContentControl(paragraph, "meeting.title");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            blank = out.toByteArray();
+        }
+
+        FilledDocument filled = filler.fill(
+                blank,
+                List.of(scalarField("meeting.title", FieldType.TEXT)),
+                new DocumentContent(Map.of("meeting.title", new FieldValue.TextValue("Spring Planning"))));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("Spring Planning"), text);
+        assertTrue(text.contains("Pick a date"), text);
+    }
+
+    /** A repeated control Word shows without a title (no alias) is repeated all the same. */
+    @Test
+    void repeatedControlsWithoutATitleAreRepeated() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph prototype = doc.createParagraph();
+            CTSdtRun sdt = prototype.getCTP().addNewSdt();
+            sdt.addNewSdtPr().addNewTag().setVal("action.item.task");
+            sdt.addNewSdtContent().addNewR().addNewT().setStringValue("[task]");
+            addUntaggedContentControl(prototype, "untagged");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            blank = out.toByteArray();
+        }
+
+        FilledDocument filled = filler.fill(
+                blank,
+                List.of(repeatedField("action.item.task", FieldType.TEXT)),
+                new DocumentContent(Map.of(
+                        "action.item.task", new FieldValue.RepeatedTextValue(List.of("First task", "Second task")))));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("First task") && text.contains("Second task"), text);
+    }
+
+    /**
+     * Word saves a control still showing its prompt marked as showing its
+     * placeholder, with the prompt styled Placeholder Text. Once a value is
+     * written, neither may stay, or Word shows the value grey and treats it
+     * as the prompt; a run style the form itself chose is kept.
+     */
+    @Test
+    void aValueWrittenIntoAWordPlaceholderIsNoLongerMarkedAsThePlaceholder() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addWordPlaceholderContentControl(doc.createParagraph(), "meeting.title");
+            addStyledContentControl(doc.createParagraph(), "meeting.organization", "Strong");
+            addWordPlaceholderContentControl(doc.createParagraph(), "action.item.task");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(
+                blank,
+                List.of(
+                        scalarField("meeting.title", FieldType.TEXT),
+                        scalarField("meeting.organization", FieldType.TEXT),
+                        repeatedField("action.item.task", FieldType.TEXT)),
+                new DocumentContent(Map.of(
+                        "meeting.title", new FieldValue.TextValue("Spring Planning"),
+                        "meeting.organization", new FieldValue.TextValue("Robotics Club"),
+                        "action.item.task", new FieldValue.RepeatedTextValue(List.of("First task", "Second task")))));
+        String documentXml = extractDocumentXml(filled.docxBytes());
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("Spring Planning") && text.contains("First task") && text.contains("Second task"), text);
+        assertTrue(!documentXml.contains("showingPlcHdr"), "a written control must not say it shows its placeholder: " + documentXml);
+        assertTrue(!documentXml.contains("PlaceholderText"), "a written value must not keep the placeholder's style: " + documentXml);
+        assertTrue(documentXml.contains("w:val=\"Strong\""), "the form's own run style must be kept: " + documentXml);
+    }
+
+    /**
+     * A spot Brownie found in a form's own blank prints that blank again
+     * while it has no value, in the spot's own formatting, and stays marked
+     * as showing its prompt; the blank is not a value, so the export check
+     * never looks for it. A value, once there, replaces the blank.
+     */
+    @Test
+    void anEmptySpotPrintsTheFormsOwnBlankInItsOwnFormattingAndNothingChecksForIt() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addFoundBlankContentControl(doc.createParagraph(), "company");
+            addFoundBlankContentControl(doc.createParagraph(), "date.of.birth");
+            addFoundBlankContentControl(doc.createParagraph(), "phone");
+            blank = toBytes(doc);
+        }
+        List<FieldDefinition> fields = List.of(
+                foundField("company", FieldType.TEXT, "[Company]"),
+                foundField("date.of.birth", FieldType.DATE, "__________"),
+                foundField("phone", FieldType.TEXT, "  ________  "));
+
+        FilledDocument filled = filler.fill(
+                blank, fields, new DocumentContent(Map.of("date.of.birth", new FieldValue.DateValue(LocalDate.of(1990, 4, 9)))));
+        String documentXml = extractDocumentXml(filled.docxBytes());
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("[Company]"), text);
+        assertTrue(text.contains("April 9, 1990") && !text.contains("__________"), text);
+        assertTrue(documentXml.contains("xml:space=\"preserve\">  ________  <"), "a blank's own spaces must be kept: " + documentXml);
+        assertEquals(3, countOccurrences(documentXml, "<w:u w:val=\"single\"/>"), "every spot keeps its run's underline: " + documentXml);
+        assertEquals(2, countOccurrences(documentXml, "showingPlcHdr"), "a spot showing its blank still shows its prompt: " + documentXml);
+        assertEquals(List.of(), filled.intendedText().get("company"));
+        assertEquals(List.of(), filled.intendedText().get("phone"));
+        assertEquals(List.of("April 9, 1990"), filled.intendedText().get("date.of.birth"));
+        assertEquals(List.of(), DocumentValidator.checkFieldContentInOutput(filled.intendedText(), filled.reopenedBodyText()));
+    }
+
+    /** A blank drawn as underlined tabs is replaced by the answer, and still prints its line when left empty. */
+    @Test
+    void aValueTakesThePlaceOfABlankOfUnderlinedTabsAndAnEmptyOneKeepsTheLine() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            for (String tag : List.of("phone", "email")) {
+                CTSdtRun sdt = doc.createParagraph().getCTP().addNewSdt();
+                sdt.addNewSdtPr().addNewTag().setVal(tag);
+                CTR run = sdt.addNewSdtContent().addNewR();
+                run.addNewRPr().addNewU().setVal(STUnderline.SINGLE);
+                run.addNewTab();
+                run.addNewTab();
+            }
+            blank = toBytes(doc);
+        }
+        List<FieldDefinition> fields = List.of(foundField("phone", FieldType.TEXT, null), foundField("email", FieldType.TEXT, null));
+
+        FilledDocument filled = filler.fill(blank, fields, new DocumentContent(Map.of("phone", new FieldValue.TextValue("555 0100"))));
+        String documentXml = extractDocumentXml(filled.docxBytes());
+
+        assertEquals(2, countOccurrences(documentXml, "<w:tab/>"), "only the empty spot keeps its tabs: " + documentXml);
+        assertTrue(documentXml.contains("<w:u w:val=\"single\"/></w:rPr><w:t>555 0100</w:t>"), documentXml);
+    }
+
+    /** Without a stored blank, an empty spot is written empty, exactly as before blanks existed. */
+    @Test
+    void anEmptySpotWithoutABlankIsWrittenEmpty() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addFoundBlankContentControl(doc.createParagraph(), "company");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(blank, List.of(scalarField("company", FieldType.TEXT)), DocumentContent.empty());
+
+        assertTrue(!filled.reopenedBodyText().contains("________"), filled.reopenedBodyText());
+        assertEquals(List.of(), filled.intendedText().get("company"));
+    }
+
+    /** A tagged control saved with no content element at all is filled, not a crash. */
+    @Test
+    void aTaggedControlWithNoContentIsFilled() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            doc.createParagraph().getCTP().addNewSdt().addNewSdtPr().addNewTag().setVal("meeting.title");
+            doc.createParagraph().getCTP().addNewSdt().addNewSdtPr().addNewTag().setVal("action.item.task");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(
+                blank,
+                List.of(scalarField("meeting.title", FieldType.TEXT), repeatedField("action.item.task", FieldType.TEXT)),
+                new DocumentContent(Map.of(
+                        "meeting.title", new FieldValue.TextValue("Spring Planning"),
+                        "action.item.task", new FieldValue.RepeatedTextValue(List.of("First task", "Second task")))));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(text.contains("Spring Planning") && text.contains("First task") && text.contains("Second task"), text);
+    }
+
+    /**
+     * "No action items recorded." belongs to the built-in minutes. Any other
+     * form's empty table loses its item row -- everything in it, a control
+     * nobody tagged included, only ever belonged to one item -- and keeps
+     * its header row.
+     */
+    @Test
+    void anEmptyGroupInAnotherFormsTableLeavesOnlyTheHeaderRowAndNoSentence() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFTable table = doc.createTable(2, 2);
+            table.getRow(0).getCell(0).setText("Expense");
+            table.getRow(0).getCell(1).setText("Amount");
+            XWPFParagraph firstCell = table.getRow(1).getCell(0).getParagraphs().getFirst();
+            addUntaggedContentControl(firstCell, "Pick a category");
+            addContentControl(firstCell, "expense.item");
+            addContentControl(table.getRow(1).getCell(1).getParagraphs().getFirst(), "expense.amount");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(
+                blank,
+                List.of(repeatedField("expense.item", FieldType.TEXT), repeatedField("expense.amount", FieldType.TEXT)),
+                new DocumentContent(Map.of()));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(!text.contains("No action items recorded."), text);
+        assertTrue(!text.contains("[expense.item]") && !text.contains("[expense.amount]"), "a placeholder was left behind: " + text);
+        assertTrue(text.contains("Expense") && text.contains("Amount"), text);
+        try (XWPFDocument reopened = new XWPFDocument(new java.io.ByteArrayInputStream(filled.docxBytes()))) {
+            assertEquals(1, reopened.getTables().getFirst().getNumberOfRows());
+        }
+    }
+
+    /**
+     * A single value a form fills into the same row, or the same paragraph, as an empty group keeps its
+     * value: only the group's own controls go.
+     */
+    @Test
+    void anEmptyGroupKeepsASingleValueFilledIntoTheSameRowOrParagraph() throws IOException {
+        byte[] tableForm;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFTable table = doc.createTable(2, 2);
+            table.getRow(0).getCell(0).setText("Item");
+            table.getRow(0).getCell(1).setText("Approver");
+            addContentControl(table.getRow(1).getCell(0).getParagraphs().getFirst(), "item");
+            addContentControl(table.getRow(1).getCell(1).getParagraphs().getFirst(), "approver");
+            tableForm = toBytes(doc);
+        }
+        byte[] paragraphForm;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph paragraph = doc.createParagraph();
+            addContentControl(paragraph, "item");
+            addContentControl(paragraph, "approver");
+            paragraphForm = toBytes(doc);
+        }
+        List<FieldDefinition> fields = List.of(repeatedField("item", FieldType.TEXT), scalarField("approver", FieldType.TEXT));
+        DocumentContent content = new DocumentContent(Map.of("approver", new FieldValue.TextValue("Dana Lee")));
+
+        String fromTable = filler.fill(tableForm, fields, content).reopenedBodyText();
+        String fromParagraph = filler.fill(paragraphForm, fields, content).reopenedBodyText();
+
+        assertTrue(fromTable.contains("Dana Lee") && !fromTable.contains("[item]"), fromTable);
+        assertTrue(fromParagraph.contains("Dana Lee") && !fromParagraph.contains("[item]"), fromParagraph);
+    }
+
+    /** A table has to keep a row, so a prototype row with nothing above it stays, without the group's controls. */
+    @Test
+    void anEmptyGroupThatIsATablesOnlyRowKeepsTheRowWithoutItsControls() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph cell = doc.createTable(1, 1).getRow(0).getCell(0).getParagraphs().getFirst();
+            addUntaggedContentControl(cell, "Pick a category");
+            addContentControl(cell, "expense.item");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(blank, List.of(repeatedField("expense.item", FieldType.TEXT)), new DocumentContent(Map.of()));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(!text.contains("No action items recorded.") && !text.contains("[expense.item]"), text);
+        assertTrue(text.contains("Pick a category"), text);
+        try (XWPFDocument reopened = new XWPFDocument(new java.io.ByteArrayInputStream(filled.docxBytes()))) {
+            assertEquals(1, reopened.getTables().getFirst().getNumberOfRows());
+        }
+    }
+
+    @Test
+    void anEmptyGroupOfParagraphsInAnotherFormIsRemovedWithoutASentence() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            doc.createParagraph().createRun().setText("HEADER_BEFORE");
+            XWPFParagraph prototype = doc.createParagraph();
+            addUntaggedContentControl(prototype, "Pick a category");
+            addContentControl(prototype, "expense.item");
+            doc.createParagraph().createRun().setText("FOOTER_SIGNATURE_BLOCK");
+            blank = toBytes(doc);
+        }
+
+        FilledDocument filled = filler.fill(blank, List.of(repeatedField("expense.item", FieldType.TEXT)), new DocumentContent(Map.of()));
+
+        String text = filled.reopenedBodyText();
+        assertTrue(!text.contains("No action items recorded."), text);
+        assertTrue(!text.contains("[expense.item]") && !text.contains("Pick a category"), text);
+        assertTrue(text.contains("HEADER_BEFORE") && text.contains("FOOTER_SIGNATURE_BLOCK"), text);
+    }
+
+    /** The built-in sentence takes its whole paragraph, so it never runs on from a control nobody tagged. */
+    @Test
+    void theBuiltInSentenceStandsAloneInItsParagraph() throws IOException {
+        byte[] blank;
+        try (XWPFDocument doc = new XWPFDocument()) {
+            XWPFParagraph prototype = doc.createParagraph();
+            addUntaggedContentControl(prototype, "Pick a date");
+            addContentControl(prototype, "action.item.task");
+            addContentControl(prototype, "action.item.owner");
+            addContentControl(prototype, "action.item.due");
+            blank = toBytes(doc);
+        }
+        List<FieldDefinition> builtInGroup = BuiltInMinutesTemplateRegistry.find("flowing-meeting-minutes").orElseThrow().fields().stream()
+                .filter(field -> field.cardinality() == FieldCardinality.REPEATED)
+                .toList();
+
+        FilledDocument filled = filler.fill(blank, builtInGroup, new DocumentContent(Map.of()));
+
+        try (XWPFDocument reopened = new XWPFDocument(new java.io.ByteArrayInputStream(filled.docxBytes()))) {
+            assertEquals(
+                    List.of("No action items recorded."),
+                    reopened.getParagraphs().stream().map(XWPFParagraph::getText).filter(line -> !line.isEmpty()).toList());
+        }
+    }
+
     private static byte[] paragraphRepeatedGroupDocxWithTrailingContent() throws IOException {
         try (XWPFDocument doc = new XWPFDocument()) {
             doc.createParagraph().createRun().setText("HEADER_BEFORE");
@@ -191,6 +530,57 @@ class PoiTemplateFillerTest {
         run.addNewT().setStringValue("[" + tag + "]");
     }
 
+    /** A control as Word saves one still showing its prompt. */
+    private static void addWordPlaceholderContentControl(XWPFParagraph paragraph, String tag) {
+        CTSdtRun sdt = paragraph.getCTP().addNewSdt();
+        CTSdtPr sdtPr = sdt.addNewSdtPr();
+        sdtPr.addNewTag().setVal(tag);
+        sdtPr.addNewShowingPlcHdr();
+        CTR run = sdt.addNewSdtContent().addNewR();
+        run.addNewRPr().addNewRStyle().setVal("PlaceholderText");
+        run.addNewT().setStringValue("Click or tap here to enter text.");
+    }
+
+    /** A control as Brownie inserts one around a form's own blank: underlined, showing its prompt, holding the blank. */
+    private static void addFoundBlankContentControl(XWPFParagraph paragraph, String tag) {
+        paragraph.createRun().setText(tag + ": ");
+        CTSdtRun sdt = paragraph.getCTP().addNewSdt();
+        CTSdtPr sdtPr = sdt.addNewSdtPr();
+        sdtPr.addNewTag().setVal(tag);
+        sdtPr.addNewShowingPlcHdr();
+        CTR run = sdt.addNewSdtContent().addNewR();
+        run.addNewRPr().addNewU().setVal(STUnderline.SINGLE);
+        run.addNewT().setStringValue("________");
+    }
+
+    private static int countOccurrences(String text, String part) {
+        int count = 0;
+        for (int at = text.indexOf(part); at >= 0; at = text.indexOf(part, at + part.length())) {
+            count++;
+        }
+        return count;
+    }
+
+    private static void addStyledContentControl(XWPFParagraph paragraph, String tag, String runStyle) {
+        CTSdtRun sdt = paragraph.getCTP().addNewSdt();
+        sdt.addNewSdtPr().addNewTag().setVal(tag);
+        CTR run = sdt.addNewSdtContent().addNewR();
+        run.addNewRPr().addNewRStyle().setVal(runStyle);
+        run.addNewT().setStringValue("[" + tag + "]");
+    }
+
+    private static void addUntaggedContentControl(XWPFParagraph paragraph, String text) {
+        CTSdtRun sdt = paragraph.getCTP().addNewSdt();
+        sdt.addNewSdtPr();
+        sdt.addNewSdtContent().addNewR().addNewT().setStringValue(text);
+    }
+
+    private static byte[] toBytes(XWPFDocument doc) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        doc.write(out);
+        return out.toByteArray();
+    }
+
     private static String extractDocumentXml(byte[] docxBytes) throws IOException {
         try (ZipInputStream zip = new ZipInputStream(new java.io.ByteArrayInputStream(docxBytes))) {
             ZipEntry entry;
@@ -207,6 +597,13 @@ class PoiTemplateFillerTest {
         return new FieldDefinition(
                 fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
                 new FieldBindingTarget.ContentControlTag(fieldId));
+    }
+
+    private static FieldDefinition foundField(String fieldId, FieldType type, String blankText) {
+        return new FieldDefinition(
+                fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag(fieldId), null, SpotOrigin.FOUND_BY_BROWNIE,
+                DocxControlOrigin.INSERTED_BY_BROWNIE, blankText);
     }
 
     private static FieldDefinition repeatedField(String fieldId, FieldType type) {

@@ -26,7 +26,7 @@ test('a signed-out visitor reaching for an upload is sent to sign in, and lands 
   await expect(page.getByRole('heading', { name: 'Welcome to Brownie!' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Upload your documents' }).click()
-  await expect(page).toHaveURL(/\/signin\?next=(%2F|\/)documents(%2F|\/)new$/)
+  await expect(page).toHaveURL(/\/signin\?next=(%2F|\/)$/)
   await expect(page.getByText('to upload your documents')).toBeVisible()
 
   // A real session against the same backend the app talks to, so what follows is the
@@ -44,8 +44,8 @@ test('a signed-out visitor reaching for an upload is sent to sign in, and lands 
   )
   await page.getByRole('link', { name: 'Sign in or sign up' }).click()
 
-  await page.waitForURL(/\/documents\/new$/)
-  await expect(page.getByLabel('Template', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await page.waitForURL(/\/$/)
+  await expect(page.getByRole('button', { name: 'Upload your documents' })).toBeVisible({ timeout: 15_000 })
   await context.close()
 })
 
@@ -126,11 +126,11 @@ test('the trash bin opens from the sidebar and says how long anything moved ther
   await expect(page.getByText(/can be restored exactly as they were for \d+ days/)).toBeVisible()
 })
 
-test('Chat sends you to the document the conversation would be about', async ({ page }) => {
+test('Chat sends you to where a document is started', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('link', { name: 'Chat', exact: true }).click()
 
   await expect(page).toHaveURL(/\/chat$/)
   await expect(page.getByRole('heading', { name: 'Chat with Brownie' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Start a new document' })).toBeVisible()
+  await expect(page.getByRole('main').getByRole('link', { name: 'Home', exact: true })).toBeVisible()
 })

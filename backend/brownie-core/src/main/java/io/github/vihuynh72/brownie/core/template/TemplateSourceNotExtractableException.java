@@ -17,4 +17,14 @@ public class TemplateSourceNotExtractableException extends RuntimeException {
                 : "Artifact " + artifactId + " extraction status is " + actualStatus
                         + "; only a COMPLETE DOCX extraction can be used as a template source.");
     }
+
+    private TemplateSourceNotExtractableException(String message) {
+        super(message);
+    }
+
+    /** A PDF that has not been read as a form yet: there is no form reading to check its places against. */
+    public static TemplateSourceNotExtractableException pdfNotPrepared(long artifactId) {
+        return new TemplateSourceNotExtractableException(
+                "PDF " + artifactId + " has not been prepared as a form yet; prepare it before creating a template from it.");
+    }
 }

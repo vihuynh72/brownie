@@ -12,5 +12,7 @@ public enum TemplateFillProblemReason {
     AMBIGUOUS_BINDING,
     MISMATCHED_REPEATED_LENGTHS,
     CARDINALITY_MISMATCH,
-    UNREADABLE_TEMPLATE
+    UNREADABLE_TEMPLATE,
+    /** A field of a PDF template holds a list of values; a PDF form holds one value in each place, so lists are not filled into one. */
+    REPEATED_FIELD_IN_PDF
 }

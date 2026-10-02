@@ -1,33 +1,38 @@
 import { test, expect } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
+import { startDocumentFromSidebar } from './documents'
 
 /**
- * Creates a document from one of the workspace's own built-in templates
+ * Starts a document from one of the workspace's own built-in templates
  * (auto-provisioned on first login by BuiltInTemplateProvisioningService,
- * the same as a real new user) and drives the real validate step against
- * it while it is still empty: the export gate must refuse a document whose
- * required fields are blank, and must never offer approval for it. The
- * filled-in half of the same journey is manual-editing.spec.ts.
+ * the same as a real new user) by pressing it in the sidebar, and opens
+ * Export while it is still empty: the check Export runs must refuse a
+ * document whose required fields are blank, and must never offer to
+ * approve it. The filled-in half of the same journey is
+ * manual-editing.spec.ts.
  */
-test('an empty document blocks export at validation and never offers to approve it', async ({ page }) => {
-  await page.goto('/documents/new')
+test('an empty document blocks export when it is checked and never offers to approve it', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('#app-sidebar').getByRole('button', { name: 'Flowing meeting minutes', exact: true })).toBeVisible({
+    timeout: 15_000,
+  })
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
-  await expect(page.getByLabel('Template', { exact: true })).toBeEnabled({ timeout: 15_000 })
-  const title = `E2E empty document ${Date.now()}`
-  await page.getByLabel('Title', { exact: true }).fill(title)
+  await startDocumentFromSidebar(page, 'Flowing meeting minutes')
+  await expect(page.getByLabel(/^Meeting title/)).toBeVisible({ timeout: 15_000 })
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
-  await page.getByRole('button', { name: 'Create document' }).click()
-  await page.waitForURL(/\/documents\/\d+$/)
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export' })
+  await expect(dialog.getByText('This version cannot be exported yet.')).toBeVisible({ timeout: 60_000 })
+  await expect(dialog.getByRole('button', { name: 'Approve and export' })).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: /^Go to Meeting title/ })).toBeVisible()
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
-  await page.getByRole('tab', { name: 'Checks' }).click()
-  await page.getByRole('button', { name: 'Validate this revision' }).click()
-
-  await expect(page.getByText('Cannot export')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('button', { name: 'Approve for export' })).toHaveCount(0)
-
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+  // A finding leads back to the fill spot it is about.
+  await dialog.getByRole('button', { name: /^Go to Meeting title/ }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByLabel(/^Meeting title/)).toBeFocused()
 })

@@ -23,8 +23,17 @@ public interface ExtractionVersionRepository {
      * and won -- returns that existing row unchanged rather than
      * overwriting it: extraction is a pure function of immutable bytes, so
      * either result is an equally valid answer, and only one is kept.
+     * {@code keptAsIs} is what the document keeps as it is ({@link
+     * DocxExtractionOutcome.Supported#keptAsIs()}), stored as the row's
+     * feature report.
      */
-    ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph);
+    ExtractionVersion saveComplete(
+            long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph, DocxFeatureReport keptAsIs);
+
+    /** {@link #saveComplete(long, long, long, String, DocxStructuralGraph, DocxFeatureReport)} for a document with nothing kept as is. */
+    default ExtractionVersion saveComplete(long workspaceId, long userId, long artifactId, String parserVersion, DocxStructuralGraph graph) {
+        return saveComplete(workspaceId, userId, artifactId, parserVersion, graph, DocxFeatureReport.empty());
+    }
 
     /** Same apply-or-return-existing behavior as {@link #saveComplete}, for a document outside the qualified subset. */
     ExtractionVersion saveUnsupported(long workspaceId, long userId, long artifactId, String parserVersion, DocxFeatureReport featureReport);

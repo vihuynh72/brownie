@@ -48,16 +48,18 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      // Documents start from Home (upload a form) or from a template in the sidebar, so an old link or
+      // bookmark to the page that used to create them goes home. What it carried (a template to preselect)
+      // is dropped: the router would otherwise copy it onto the home address. Declared before the
+      // document route, which would otherwise read "new" as a document number.
       path: '/documents/new',
-      name: 'new-document',
-      component: () => import('@/views/NewDocumentView.vue'),
-      meta: { requiresSession: true },
+      redirect: { name: 'home', query: {}, hash: '' },
     },
     {
+      // A form becomes a template by uploading it, from Home or from the + beside My Templates, so an old
+      // link to the page that used to teach one goes home too.
       path: '/templates/new',
-      name: 'new-template',
-      component: () => import('@/views/NewTemplateView.vue'),
-      meta: { requiresSession: true },
+      redirect: { name: 'home', query: {}, hash: '' },
     },
     {
       path: '/documents/:documentId',

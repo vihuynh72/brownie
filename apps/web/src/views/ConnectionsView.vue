@@ -352,7 +352,7 @@ async function disconnect(): Promise<void> {
           <dd v-else>Nothing yet. Your calendar is added here the first time you list its events from a document.</dd>
         </dl>
         <p v-if="calendar?.state === 'ACTIVE' && calendarOffered" class="field-hint">
-          To copy an event, open a document and use "Copy an event from Google Calendar" on its Sources tab.
+          To copy an event, open a document, press Add a source (+) beside the message box and use "Copy an event from Google Calendar".
         </p>
         <p v-else-if="calendar?.state === 'ACTIVE'" class="field-hint">
           Copying events from Google Calendar is not offered on this Brownie at the moment. The connection stays until you
@@ -401,7 +401,7 @@ async function disconnect(): Promise<void> {
           </template>
         </dl>
         <p v-if="drive?.state === 'ACTIVE' && driveOffered && pickedFiles.length > 0" class="field-hint">
-          To copy a file, open a document and use "Copy a file from Google Drive" on its Sources tab.
+          To copy a file, open a document, press Add a source (+) beside the message box and use "Copy a file from Google Drive".
         </p>
         <button
           v-if="driveOffered"
@@ -436,7 +436,7 @@ async function disconnect(): Promise<void> {
           </dd>
         </dl>
         <p v-if="saving?.state === 'ACTIVE' && savingOffered" class="field-hint">
-          To save a document, export it, then use "Save to Google Drive" on its Checks tab.
+          To save a document, open Export on it; "Save to Google Drive" is there once it is exported.
         </p>
         <p v-else-if="saving?.state === 'ACTIVE'" class="field-hint">
           Saving to Google Drive is not offered on this Brownie at the moment. The connection stays until you disconnect it.
@@ -468,7 +468,7 @@ async function disconnect(): Promise<void> {
           <dd>Which account this is, and an event it added for you, to check it after adding it.</dd>
         </dl>
         <p v-if="adding?.state === 'ACTIVE' && addingOffered" class="field-hint">
-          To add an event, open a document and use "Add an event to Google Calendar" on its Checks tab.
+          To add an event, open a document and use "Add an event to Google Calendar" in its Export window.
         </p>
         <p v-else-if="adding?.state === 'ACTIVE'" class="field-hint">
           Adding events to Google Calendar is not offered on this Brownie at the moment. The connection stays until you

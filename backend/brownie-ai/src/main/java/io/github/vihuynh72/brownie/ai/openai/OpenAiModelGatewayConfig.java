@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.ai.openai;
 
+import io.github.vihuynh72.brownie.core.generation.usage.ModelPricing;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,7 +19,22 @@ import org.springframework.context.annotation.Configuration;
 public class OpenAiModelGatewayConfig {
 
     @Bean
-    ModelGateway modelGateway(ChatModel chatModel, @Value("${brownie.ai.openai.model}") String model) {
-        return new OpenAiModelGateway(chatModel, model);
+    ModelGateway modelGateway(
+            ChatModel chatModel,
+            @Value("${brownie.ai.openai.model}") String model,
+            @Value("${brownie.ai.openai.reasoning-effort}") String reasoningEffort) {
+        return new OpenAiModelGateway(chatModel, model, reasoningEffort);
+    }
+
+    /**
+     * The rates every request is reserved and settled at, in whichever
+     * process imports this class. Read from the same setting that picks the
+     * model the gateway calls, so the price always describes the model that
+     * is actually called; a model with no known price stops the process at
+     * startup instead of spending against a price that is not its own.
+     */
+    @Bean
+    ModelPricing modelPricing(@Value("${brownie.ai.openai.model}") String model) {
+        return ModelPricing.forModel(model);
     }
 }

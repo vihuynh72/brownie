@@ -67,13 +67,20 @@ const refusedFilePeriod = computed(() => hourCount(practices.value?.refusedFileH
 const unusedFilePeriod = computed(() => hourCount(practices.value?.unusedFileHours))
 const auditRecordPeriod = computed(() => dayCount(practices.value?.auditRecordDays))
 
-/** "OpenAI (gpt-5.4-mini)", or null when the server has not said who the model provider is. */
+/** "OpenAI (gpt-6-luna)", or null when the server has not said who the model provider is. */
 const modelLabel = computed(() => {
   const provider = practices.value?.modelProvider
   if (!provider) return null
   const model = practices.value?.modelName
   return model ? `${provider} (${model})` : provider
 })
+
+/**
+ * Whether this Brownie sends an uploaded form's text to the model by itself, to find the places to fill in and name
+ * them. Nothing asks first, so the page says so rather than promise that nothing is sent until the person asks. A
+ * server from before that sends nothing on upload, and leaves the answer out.
+ */
+const formTextSentToModel = computed(() => practices.value?.formTextSentToModel === true)
 
 const acceptedFilesSentence = computed(() => {
   const types = capabilities.value?.uploadMediaTypes
@@ -362,7 +369,12 @@ watch(
         document is sent to
         <template v-if="modelLabel">{{ modelLabel }}</template>
         <template v-else>the AI service this Brownie is set up to use</template>
-        to get an answer. Nothing is sent until you ask.
+        to get an answer.
+        <template v-if="formTextSentToModel"
+          >When you upload a form, its text is sent to the same service, so Brownie can find the places to fill in and
+          name them. Nothing else is sent until you ask.</template
+        >
+        <template v-else>Nothing is sent until you ask.</template>
       </li>
       <li>Signing in is handled by Microsoft. Brownie receives who you are, never your password.</li>
       <li>Every file you upload is scanned for viruses on Brownie's own server before anything reads it.</li>

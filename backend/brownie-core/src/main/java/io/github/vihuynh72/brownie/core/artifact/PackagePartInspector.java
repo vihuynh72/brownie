@@ -21,14 +21,17 @@ import java.util.regex.Pattern;
  * than any real document is, and a relationships part that points at
  * something on a network other than as an ordinary hyperlink, which is how
  * a document asks whoever opens it to fetch a remote template, object or
- * frame. A relationship to a path on the author's own machine is left
- * alone: nearly every document written in Word carries one, naming the
- * template it was started from.
+ * frame (in a file a person gave, that is: see {@link PackagePolicy}). A
+ * relationship to a path on the author's own machine is left alone: nearly
+ * every document written in Word carries one, naming the template it was
+ * started from.
  *
  * <p>It understands no more of the format than that. It is not namespace
  * aware on purpose: all it needs is how deep the elements go and three
  * attributes of one element, and a part with an unusual prefix is not a
- * reason to refuse a file.
+ * reason to refuse a file. What the caller wants to learn of a part (the
+ * content types a package declares, say) it collects through an {@link
+ * ElementListener} while the part is read here, so no part is read twice.
  */
 final class PackagePartInspector {
 
@@ -61,34 +64,51 @@ final class PackagePartInspector {
      * Reads the part to its end through {@code part}, which the caller has
      * already bounded, and leaves the stream open: closing it would close
      * the archive it is one entry of.
+     *
+     * <p>{@code documentTypeAllowed} is for the one part of one kind of
+     * package that carries a document type innocently: the manifest of an
+     * OpenDocument file written by OpenOffice 2, which names the manifest's
+     * public DTD. Even there, a document type that declares anything of its
+     * own (an internal subset, which is where entities are declared) is
+     * refused; the named DTD is never fetched, here or anywhere.
      */
-    static void inspect(String entryName, InputStream part) throws IOException {
-        boolean relationships = entryName.toLowerCase(Locale.ROOT).endsWith(".rels");
+    static void inspect(
+            String entryName,
+            InputStream part,
+            PackagePolicy policy,
+            boolean documentTypeAllowed,
+            ElementListener listener) throws IOException {
+        boolean relationships = entryName.toLowerCase(Locale.ROOT).endsWith(".rels")
+                && policy == PackagePolicy.UPLOAD;
         XMLStreamReader reader = null;
         try {
             reader = factory().createXMLStreamReader(new UncloseableInputStream(part));
             int depth = 0;
             while (reader.hasNext()) {
                 int event = reader.next();
-                if (event == XMLStreamConstants.DTD) {
-                    throw new UnsupportedArtifactTypeException("Package contains a part that declares a document type.");
+                if (event == XMLStreamConstants.DTD && !(documentTypeAllowed && declaresNothing(reader.getText()))) {
+                    throw new UnsupportedArtifactTypeException(
+                            UnsupportedArtifactTypeException.Reason.DAMAGED,
+                            "Package contains a part that declares a document type.");
                 }
                 if (event == XMLStreamConstants.START_ELEMENT) {
                     depth++;
                     if (depth > MAX_ELEMENT_DEPTH) {
                         throw new UnsupportedArtifactTypeException(
+                                UnsupportedArtifactTypeException.Reason.DAMAGED,
                                 "Package contains a part nested more than " + MAX_ELEMENT_DEPTH + " elements deep.");
                     }
                     if (relationships && "Relationship".equals(localName(reader.getLocalName()))) {
                         requireInternalOrHyperlink(reader);
                     }
+                    listener.startElement(reader, depth);
                 } else if (event == XMLStreamConstants.END_ELEMENT) {
                     depth--;
                 }
             }
         } catch (XMLStreamException e) {
             // Not the parser's message: it quotes the document.
-            throw new UnsupportedArtifactTypeException("Package contains a part that is not well-formed XML.");
+            throw new MalformedPartException();
         } finally {
             if (reader != null) {
                 try {
@@ -117,8 +137,19 @@ final class PackagePartInspector {
         boolean hyperlink = type != null && type.endsWith(HYPERLINK_TYPE_SUFFIX);
         if ("External".equalsIgnoreCase(targetMode) && !hyperlink && isOnANetwork(target)) {
             throw new UnsupportedArtifactTypeException(
+                    UnsupportedArtifactTypeException.Reason.REMOTE_CONTENT,
                     "Package refers to content on a network other than as an ordinary hyperlink.");
         }
+    }
+
+    /**
+     * A document type with no internal subset only names a DTD, which is
+     * never read; one with a subset declares entities or elements itself.
+     * Whatever follows the name is refused if it opens a subset anywhere,
+     * inside a quoted identifier included, which no real manifest has.
+     */
+    private static boolean declaresNothing(String documentType) {
+        return documentType != null && documentType.indexOf('[') < 0;
     }
 
     /**
@@ -172,7 +203,7 @@ final class PackagePartInspector {
     private static final Pattern SCHEME = Pattern.compile("[a-z][a-z0-9+.-]*:");
 
     /** Without namespace awareness a prefixed name arrives whole; only what follows the colon matters here. */
-    private static String localName(String name) {
+    static String localName(String name) {
         int colon = name.indexOf(':');
         return colon < 0 ? name : name.substring(colon + 1);
     }
@@ -188,10 +219,42 @@ final class PackagePartInspector {
         // Left on so that a document type is reported as an event and refused, instead of being a parse error
         // indistinguishable from any other; nothing in it is ever resolved or expanded.
         factory.setProperty(XMLInputFactory.SUPPORT_DTD, true);
+        // Without this the reader asks the resolver below for a named external DTD before it reports the document
+        // type at all, so a manifest that names one could not be told from a part that is not XML.
+        factory.setProperty(IGNORE_EXTERNAL_DTD, true);
         factory.setXMLResolver((publicId, systemId, baseUri, namespace) -> {
             throw new XMLStreamException("External resources are never fetched.");
         });
         return factory;
+    }
+
+    /** The JDK reader's own switch; {@link #factory} always asks for the JDK's reader, so it is always understood. */
+    private static final String IGNORE_EXTERNAL_DTD = "http://java.sun.com/xml/stream/properties/ignore-external-dtd";
+
+    /**
+     * Told of each element as it starts, with the reader positioned on it
+     * and its depth (the root is 1), so the caller can read its name and
+     * attributes. It must not move the reader.
+     */
+    interface ElementListener {
+
+        ElementListener NONE = (reader, depth) -> {
+        };
+
+        void startElement(XMLStreamReader reader, int depth);
+    }
+
+    /**
+     * A part that is not well-formed XML. Kept apart from the other
+     * refusals because one kind of package stores some parts encrypted,
+     * and whether a part is damaged or only encrypted is known only once
+     * that package's manifest has been read.
+     */
+    static final class MalformedPartException extends UnsupportedArtifactTypeException {
+
+        private MalformedPartException() {
+            super(Reason.DAMAGED, "Package contains a part that is not well-formed XML.");
+        }
     }
 
     private static final class UncloseableInputStream extends FilterInputStream {

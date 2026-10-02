@@ -192,6 +192,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/revisions/{revisionId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo: appends a new revision whose content is revision revisionId's, except that every field explicitly locked now keeps its current value, evidence and state (a lock on any item of any repeated field keeps every repeated field, since their items line up). A field the earlier revision did not have is left without a value. No history is changed. The edit reason defaults to "Restored version N.". The new revision is on the earlier revision's template version: restoring across a fill spot correction moves the document back to that version (a value that version has no fill spot for is dropped and named in droppedFieldIds), and when the document was the only one on the version it leaves and the two are one correction apart, the template's current version moves back with it (and forward again on redo). */
+        post: operations["restoreDocumentRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/fill-spots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adds, renames or takes away fill spots of an open document, or on a PDF form adds, moves, resizes or restyles a box, as one new activated version of its form made from the version the document is on; the document moves to it keeping every value the new version has a fill spot for. Forms started from the template afterwards have the correction too; other documents stay on their version until moved. Adding to a Word form edits its file where the anchor says and proves a sample render, so it takes a few seconds; a PDF form's file is never changed (only its boxes and fields are) and its proof is a quick sample fill; renaming reuses everything. Send every box moved in one editing session in one request: it makes one version. Idempotent per Idempotency-Key: a replay answers with the same result. */
+        post: operations["changeFillSpots"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/template-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Moves the document to another activated version of its form (for example the newest one, after a fill spot was added from another document), keeping every value that version has a fill spot for and naming the ones dropped. A locked value is never dropped: the move is refused with FILL_SPOT_LOCKED instead. Idempotent per Idempotency-Key. */
+        post: operations["moveDocumentToTemplateVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/documents/{documentId}/sources": {
         parameters: {
             query?: never;
@@ -534,6 +585,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/fillable-form": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What an earlier POST made of this upload, without making anything: its Word copy, or for a PDF the spots that POST kept. 404 when nothing has been made of it yet. */
+        get: operations["getFillableForm"];
+        put?: never;
+        /** Makes an uploaded form ready to fill: a clean Word working copy (converted first when the upload is .doc, .rtf, .odt, .ott or .pages), stored as a new artifact and extracted, whose places to fill are found, named and made into spots. A PDF is filled as it is: no copy is made (templateSourceArtifactId is the upload itself), its form reading is kept (extraction.id is the reading a PDF template draft pins), and its spots are the form's own text fields, or, on a PDF with none, boxes over the blanks on its pages. Each spot is ready to send back as a template field as it is. Runs inside the request and waits for the same sandbox slots rendering uses. The first request answers 201; asking again for the same upload answers 200 with the same answer (for a PDF, the same reading and the same spots, kept from the first request, so its places are named once). */
+        post: operations["makeFillableForm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/templates": {
         parameters: {
             query?: never;
@@ -541,11 +610,45 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Every template in the workspace (both ACTIVE and DRAFT), in creation order. A caller building a document-creation picker filters to entries with a non-null currentActiveVersionId itself. */
+        /** Every template in the workspace that is not in the Trash Bin (both ACTIVE and DRAFT), in creation order. A caller building a document-creation picker filters to entries with a non-null currentActiveVersionId itself. With trashed=true, only the templates in the Trash Bin instead, the most recently trashed first. */
         get: operations["listTemplates"];
         put?: never;
-        /** Creates a new custom template's own draft against an already- extracted DOCX source. Deliberately returns the draft version alongside the template, since a caller needs that version's own number for the very next PUT .../draft/bindings call. */
+        /** Creates a new custom template's own draft against an already- extracted DOCX source, or against a PDF already prepared as a form (the server picks the kind from the file: a PDF makes a PDF template pinned to its stored form reading). Deliberately returns the draft version alongside the template, since a caller needs that version's own number for the very next PUT .../draft/bindings call. A PDF whose reading refused the whole file answers 422 with code PDF_FORM_NOT_FILLABLE and a reason (ENCRYPTED, SIGNED, XFA, LAUNCH_ACTION, EMBEDDED_FILES, DOCUMENT_JAVASCRIPT, DAMAGED, TOO_LARGE); one never prepared answers 422 SOURCE_NOT_EXTRACTABLE. The upload step's notices for the file may be sent along to be kept with the template; a notice it could not have given (an unknown code, too large a count, too long a detail, too many) answers 400. */
         post: operations["createTemplateDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Moves the template to the Trash Bin. It leaves the template list and no new document can be started from it, while every document already made from it keeps reading its version, layout and rules, and keeps being edited, filled and exported. Nothing deletes it from the Trash Bin by itself, since those documents depend on it. Trashing a template already there answers with it unchanged. */
+        post: operations["trashTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes the template back out of the Trash Bin, so documents can be started from it again. Restoring a template that is not there answers with it unchanged. */
+        post: operations["restoreTemplate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -595,8 +698,42 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Activates the draft's current version after re-validating its bindings and rules and proving a real sample fill and render -- refuses an empty field list. */
+        /** Activates the draft's current version after re-validating its bindings and rules and proving a real sample fill and render -- refuses an empty field list unless allowNoPlaces is true. */
         post: operations["activateTemplateVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/fields/{fieldId}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Says a spot Brownie found is right, so the page stops marking it as found. Belongs to the template, so it holds in every later version that still has the field. Keeping it again changes nothing. */
+        put: operations["keepFillSpot"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/field-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keeps several found spots at once ("Keep all"): every field is kept, or, when one cannot be, none is. */
+        post: operations["keepFillSpots"];
         delete?: never;
         options?: never;
         head?: never;
@@ -614,6 +751,40 @@ export interface paths {
         get: operations["getTemplateVersion"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The version's document as a page: its paragraphs and tables in order with the template's own text and style, and a fill spot wherever the filler writes a field's value. Read afresh from the version's own file on every request; makes no model call and changes nothing. Fill spots appear only in the main document body (the filler never writes into headers or footers), and the repeating row or paragraph is the one the filler copies once per repeated item. A PDF template (kind PDF) has no parts; its pages, lines and places are in pdf instead, from its pinned form reading. */
+        get: operations["getTemplateVersionLayout"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/templates/{templateId}/versions/{versionId}/box-suggestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Where a box on a PDF template's page would go for a person who pointed at a place (point) or chose a line (lineIndex, the keyboard way): just right of a label on the same line, a box to the next text or the page's text margin, one line tall; anywhere else a box two inches wide at the point. Its style is taken from the words beside it, and labelGuess from the words just before it (null when none). Deterministic, no model call, nothing kept; counted as a read. */
+        post: operations["suggestPdfBox"];
         delete?: never;
         options?: never;
         head?: never;
@@ -818,7 +989,7 @@ export interface paths {
         /** The latest export approval recorded for this document, if any. */
         get: operations["getLatestExportApproval"];
         put?: never;
-        /** Approve an already-clean validation manifest for export. Refused if the manifest is stale against the document's current revision or still has an unresolved blocking finding. Approving again what is already the document's latest approval (same person, manifest and format) answers with that approval, so a repeated request records nothing twice. Any other approval, including going back to a format chosen earlier, is a new one and becomes the latest, which is the one an export follows. */
+        /** Approve an already-clean validation manifest for export. Refused if the manifest is stale against the document's current revision or still has an unresolved blocking finding. Approving again what is already the document's latest approval (same person, manifest and format) answers with that approval, so a repeated request records nothing twice. Any other approval, including going back to a format chosen earlier, is a new one and becomes the latest, which is the one an export follows. A PDF form is exported as a PDF only: approving DOCX or BOTH for one answers 422 with code EXPORT_FORMAT_NOT_OFFERED. */
         post: operations["approveExport"];
         delete?: never;
         options?: never;
@@ -1431,6 +1602,24 @@ export interface components {
             editReason: string;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: int64
+             * @description The template version this revision's content was written against; always sent by a server that can move documents between versions.
+             */
+            templateVersionId?: number;
+        };
+        RestoreRevisionRequest: {
+            /** Format: int64 */
+            expectedRevisionId: number;
+            /** @description Defaults to "Restored version N." when blank or omitted. */
+            editReason?: string | null;
+        };
+        RestoreRevisionResponse: {
+            revision: components["schemas"]["DocumentRevisionResponse"];
+            /** @description Fields that kept their current value because they were locked, sorted by field ID. */
+            keptLockedFieldIds: string[];
+            /** @description Fields whose value was dropped because the restored revision's template version has no fill spot for them, locked or not, sorted by field ID. */
+            droppedFieldIds?: string[];
         };
         DocumentResponse: {
             /** Format: int64 */
@@ -1440,11 +1629,92 @@ export interface components {
             templateId: number;
             /** Format: int64 */
             templateVersionId: number;
+            /**
+             * Format: int64
+             * @description The template's current version, the one new documents start from. When it differs from templateVersionId the form has a newer version this document can be moved to.
+             */
+            templateLatestVersionId?: number | null;
             /** Format: int64 */
             currentRevisionId: number;
             /** Format: date-time */
             createdAt: string;
             currentRevision: components["schemas"]["DocumentRevisionResponse"];
+        };
+        /** @description A place in one paragraph of a Word form, as the page layout gives it: the paragraph's nodeId and anchorTextHash, and start and end counted in Unicode code points into its anchor text (the text of its own runs, as the layout's anchorStart offsets count it). AT is a point (start equals end); REPLACE takes the place of the text between start and end; WHOLE_LINE replaces the whole line when it holds only a blank and otherwise goes at its end; EXISTING_CONTROL makes the control at controlNodeId the spot. */
+        DocxAnchor: {
+            /** @enum {string} */
+            part: "MAIN_DOCUMENT" | "HEADER" | "FOOTER";
+            paragraphNodeId?: string | null;
+            /** @enum {string} */
+            placement: "AT" | "REPLACE" | "WHOLE_LINE" | "EXISTING_CONTROL";
+            start?: number;
+            end?: number;
+            anchorTextHash?: string | null;
+            parserVersion: string;
+            controlNodeId?: string | null;
+        };
+        /** @description ADD takes label, type (TEXT when left out) and anchor; RENAME takes fieldId and label; REMOVE takes fieldId (on a PDF form only the spot goes; the file is never changed). A name is 1 to 60 characters on one line. On a PDF form: ADD_BOX takes pageNumber, box, label and type, and may take style (left out, the look of the words beside the box, or an ordinary 11 pt sans-serif on a scan), multiline (false) and overflow (SHRINK_TO_FIT); MOVE_BOX takes fieldId and box, the new place and size on the same page; RESTYLE_BOX takes fieldId and at least one of sizePt, overflow and multiline, leaving the others as they are. Only a box Brownie draws moves or restyles: one of the PDF's own form fields is refused. One spot can be renamed, moved and restyled in one request, each once. */
+        FillSpotChangeRequest: {
+            /** @enum {string} */
+            kind: "ADD" | "RENAME" | "REMOVE" | "ADD_BOX" | "MOVE_BOX" | "RESTYLE_BOX";
+            fieldId?: string | null;
+            label?: string | null;
+            /** @enum {string|null} */
+            type?: "TEXT" | "DATE" | null;
+            anchor?: components["schemas"]["DocxAnchor"] | null;
+            /** @description ADD_BOX only. */
+            pageNumber?: number | null;
+            /** @description ADD_BOX and MOVE_BOX. */
+            box?: components["schemas"]["PdfBox"] | null;
+            /** @description ADD_BOX only; left out, the look of the words beside the box. */
+            style?: components["schemas"]["PdfTextStyle"] | null;
+            /** @description ADD_BOX (false when left out) and RESTYLE_BOX (unchanged when left out). */
+            multiline?: boolean | null;
+            /**
+             * @description ADD_BOX (SHRINK_TO_FIT when left out) and RESTYLE_BOX (unchanged when left out). When the text does not fit: make it smaller, down to 6 pt, or stop export until it is shortened.
+             * @enum {string|null}
+             */
+            overflow?: "SHRINK_TO_FIT" | "BLOCK" | null;
+            /** @description RESTYLE_BOX only; the text size the box starts at, in points. */
+            sizePt?: number | null;
+        };
+        FillSpotsRequest: {
+            /** Format: int64 */
+            expectedRevisionId: number;
+            /**
+             * Format: int64
+             * @description The template version the page showed; it must be the document's own.
+             */
+            templateVersionId: number;
+            changes: components["schemas"]["FillSpotChangeRequest"][];
+        };
+        FillSpotsResponse: {
+            document: components["schemas"]["DocumentResponse"];
+            revision: components["schemas"]["DocumentRevisionResponse"];
+            templateVersion: components["schemas"]["TemplateVersionResponse"];
+            /**
+             * Format: int64
+             * @description The revision the change replaced; restoring it is Undo.
+             */
+            previousRevisionId: number;
+            /** @description The field IDs the changes named, in request order; an added spot's new ID included. */
+            fieldIds: string[];
+            /** @description How many other documents are still on the version the document left. */
+            otherDocumentsOnPreviousVersion: number;
+        };
+        TemplateVersionMoveRequest: {
+            /** Format: int64 */
+            expectedRevisionId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+        };
+        TemplateVersionMoveResponse: {
+            document: components["schemas"]["DocumentResponse"];
+            revision: components["schemas"]["DocumentRevisionResponse"];
+            /** Format: int64 */
+            previousTemplateVersionId: number;
+            /** @description Fields whose value was dropped because the version has no fill spot for them, sorted by field ID. */
+            droppedFieldIds: string[];
         };
         CommandReceiptResponse: {
             /** Format: uuid */
@@ -1624,7 +1894,7 @@ export interface components {
              * @enum {string}
              */
             limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
-            /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED for an event, and GONE, ACCESS_LOST, TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY for a Drive file; with CONNECTOR_RESOURCE_UNSUPPORTED, TYPE or NOT_UTF8 for a Drive file (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT, EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE, HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID. */
+            /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED for an event, and GONE, ACCESS_LOST, TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY for a Drive file; with CONNECTOR_RESOURCE_UNSUPPORTED, TYPE or NOT_UTF8 for a Drive file (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT, EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE, HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID; with UNSUPPORTED_MEDIA_TYPE, why the file was refused: NOT_A_DOCUMENT, SPREADSHEET, PRESENTATION, PASSWORD_PROTECTED, RIGHTS_PROTECTED, REMOTE_CONTENT (it asks whoever opens it to fetch something from a network) or DAMAGED; with FILLABLE_FORM_FAILED, CANNOT_OPEN, DAMAGED or TIMED_OUT. */
             reason?: string;
             /**
              * @description Present only when code is CONNECTION_RECONNECT_REQUIRED, naming the connection that must be made again, or CONNECTION_ACCESS_NOT_OFFERED, naming the connection nothing here would use.
@@ -1667,17 +1937,31 @@ export interface components {
             /** Format: int64 */
             byteCount?: number | null;
             sha256?: string | null;
-            /** @enum {string|null} */
-            detectedMediaType?: "DOCX" | "PDF" | "PLAIN_TEXT" | null;
+            /**
+             * @description What the bytes are, never what the name or the browser said. DOC covers a Word 97-2003 template (.dot) too, and ODT an OpenDocument template (.ott). Only DOCX is read for its structure; DOTX, DOCM, DOTM, DOC, RTF, ODT and PAGES are filled through a Word copy made from them.
+             * @enum {string|null}
+             */
+            detectedMediaType?: "DOCX" | "DOTX" | "DOCM" | "DOTM" | "DOC" | "RTF" | "ODT" | "PAGES" | "PDF" | "PLAIN_TEXT" | null;
             displayFilename?: string | null;
             rejectionReason?: string | null;
         };
-        /** @description The full shape carries format-specific fields (feature findings for DOCX, page geometry for PDF) not modeled here yet -- the frontend workspace only needs the terminal status today. */
+        /** @description The full shape carries further format-specific fields (page geometry for PDF) not modeled here yet. */
         ExtractionResponse: {
             /** @enum {string} */
             status: "COMPLETE" | "UNSUPPORTED" | "FAILED";
             parserVersion?: string | null;
             failureReason?: string | null;
+            /** @description For a Word file, what stopped the read (only when the status is UNSUPPORTED); empty for other formats. */
+            unsupportedFeatures?: components["schemas"]["DocxFeatureFindingResponse"][];
+            /** @description For a Word file, what it keeps as it is beside a complete read: floating shapes, tables inside tables, fields Word works out by itself, embedded documents of allowed programs. Empty for other formats. Absent from servers that predate it. */
+            keptAsIsFeatures?: components["schemas"]["DocxFeatureFindingResponse"][];
+        };
+        DocxFeatureFindingResponse: {
+            /** @enum {string} */
+            feature: "TRACKED_CHANGES" | "UNRESOLVED_COMMENT" | "FLOATING_SHAPE" | "NESTED_TABLE" | "LINKED_EXTERNAL_IMAGE" | "EMBEDDED_OBJECT" | "UNSUPPORTED_FIELD" | "PACKAGE_SIGNATURE" | "DYNAMIC_FIELD" | "UNSAFE_EMBEDDED_OBJECT" | "TRACKED_FORMATTING_CHANGE";
+            /** @description Where in the file, such as "word/document.xml, p4". */
+            location: string;
+            detail: string;
         };
         TemplateResponse: {
             /** Format: int64 */
@@ -1689,6 +1973,11 @@ export interface components {
             currentActiveVersionId?: number | null;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the template was moved to the Trash Bin; null while it is not there. Absent from servers that predate the Trash Bin.
+             */
+            trashedAt?: string | null;
         };
         FieldDefinitionResponse: {
             fieldId: string;
@@ -1699,10 +1988,28 @@ export interface components {
             /** @enum {string} */
             requiredness: "REQUIRED" | "OPTIONAL";
             /** @enum {string} */
-            bindingKind: "CONTENT_CONTROL_TAG" | "STRUCTURAL_NODE";
+            bindingKind: "CONTENT_CONTROL_TAG" | "STRUCTURAL_NODE" | "ACROFORM_FIELD" | "PAGE_BOX";
             tag?: string | null;
             part?: string | null;
             nodeId?: string | null;
+            /** @description ACROFORM_FIELD only; the full dotted name of the PDF form's own text field. Absent from servers that predate PDF templates. */
+            acroFormField?: string | null;
+            /** @description PAGE_BOX only; the box on a PDF page the value is written in. Absent from servers that predate PDF templates. */
+            pageBox?: components["schemas"]["PageBoxBinding"] | null;
+            /** @description The name a person sees for this field, taken from the document or typed by the person; null means it is worked out from fieldId ("meeting.title" reads "Meeting title"). Absent from servers that predate stored labels. */
+            label?: string | null;
+            /**
+             * @description Who placed the spot; null means it came with the form (FORM). Absent from servers that predate it.
+             * @enum {string|null}
+             */
+            origin?: "FORM" | "FOUND_BY_BROWNIE" | "ADDED_BY_PERSON" | null;
+            /**
+             * @description For a Word document, whether the spot's named control was in the file already (ORIGINAL, also what null means) or was named or added by Brownie. Absent from servers that predate it.
+             * @enum {string|null}
+             */
+            docxControl?: "ORIGINAL" | "TAGGED_BY_BROWNIE" | "INSERTED_BY_BROWNIE" | null;
+            /** @description The form's own blank ("________", "[Company]"), printed in the spot while it has no value; null when there is none. Absent from servers that predate it. */
+            blankText?: string | null;
         };
         TemplateVersionResponse: {
             /** Format: int64 */
@@ -1712,8 +2019,21 @@ export interface components {
             versionNumber: number;
             /** Format: int64 */
             sourceArtifactId: number;
-            /** Format: int64 */
-            extractionVersionId: number;
+            /**
+             * @description What the template is filled into: a Word file (DOCX) or a PDF (PDF). Absent from servers that predate PDF templates, which only have DOCX ones.
+             * @enum {string}
+             */
+            kind?: "DOCX" | "PDF";
+            /**
+             * Format: int64
+             * @description The Word structure a DOCX version is pinned to; null for a PDF version.
+             */
+            extractionVersionId: number | null;
+            /**
+             * Format: int64
+             * @description The PDF form reading a PDF version is pinned to; null (or absent, from older servers) for a DOCX version.
+             */
+            pdfFormExtractionId?: number | null;
             /** @enum {string} */
             status: "DRAFT" | "ACTIVATED";
             fields: components["schemas"]["FieldDefinitionResponse"][];
@@ -1721,23 +2041,228 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             activatedAt?: string | null;
+            /** @description The template's fields a person has kept (PUT .../fields/{fieldId}/review). A field found by Brownie and not in this list is still marked as found. */
+            acceptedFieldIds?: string[];
+            /**
+             * Format: int64
+             * @description The version this one was made from by correcting a document's fill spots; null for one made from a file.
+             */
+            derivedFromVersionId?: number | null;
+            /** @description What the person was told when the template's file was made ready to fill: the upload step's notices (codes as in FillableFormResponse.notices), kept with the template version and carried on to every version made from it. Null for a version made before notices were kept, and absent from older servers. */
+            preparationNotices?: components["schemas"]["PreparationNoticeResponse"][] | null;
+        };
+        TemplateLayoutResponse: {
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            versionId: number;
+            /**
+             * @description Which page this is; absent from servers that predate PDF templates, which only have DOCX ones.
+             * @enum {string}
+             */
+            kind?: "DOCX" | "PDF";
+            /** @description PDF only; null for a DOCX version, whose page is parts. */
+            pdf?: components["schemas"]["PdfLayoutResponse"] | null;
+            /** @description The extractor that read the file for this response. */
+            parserVersion: string;
+            /** @description MAIN_DOCUMENT first, then HEADER parts, then FOOTER parts, each in document order. */
+            parts: components["schemas"]["TemplateLayoutPartResponse"][];
+            /** @description Fields of this version with no fill spot anywhere in parts (bound to a structural node, or to a tag found nowhere the filler writes), in the version's field order. */
+            unplacedFieldIds: string[];
+        };
+        TemplateLayoutPartResponse: {
+            /** @enum {string} */
+            kind: "MAIN_DOCUMENT" | "HEADER" | "FOOTER";
+            blocks: components["schemas"]["TemplateLayoutBlockResponse"][];
+        };
+        TemplateLayoutBlockResponse: {
+            /** @enum {string} */
+            kind: "PARAGRAPH" | "TABLE";
+            /**
+             * @description PARAGRAPH only; null when the template sets none a page can show.
+             * @enum {string|null}
+             */
+            alignment?: "START" | "CENTER" | "END" | "JUSTIFY" | null;
+            /** @description PARAGRAPH only; the numbering level of a numbered paragraph, else null. */
+            listLevel?: number | null;
+            /** @description PARAGRAPH only; true for the one paragraph the filler copies once per repeated item. Always false for a TABLE. */
+            repeating: boolean;
+            /** @description PARAGRAPH only (an empty paragraph has none); null for a TABLE. */
+            inlines?: components["schemas"]["TemplateLayoutInlineResponse"][] | null;
+            /** @description TABLE only; null for a PARAGRAPH. */
+            rows?: components["schemas"]["TemplateLayoutRowResponse"][] | null;
+            /** @description PARAGRAPH only; the paragraph's node id in the graph of the layout's parserVersion. */
+            nodeId?: string | null;
+            /** @description PARAGRAPH only; true when a fill spot can be added in it: in the body the filler writes into, outside the repeating row or paragraph. Always false for a TABLE. */
+            anchorable?: boolean;
+            /** @description PARAGRAPH only; the hash of its anchor text that a place chosen in it sends back. Null when it is not anchorable. */
+            anchorTextHash?: string | null;
+        };
+        TemplateLayoutRowResponse: {
+            /** @description True for the one row the filler copies once per repeated item. */
+            repeating: boolean;
+            cells: components["schemas"]["TemplateLayoutCellResponse"][];
+        };
+        TemplateLayoutCellResponse: {
+            blocks: components["schemas"]["TemplateLayoutBlockResponse"][];
+        };
+        TemplateLayoutInlineResponse: {
+            /** @enum {string} */
+            kind: "TEXT" | "FILL_SPOT" | "IMAGE";
+            /** @description TEXT only; the template's own words, every character kept, with neighbouring runs of the same style joined. */
+            text?: string | null;
+            /** @description FILL_SPOT only; the field whose value goes here. */
+            fieldId?: string | null;
+            /** @description FILL_SPOT only; the template's own text inside the control, trimmed; null when it has none. */
+            placeholder?: string | null;
+            /** @description TEXT and FILL_SPOT; null when the template sets none of these properties. For a FILL_SPOT it is the style of the control's first run, which is the formatting a filled value takes. */
+            style?: components["schemas"]["TemplateLayoutStyleResponse"] | null;
+            /** @description TEXT only, in an anchorable paragraph; where the text starts in the paragraph's anchor text, in code points. Null for text shown from a control no field names, which carries controlNodeId instead. Two pieces of text are joined only when they stay contiguous. */
+            anchorStart?: number | null;
+            /** @description TEXT only; the control this text is shown from, which an EXISTING_CONTROL anchor names. */
+            controlNodeId?: string | null;
+            /** @description FILL_SPOT only; the node id of the spot's control. */
+            nodeId?: string | null;
+            /**
+             * @description FILL_SPOT only; who placed the spot.
+             * @enum {string|null}
+             */
+            origin?: "FORM" | "FOUND_BY_BROWNIE" | "ADDED_BY_PERSON" | null;
+            /** @description FILL_SPOT only; the name a person sees for the spot's field. */
+            label?: string | null;
+        };
+        /** @description Every property is null when the template never set it, which is not the same as off. */
+        TemplateLayoutStyleResponse: {
+            bold?: boolean | null;
+            italic?: boolean | null;
+            underline?: boolean | null;
+            fontFamily?: string | null;
+            /** @description Half-points, as Word stores them; 22 is 11 pt. */
+            fontSizeHalfPoints?: number | null;
+            /** @description Six hex digits without a leading '#'; null for "auto" or anything else. */
+            colorHex?: string | null;
         };
         CreateTemplateRequest: {
             displayName: string;
             /** Format: int64 */
             sourceArtifactId: number;
+            /** @description Optional: the notices the upload step gave for this file (FillableFormResponse.notices), kept with the template so they can be shown again. Left out, none are kept. */
+            preparationNotices?: components["schemas"]["PreparationNoticeRequest"][];
+        };
+        PreparationNoticeRequest: {
+            /** @description One of the codes FillableFormResponse.notices lists. */
+            code: string;
+            count: number;
+            detail?: string | null;
         };
         TemplateDraftResponse: {
             template: components["schemas"]["TemplateResponse"];
             draftVersion: components["schemas"]["TemplateVersionResponse"];
         };
-        /** @description Only tag (for CONTENT_CONTROL_TAG) or part/nodeId (for STRUCTURAL_NODE) is required, chosen by kind; the other is ignored. */
+        /** @description Only the part kind chooses is required and the rest is ignored: tag (CONTENT_CONTROL_TAG), part/nodeId (STRUCTURAL_NODE), acroFormField (ACROFORM_FIELD) or pageBox (PAGE_BOX). A Word binding on a PDF template, or the reverse, is refused as WRONG_FORMAT. */
         BindingRequest: {
             /** @enum {string} */
-            kind: "CONTENT_CONTROL_TAG" | "STRUCTURAL_NODE";
+            kind: "CONTENT_CONTROL_TAG" | "STRUCTURAL_NODE" | "ACROFORM_FIELD" | "PAGE_BOX";
             tag?: string | null;
             part?: string | null;
             nodeId?: string | null;
+            /** @description The full dotted name of one of the PDF form's own text fields. */
+            acroFormField?: string | null;
+            pageBox?: components["schemas"]["PageBoxBinding"] | null;
+        };
+        /** @description A box on a PDF page, in points, on the page as stored (before it is turned), with the origin at the top-left of the page's visible area and Y down. A box must be wholly on its page, at least 8 by 6 points, and cover no more than a fifth of another place. */
+        PageBoxBinding: {
+            page: number;
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+            style?: components["schemas"]["PdfTextStyle"];
+            /** @default false */
+            multiline: boolean;
+            /**
+             * @description When the text does not fit: make it smaller, down to 6 pt (SHRINK_TO_FIT), or stop export until it is shortened (BLOCK).
+             * @default SHRINK_TO_FIT
+             * @enum {string}
+             */
+            overflow: "SHRINK_TO_FIT" | "BLOCK";
+        };
+        /** @description How text in a box looks. Left out, it is an ordinary 11 pt sans-serif. */
+        PdfTextStyle: {
+            /**
+             * @default SANS
+             * @enum {string}
+             */
+            font: "SANS" | "SERIF" | "MONO";
+            /** @default false */
+            bold: boolean;
+            /** @default 11 */
+            sizePt: number;
+        };
+        PdfLayoutResponse: {
+            /**
+             * Format: int64
+             * @description The PDF to draw the pages from.
+             */
+            sourceArtifactId: number;
+            pages: components["schemas"]["PdfLayoutPage"][];
+            /** @description Every place a value goes, one per place a form field is shown, in the version's field order. */
+            spots: components["schemas"]["PdfLayoutSpot"][];
+        };
+        PdfLayoutPage: {
+            pageNumber: number;
+            /** @description The visible area's width in points, before the page is turned. */
+            width: number;
+            height: number;
+            /** @enum {integer} */
+            rotation: 0 | 90 | 180 | 270;
+            /** @description False for a scanned page, whose words cannot be read. */
+            hasText: boolean;
+            lines: components["schemas"]["PdfLayoutLine"][];
+        };
+        PdfLayoutLine: {
+            index: number;
+            text: string;
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+        };
+        PdfLayoutSpot: {
+            fieldId: string;
+            label: string;
+            /** @enum {string} */
+            origin: "FORM" | "FOUND_BY_BROWNIE" | "ADDED_BY_PERSON";
+            pageNumber: number;
+            box: components["schemas"]["PdfBox"];
+            /** @description Null for one of the form's own fields, whose look the form sets. */
+            style?: components["schemas"]["PdfTextStyle"] | null;
+            multiline: boolean;
+            /** @enum {string} */
+            overflow: "SHRINK_TO_FIT" | "BLOCK";
+            /** @enum {string} */
+            bindingKind: "ACROFORM_FIELD" | "PAGE_BOX";
+        };
+        /** @description Points, on the page as stored, origin at the top-left of the page's visible area, Y down. */
+        PdfBox: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        };
+        /** @description Exactly one of point and lineIndex. */
+        BoxSuggestionRequest: {
+            pageNumber: number;
+            point?: {
+                x: number;
+                y: number;
+            } | null;
+            lineIndex?: number | null;
+        };
+        BoxSuggestionResponse: {
+            box: components["schemas"]["PdfBox"];
+            style: components["schemas"]["PdfTextStyle"];
+            labelGuess: string | null;
         };
         FieldDefinitionRequest: {
             fieldId: string;
@@ -1748,6 +2273,20 @@ export interface components {
             /** @enum {string} */
             requiredness: "REQUIRED" | "OPTIONAL";
             binding: components["schemas"]["BindingRequest"];
+            /** @description The name a person sees for this field. Spaces are tidied; it must then be one line of 1 to 60 characters with at least one letter or number, or the request is refused as malformed. Leave it out to have the name worked out from fieldId. */
+            label?: string | null;
+            /**
+             * @description Who placed the spot; leave it out for one that came with the form.
+             * @enum {string|null}
+             */
+            origin?: "FORM" | "FOUND_BY_BROWNIE" | "ADDED_BY_PERSON" | null;
+            /**
+             * @description For a Word document, where the spot's named control came from; leave it out when it was in the file.
+             * @enum {string|null}
+             */
+            docxControl?: "ORIGINAL" | "TAGGED_BY_BROWNIE" | "INSERTED_BY_BROWNIE" | null;
+            /** @description The form's own blank, printed in the spot while it has no value. One line with no tabs or other control characters, or the request is refused as malformed. */
+            blankText?: string | null;
         };
         ReplaceBindingsRequest: {
             expectedVersionNumber: number;
@@ -1755,6 +2294,99 @@ export interface components {
         };
         ActivateVersionRequest: {
             expectedVersionNumber: number;
+            /** @description true lets a draft with no fields activate, for a form opened with no places found: the document opens and the person adds its spots. Left out, a draft with no fields is refused. */
+            allowNoPlaces?: boolean;
+        };
+        FieldReviewRequest: {
+            /** @enum {string} */
+            decision: "KEPT";
+        };
+        FieldReviewsRequest: {
+            fieldIds: string[];
+            /**
+             * @description May be left out; KEPT is the only review there is.
+             * @enum {string}
+             */
+            decision?: "KEPT";
+        };
+        FillableFormResponse: {
+            /** @enum {string} */
+            kind: "DOCX" | "PDF";
+            /**
+             * Format: int64
+             * @description The upload, which is never changed.
+             */
+            sourceArtifactId: number;
+            /**
+             * Format: int64
+             * @description The artifact to create the template draft from (for Word, the clean working copy; for a PDF, the upload itself).
+             */
+            templateSourceArtifactId: number;
+            /** @description The upload's detected media type (DOCX, DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES or PDF). */
+            sourceFormat: string;
+            converted: boolean;
+            extraction: components["schemas"]["FillableFormExtraction"];
+            spots: components["schemas"]["FillableFormSpot"][];
+            /** @description What the person should be told about how the file was made ready, in order. Codes: TRACKED_CHANGES_AND_COMMENTS, MACROS_REMOVED, SIGNATURE_REMOVED, LINKED_CONTENT_REMOVED, FIELDS_FROZEN, EMBEDDED_FILES_TO_PICTURES, EDITING_RESTRICTION_REMOVED, CONVERTED (detail is the format converted from), KEPT_AS_IS (detail is the feature), SPOTS_FOUND, NO_SPOTS_FOUND, SIGNATURE_LINES_LEFT, CHECKBOXES_LEFT, SOME_NAMED_BY_RULES, SPOTS_SKIPPED, BLANKS_OUTSIDE_BODY, TABLE_ROWS_GROW, PLACES_LEFT_OUT (places the rules found that the naming step decided are not for filling in, such as an example answer or a box kept for the office; a place to sign is counted by SIGNATURE_LINES_LEFT instead), and for a PDF SCANNED_PDF (no text and no fields: boxes are drawn by hand) and PDF_FIELDS_LEFT (the form's check boxes, choices and signature fields, left for the person). */
+            notices: components["schemas"]["PreparationNoticeResponse"][];
+            /**
+             * @description MODEL when the model named at least one spot.
+             * @enum {string}
+             */
+            spotNaming: "MODEL" | "RULES";
+            /**
+             * @description Why the rules named every spot; null when the model named some.
+             * @enum {string|null}
+             */
+            rulesOnlyReason?: "DISABLED" | "NO_CANDIDATES" | "ALLOWANCE_USED_UP" | "MODEL_UNAVAILABLE" | null;
+        };
+        FillableFormExtraction: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            status: "COMPLETE" | "UNSUPPORTED" | "FAILED";
+            parserVersion: string;
+            keptAsIs: {
+                feature: string;
+                count: number;
+            }[];
+        };
+        /** @description One spot, in the shape of a template field request, so it can be sent back as a field as it is; namedBy, requiredHint, suggestedType and foundAs describe how it was found and named. A Word spot is bound to its control's tag (CONTENT_CONTROL_TAG); a PDF spot to one of the form's own fields (ACROFORM_FIELD) or to a box on a page (PAGE_BOX). */
+        FillableFormSpot: {
+            fieldId: string;
+            /** @description Null for a control the form had already named with a usable id; its name is worked out from fieldId. */
+            label?: string | null;
+            /** @enum {string} */
+            type: "TEXT" | "DATE";
+            /** @enum {string} */
+            cardinality: "SCALAR" | "REPEATED";
+            /**
+             * @description Always OPTIONAL; a guess never blocks an export (see requiredHint).
+             * @enum {string}
+             */
+            requiredness: "REQUIRED" | "OPTIONAL";
+            binding: components["schemas"]["BindingRequest"];
+            /** @enum {string} */
+            origin: "FORM" | "FOUND_BY_BROWNIE" | "ADDED_BY_PERSON";
+            /**
+             * @description Null for a PDF.
+             * @enum {string|null}
+             */
+            docxControl?: "ORIGINAL" | "TAGGED_BY_BROWNIE" | "INSERTED_BY_BROWNIE" | null;
+            /** @description The form's own blank the spot replaced (underscores, a bracketed prompt), printed while the spot is empty. Null for a PDF, whose page is never changed. */
+            blankText?: string | null;
+            /** @enum {string} */
+            namedBy: "MODEL" | "RULES";
+            requiredHint: boolean;
+            /** @description The type as the namer put it (TEXT, DATE, NUMBER or LONG_TEXT); null for a PDF. */
+            suggestedType?: string | null;
+            /** @description What the rules saw there (UNDERSCORES, BRACKET, EMPTY_CELL, EXISTING_TAGGED_CONTROL, ...); null for a PDF. */
+            foundAs?: string | null;
+        };
+        PreparationNoticeResponse: {
+            code: string;
+            count: number;
+            detail?: string | null;
         };
         CandidateFieldBindingResponse: {
             fieldId: string;
@@ -1767,6 +2399,8 @@ export interface components {
         CandidateBindingReportResponse: {
             candidates: components["schemas"]["CandidateFieldBindingResponse"][];
             ambiguousContentControlTags: string[];
+            /** @description How many content controls in the body of the form have no tag, or a tag of only whitespace: none of them is a candidate, and each stays in the form as it is. Absent from servers from before it, which means 0. */
+            untaggedContentControlCount?: number;
         };
         AttachSourceRequest: {
             /** Format: int64 */
@@ -1888,14 +2522,59 @@ export interface components {
             googleConnectorAccess?: ("CALENDAR_EVENTS" | "DRIVE_FILES" | "DRIVE_SAVING" | "CALENDAR_EVENT_CREATION")[];
             /** @description Which changes in a person's Google account this deployment makes, each only when its person approves that exact change. Empty unless Google is set up and such changes are switched on. A server from before such changes existed leaves it out. */
             googleActions?: ("CALENDAR_CREATE_EVENT" | "DRIVE_SAVE_AS_GOOGLE_DOC" | "DRIVE_SAVE_FILE" | "GOOGLE_DOC_APPEND")[];
+            /** @description What a file chooser for a form to fill may offer, and how each is filled: NATIVE as the Word document it is, CONVERTED through a Word copy converted from it, PDF as a PDF. An extension appears once for each media type a browser may report for it. The server still judges every file by its bytes. A server from before these formats leaves it out. */
+            formFileTypes?: {
+                /** @description Without the dot, lower case. */
+                extension: string;
+                mediaType: string;
+                /** @enum {string} */
+                route: "NATIVE" | "CONVERTED" | "PDF";
+            }[];
+            /**
+             * @description Who names the places Brownie finds in an uploaded form: MODEL when the form's text is sent to the model for that, RULES when Brownie's own rules name them on the server. A server from before places were found on upload leaves it out.
+             * @enum {string}
+             */
+            fillSpotNaming?: "MODEL" | "RULES";
+        };
+        /** @description A place selected on a PDF form's page: page pageNumber, and either a point (points, on the page as stored, before it is turned, origin at the top-left of its visible area, Y down: the convention boxes use) or one of the page's lines by its index in the page layout. Exactly one of point and lineIndex. */
+        PdfPageAnchor: {
+            /** @enum {string} */
+            kind: "PDF";
+            pageNumber: number;
+            point?: {
+                x: number;
+                y: number;
+            } | null;
+            lineIndex?: number | null;
         };
         AssistTextRequest: {
             text: string;
+            /** @description The place selected on the page, if any: where "here" and "this line" are, or the choice picked from an interpretation's choices. A place in a Word form's text (DocxAnchor, with no kind) or on a PDF form's page (PdfPageAnchor, kind PDF). */
+            pageAnchor?: components["schemas"]["DocxAnchor"] | components["schemas"]["PdfPageAnchor"] | null;
         };
         AssistExecuteRequest: {
             text: string;
             /** Format: int64 */
             expectedRevisionId: number;
+            pageAnchor?: components["schemas"]["DocxAnchor"] | components["schemas"]["PdfPageAnchor"] | null;
+        };
+        AssistPlaceChoiceResponse: {
+            lineText: string;
+            /** @description The place, in the shape the page sends it back in as pageAnchor: a place in a Word form's text, or a line on a PDF form's page (kind PDF, pageNumber and lineIndex). */
+            anchor: components["schemas"]["DocxAnchor"] | components["schemas"]["PdfPageAnchor"];
+        };
+        AssistSpotChangeResponse: {
+            fieldId: string;
+            label: string;
+            /** @description The line an added spot went on; null for a rename, a removal, or a box put at a point on a PDF page. */
+            lineText?: string | null;
+            /**
+             * Format: int64
+             * @description The revision the change replaced; restoring it is Undo.
+             */
+            previousRevisionId: number;
+            /** Format: int64 */
+            templateVersionId: number;
         };
         AssistScopeResponse: {
             fieldId?: string | null;
@@ -1905,20 +2584,24 @@ export interface components {
         };
         AssistInterpretationResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             scope?: components["schemas"]["AssistScopeResponse"] | null;
             executable: boolean;
             usesModel: boolean;
             help: string[];
+            /** @description The lines a new fill spot could go on when the quoted words are on more than one; send the chosen anchor back as pageAnchor with the same text. Empty otherwise. */
+            choices?: components["schemas"]["AssistPlaceChoiceResponse"][];
         };
         AssistExecutionResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             proposal?: components["schemas"]["PatchProposalResponse"] | null;
             explanation?: string | null;
             help: string[];
+            /** @description Set when a fill spot was added, renamed or taken away, which is applied at once. */
+            spotChange?: components["schemas"]["AssistSpotChangeResponse"] | null;
         };
         EvidenceExcerptResponse: {
             /** Format: int64 */
@@ -2133,9 +2816,12 @@ export interface components {
             templateId: number;
             /** Format: int64 */
             templateVersionId: number;
-            /** Format: int64 */
-            docxArtifactId: number;
-            docxSha256: string;
+            /**
+             * Format: int64
+             * @description Null for a PDF template, which is filled as a PDF and has no Word file.
+             */
+            docxArtifactId: number | null;
+            docxSha256: string | null;
             /** Format: int64 */
             pdfArtifactId?: number | null;
             pdfSha256?: string | null;
@@ -2161,9 +2847,12 @@ export interface components {
             templateId: number;
             /** Format: int64 */
             templateVersionId: number;
-            /** Format: int64 */
-            docxArtifactId: number;
-            docxSha256: string;
+            /**
+             * Format: int64
+             * @description Null for a PDF template, which is filled as a PDF and has no Word file.
+             */
+            docxArtifactId: number | null;
+            docxSha256: string | null;
             /** Format: int64 */
             pdfArtifactId: number;
             pdfSha256: string;
@@ -2208,9 +2897,12 @@ export interface components {
             exportApprovalId: number;
             /** Format: int64 */
             validationManifestId: number;
-            /** Format: int64 */
-            docxArtifactId: number;
-            docxSha256: string;
+            /**
+             * Format: int64
+             * @description Null for a PDF template's export, which is a PDF and nothing else.
+             */
+            docxArtifactId: number | null;
+            docxSha256: string | null;
             /** Format: int64 */
             pdfArtifactId?: number | null;
             pdfSha256?: string | null;
@@ -2360,6 +3052,8 @@ export interface components {
             modelName: string;
             /** @description Whoever runs this deployment published this; absent until they have. */
             supportContact?: string | null;
+            /** @description Whether an uploaded form's text is sent to the model, without a further request, so Brownie can find the places to fill in and name them. A server from before that leaves it out, and sends nothing. */
+            formTextSentToModel?: boolean;
         };
     };
     responses: {
@@ -2607,7 +3301,15 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            409: components["responses"]["Conflict"];
+            /** @description The idempotency key was already used for a different request (code CONFLICT), or the template is in the Trash Bin (code TEMPLATE_TRASHED) and has to be restored before a document can be started from it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
             422: components["responses"]["UnprocessableContent"];
         };
     };
@@ -2804,6 +3506,181 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    restoreDocumentRevision: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+                revisionId: components["parameters"]["RevisionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description The newly appended revision and the fields that kept their value, or the stable result of an idempotent replay. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreRevisionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The document is not in this workspace (or is in the trash), or revisionId is not one of its revisions. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            409: components["responses"]["Conflict"];
+            /** @description The expected revision is no longer current (code STALE_REVISION, with currentRevisionId). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    changeFillSpots: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillSpotsRequest"];
+            };
+        };
+        responses: {
+            /** @description The document on its new form version, the revision appended, and what Undo needs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillSpotsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description TEMPLATE_VERSION_MOVED_ON (another correction of the same form got there first; reload and try again), DOCUMENT_TEMPLATE_VERSION_MOVED (the document is not on templateVersionId, or is behind the form's newest version, which is templateLatestVersionId: move it first), FILL_SPOT_ANCHOR_STALE (the page changed since the place was chosen), FILL_SPOT_LOCKED (a value to be removed is locked, with fieldId), or an Idempotency-Key reused for a different request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The expected revision is no longer current (code STALE_REVISION, with currentRevisionId). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FILL_SPOT_PLACE_NOT_ALLOWED with reason (INSIDE_LINK, INSIDE_FIELD_CODE, HEADER_FOOTER, REPEATING_REGION, PROTECTED, NOT_FOUND, NOT_REACHABLE for a Word form; OFF_PAGE, TOO_SMALL, OVERLAPS, NOT_FILLABLE for a box on a PDF page: not all on its page, smaller than 8 by 6 points, covering more than a fifth of another place, or on a page Brownie cannot write on), FILL_SPOT_CHANGE_INVALID (a name that is not one, a spot the form does not have, too many changes, no spot left, a text size outside 4 to 72 points, moving or restyling one of a PDF's own form fields, or a change for the other kind of form: an ADD on a PDF form, a box on a Word form), FILL_SPOT_WOULD_NOT_PRINT (the form would not print correctly with the change, with fields), or the checks activation makes (bindings, rules). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too many requests that edit and render a form in a short time (code RATE_LIMITED, with Retry-After). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    moveDocumentToTemplateVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateVersionMoveRequest"];
+            };
+        };
+        responses: {
+            /** @description The document on the version, and the revision appended. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateVersionMoveResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description FILL_SPOT_LOCKED (with fieldId), DOCUMENT_ALREADY_ON_VERSION, or an Idempotency-Key reused for a different request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The expected revision is no longer current (code STALE_REVISION, with currentRevisionId). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The version is not an activated version of this document's form. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listDocumentSources: {
@@ -3375,7 +4252,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Error"];
                 };
             };
-            /** @description The uploaded content is not a supported media type. */
+            /** @description The uploaded content is not a supported media type, or is one in a form Brownie will not open. Code UNSUPPORTED_MEDIA_TYPE, with reason saying why. */
             415: {
                 headers: {
                     [name: string]: unknown;
@@ -3435,12 +4312,109 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description NEEDS_FILLABLE_COPY: the artifact is a word-processing file Brownie accepts but reads only through a Word copy made from it (detectedMediaType DOTX, DOCM, DOTM, DOC, RTF, ODT or PAGES). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getFillableForm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                artifactId: components["parameters"]["ArtifactId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored answer, a Word copy or a PDF's kept spots. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillableFormResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    makeFillableForm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                artifactId: components["parameters"]["ArtifactId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The copy an earlier request made (for a PDF, the answer an earlier request kept). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillableFormResponse"];
+                };
+            };
+            /** @description The copy was made by this request (for a PDF, this request found and named its places). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillableFormResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description NOT_A_WORD_PROCESSING_DOCUMENT (plain text is no form), or FORMAT_DISABLED (this server has switched converting the file's format off; the error's format property names it). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FILLABLE_FORM_FAILED: the file was accepted but no fillable copy could be made; the error's reason is CANNOT_OPEN (the file did not open as its format), DAMAGED, or TIMED_OUT (converting it took too long). PDF_FORM_NOT_FILLABLE: a PDF that cannot be filled at all; the error's reason is ENCRYPTED, SIGNED, XFA, LAUNCH_ACTION, EMBEDDED_FILES, DOCUMENT_JAVASCRIPT, DAMAGED or TOO_LARGE. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RENDERER_BUSY (every sandbox slot stayed taken; with a Retry-After header), CONVERTER_UNAVAILABLE (the converter could not be run; with a Retry-After header), or any other ServiceUnavailable code. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listTemplates: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description true lists the Trash Bin instead of the templates new documents are started from. */
+                trashed?: boolean;
+            };
             header?: never;
             path: {
                 workspaceId: components["parameters"]["WorkspaceId"];
@@ -3484,8 +4458,57 @@ export interface operations {
                     "application/json": components["schemas"]["TemplateDraftResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableContent"];
+        };
+    };
+    trashTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template, now in the Trash Bin. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    restoreTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template, back in the template list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     getDraftCandidateBindings: {
@@ -3573,6 +4596,77 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    keepFillSpot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+                fieldId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FieldReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such template, or it has no such field in its open draft or active version. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    keepFillSpots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FieldReviewsRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such template, or it has no such field in its open draft or active version. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getTemplateVersion: {
         parameters: {
             query?: never;
@@ -3596,6 +4690,80 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    getTemplateVersionLayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+                versionId: components["parameters"]["VersionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The layout. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateLayoutResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The version's file cannot be drawn as a page (code TEMPLATE_LAYOUT_UNAVAILABLE): it no longer reads as a Word document, uses something the extractor does not support, or holds more than 400,000 characters of text. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    suggestPdfBox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                templateId: components["parameters"]["TemplateId"];
+                versionId: components["parameters"]["VersionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BoxSuggestionRequest"];
+            };
+        };
+        responses: {
+            /** @description The suggested box. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoxSuggestionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description The version is a Word template, which has no pages to place a box on (code TEMPLATE_LAYOUT_UNAVAILABLE). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listRules: {

@@ -1,6 +1,9 @@
 package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.job.CancellationCommand;
@@ -32,13 +35,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -60,37 +58,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcJobRepositoryTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     @Autowired
@@ -505,7 +489,7 @@ class JdbcJobRepositoryTest {
     }
 
     private long countAsWorker(String sql) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD);
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet resultSet = statement.executeQuery()) {
             resultSet.next();
@@ -514,7 +498,7 @@ class JdbcJobRepositoryTest {
     }
 
     private long countAsWorkerWithContext(long userId, String sql) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD)) {
             connection.setAutoCommit(false);
             setLocalContext(connection, userId);
             try (PreparedStatement statement = connection.prepareStatement(sql); ResultSet resultSet = statement.executeQuery()) {
@@ -561,7 +545,7 @@ class JdbcJobRepositoryTest {
     }
 
     private void updateAsMigration(String sql, long jobId) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, jobId);
             assertThat(statement.executeUpdate()).isEqualTo(1);
@@ -569,7 +553,7 @@ class JdbcJobRepositoryTest {
     }
 
     private void executeAsWorker(String sql, long jobId) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD);
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, jobId);
             statement.executeUpdate();
@@ -577,7 +561,7 @@ class JdbcJobRepositoryTest {
     }
 
     private void expireAsMigration(long jobId) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         "UPDATE job SET deadline_at = clock_timestamp() - interval '1 minute' WHERE id = ?")) {
             statement.setLong(1, jobId);
@@ -586,7 +570,7 @@ class JdbcJobRepositoryTest {
     }
 
     private void insertStagedOutputAsWorker(long workspaceId, long jobId) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_worker", WORKER_PASSWORD);
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_worker", WORKER_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         """
                         INSERT INTO job_staged_output

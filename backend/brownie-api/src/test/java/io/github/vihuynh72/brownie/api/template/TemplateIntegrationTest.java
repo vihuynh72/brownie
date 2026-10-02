@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.api.template;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.rule.EmptyValueResolution;
 import io.github.vihuynh72.brownie.core.rule.RulePayload;
@@ -40,18 +43,11 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,49 +68,26 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "spring.autoconfigure.exclude=")
-@Testcontainers
+@DockerTest
 class TemplateIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String ISSUER = "https://issuer-template-integration";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(org.testcontainers.utility.DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
     }
 
     // A plain, local instance, not @Autowired -- see ExtractionIntegrationTest's
@@ -335,6 +308,156 @@ class TemplateIntegrationTest {
         assertThat(activated.get("activatedAt").isNull()).isFalse();
     }
 
+    /**
+     * The upload step's notes about the file travel with the template made
+     * from it: kept as sent with the draft, read back on every read of the
+     * version and after it is activated, and absent -- null -- when none
+     * were sent. Notes the upload step could not have given are refused as
+     * a malformed request, and no template is made.
+     */
+    @Test
+    void theUploadsNotesAreKeptWithTheTemplateAndNotesNoUploadCouldGiveAreRefused() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-preparation-notices");
+        long workspaceId = ensureWorkspace("subject-preparation-notices").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("meeting.title"), "minutes.docx");
+        extract(session, workspaceId, artifactId);
+        // A long form restyled while changes were tracked counts its tracked changes in the many thousands.
+        String notices = "[{\"code\":\"CONVERTED\",\"count\":1,\"detail\":\"WORD_97\"},{\"code\":\"PLACES_LEFT_OUT\",\"count\":2},"
+                + "{\"code\":\"TRACKED_CHANGES_AND_COMMENTS\",\"count\":12000}]";
+
+        JsonNode created = readJson(mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"displayName\":\"Club Minutes\",\"sourceArtifactId\":" + artifactId
+                                + ",\"preparationNotices\":" + notices + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        long templateId = created.get("template").get("id").asLong();
+        JsonNode kept = created.get("draftVersion").get("preparationNotices");
+        assertThat(kept).hasSize(3);
+        assertThat(kept.get(0).get("code").asText()).isEqualTo("CONVERTED");
+        assertThat(kept.get(0).get("count").asInt()).isEqualTo(1);
+        assertThat(kept.get(0).get("detail").asText()).isEqualTo("WORD_97");
+        assertThat(kept.get(1).get("code").asText()).isEqualTo("PLACES_LEFT_OUT");
+        assertThat(kept.get(1).get("count").asInt()).isEqualTo(2);
+        assertThat(kept.get(1).get("detail").isNull()).isTrue();
+        assertThat(kept.get(2).get("count").asInt()).isEqualTo(12000);
+
+        mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings").cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"expectedVersionNumber\":1,\"fields\":[{\"fieldId\":\"meeting.title\",\"type\":\"TEXT\","
+                                + "\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}}]}"))
+                .andExpect(status().isOk());
+        JsonNode activated = readJson(mockMvc.perform(post(templatesPath(workspaceId) + "/" + templateId + "/versions").cookie(session)
+                        .with(csrf()).contentType("application/json").content("{\"expectedVersionNumber\":2}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(activated.get("preparationNotices")).isEqualTo(kept);
+        JsonNode read = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/versions/"
+                        + activated.get("id").asLong()).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(read.get("preparationNotices")).isEqualTo(kept);
+
+        JsonNode plain = readJson(mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"displayName\":\"Club Minutes 2\",\"sourceArtifactId\":" + artifactId + "}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        assertThat(plain.get("draftVersion").get("preparationNotices").isNull()).isTrue();
+
+        int templatesBefore = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk()).andReturn()).size();
+        String fortyOne = String.join(",", Collections.nCopies(41, "{\"code\":\"SPOTS_FOUND\",\"count\":1}"));
+        for (String refused : List.of(
+                "[{\"code\":\"IGNORE_THE_RULES\",\"count\":1}]",
+                "[{\"code\":\"SPOTS_FOUND\",\"count\":-1}]",
+                "[{\"code\":\"SPOTS_FOUND\"}]",
+                "[{\"count\":1}]",
+                "[null]",
+                "[{\"code\":\"KEPT_AS_IS\",\"count\":1,\"detail\":\"" + "x".repeat(201) + "\"}]",
+                "[" + fortyOne + "]")) {
+            mockMvc.perform(post(templatesPath(workspaceId)).cookie(session).with(csrf())
+                            .contentType("application/json")
+                            .content("{\"displayName\":\"Refused\",\"sourceArtifactId\":" + artifactId
+                                    + ",\"preparationNotices\":" + refused + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
+                .andExpect(status().isOk()).andReturn()).size()).isEqualTo(templatesBefore);
+    }
+
+    /**
+     * A field's name, where it came from and the form's own blank travel
+     * with it: stored as sent (the name tidied), returned by every read, and
+     * absent -- null -- on a field sent without them. A name that is not one
+     * short line, or a blank with a control character in it, is a malformed
+     * request.
+     */
+    @Test
+    void aFieldsLabelOriginAndBlankRoundTripAndABadOneIsAMalformedRequest() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-field-labels");
+        long workspaceId = ensureWorkspace("subject-field-labels").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithContentControl("ho.va.ten", "meeting.title"), "form.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        String bindingsBody = "{"
+                + "\"expectedVersionNumber\":1,"
+                + "\"fields\":[{"
+                + "\"fieldId\":\"ho.va.ten\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"OPTIONAL\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"ho.va.ten\"},"
+                + "\"label\":\"  H\u1ecd   v\u00e0 t\u00ean \",\"origin\":\"FOUND_BY_BROWNIE\",\"docxControl\":\"INSERTED_BY_BROWNIE\","
+                + "\"blankText\":\"________\""
+                + "},{"
+                + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}"
+                + "}]}";
+        JsonNode replaced = readUtf8Json(mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                        .cookie(session)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(bindingsBody.getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        JsonNode labelled = replaced.get("fields").get(0);
+        assertThat(labelled.get("label").asText()).isEqualTo("H\u1ecd v\u00e0 t\u00ean");
+        assertThat(labelled.get("origin").asText()).isEqualTo("FOUND_BY_BROWNIE");
+        assertThat(labelled.get("docxControl").asText()).isEqualTo("INSERTED_BY_BROWNIE");
+        assertThat(labelled.get("blankText").asText()).isEqualTo("________");
+        JsonNode plain = replaced.get("fields").get(1);
+        for (String property : List.of("label", "origin", "docxControl", "blankText")) {
+            assertThat(plain.get(property).isNull()).as(property).isTrue();
+        }
+
+        String versionPath = templatesPath(workspaceId) + "/" + templateId + "/versions/" + replaced.get("id").asLong();
+        JsonNode reread = readUtf8Json(mockMvc.perform(get(versionPath).cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        assertThat(reread.get("fields")).isEqualTo(replaced.get("fields"));
+
+        for (String badPart : List.of(
+                "\"label\":\"First line\\nSecond line\"",
+                "\"label\":\"" + "a".repeat(61) + "\"",
+                "\"label\":\"   \"",
+                "\"blankText\":\"____\\t____\"",
+                "\"blankText\":\"" + "_".repeat(201) + "\"")) {
+            String badBody = "{\"expectedVersionNumber\":2,\"fields\":[{"
+                    + "\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\",\"requiredness\":\"REQUIRED\","
+                    + "\"binding\":{\"kind\":\"CONTENT_CONTROL_TAG\",\"tag\":\"meeting.title\"}," + badPart + "}]}";
+            JsonNode problem = readUtf8Json(mockMvc.perform(put(templatesPath(workspaceId) + "/" + templateId + "/draft/bindings")
+                            .cookie(session)
+                            .with(csrf())
+                            .contentType("application/json")
+                            .content(badBody))
+                    .andExpect(status().isBadRequest())
+                    .andReturn());
+            assertThat(problem.get("code").asText()).as(badPart).isEqualTo("MALFORMED_REQUEST");
+            assertThat(problem.get("detail").asText()).as(badPart).contains("\"meeting.title\"", "must be one line");
+        }
+    }
+
     @Test
     void creatingADraftBeforeExtractionHasRunReturnsUnprocessable() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-not-extracted");
@@ -442,6 +565,7 @@ class TemplateIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
         assertThat(candidates.get("ambiguousContentControlTags")).isEmpty();
+        assertThat(candidates.get("untaggedContentControlCount").asInt()).isZero();
         assertThat(candidates.get("candidates")).hasSize(2);
         JsonNode titleCandidate = findCandidate(candidates, "meeting.title");
         assertThat(titleCandidate.get("type").asText()).isEqualTo("TEXT");
@@ -471,6 +595,26 @@ class TemplateIntegrationTest {
                         .contentType("application/json")
                         .content("{\"expectedVersionNumber\":2}"))
                 .andExpect(status().isCreated());
+    }
+
+    /** A content control with no tag, or an empty one, is counted rather than proposed, so the person can be told it stays as it is. */
+    @Test
+    void candidateBindingsCountTheContentControlsWithNoUsableTag() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-untagged-controls");
+        long workspaceId = ensureWorkspace("subject-untagged-controls").id();
+        long artifactId = uploadAndFinalize(session, workspaceId, docxWithUntaggedAndEmptyTaggedControls("meeting.title"), "untagged.docx");
+        extract(session, workspaceId, artifactId);
+        long templateId = createDraft(session, workspaceId, artifactId);
+
+        JsonNode candidates = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + templateId + "/draft/candidate-bindings")
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        assertThat(candidates.get("candidates")).hasSize(1);
+        assertThat(findCandidate(candidates, "meeting.title").get("contentControlTag").asText()).isEqualTo("meeting.title");
+        assertThat(candidates.get("ambiguousContentControlTags")).isEmpty();
+        assertThat(candidates.get("untaggedContentControlCount").asInt()).isEqualTo(2);
     }
 
     /** Proves {@code RuleController} for the first time: propose, list, find, and accept a rule through real HTTP against a real draft template. */
@@ -673,18 +817,37 @@ class TemplateIntegrationTest {
 
     /**
      * A real DOCX with one plain, scalar content control (the same shape
-     * {@link #docxWithContentControl} builds) plus a one-row, one-cell
-     * table whose cell holds its own content control -- a real prototype
-     * row, the shape {@link FieldBindingCandidateProposer} infers a {@code
-     * REPEATED} candidate from.
+     * {@link #docxWithContentControl} builds) plus a one-column table: a
+     * heading row, and under it one row whose cell holds its own content
+     * control -- a real prototype row, the shape {@link
+     * FieldBindingCandidateProposer} infers a {@code REPEATED} candidate
+     * from.
      */
     private static byte[] docxWithContentControlAndTableContentControl(String scalarTag, String tableTag) throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
             addContentControlParagraph(doc.createParagraph(), scalarTag);
 
-            XWPFTable table = doc.createTable(1, 1);
-            XWPFTableCell cell = table.getRow(0).getCell(0);
+            XWPFTable table = doc.createTable(2, 1);
+            table.getRow(0).getCell(0).setText("Items");
+            XWPFTableCell cell = table.getRow(1).getCell(0);
             addContentControlParagraph(cell.getParagraphs().get(0), tableTag);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            doc.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    /** One tagged content control, one with no tag at all (a date picker Word inserted, say), and one whose tag is empty. */
+    private static byte[] docxWithUntaggedAndEmptyTaggedControls(String tag) throws Exception {
+        try (XWPFDocument doc = new XWPFDocument()) {
+            addContentControlParagraph(doc.createParagraph(), tag);
+            CTSdtRun untagged = doc.createParagraph().getCTP().addNewSdt();
+            untagged.addNewSdtPr();
+            untagged.addNewSdtContent().addNewR().addNewT().setStringValue("Pick a date");
+            CTSdtRun emptyTag = doc.createParagraph().getCTP().addNewSdt();
+            emptyTag.addNewSdtPr().addNewTag().setVal("");
+            emptyTag.addNewSdtContent().addNewR().addNewT().setStringValue("Choose one");
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
@@ -706,6 +869,11 @@ class TemplateIntegrationTest {
 
     private JsonNode readJson(org.springframework.test.web.servlet.MvcResult result) throws Exception {
         return OBJECT_MAPPER.readTree(result.getResponse().getContentAsString());
+    }
+
+    /** The response's own bytes, read as the UTF-8 JSON they are -- a name in any language survives, whatever the response's declared charset. */
+    private JsonNode readUtf8Json(org.springframework.test.web.servlet.MvcResult result) throws Exception {
+        return OBJECT_MAPPER.readTree(result.getResponse().getContentAsByteArray());
     }
 
     /** Same real-session-through-the-real-repository pattern as {@code ExtractionIntegrationTest}. */

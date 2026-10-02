@@ -44,6 +44,7 @@ import io.github.vihuynh72.brownie.core.question.ResolvedAnswerBundle;
 import io.github.vihuynh72.brownie.core.revision.DocumentContent;
 import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,6 +109,7 @@ class GenerationExtractionJobProcessor {
     private final Duration leaseDuration;
     private final ObjectMapper objectMapper;
     private final JdbcWorkerUsageRepository usageRepository;
+    private final ModelPricing modelPricing;
     private final String modelName;
     private final UsageLimits durableRunLimits;
     private final UsageLimits attemptLimits;
@@ -121,6 +123,7 @@ class GenerationExtractionJobProcessor {
             JobLeaseRepository jobLeaseRepository,
             JobOutputPublisher jobOutputPublisher,
             JdbcWorkerUsageRepository usageRepository,
+            ModelPricing modelPricing,
             @Value("${brownie.worker.generation.lease-duration:PT2M}") Duration leaseDuration,
             @Value("${brownie.ai.openai.model}") String modelName,
             @Value("${brownie.usage.run-max-requests:6}") int runMaxRequests,
@@ -128,6 +131,7 @@ class GenerationExtractionJobProcessor {
             @Value("${brownie.usage.workspace-monthly-limit-usd:2.00}") BigDecimal workspaceMonthlyLimitUsd,
             @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd) {
         this.usageRepository = usageRepository;
+        this.modelPricing = modelPricing;
         this.modelName = modelName;
         // What the ledger holds a whole run to, counted across every attempt
         // and resume of the job. A run that stops to ask a question makes its
@@ -150,7 +154,17 @@ class GenerationExtractionJobProcessor {
         this.jobLeaseRepository = jobLeaseRepository;
         this.jobOutputPublisher = jobOutputPublisher;
         this.leaseDuration = leaseDuration;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = bundleMapper();
+    }
+
+    /**
+     * Reads the bundles the API stages and writes this worker's own. A
+     * property this worker does not know is passed over rather than failing
+     * the run, so an API newer than the worker (one that adds a property to
+     * a bundle) does not stop every run until the worker is restarted.
+     */
+    static ObjectMapper bundleMapper() {
+        return new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     void process(LeasedJob leasedJob) {
@@ -409,12 +423,11 @@ class GenerationExtractionJobProcessor {
     }
 
     private UsageBudget budgetFor(LeasedJob leasedJob) {
-        ModelPricing pricing = ModelPricing.gpt5Mini();
         return new UsageBudget(
                 attemptLimits,
-                pricing,
+                modelPricing,
                 new LeasedJobUsageLedger(
-                        usageRepository, leasedJob.leaseToken(), modelName, pricing, durableRunLimits, monthlyUsageLimits));
+                        usageRepository, leasedJob.leaseToken(), modelName, modelPricing, durableRunLimits, monthlyUsageLimits));
     }
 
     /**

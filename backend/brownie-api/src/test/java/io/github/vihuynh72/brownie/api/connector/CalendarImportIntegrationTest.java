@@ -1,8 +1,14 @@
 package io.github.vihuynh72.brownie.api.connector;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.extension.Parameters;
+import com.github.tomakehurst.wiremock.extension.ServeEventListener;
+import com.github.tomakehurst.wiremock.stubbing.ServeEvent;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.connector.GrantRevocationReason;
 import io.github.vihuynh72.brownie.core.connector.ResourceGrant;
 import io.github.vihuynh72.brownie.core.connector.ResourceGrantRepository;
@@ -40,21 +46,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.web.util.UriComponentsBuilder;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -62,6 +59,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -69,10 +67,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
@@ -85,6 +85,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlMatching;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -115,7 +116,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "brownie.connectors.google.client-id=stand-in-client.apps.googleusercontent.com",
         "brownie.connectors.google.client-secret=" + CalendarImportIntegrationTest.CLIENT_SECRET,
         "brownie.connectors.token-key-id=test-key"})
-@Testcontainers
+@DockerTest
 @ExtendWith(OutputCaptureExtension.class)
 class CalendarImportIntegrationTest {
 
@@ -144,37 +145,24 @@ class CalendarImportIntegrationTest {
                           "domain":"googleapis.com","metadata":{"service":"calendar-json.googleapis.com"}}]}}
             """;
 
+    /** Declared before {@link #GOOGLE}, which is started with it. */
+    private static final HeldAnswers HELD_ANSWERS = new HeldAnswers();
     private static final WireMockServer GOOGLE = startedGoogle();
     private static final String TOKEN_KEY = randomKey();
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword("postgres_bootstrap_only")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
-
-    @Container
-    static final GenericContainer<?> CLAMAV = new GenericContainer<>(DockerImageName.parse("clamav/clamav-debian:1.4"))
-            .withExposedPorts(3310)
-            .waitingFor(Wait.forLogMessage(".*socket found, clamd started\\.\\n", 1))
-            .withStartupTimeout(java.time.Duration.ofMinutes(3));
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
-        registry.add("brownie.security.clamav.host", CLAMAV::getHost);
-        registry.add("brownie.security.clamav.port", () -> CLAMAV.getMappedPort(3310));
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
+        registry.add("brownie.security.clamav.host", SharedContainers::clamAvHost);
+        registry.add("brownie.security.clamav.port", SharedContainers::clamAvPort);
         registry.add("brownie.connectors.token-key", () -> TOKEN_KEY);
         registry.add("brownie.connectors.google.token-uri", () -> GOOGLE.baseUrl() + "/token");
         registry.add("brownie.connectors.google.revocation-uri", () -> GOOGLE.baseUrl() + "/revoke");
@@ -415,9 +403,12 @@ class CalendarImportIntegrationTest {
         Member member = signInAndConnectCalendar("subject-calendar-race");
         long documentId = createDocument(member);
         stubEvent("slow1", "1", "Slow sync");
-        // Google takes its time over the calendar's time zone, which the import asks for after reading the event.
+        // Google does not answer about the calendar's time zone, which the import asks for after reading the event,
+        // until the disconnect is done.
+        CountDownLatch timeZoneMayAnswer = HELD_ANSWERS.holdNext();
         GOOGLE.stubFor(get(urlPathEqualTo(EVENTS)).withQueryParam("maxResults", equalTo("1"))
-                .willReturn(okJson("{\"timeZone\":\"America/Los_Angeles\"}").withFixedDelay(3000)));
+                .withServeEventListener(HeldAnswers.NAME, Parameters.empty())
+                .willReturn(okJson("{\"timeZone\":\"America/Los_Angeles\"}")));
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         MvcResult result;
@@ -430,8 +421,10 @@ class CalendarImportIntegrationTest {
             mockMvc.perform(MockMvcRequestBuilders.post("/api/v1/workspaces/" + member.workspaceId() + "/connections/google/disconnect")
                             .cookie(member.session()).with(csrf()))
                     .andExpect(status().isOk());
+            timeZoneMayAnswer.countDown();
             result = importing.get(60, TimeUnit.SECONDS);
         } finally {
+            timeZoneMayAnswer.countDown();
             executor.shutdownNow();
         }
 
@@ -447,12 +440,15 @@ class CalendarImportIntegrationTest {
         Member member = signInAndConnectCalendar("subject-calendar-trash");
         long documentId = createDocument(member);
         stubEvent("late1", "1", "Late sync");
+        CountDownLatch timeZoneMayAnswer = HELD_ANSWERS.holdNext();
         GOOGLE.stubFor(get(urlPathEqualTo(EVENTS)).withQueryParam("maxResults", equalTo("1"))
-                .willReturn(okJson("{\"timeZone\":\"America/Los_Angeles\"}").withFixedDelay(3000)));
+                .withServeEventListener(HeldAnswers.NAME, Parameters.empty())
+                .willReturn(okJson("{\"timeZone\":\"America/Los_Angeles\"}")));
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         MvcResult result;
         long deletionId;
+        Instant heldUntil;
         try {
             Future<MvcResult> importing = executor.submit(() -> mockMvc.perform(MockMvcRequestBuilders.post(calendarPath(member) + "/imports")
                             .cookie(member.session()).with(csrf()).contentType("application/json")
@@ -463,18 +459,21 @@ class CalendarImportIntegrationTest {
                             .cookie(member.session()).with(csrf()).contentType("application/json")
                             .content("{\"scope\":\"DOCUMENT\",\"documentId\":" + documentId + "}"))
                     .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asLong();
+            heldUntil = Instant.now();
+            timeZoneMayAnswer.countDown();
             result = importing.get(60, TimeUnit.SECONDS);
         } finally {
+            timeZoneMayAnswer.countDown();
             executor.shutdownNow();
         }
 
         assertThat(result.getResponse().getStatus()).as("a document moved to the trash meanwhile still takes the copy").isEqualTo(201);
         long snapshotId = JSON.readTree(result.getResponse().getContentAsString()).get("source").get("id").asLong();
         assertThat(count("SELECT count(*) FROM document_source WHERE source_snapshot_id = ?", snapshotId)).isEqualTo(1);
-        assertThat(count("SELECT (extract(epoch FROM a.occurred_at - s.fetched_at) * 1000)::bigint FROM source_snapshot s"
-                + " JOIN audit_event a ON a.resource_id = s.id AND a.action = 'SOURCE_IMPORTED' WHERE s.id = ?", snapshotId))
-                .as("fetched_at is when Google was read, before the slow time-zone call, not when the row was written")
-                .isGreaterThanOrEqualTo(2500);
+        // Both instants come from this JVM's clock, which the import reads too; the database's clock plays no part.
+        assertThat(count("SELECT (extract(epoch FROM fetched_at) * 1000000)::bigint FROM source_snapshot WHERE id = ?", snapshotId))
+                .as("fetched_at is when Google was read, before the held time-zone answer was let go, not when the row was written")
+                .isLessThan(ChronoUnit.MICROS.between(Instant.EPOCH, heldUntil));
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/v1/workspaces/" + member.workspaceId() + "/deletions/" + deletionId + "/purge")
                         .cookie(member.session()).with(csrf()))
@@ -495,7 +494,7 @@ class CalendarImportIntegrationTest {
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<MvcResult> deleting;
-        try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+        try (Connection api = DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD)) {
             api.setAutoCommit(false);
             try (PreparedStatement context = api.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
                 context.setString(1, String.valueOf(member.userId()));
@@ -569,7 +568,7 @@ class CalendarImportIntegrationTest {
         }
         assertThat(count("SELECT count(*) FROM source_snapshot WHERE workspace_id = ? AND kind = 'GOOGLE_DRIVE'", member.workspaceId()))
                 .isEqualTo(2);
-        try (Connection api = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+        try (Connection api = DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD)) {
             api.setAutoCommit(false);
             try (PreparedStatement context = api.prepareStatement("SELECT set_config('app.current_user_id', ?, true)")) {
                 context.setString(1, String.valueOf(member.userId()));
@@ -802,10 +801,10 @@ class CalendarImportIntegrationTest {
 
     private static void awaitABackendWaitingForALock() throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        try (Connection superuser = DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())) {
+        try (Connection superuser = DB.superuserConnection()) {
             while (true) {
                 try (ResultSet rs = superuser.prepareStatement(
-                        "SELECT count(*) FROM pg_stat_activity WHERE datname = 'brownie' AND wait_event_type = 'Lock'").executeQuery()) {
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").executeQuery()) {
                     rs.next();
                     if (rs.getLong(1) > 0) {
                         return;
@@ -985,7 +984,7 @@ class CalendarImportIntegrationTest {
     }
 
     private static Connection ownerConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
     private static long count(String sql, long parameter) throws SQLException {
@@ -1008,14 +1007,57 @@ class CalendarImportIntegrationTest {
         }
     }
 
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
-    }
-
     private static WireMockServer startedGoogle() {
-        WireMockServer server = new WireMockServer(0);
+        WireMockServer server = new WireMockServer(options().dynamicPort().extensions(HELD_ANSWERS));
         server.start();
         return server;
+    }
+
+    /**
+     * Keeps WireMock from sending the answer of a stub that names it until
+     * the test lets it go: the test acts while the import is still waiting
+     * on Google, and the import goes on as soon as the test is done rather
+     * than after a fixed delay. WireMock has already recorded the request
+     * while its answer is held.
+     */
+    private static final class HeldAnswers implements ServeEventListener {
+
+        static final String NAME = "held-answer";
+
+        private final AtomicReference<CountDownLatch> mayAnswer = new AtomicReference<>();
+
+        /** The next answer of a stub that names this waits until the latch returned is counted down. */
+        CountDownLatch holdNext() {
+            CountDownLatch latch = new CountDownLatch(1);
+            mayAnswer.set(latch);
+            return latch;
+        }
+
+        @Override
+        public void beforeResponseSent(ServeEvent serveEvent, Parameters parameters) {
+            CountDownLatch latch = mayAnswer.getAndSet(null);
+            if (latch == null) {
+                return;
+            }
+            try {
+                if (!latch.await(60, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("A held answer was never let go.");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public boolean applyGlobally() {
+            return false;
+        }
+
+        @Override
+        public String getName() {
+            return NAME;
+        }
     }
 
     private static String randomKey() {

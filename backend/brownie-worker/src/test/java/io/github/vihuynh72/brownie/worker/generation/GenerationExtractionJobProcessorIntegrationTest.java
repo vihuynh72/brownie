@@ -4,12 +4,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
+import io.github.vihuynh72.brownie.core.generation.usage.ModelPricing;
 import io.github.vihuynh72.brownie.core.job.JobLeaseRepository;
 import io.github.vihuynh72.brownie.core.job.LeasedJob;
 import io.github.vihuynh72.brownie.core.job.WorkerId;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
 import io.github.vihuynh72.brownie.core.model.ModelUsage;
+import io.github.vihuynh72.brownie.worker.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.worker.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.worker.testinfra.TestDatabase;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -22,11 +26,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -60,37 +59,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 @Import(GenerationExtractionJobProcessorIntegrationTest.FakeModelGatewayConfig.class)
 class GenerationExtractionJobProcessorIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_worker");
         registry.add("spring.datasource.password", () -> WORKER_PASSWORD);
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
         // The scheduled poller must not race this test's own direct calls.
         registry.add("brownie.worker.generation.enabled", () -> "false");
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath().getParent().getParent().resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     /**
@@ -103,7 +88,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
     @BeforeAll
     static void migrateSchema() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
+                .dataSource(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
                 .locations("filesystem:" + apiMigrationPath())
                 .load()
                 .migrate();
@@ -160,7 +145,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         long jobId;
         String bundleHash;
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             userId = insertUser(connection);
             workspaceId = insertWorkspace(connection, userId);
             insertMembership(connection, workspaceId, userId);
@@ -201,7 +186,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
 
         processor.process(leasedJob);
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("SUCCEEDED");
 
             long artifactId = publishedArtifactId(connection, jobId, "extraction-result");
@@ -214,10 +199,13 @@ class GenerationExtractionJobProcessorIntegrationTest {
                     .isEqualTo("Weekly Robotics Club Sync");
 
             // The one request it made is in the ledger, charged to the person who asked for the run,
-            // closed with what the provider reported rather than what was held for it.
+            // closed with what the provider reported rather than what was held for it, at the price of
+            // the model this worker is configured to call.
+            String configuredModel = environment.getProperty("brownie.ai.openai.model");
+            ModelPricing configuredPricing = ModelPricing.forModel(configuredModel);
             try (PreparedStatement usage = connection.prepareStatement("""
                     SELECT workspace_id, requested_by_user_id, purpose, run_epoch, state, actual_input_tokens, actual_output_tokens,
-                           actual_cost_usd < reserved_cost_usd
+                           actual_cost_usd < reserved_cost_usd, model_name, rate_card, actual_cost_usd
                     FROM model_usage WHERE job_id = ?
                     """)) {
                 usage.setLong(1, jobId);
@@ -231,6 +219,9 @@ class GenerationExtractionJobProcessorIntegrationTest {
                     assertThat(row.getInt(6)).isEqualTo(50);
                     assertThat(row.getInt(7)).isEqualTo(20);
                     assertThat(row.getBoolean(8)).isTrue();
+                    assertThat(row.getString(9)).isEqualTo(configuredModel);
+                    assertThat(row.getString(10)).isEqualTo(configuredPricing.rateCard());
+                    assertThat(row.getBigDecimal(11)).isEqualByComparingTo(configuredPricing.estimateCost(50, 20));
                     assertThat(row.next()).as("one request, one row").isFalse();
                 }
             }
@@ -258,7 +249,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         long jobId;
         String bundleHash;
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             userId = insertUser(connection);
             workspaceId = insertWorkspace(connection, userId);
             insertMembership(connection, workspaceId, userId);
@@ -290,7 +281,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
 
         processor.process(firstLease);
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("WAITING_FOR_INPUT");
         }
         // WAITING_FOR_INPUT is not itself claimable -- a person (via the API's own resume route) must act first.
@@ -321,7 +312,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
                 GenerationJobTypes.resolvedAnswersObjectKey(workspaceId, jobId),
                 new ByteArrayInputStream(resolvedAnswersJson.getBytes(StandardCharsets.UTF_8)),
                 1_000_000);
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             requeueWaitingJob(connection, jobId);
         }
 
@@ -332,7 +323,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
 
         processor.process(secondLease);
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("SUCCEEDED");
 
             long artifactId = publishedArtifactId(connection, jobId, "extraction-result");
@@ -367,7 +358,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         long revisionId;
         long jobId;
 
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             userId = insertUser(connection);
             workspaceId = insertWorkspace(connection, userId);
             insertMembership(connection, workspaceId, userId);
@@ -397,7 +388,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         // Exactly the row change the API's own cancel route makes for a
         // LEASED job (JdbcJobRepository#requestCancellation), applied as
         // the schema owner since this module never depends on brownie-api.
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             requestCancellation(connection, jobId);
         }
 
@@ -405,7 +396,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         processor.process(leasedJob);
 
         assertThat(MODEL_CALLS.get()).isEqualTo(modelCallsBefore);
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("CANCELLED");
             assertThat(publishedOutputCount(connection, jobId)).isZero();
         }
@@ -454,7 +445,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
     @Test
     void aRunThatAlreadyUsedItsRequestsInEarlierAttemptsIsRefusedBeforeTheModelIsCalledAgain() throws Exception {
         long jobId;
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             jobId = insertClaimableJobWithBundle(connection);
             long workspaceId = jobWorkspaceId(connection, jobId);
             for (int request = 0; request < 6; request++) {
@@ -469,7 +460,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         processor.process(leasedJob);
 
         assertThat(MODEL_CALLS.get()).as("nothing was sent").isEqualTo(callsBefore);
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("DEAD");
             assertThat(lastJobEventMessage(connection, jobId)).contains("limit of 6 model requests");
             assertThat(usageRowCount(connection, jobId)).as("the refused request left no row behind").isEqualTo(6);
@@ -480,7 +471,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
     @Test
     void aWorkspaceThatHasSpentItsMonthlyAllowanceMakesNoFurtherRequest() throws Exception {
         long jobId;
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             jobId = insertClaimableJobWithBundle(connection);
             // Spent by some other, long-finished run of the same workspace: the default allowance is two dollars.
             insertSettledUsage(connection, jobWorkspaceId(connection, jobId), jobId + 1_000_000, "2.000000");
@@ -493,7 +484,7 @@ class GenerationExtractionJobProcessorIntegrationTest {
         processor.process(leasedJob);
 
         assertThat(MODEL_CALLS.get()).isEqualTo(callsBefore);
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             assertThat(jobState(connection, jobId)).isEqualTo("DEAD");
             assertThat(lastJobEventMessage(connection, jobId)).contains("allowance").contains("this month");
         }

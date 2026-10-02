@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.generation;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStorageException;
@@ -107,9 +108,6 @@ public class GenerationOrchestrationService {
     private static final String EXTRACTING_STAGE = "extracting";
     private static final String DOCUMENT_RESOURCE_TYPE = "document";
     private static final long MAX_BUNDLE_BYTES = 2_000_000;
-    /** The least a run's first request can hold: one input token and the most an extraction may write back. */
-    private static final BigDecimal SMALLEST_FIRST_REQUEST_USD =
-            ModelPricing.gpt5Mini().estimateCost(1, ExtractionService.MAX_OUTPUT_TOKENS);
     private static final int SKIPPED_ITEM_DESCRIPTION_MAX_LENGTH = 120;
 
     /**
@@ -137,9 +135,17 @@ public class GenerationOrchestrationService {
     private final BlobStore blobStore;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final ObjectMapper objectMapper;
+    /**
+     * Writes a run's input bundle with every property that has no value
+     * left out, so a worker built before a property was added (a field's
+     * label, say) still reads each bundle that does not use it.
+     */
+    private final ObjectMapper bundleMapper;
     private final TransactionTemplate transactionTemplate;
     private final UsageService usageService;
     private final String modelName;
+    /** The least a run's first request can hold at the configured model's price: one input token and the most an extraction may write back. */
+    private final BigDecimal smallestFirstRequestUsd;
 
     public GenerationOrchestrationService(
             RevisionService revisionService,
@@ -157,6 +163,7 @@ public class GenerationOrchestrationService {
             ObjectMapper objectMapper,
             TransactionTemplate transactionTemplate,
             UsageService usageService,
+            ModelPricing modelPricing,
             @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
@@ -171,9 +178,13 @@ public class GenerationOrchestrationService {
         this.blobStore = blobStore;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.objectMapper = objectMapper;
+        this.bundleMapper = objectMapper.rebuild()
+                .changeDefaultPropertyInclusion(inclusion -> inclusion.withValueInclusion(JsonInclude.Include.NON_NULL))
+                .build();
         this.transactionTemplate = transactionTemplate;
         this.usageService = usageService;
         this.modelName = modelName;
+        this.smallestFirstRequestUsd = modelPricing.estimateCost(1, ExtractionService.MAX_OUTPUT_TOKENS);
     }
 
     public CommandReceipt startExtraction(
@@ -192,7 +203,7 @@ public class GenerationOrchestrationService {
         // A replay of a start that was already accepted is answered with
         // that start, whatever has been spent since.
         if (!jobCommandRepository.enqueueWasAccepted(workspaceId, userId, idempotencyKey)) {
-            usageService.requireAllowanceFor(workspaceId, userId, SMALLEST_FIRST_REQUEST_USD);
+            usageService.requireAllowanceFor(workspaceId, userId, smallestFirstRequestUsd);
         }
         TemplateVersion templateVersion = templateService
                 .findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
@@ -637,7 +648,7 @@ public class GenerationOrchestrationService {
     private boolean writeBundleIfAbsent(long workspaceId, CanonicalRequestHash bundleHash, ExtractionInputBundle bundle) {
         String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash.value());
         try {
-            byte[] json = objectMapper.writeValueAsBytes(bundle);
+            byte[] json = bundleMapper.writeValueAsBytes(bundle);
             blobStore.writeNewAndDigest(objectKey, new ByteArrayInputStream(json), MAX_BUNDLE_BYTES);
             return true;
         } catch (BlobAlreadyExistsException ignored) {

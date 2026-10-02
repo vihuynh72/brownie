@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.document.ExtractionStatus;
 import io.github.vihuynh72.brownie.core.document.PlainTextExtractionVersion;
 import io.github.vihuynh72.brownie.core.document.PlainTextExtractionVersionRepository;
@@ -14,13 +17,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -39,36 +37,22 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcPlainTextExtractionVersionRepositoryTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     @Autowired

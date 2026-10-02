@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
+import { startDocumentFromSidebar } from './documents'
 
 /**
  * The whole life of a document someone no longer wants, in a real browser
@@ -9,21 +10,27 @@ import { AxeBuilder } from '@axe-core/playwright'
  * (not only the page) says it does not exist. No model call is involved.
  */
 test('a document goes to the trash, comes back unchanged, and is then deleted for good', async ({ page, context }) => {
-  await page.goto('/documents/new')
-  await expect(page.getByLabel('Template', { exact: true })).toBeEnabled({ timeout: 15_000 })
-  const title = `E2E trash journey ${Date.now()}`
-  await page.getByLabel('Title', { exact: true }).fill(title)
-  await page.getByRole('button', { name: 'Create document' }).click()
-  await page.waitForURL(/\/documents\/\d+$/)
+  const { id: documentId, title } = await startDocumentFromSidebar(page, 'Flowing meeting minutes')
   const documentUrl = new URL(page.url())
-  const documentId = Number(documentUrl.pathname.split('/').pop())
   const workspaceId = (await (await context.request.get('/api/v1/me')).json()).memberships[0].workspaceId
+
+  // Every document started from the same template on the same day shares its title, so this one is
+  // told apart by its own address on Home, and in the trash bin by the entry that holds it.
+  const homeRow = page.getByRole('listitem').filter({ has: page.locator(`a[href="/documents/${documentId}"]`) })
+  const trashRow = (deletionId: number) => page.getByRole('listitem').filter({ has: page.locator(`#trash-restore-${deletionId}`) })
+  async function moveToTrashFromHome(): Promise<number> {
+    const answer = page.waitForResponse(
+      (response) => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/deletions'),
+    )
+    await homeRow.getByRole('button', { name: `Move ${title} to the trash` }).click()
+    return (await (await answer).json()).id
+  }
 
   // Home: one click, no question, because nothing is lost yet.
   await page.goto('/')
-  await page.getByRole('button', { name: `Move ${title} to the trash` }).click()
+  const firstDeletion = await moveToTrashFromHome()
   await expect(page.getByText(`Moved "${title}" to the trash.`)).toBeVisible()
-  await expect(page.getByRole('link', { name: title })).toHaveCount(0)
+  await expect(page.locator(`a[href="/documents/${documentId}"]`)).toHaveCount(0)
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
 
   // Its own address no longer answers, in the page or on the server.
@@ -34,7 +41,7 @@ test('a document goes to the trash, comes back unchanged, and is then deleted fo
   // The trash bin has it, one click away, with the day it would be deleted for good.
   await page.getByRole('link', { name: 'Open the trash bin' }).click()
   await expect(page).toHaveURL(/\/trash$/)
-  const row = page.getByRole('listitem').filter({ hasText: title })
+  const row = trashRow(firstDeletion)
   await expect(row).toBeVisible()
   await expect(row.getByText(/Deleted for good on/)).toBeVisible()
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
@@ -52,10 +59,10 @@ test('a document goes to the trash, comes back unchanged, and is then deleted fo
 
   // Second time round: delete forever asks once, by name.
   await page.goto('/')
-  await page.getByRole('button', { name: `Move ${title} to the trash` }).click()
+  const secondDeletion = await moveToTrashFromHome()
   await page.getByRole('link', { name: 'Restore it from the trash bin' }).click()
   await page.waitForURL(/\/trash$/)
-  const again = page.getByRole('listitem').filter({ hasText: title })
+  const again = trashRow(secondDeletion)
   await again.getByRole('button', { name: `Delete forever ${title}` }).click()
   await expect(page.getByText(`Delete "${title}" forever? This cannot be undone.`)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Yes, delete forever' })).toBeFocused()

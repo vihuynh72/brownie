@@ -153,7 +153,11 @@ class SecurityConfigIntegrationTest {
                 .andExpect(jsonPath("$.uploadMediaTypes[*].extension").value(org.hamcrest.Matchers.hasItems("docx", "pdf", "txt")))
                 .andExpect(jsonPath("$.assistSourceMediaTypes[0]").value("text/plain"))
                 .andExpect(jsonPath("$.templateMediaTypes[0]").value("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
-                .andExpect(jsonPath("$.googleConnectorAccess").isEmpty());
+                .andExpect(jsonPath("$.templateMediaTypes[1]").value("application/pdf"))
+                .andExpect(jsonPath("$.googleConnectorAccess").isEmpty())
+                .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'docx')].route").value(org.hamcrest.Matchers.contains("NATIVE")))
+                .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'ott')].route").value(org.hamcrest.Matchers.contains("CONVERTED")))
+                .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'pdf')].mediaType").value(org.hamcrest.Matchers.contains("application/pdf")));
 
         HttpResponse<String> anonymous = client.send(
                 HttpRequest.newBuilder(URI.create(url("/api/v1/capabilities"))).GET().build(),

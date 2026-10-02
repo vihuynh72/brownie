@@ -70,6 +70,18 @@ class ExampleAlignerTest {
         assertThrows(NoComparableFieldBindingsException.class, () -> ExampleAligner.align(TEMPLATE_ID, fields, example));
     }
 
+    /** A PDF form's places are never in a Word example, so a template made only of them has nothing to compare and refuses. */
+    @Test
+    void aPdfTemplatesFieldsAreNeverComparedWithAWordExample() {
+        List<FieldDefinition> fields = List.of(
+                field("name", new FieldBindingTarget.AcroFormField("fullName")),
+                field("note", new FieldBindingTarget.PageBox(1, 72, 72, 100, 14,
+                        io.github.vihuynh72.brownie.core.document.PdfTextStyle.DEFAULT, false,
+                        io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy.SHRINK_TO_FIT)));
+
+        assertThrows(NoComparableFieldBindingsException.class, () -> ExampleAligner.align(TEMPLATE_ID, fields, graphWithTags("meeting.title")));
+    }
+
     @Test
     void anEmptyFieldListRefusesRatherThanGuessing() {
         assertThrows(

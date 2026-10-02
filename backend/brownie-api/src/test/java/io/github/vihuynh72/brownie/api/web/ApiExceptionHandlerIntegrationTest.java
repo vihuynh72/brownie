@@ -134,6 +134,34 @@ class ApiExceptionHandlerIntegrationTest {
         assertThat(conflictBody).containsEntry("code", "CONFLICT");
     }
 
+    @Test
+    void makingAFormFillableAnswersWithACodeAndAReasonThePageCanWordForAPerson() throws Exception {
+        MvcResult notAForm = probe("/probe/not-a-form", null);
+        MvcResult disabled = probe("/probe/format-disabled", null);
+        MvcResult failed = probe("/probe/fillable-form-failed", null);
+        MvcResult unavailable = probe("/probe/converter-unavailable", null);
+
+        assertThat(notAForm.getResponse().getStatus()).isEqualTo(415);
+        assertThat(body(notAForm)).containsEntry("code", "NOT_A_WORD_PROCESSING_DOCUMENT");
+        assertThat(disabled.getResponse().getStatus()).isEqualTo(415);
+        assertThat(body(disabled)).containsEntry("code", "FORMAT_DISABLED").containsEntry("format", "RTF");
+        assertThat(failed.getResponse().getStatus()).isEqualTo(422);
+        assertThat(body(failed)).containsEntry("code", "FILLABLE_FORM_FAILED").containsEntry("reason", "CANNOT_OPEN");
+        assertThat(body(failed).get("detail").toString()).doesNotContain("secret");
+        assertThat(unavailable.getResponse().getStatus()).isEqualTo(503);
+        assertThat(body(unavailable)).containsEntry("code", "CONVERTER_UNAVAILABLE");
+        assertThat(unavailable.getResponse().getHeader("Retry-After")).isEqualTo("30");
+    }
+
+    @Test
+    void aPdfTheFillerCannotFillIsAnsweredLikeOneTheReaderRefusedWithItsReason() throws Exception {
+        MvcResult result = probe("/probe/pdf-not-fillable", null);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(422);
+        assertThat(body(result)).containsEntry("code", "PDF_FORM_NOT_FILLABLE").containsEntry("reason", "TOO_LARGE");
+        assertThat(body(result).get("detail").toString()).startsWith("This PDF has more pages").doesNotContain("secret");
+    }
+
     private MvcResult probe(String path, String correlationId) throws Exception {
         MockHttpServletRequestBuilder builder = get(path).with(user("someone"));
         if (correlationId != null) {
@@ -176,6 +204,35 @@ class ApiExceptionHandlerIntegrationTest {
         @GetMapping("/probe/job-conflict")
         String jobConflict() {
             throw new InvalidJobTransitionException(JobState.CANCELLED, JobState.CANCELLED);
+        }
+
+        @GetMapping("/probe/not-a-form")
+        String notAForm() {
+            throw new io.github.vihuynh72.brownie.core.prepare.NotAFillableFormException(
+                    io.github.vihuynh72.brownie.core.prepare.NotAFillableFormException.Code.NOT_A_WORD_PROCESSING_DOCUMENT, 5L);
+        }
+
+        @GetMapping("/probe/format-disabled")
+        String formatDisabled() {
+            throw new io.github.vihuynh72.brownie.core.prepare.ConversionFormatDisabledException(
+                    io.github.vihuynh72.brownie.core.prepare.ConvertibleFormat.RTF);
+        }
+
+        @GetMapping("/probe/fillable-form-failed")
+        String fillableFormFailed() {
+            throw new io.github.vihuynh72.brownie.core.prepare.FillableFormFailedException(
+                    io.github.vihuynh72.brownie.core.prepare.FillableFormFailedException.Reason.CANNOT_OPEN, "the secret converter log", null);
+        }
+
+        @GetMapping("/probe/converter-unavailable")
+        String converterUnavailable() {
+            throw new io.github.vihuynh72.brownie.core.prepare.ConverterUnavailableException("no image");
+        }
+
+        @GetMapping("/probe/pdf-not-fillable")
+        String pdfNotFillable() {
+            throw new io.github.vihuynh72.brownie.core.document.PdfFormNotFillableException(
+                    io.github.vihuynh72.brownie.core.document.UnsupportedPdfFormReason.TOO_LARGE, "the secret filler failure");
         }
 
         @GetMapping("/probe/data-integrity-violation")

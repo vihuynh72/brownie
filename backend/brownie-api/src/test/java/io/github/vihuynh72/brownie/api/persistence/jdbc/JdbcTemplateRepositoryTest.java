@@ -1,5 +1,8 @@
 package io.github.vihuynh72.brownie.api.persistence.jdbc;
 
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.document.DocumentPart;
 import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
@@ -9,11 +12,13 @@ import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.document.StructuralNodeKind;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.template.DocxControlOrigin;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldRequiredness;
 import io.github.vihuynh72.brownie.core.template.FieldType;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateNotFoundException;
 import io.github.vihuynh72.brownie.core.template.TemplateRepository;
@@ -29,13 +34,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -57,36 +57,22 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcTemplateRepositoryTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> API_PASSWORD);
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     @Autowired
@@ -150,6 +136,53 @@ class JdbcTemplateRepositoryTest {
 
         TemplateVersion reloaded = templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow();
         assertThat(reloaded).isEqualTo(updated);
+    }
+
+    /**
+     * A found field's label, origin, control origin and blank are stored
+     * and read back; a field without them is stored as the very same JSON
+     * every field was stored as before they existed, compared by Postgres
+     * itself as {@code jsonb}.
+     */
+    @Test
+    void labelsOriginsAndBlanksRoundTripAndAFieldWithoutThemIsStoredExactlyAsBefore() throws SQLException {
+        long userId = newUser("subject-labels").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        long artifactId = insertArtifact(workspaceId, userId);
+        long extractionId = insertExtraction(workspaceId, userId, artifactId);
+        Template template = templateRepository.createDraft(workspaceId, userId, "Form", artifactId, extractionId);
+
+        FieldDefinition plain = new FieldDefinition(
+                "meeting.title", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED,
+                new FieldBindingTarget.ContentControlTag("meeting.title"));
+        FieldDefinition found = new FieldDefinition(
+                "ho.va.ten", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag("ho.va.ten"),
+                "H\u1ecd v\u00e0 t\u00ean", SpotOrigin.FOUND_BY_BROWNIE, DocxControlOrigin.INSERTED_BY_BROWNIE, "________");
+
+        TemplateVersion updated = templateRepository.replaceDraftBindings(workspaceId, userId, template.id(), 1, List.of(plain, found));
+
+        assertThat(updated.fieldDefinitions()).containsExactly(plain, found);
+        assertThat(templateRepository.findDraftVersion(workspaceId, userId, template.id()).orElseThrow().fieldDefinitions())
+                .containsExactly(plain, found);
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            setLocalContext(connection, userId);
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT field_definitions -> 0 = ?::jsonb, field_definitions -> 1 ->> 'label' FROM template_version WHERE id = ?")) {
+                statement.setString(1, "{\"fieldId\":\"meeting.title\",\"type\":\"TEXT\",\"cardinality\":\"SCALAR\","
+                        + "\"requiredness\":\"REQUIRED\",\"bindingKind\":\"CONTENT_CONTROL_TAG\",\"contentControlTag\":\"meeting.title\","
+                        + "\"structuralNodePart\":null,\"structuralNodeId\":null}");
+                statement.setLong(2, updated.id());
+                try (ResultSet row = statement.executeQuery()) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getBoolean(1)).as("a field without the optional parts is stored exactly as before").isTrue();
+                    assertThat(row.getString(2)).isEqualTo("H\u1ecd v\u00e0 t\u00ean");
+                }
+            }
+            connection.rollback();
+        }
     }
 
     @Test
@@ -258,6 +291,62 @@ class JdbcTemplateRepositoryTest {
         Template template = templateRepository.createDraft(workspaceB.id(), userB.id(), "Private", artifactId, extractionId);
 
         assertThat(templateRepository.find(workspaceB.id(), userA.id(), template.id())).isEmpty();
+    }
+
+    /**
+     * The template made last is trashed first, so an order by ID (or by
+     * creation) would list it first; the Trash Bin lists the most recently
+     * trashed first instead. Each trash is its own transaction, so the two
+     * times differ, and the test says so rather than relying on it.
+     */
+    @Test
+    void trashKeepsTheFirstTimeTheTrashBinListsTheMostRecentlyTrashedFirstAndRestoreBringsTheTemplateBack() {
+        long userId = newUser("subject-trash").id();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
+        long artifactId = insertArtifact(workspaceId, userId);
+        long extractionId = insertExtraction(workspaceId, userId, artifactId);
+        Template kept = templateRepository.createDraft(workspaceId, userId, "Kept", artifactId, extractionId);
+        Template older = templateRepository.createDraft(workspaceId, userId, "Made first, trashed second", artifactId, extractionId);
+        Template newer = templateRepository.createDraft(workspaceId, userId, "Made second, trashed first", artifactId, extractionId);
+
+        Template trashedFirst = templateRepository.trash(workspaceId, userId, newer.id());
+        Template trashed = templateRepository.trash(workspaceId, userId, older.id());
+        Template trashedAgain = templateRepository.trash(workspaceId, userId, older.id());
+
+        assertThat(kept.trashedAt()).isNull();
+        assertThat(trashed.trashedAt()).isAfter(trashedFirst.trashedAt());
+        assertThat(trashedAgain).isEqualTo(trashed);
+        assertThat(templateRepository.findTrashed(workspaceId, userId)).extracting(Template::id).containsExactly(older.id(), newer.id());
+        assertThat(templateRepository.findAll(workspaceId, userId))
+                .extracting(Template::id)
+                .containsExactly(kept.id(), older.id(), newer.id());
+
+        Template restored = templateRepository.restore(workspaceId, userId, older.id());
+
+        assertThat(restored.trashedAt()).isNull();
+        assertThat(templateRepository.restore(workspaceId, userId, older.id())).isEqualTo(restored);
+        assertThat(templateRepository.findTrashed(workspaceId, userId)).extracting(Template::id).containsExactly(newer.id());
+    }
+
+    @Test
+    void anotherWorkspacesTemplateCannotBeTrashedOrRestoredAndIsLeftAsItWas() {
+        UserIdentity owner = newUser("subject-trash-owner");
+        UserIdentity stranger = newUser("subject-trash-stranger");
+        Workspace ownerWorkspace = workspaceRepository.ensurePersonalWorkspace(owner.id());
+        Workspace strangerWorkspace = workspaceRepository.ensurePersonalWorkspace(stranger.id());
+        long artifactId = insertArtifact(ownerWorkspace.id(), owner.id());
+        long extractionId = insertExtraction(ownerWorkspace.id(), owner.id(), artifactId);
+        Template template = templateRepository.createDraft(ownerWorkspace.id(), owner.id(), "Private", artifactId, extractionId);
+
+        assertThrows(TemplateNotFoundException.class, () -> templateRepository.trash(ownerWorkspace.id(), stranger.id(), template.id()));
+        assertThrows(TemplateNotFoundException.class, () -> templateRepository.trash(strangerWorkspace.id(), stranger.id(), template.id()));
+        assertThat(templateRepository.find(ownerWorkspace.id(), owner.id(), template.id()).orElseThrow().trashedAt()).isNull();
+
+        templateRepository.trash(ownerWorkspace.id(), owner.id(), template.id());
+
+        assertThrows(TemplateNotFoundException.class, () -> templateRepository.restore(ownerWorkspace.id(), stranger.id(), template.id()));
+        assertThat(templateRepository.find(ownerWorkspace.id(), owner.id(), template.id()).orElseThrow().trashedAt()).isNotNull();
+        assertThat(templateRepository.findTrashed(ownerWorkspace.id(), stranger.id())).isEmpty();
     }
 
     private long insertArtifact(long workspaceId, long userId) {

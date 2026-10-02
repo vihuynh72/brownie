@@ -36,6 +36,24 @@ class LayoutComparatorTest {
         assertTrue(LayoutComparator.compareStructure(baseline, filled, SCALAR_FIELD).isEmpty());
     }
 
+    /** A place on a PDF is never part of a Word graph, so a field bound to one leaves the comparison as it was. */
+    @Test
+    void aFieldBoundToAPlaceOnAPdfIsLeftOutOfTheWordComparison() {
+        DocxStructuralGraph baseline = graphWithHeadingAndField("Club Minutes", "Sample value");
+        DocxStructuralGraph filled = graphWithHeadingAndField("Something Else Entirely", "Sample value");
+        List<FieldDefinition> fields = List.of(
+                SCALAR_FIELD.get(0),
+                new FieldDefinition("form.name", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                        new FieldBindingTarget.AcroFormField("fullName")),
+                new FieldDefinition("box.note", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                        new FieldBindingTarget.PageBox(1, 72, 72, 100, 14, io.github.vihuynh72.brownie.core.document.PdfTextStyle.DEFAULT,
+                                false, io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy.SHRINK_TO_FIT)));
+
+        assertEquals(LayoutComparator.compareStructure(baseline, filled, SCALAR_FIELD),
+                LayoutComparator.compareStructure(baseline, filled, fields));
+        assertTrue(LayoutComparator.compareStructure(baseline, baseline, fields).isEmpty());
+    }
+
     @Test
     void changedProtectedHeadingTextIsReported() {
         DocxStructuralGraph baseline = graphWithHeadingAndField("Club Minutes", "Sample value");

@@ -2,6 +2,9 @@ package io.github.vihuynh72.brownie.api.action;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.document.DocumentPart;
 import io.github.vihuynh72.brownie.core.document.DocumentPartKind;
 import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
@@ -57,17 +60,12 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.web.util.UriComponentsBuilder;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -125,7 +123,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "brownie.connectors.google.client-secret=" + ExternalActionAdversarialIntegrationTest.CLIENT_SECRET,
         "brownie.connectors.token-key-id=test-key",
         "brownie.connectors.google.actions-offered=true"})
-@Testcontainers
+@DockerTest
 @Import(ExternalActionAdversarialIntegrationTest.ForgingModelConfig.class)
 class ExternalActionAdversarialIntegrationTest {
 
@@ -157,21 +155,14 @@ class ExternalActionAdversarialIntegrationTest {
         }
     }
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword("postgres_bootstrap_only")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(Path.of("").toAbsolutePath().getParent().getParent()
-                            .resolve("infra/local/postgres/init/01-app-roles.sql")), "/docker-entrypoint-initdb.d/01-app-roles.sql");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_api");
         registry.add("spring.datasource.password", () -> "brownie_api_local_only");
-        registry.add("spring.flyway.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.flyway.url", DB::jdbcUrl);
         registry.add("spring.flyway.user", () -> "brownie_migration");
         registry.add("spring.flyway.password", () -> MIGRATION_PASSWORD);
         registry.add("brownie.connectors.token-key", () -> TOKEN_KEY);
@@ -471,7 +462,7 @@ class ExternalActionAdversarialIntegrationTest {
 
     /** Moves a lifetime's start and end back, as the clock would, keeping the table's own rule that ties them. */
     private static void age(String from, String until, JsonNode action, int minutes) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement update = owner.prepareStatement("UPDATE action_request SET " + from + " = " + from + " - make_interval(mins => ?), "
                         + until + " = " + until + " - make_interval(mins => ?) WHERE id = ?")) {
             update.setInt(1, minutes);
@@ -633,7 +624,7 @@ class ExternalActionAdversarialIntegrationTest {
     }
 
     private static long count(String sql, long parameter) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = owner.prepareStatement(sql)) {
             statement.setLong(1, parameter);
             try (ResultSet rs = statement.executeQuery()) {
@@ -644,7 +635,7 @@ class ExternalActionAdversarialIntegrationTest {
     }
 
     private static String text(String sql, long parameter) throws SQLException {
-        try (Connection owner = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        try (Connection owner = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = owner.prepareStatement(sql)) {
             statement.setLong(1, parameter);
             try (ResultSet rs = statement.executeQuery()) {

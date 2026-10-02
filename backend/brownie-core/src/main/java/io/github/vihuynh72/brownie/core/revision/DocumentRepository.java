@@ -52,6 +52,10 @@ public interface DocumentRepository {
     /**
      * Appends one child revision only while {@code expectedRevisionId} is
      * still the document's current pointer. A mismatch writes nothing.
+     * {@code templateVersionId} null writes the revision against the version
+     * the document is on now; a version moves the document to it, and must
+     * be an activated version of the document's own template, or nothing is
+     * written.
      */
     DocumentMutationResult appendRevisionIdempotently(
             long workspaceId,
@@ -60,6 +64,7 @@ public interface DocumentRepository {
             CanonicalRequestHash requestHash,
             long documentId,
             long expectedRevisionId,
+            Long templateVersionId,
             DocumentContent content,
             Map<String, List<Long>> evidence,
             Map<FieldItemRef, FieldState> fieldStates,

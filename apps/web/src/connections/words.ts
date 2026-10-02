@@ -10,7 +10,7 @@ import { describeCommonFailure } from '@/api/failures'
 
 /**
  * Everything the pages say about connected accounts, in one place, so that
- * the Connections page and a document's Sources tab never describe the same
+ * the Connections page and a document's workspace never describe the same
  * permission, state or failure in two different ways.
  */
 

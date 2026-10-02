@@ -13,8 +13,10 @@ import java.util.List;
  * {@code docxArtifactId}/{@code pdfArtifactId} are the actual generated
  * baseline files, stored the same authorized way any other generated
  * artifact is, so a person can open and inspect exactly what was rendered.
+ * A PDF template's baseline is the PDF filled with the sample content, with
+ * no Word file, so its {@code docxArtifactId} is null.
  */
-public record BaselineRenderResult(long docxArtifactId, long pdfArtifactId, String rendererVersion, List<String> failedFieldIds) {
+public record BaselineRenderResult(Long docxArtifactId, long pdfArtifactId, String rendererVersion, List<String> failedFieldIds) {
 
     public BaselineRenderResult {
         failedFieldIds = List.copyOf(failedFieldIds);

@@ -139,7 +139,7 @@ class ExportController {
             long templateVersionId,
             long exportApprovalId,
             long validationManifestId,
-            long docxArtifactId,
+            Long docxArtifactId,
             String docxSha256,
             Long pdfArtifactId,
             String pdfSha256,

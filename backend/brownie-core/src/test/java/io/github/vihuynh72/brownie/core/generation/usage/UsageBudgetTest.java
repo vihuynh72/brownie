@@ -12,10 +12,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class UsageBudgetTest {
 
     private static final UsageLimits THREE_REQUEST_LIMITS = new UsageLimits(3, 40_000, 8_000, new BigDecimal("0.10"));
+    private static final ModelPricing LUNA = ModelPricing.forModel("gpt-6-luna");
 
     @Test
     void aFourthReservationIsRefusedAfterThreeRequests() throws Exception {
-        UsageBudget budget = new UsageBudget(THREE_REQUEST_LIMITS, ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(THREE_REQUEST_LIMITS, LUNA);
         for (int i = 0; i < 3; i++) {
             budget.reserveForCall(1000, 500);
             budget.settleActual(new ModelUsage(1000, 500));
@@ -27,21 +28,21 @@ class UsageBudgetTest {
 
     @Test
     void aReservationThatWouldExceedTheInputTokenLimitIsRefused() {
-        UsageBudget budget = new UsageBudget(new UsageLimits(3, 100, 8_000, new BigDecimal("10")), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(new UsageLimits(3, 100, 8_000, new BigDecimal("10")), LUNA);
 
         assertThrows(BudgetExceededException.class, () -> budget.reserveForCall(101, 10));
     }
 
     @Test
     void aReservationThatWouldExceedTheOutputTokenLimitIsRefused() {
-        UsageBudget budget = new UsageBudget(new UsageLimits(3, 40_000, 100, new BigDecimal("10")), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(new UsageLimits(3, 40_000, 100, new BigDecimal("10")), LUNA);
 
         assertThrows(BudgetExceededException.class, () -> budget.reserveForCall(10, 101));
     }
 
     @Test
     void aReservationThatWouldExceedTheCostLimitIsRefused() {
-        UsageBudget budget = new UsageBudget(new UsageLimits(3, 40_000, 8_000, new BigDecimal("0.000001")), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(new UsageLimits(3, 40_000, 8_000, new BigDecimal("0.000001")), LUNA);
 
         assertThrows(BudgetExceededException.class, () -> budget.reserveForCall(10_000, 10_000));
     }
@@ -49,26 +50,26 @@ class UsageBudgetTest {
     /** A person may read these, word for word: numbers a person can read, money in dollars and cents, plurals right. */
     @Test
     void eachRefusalSaysWhichLimitInWordsAPersonCanRead() throws Exception {
-        UsageBudget oneRequest = new UsageBudget(new UsageLimits(1, 40_000, 8_000, new BigDecimal("0.1")), ModelPricing.gpt5Mini());
+        UsageBudget oneRequest = new UsageBudget(new UsageLimits(1, 40_000, 8_000, new BigDecimal("0.1")), LUNA);
         oneRequest.reserveForCall(10, 10);
         oneRequest.settleActual(new ModelUsage(10, 10));
         assertEquals("This run has already made its limit of 1 model request.",
                 assertThrows(BudgetExceededException.class, () -> oneRequest.reserveForCall(1, 1)).getMessage());
 
-        UsageBudget tokens = new UsageBudget(new UsageLimits(3, 40_000, 8_000, new BigDecimal("10")), ModelPricing.gpt5Mini());
+        UsageBudget tokens = new UsageBudget(new UsageLimits(3, 40_000, 8_000, new BigDecimal("10")), LUNA);
         assertEquals("This request would take the run past its limit of 40,000 tokens sent to the model.",
                 assertThrows(BudgetExceededException.class, () -> tokens.reserveForCall(40_001, 1)).getMessage());
         assertEquals("This request would take the run past its limit of 8,000 tokens written by the model.",
                 assertThrows(BudgetExceededException.class, () -> tokens.reserveForCall(1, 8_001)).getMessage());
 
-        UsageBudget money = new UsageBudget(new UsageLimits(3, 400_000, 400_000, new BigDecimal("0.1")), ModelPricing.gpt5Mini());
+        UsageBudget money = new UsageBudget(new UsageLimits(3, 400_000, 400_000, new BigDecimal("0.1")), LUNA);
         assertEquals("This request would take the run past its spending limit of $0.10.",
                 assertThrows(BudgetExceededException.class, () -> money.reserveForCall(300_000, 300_000)).getMessage());
     }
 
     @Test
     void settlingWithLessThanTheReservedEstimateOnlyCountsTheRealUsage() throws Exception {
-        UsageBudget budget = new UsageBudget(new UsageLimits(3, 1000, 1000, new BigDecimal("10")), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(new UsageLimits(3, 1000, 1000, new BigDecimal("10")), LUNA);
         budget.reserveForCall(900, 900);
 
         budget.settleActual(new ModelUsage(10, 10));
@@ -82,7 +83,7 @@ class UsageBudgetTest {
 
     @Test
     void aLostResponseRetainsTheFullWorstCaseReservationRatherThanRefundingIt() throws Exception {
-        UsageBudget budget = new UsageBudget(new UsageLimits(3, 1000, 1000, new BigDecimal("10")), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(new UsageLimits(3, 1000, 1000, new BigDecimal("10")), LUNA);
         budget.reserveForCall(900, 900);
 
         budget.retainReservationAfterLostResponse();
@@ -92,7 +93,7 @@ class UsageBudgetTest {
 
     @Test
     void reservingTwiceWithoutSettlingOrRetainingInBetweenIsRejected() throws Exception {
-        UsageBudget budget = new UsageBudget(THREE_REQUEST_LIMITS, ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(THREE_REQUEST_LIMITS, LUNA);
         budget.reserveForCall(1, 1);
 
         assertThrows(IllegalStateException.class, () -> budget.reserveForCall(1, 1));
@@ -128,17 +129,18 @@ class UsageBudgetTest {
                 events.add("retain " + id);
             }
         };
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), ledger);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), LUNA, ledger);
 
         budget.reserveForCall(1000, 2000, "extract-v1");
         budget.settleActual(new io.github.vihuynh72.brownie.core.model.ModelUsage(900, 100));
         budget.reserveForCall(1000, 2000, "extract-v1");
         budget.retainReservationAfterLostResponse();
 
+        // Reserved: 1,000 in at $0.125 and 2,000 out at $0.50 per million. Settled: 900 in and 100 out, rounded up.
         assertEquals(java.util.List.of(
-                "reserve extract-v1 1000/2000 $0.009750",
-                "settle 7 900/100 $0.001125",
-                "reserve extract-v1 1000/2000 $0.009750",
+                "reserve extract-v1 1000/2000 $0.001125",
+                "settle 7 900/100 $0.000163",
+                "reserve extract-v1 1000/2000 $0.001125",
                 "retain 8"), events);
     }
 
@@ -161,7 +163,7 @@ class UsageBudgetTest {
                 throw new IllegalStateException("database unavailable");
             }
         };
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), broken);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), LUNA, broken);
 
         budget.reserveForCall(10, 10, "extract-v1");
         budget.settleActual(new io.github.vihuynh72.brownie.core.model.ModelUsage(5, 5));

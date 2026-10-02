@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.core.document.DocxStructuralGraph;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.TemplateBindingValidator;
+import io.github.vihuynh72.brownie.core.template.TemplateKind;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -30,7 +31,11 @@ public final class RulePayloadValidator {
     private RulePayloadValidator() {
     }
 
-    /** Every problem found -- empty means {@code scope} and {@code payload} are both valid against {@code fieldDefinitions}/{@code graph}. */
+    /**
+     * Every problem found -- empty means {@code scope} and {@code payload} are both valid against {@code fieldDefinitions}/{@code graph}.
+     * {@code graph} is null for a PDF template, which has no Word structure: a protected region, which names part of that
+     * structure, is then refused, as is one that names a place on a PDF page on any template.
+     */
     public static List<RuleProblem> validate(
             List<FieldDefinition> fieldDefinitions, DocxStructuralGraph graph, RuleScope scope, RulePayload payload) {
         Map<String, FieldDefinition> byFieldId =
@@ -68,6 +73,10 @@ public final class RulePayloadValidator {
             case RulePayload.AllowedOverflowBehavior(String fieldId, OverflowResolution resolution) -> requireKnownField(fieldId, byFieldId, problems);
             case RulePayload.RepeatableRegionEmptyBehavior(String fieldId, EmptyValueResolution resolution) ->
                     requireKnownRepeatedField(fieldId, byFieldId, problems);
+            case RulePayload.ProtectedRegion(var target) when graph == null || target.templateKind() != TemplateKind.DOCX ->
+                    problems.add(new RuleProblem(
+                            RuleProblemReason.UNSUPPORTED_TARGET,
+                            "a protected region can only name part of a Word form's own structure, not a place on a PDF"));
             case RulePayload.ProtectedRegion(var target) -> {
                 int matches = TemplateBindingValidator.matchCount(graph, target);
                 if (matches != 1) {

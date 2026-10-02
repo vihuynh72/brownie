@@ -48,7 +48,7 @@ class BoundedModelCallTest {
         gateway.enqueue(success);
         RecordingLedger ledger = new RecordingLedger();
         List<Duration> pauses = new ArrayList<>();
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), ledger);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"), ledger);
 
         ModelCompletion completion = BoundedModelCall.complete(
                 gateway, REQUEST, 10, budget, CancellationSignal.never(), retrying(2, pauses));
@@ -67,7 +67,7 @@ class BoundedModelCallTest {
         FakeModelGateway gateway = new FakeModelGateway();
         gateway.enqueueFailure(new ModelTransportException("credential rejected", false, null));
         List<Duration> pauses = new ArrayList<>();
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"));
 
         assertThrows(ModelTransportException.class, () -> BoundedModelCall.complete(
                 gateway, REQUEST, 10, budget, CancellationSignal.never(), retrying(2, pauses)));
@@ -83,7 +83,7 @@ class BoundedModelCallTest {
             gateway.enqueueFailure(new ModelTransportException("provider outage " + i, true, null));
         }
         RecordingLedger ledger = new RecordingLedger();
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), ledger);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"), ledger);
 
         ModelTransportException failure = assertThrows(ModelTransportException.class, () -> BoundedModelCall.complete(
                 gateway, REQUEST, 10, budget, CancellationSignal.never(), retrying(2, new ArrayList<>())));
@@ -109,7 +109,7 @@ class BoundedModelCallTest {
             outages.add(outage);
             gateway.enqueueFailure(outage);
         }
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"));
         int bound = UsageLimits.defaultRunLimits().maxPhysicalRequests();
 
         ModelTransportException reported = assertThrows(ModelTransportException.class, () -> BoundedModelCall.complete(
@@ -128,7 +128,7 @@ class BoundedModelCallTest {
         gateway.enqueueFailure(outage);
         gateway.enqueue(new ModelCompletion.Success("{}", new ModelUsage(1, 1)));
         RecordingLedger ledger = new RecordingLedger();
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), ledger);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"), ledger);
         // The month runs out between the first try and the second.
         TransportRetryPolicy policy = new TransportRetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(8),
                 duration -> ledger.refuseWith = new BudgetExceededException(UsageLimitKind.WORKSPACE_MONTH, "used up"));
@@ -146,7 +146,7 @@ class BoundedModelCallTest {
         gateway.enqueueFailure(new ModelTransportException("rate limited", true, null));
         gateway.enqueue(new ModelCompletion.Success("{}", new ModelUsage(1, 1)));
         AtomicBoolean cancelled = new AtomicBoolean(false);
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini());
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"));
         // Cancellation arrives while the first failure is being waited out.
         TransportRetryPolicy policy = new TransportRetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(8), duration -> cancelled.set(true));
 
@@ -162,7 +162,7 @@ class BoundedModelCallTest {
         gateway.enqueue(new ModelCompletion.Success("{}", new ModelUsage(1, 1)));
         RecordingLedger ledger = new RecordingLedger();
         ledger.refuseWith = new BudgetExceededException(UsageLimitKind.WORKSPACE_MONTH, "This workspace has used its allowance.");
-        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.gpt5Mini(), ledger);
+        UsageBudget budget = new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"), ledger);
 
         BudgetExceededException refused = assertThrows(BudgetExceededException.class, () -> BoundedModelCall.complete(
                 gateway, REQUEST, 10, budget, CancellationSignal.never(), TransportRetryPolicy.none()));

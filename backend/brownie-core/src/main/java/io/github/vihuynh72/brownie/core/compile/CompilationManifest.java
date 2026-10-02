@@ -12,7 +12,8 @@ import java.util.Objects;
  * not the fuller export receipt (bound to a
  * human review decision and a validation manifest, neither of which exist
  * yet), so it is named for what it actually is rather than borrowing that
- * later name.
+ * later name. A PDF template's compilation fills a PDF and makes no Word
+ * file, so its {@code docxArtifactId}/{@code docxSha256} are null.
  */
 public record CompilationManifest(
         long id,
@@ -21,7 +22,7 @@ public record CompilationManifest(
         long revisionId,
         long templateId,
         long templateVersionId,
-        long docxArtifactId,
+        Long docxArtifactId,
         String docxSha256,
         long pdfArtifactId,
         String pdfSha256,
@@ -30,7 +31,9 @@ public record CompilationManifest(
         OffsetDateTime compiledAt) {
 
     public CompilationManifest {
-        Objects.requireNonNull(docxSha256, "docxSha256");
+        if ((docxArtifactId == null) != (docxSha256 == null)) {
+            throw new IllegalArgumentException("docxArtifactId and docxSha256 must be both present or both absent.");
+        }
         Objects.requireNonNull(pdfSha256, "pdfSha256");
         Objects.requireNonNull(rendererVersion, "rendererVersion");
         integrityFindings = List.copyOf(integrityFindings);

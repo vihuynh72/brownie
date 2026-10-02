@@ -3,6 +3,11 @@
 
 # Keep binary fixtures and packaged assets out of text conversion and textual diffs.
 *.docx binary -eol
+*.doc binary -eol
+*.rtf binary -eol
+*.odt binary -eol
+*.ott binary -eol
+*.pages binary -eol
 *.pdf binary -eol
 *.png binary -eol
 *.jpg binary -eol

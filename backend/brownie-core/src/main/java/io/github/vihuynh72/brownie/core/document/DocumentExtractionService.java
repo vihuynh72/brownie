@@ -14,10 +14,11 @@ import java.util.Optional;
  * and the extractor/repository interfaces above, so it has no framework or
  * infrastructure dependency of its own -- real POI/PDFBox-backed
  * extractors and JDBC repositories are supplied by whichever module wires
- * this up. {@code SupportedMediaType} has exactly three values and all
- * three now have a real extractor here, so {@link #extract}/{@link
- * #findLatestResult}'s {@code switch}es are genuinely exhaustive -- there
- * is no longer an "unsupported type" branch to throw from.
+ * this up. DOCX, PDF and plain text each have a real extractor here; every
+ * other word-processing type is refused by {@link #extract}/{@link
+ * #findLatestResult} with {@link NotExtractableMediaTypeException}, because
+ * only a Word document is ever read for structure and those become one (a
+ * working copy) before anything reads them.
  *
  * <p>DOCX, PDF, and plain text are kept as genuinely separate pairs of
  * methods and repositories, each returning its own format-shaped result
@@ -74,19 +75,23 @@ public class DocumentExtractionService {
      * is not READY ({@link ArtifactService#openContent}).
      */
     public ExtractionResult extract(long workspaceId, long userId, long artifactId) {
-        return switch (mediaTypeOf(workspaceId, userId, artifactId)) {
+        SupportedMediaType mediaType = mediaTypeOf(workspaceId, userId, artifactId);
+        return switch (mediaType) {
             case DOCX -> new ExtractionResult.Docx(extractDocx(workspaceId, userId, artifactId));
             case PDF -> new ExtractionResult.Pdf(extractPdf(workspaceId, userId, artifactId));
             case PLAIN_TEXT -> new ExtractionResult.PlainText(extractPlainText(workspaceId, userId, artifactId));
+            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
         };
     }
 
     /** The already-persisted result for this artifact, from whichever repository matches its own detected media type, if any. */
     public Optional<ExtractionResult> findLatestResult(long workspaceId, long userId, long artifactId) {
-        return switch (mediaTypeOf(workspaceId, userId, artifactId)) {
+        SupportedMediaType mediaType = mediaTypeOf(workspaceId, userId, artifactId);
+        return switch (mediaType) {
             case DOCX -> findLatest(workspaceId, userId, artifactId).map(ExtractionResult.Docx::new);
             case PDF -> findLatestPdf(workspaceId, userId, artifactId).map(ExtractionResult.Pdf::new);
             case PLAIN_TEXT -> findLatestPlainText(workspaceId, userId, artifactId).map(ExtractionResult.PlainText::new);
+            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
         };
     }
 
@@ -131,7 +136,7 @@ public class DocumentExtractionService {
             }
             return switch (outcome) {
                 case DocxExtractionOutcome.Supported supported -> extractionVersionRepository.saveComplete(
-                        workspaceId, userId, artifactId, parserVersion, supported.graph());
+                        workspaceId, userId, artifactId, parserVersion, supported.graph(), supported.keptAsIs());
                 case DocxExtractionOutcome.Unsupported unsupported -> extractionVersionRepository.saveUnsupported(
                         workspaceId, userId, artifactId, parserVersion, unsupported.featureReport());
             };

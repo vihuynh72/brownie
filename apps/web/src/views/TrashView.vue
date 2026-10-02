@@ -3,10 +3,20 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import { useSessionStore } from '@/stores/session'
+import { useTemplatesStore } from '@/stores/templates'
 import { loadCapabilities } from '@/capabilities'
 import { dayCount } from '@/periods'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
-import { ApiRequestError, listDeletions, purgeDeletion, restoreDeletion, type DeletionResponse } from '@/api/client'
+import {
+  ApiRequestError,
+  listDeletions,
+  listTrashedTemplates,
+  purgeDeletion,
+  restoreDeletion,
+  restoreTemplate,
+  type DeletionResponse,
+  type TemplateResponse,
+} from '@/api/client'
 
 /**
  * The trash bin: every document that was moved here and can still come
@@ -15,8 +25,13 @@ import { ApiRequestError, listDeletions, purgeDeletion, restoreDeletion, type De
  * forever cannot be undone, so it asks once, in the row itself, with the
  * document's name in the question; there is no dialog to get lost in, and
  * Escape or "Keep it" puts focus back on the button that asked.
+ *
+ * Templates moved here have a section of their own. They are never
+ * deleted for good, by time or by hand: every document made from one
+ * still reads it, so it stays until it is restored.
  */
 const session = useSessionStore()
+const templatesStore = useTemplatesStore()
 const entries = ref<DeletionResponse[]>([])
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref<string | null>(null)
@@ -30,6 +45,30 @@ const actionError = ref<string | null>(null)
 const noticeElement = ref<HTMLElement | null>(null)
 
 const trashed = computed(() => entries.value.filter((entry) => entry.scope === 'DOCUMENT' && entry.state === 'TRASHED'))
+
+const trashedTemplates = ref<TemplateResponse[]>([])
+/** "older" is a server that keeps no templates in the trash at all. */
+const templatesState = ref<'idle' | 'loading' | 'loaded' | 'error' | 'older'>('idle')
+const templatesError = ref<string | null>(null)
+const restoringTemplateId = ref<number | null>(null)
+
+/** Nothing in the trash at all, and both lists have said so. */
+const empty = computed(
+  () =>
+    loadState.value === 'loaded' &&
+    trashed.value.length === 0 &&
+    templatesState.value === 'loaded' &&
+    trashedTemplates.value.length === 0,
+)
+
+/**
+ * The same words describeCommonFailure uses for a server older than this
+ * page, for the one way such a server shows it here without a missing
+ * route: see loadTemplates.
+ */
+const OLDER_SERVER_TEMPLATES =
+  'The Brownie server that answered is older than this page and does not have a Trash Bin for templates yet. ' +
+  'Reloading will not change that: the server needs to be updated and restarted.'
 
 /** Deleted for good, with stored files the background worker has not removed yet. */
 const stillRemovingCount = computed(
@@ -68,11 +107,55 @@ function datesOf(entry: DeletionResponse): string {
   return sentences.join(' ')
 }
 
+/** Counts every request for the templates in the trash, so an answer that arrives after a newer one was asked for is dropped. */
+let templatesRequests = 0
+
+/**
+ * A server that predates templates in the trash has the list route but
+ * not the question: it ignores "trashed=true" and answers with every
+ * template it has, none of which says when it was trashed. Offering
+ * those for restoring would present the whole live list as trash, so an
+ * answer like that is read as the older server it came from.
+ *
+ * Only the first load says "loading": a list already on screen stays
+ * there while it is fetched again, so a template just moved here from the
+ * sidebar appears in place instead of the whole list blinking out and back.
+ */
+async function loadTemplates(workspaceId: number): Promise<void> {
+  const request = ++templatesRequests
+  if (templatesState.value !== 'loaded') {
+    templatesState.value = 'loading'
+  }
+  templatesError.value = null
+  try {
+    const answer = await listTrashedTemplates(workspaceId)
+    if (request !== templatesRequests) {
+      return
+    }
+    if (answer.some((template) => typeof template.trashedAt !== 'string')) {
+      trashedTemplates.value = []
+      templatesState.value = 'older'
+      return
+    }
+    trashedTemplates.value = answer
+    templatesState.value = 'loaded'
+  } catch (error) {
+    if (request !== templatesRequests) {
+      return
+    }
+    templatesState.value = 'error'
+    templatesError.value =
+      describeCommonFailure(error, 'a Trash Bin for templates') ??
+      'Brownie could not load the templates in the trash. If this keeps happening, let whoever runs this Brownie know.'
+  }
+}
+
 async function load(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined) {
     return
   }
+  void loadTemplates(workspaceId)
   loadState.value = 'loading'
   loadError.value = null
   try {
@@ -98,6 +181,16 @@ watch(
   (workspaceId, previous) => {
     if (workspaceId !== undefined && workspaceId !== previous) {
       void load()
+    }
+  },
+)
+// The sidebar stays beside this page, and a template moved to the trash from there belongs in the list here.
+watch(
+  () => templatesStore.trashedSerial,
+  () => {
+    const workspaceId = session.personalWorkspaceId
+    if (workspaceId !== undefined) {
+      void loadTemplates(workspaceId)
     }
   },
 )
@@ -156,6 +249,39 @@ async function restore(entry: DeletionResponse): Promise<void> {
   }
   if (retryable) {
     await refocus(`trash-restore-${entry.id}`)
+  }
+}
+
+/**
+ * Puts a template back in My Templates, where the sidebar shows it again at
+ * once. Restoring one that is already back (from another tab, say) is the
+ * same success: the server answers with the template either way.
+ */
+async function restoreTrashedTemplate(template: TemplateResponse): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined || restoringTemplateId.value !== null) {
+    return
+  }
+  restoringTemplateId.value = template.id
+  actionError.value = null
+  let retryable = false
+  try {
+    await restoreTemplate(workspaceId, template.id)
+    trashedTemplates.value = trashedTemplates.value.filter((candidate) => candidate.id !== template.id)
+    void templatesStore.refresh(workspaceId)
+    await showNotice(`Restored "${template.displayName}" to My Templates.`, null)
+  } catch (error) {
+    retryable = true
+    actionError.value = `Could not restore "${template.displayName}". ${
+      describeCommonFailure(error, 'a way to restore templates') ??
+      (error instanceof ApiRequestError ? error.problem?.detail : undefined) ??
+      'Try again.'
+    }`
+  } finally {
+    restoringTemplateId.value = null
+  }
+  if (retryable) {
+    await refocus(`trash-template-restore-${template.id}`)
   }
 }
 
@@ -218,7 +344,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
   <section v-else class="trash" aria-labelledby="trash-heading">
     <span class="trash__mark" aria-hidden="true"><AppIcon name="trash" :size="28" /></span>
     <h1 id="trash-heading" class="trash__title">
-      {{ loadState === 'loaded' && trashed.length === 0 ? 'Your trash bin is empty' : 'Trash bin' }}
+      {{ empty ? 'Your trash bin is empty' : 'Trash bin' }}
     </h1>
     <p v-if="retention">
       Documents you move here can be restored exactly as they were for {{ retention }}. After that, or when you delete
@@ -238,6 +364,10 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
 
     <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Loading the trash bin…</p>
     <p v-else-if="loadState === 'error'" class="field-error" role="alert">{{ loadError }}</p>
+    <!-- With nothing in the trash at all, the heading already says so. -->
+    <p v-else-if="loadState === 'loaded' && trashed.length === 0 && !empty" class="field-hint">
+      No documents are in the trash.
+    </p>
 
     <ul v-if="trashed.length > 0" class="trash__list">
       <li v-for="entry in trashed" :key="entry.id" class="trash__item">
@@ -298,6 +428,43 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
       Nobody can open them any more.
     </p>
 
+    <section class="trash__templates" aria-labelledby="trash-templates-heading">
+      <h2 id="trash-templates-heading" class="trash__subtitle">Templates</h2>
+      <p>
+        Documents made from a template keep working while it is in the trash. A template stays here until you restore
+        it.
+      </p>
+
+      <p v-if="templatesState === 'loading'" class="field-hint">Loading the templates in the trash…</p>
+      <p v-else-if="templatesState === 'older'" class="field-error" role="alert">{{ OLDER_SERVER_TEMPLATES }}</p>
+      <p v-else-if="templatesState === 'error'" class="field-error" role="alert">{{ templatesError }}</p>
+      <p v-else-if="templatesState === 'loaded' && trashedTemplates.length === 0 && !empty" class="field-hint">
+        No templates are in the trash.
+      </p>
+
+      <ul v-if="trashedTemplates.length > 0" class="trash__list">
+        <li v-for="template in trashedTemplates" :key="template.id" class="trash__item">
+          <div class="trash__text">
+            <span class="trash__name" :title="template.displayName">{{ template.displayName }}</span>
+            <span class="field-hint">Moved here {{ formatDay(template.trashedAt) }}.</span>
+          </div>
+          <div class="trash__actions">
+            <button
+              :id="`trash-template-restore-${template.id}`"
+              type="button"
+              class="button button--secondary"
+              :disabled="restoringTemplateId !== null"
+              @click="restoreTrashedTemplate(template)"
+            >
+              <AppIcon name="restore" :size="18" />
+              <!-- The space lives outside the hidden span: inside it, the compiler trims it and the name runs together. -->
+              <span>Restore <span class="visually-hidden">{{ template.displayName }}</span></span>
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
+
     <RouterLink class="button button--secondary" to="/">Back to your documents</RouterLink>
   </section>
 </template>
@@ -328,6 +495,20 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
 .trash__title {
   margin: 0;
   font-size: var(--font-size-xl);
+}
+
+.trash__templates {
+  inline-size: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-block-start: var(--space-4);
+}
+
+.trash__subtitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
 }
 
 .trash__notice {

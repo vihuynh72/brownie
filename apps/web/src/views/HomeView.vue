@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { ApiRequestError, listDocuments, trashDocument, type DocumentSummaryResponse } from '@/api/client'
+import { documentHandoffState } from '@/router/handoff'
+import { loadCapabilities } from '@/capabilities'
+import { FORM_FILE_ACCEPT, learnFormAndStartDocument, learnStepWords } from '@/upload/learnAndStart'
+import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
 
 const session = useSessionStore()
 const route = useRoute()
+const router = useRouter()
 const documents = ref<DocumentSummaryResponse[]>([])
 
 // A sign-in that the identity provider refused comes back here as /?signin=failed&reason=<code>
@@ -21,8 +26,9 @@ const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'n
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
+// A typographer's apostrophe, as the design sets it.
 const greeting = computed(() =>
-  session.firstName ? `What's on your mind today, ${session.firstName}?` : "What's on your mind today?",
+  session.firstName ? `What’s on your mind today, ${session.firstName}?` : 'What’s on your mind today?',
 )
 
 async function loadDocuments(): Promise<void> {
@@ -43,6 +49,92 @@ async function loadDocuments(): Promise<void> {
 }
 
 onMounted(loadDocuments)
+
+// ---- Uploading a form ------------------------------------------------------------------------
+//
+// The file chooser belongs to a hidden input, opened by the big button, so the button can look
+// like the design and still be one ordinary control. While a form is being learned the button
+// says it is unavailable with aria-disabled rather than the disabled attribute, which would drop
+// the keyboard focus it holds; a press in that time does nothing.
+
+const fileInput = ref<HTMLInputElement | null>(null)
+// Kept outside the page (see formUploadState), so leaving Home mid-way loses neither the step nor how it ended.
+const uploadStep = formUploadStep
+const uploadError = formUploadError
+const uploadFinished = formUploadFinished
+const uploading = computed(() => uploadStep.value !== null)
+const uploadStatus = computed(() => (uploadStep.value ? learnStepWords(uploadStep.value.step, uploadStep.value.detail) : ''))
+
+// Where this deployment has the AI service name the places in an uploaded form, the form's text goes to it, and the
+// person is told so before they choose a file. Asked only once signed in: the question is about their uploads.
+const namingByModel = ref(false)
+async function loadNaming(): Promise<void> {
+  try {
+    namingByModel.value = (await loadCapabilities()).fillSpotNaming === 'MODEL'
+  } catch {
+    // Unknown, and nothing is said; an upload that happens anyway is worded by the server's own answers.
+    namingByModel.value = false
+  }
+}
+onMounted(() => {
+  if (session.status === 'authenticated') void loadNaming()
+})
+const uploadDescribedBy = computed(() => (namingByModel.value ? 'home-upload-kinds home-upload-disclosure' : 'home-upload-kinds'))
+// Someone who moves on while a form is being learned is not pulled back to it when it is ready: the
+// document is in their recent documents, and the template under My Templates, either way.
+let leftHome = false
+onBeforeUnmount(() => {
+  leftHome = true
+  // A refusal already shown here is not said again on the next visit; one that comes while the person is away is.
+  if (!uploading.value) uploadError.value = null
+})
+
+function chooseForm(): void {
+  if (uploading.value) return
+  fileInput.value?.click()
+}
+
+async function onFormChosen(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Cleared at once, so choosing the same file again after a refusal is still a change.
+  input.value = ''
+  const workspaceId = session.personalWorkspaceId
+  if (!file || workspaceId === undefined || uploading.value) return
+
+  uploadError.value = null
+  uploadFinished.value = null
+  uploadStep.value = { step: 'uploading', detail: { mediaType: null, waiting: false } }
+  const outcome = await learnFormAndStartDocument(workspaceId, file, (step, detail) => {
+    uploadStep.value = { step, detail }
+  })
+  if (!outcome.ok) {
+    uploadStep.value = null
+    uploadError.value = outcome.message
+    return
+  }
+  if (leftHome) {
+    // Said on Home when the person comes back, with a way to the document, instead of lost.
+    uploadFinished.value = { documentId: outcome.documentId, name: outcome.name, notes: outcome.notes }
+    uploadStep.value = null
+    return
+  }
+  await router.push(documentLocation(outcome.documentId, outcome.notes))
+  uploadStep.value = null
+}
+
+/**
+ * The notes about the form ride along in the pushed route's history state, so they are read on
+ * the page the person lands on, and still there if they reload it.
+ */
+function documentLocation(documentId: number, notes: string[]) {
+  return {
+    path: `/documents/${documentId}`,
+    state: notes.length > 0 ? documentHandoffState({ attachedSources: [], sourceWarning: null, formNotes: notes }) : undefined,
+  }
+}
+
+// ---- Recent documents ------------------------------------------------------------------------
 
 // One document at a time: the list is rebuilt from what the server accepted,
 // so a second click cannot race the first one's answer.
@@ -78,7 +170,7 @@ async function moveToTrash(document: DocumentSummaryResponse): Promise<void> {
     trashNotice.value = null
     if (error instanceof ApiRequestError && error.routeMissing) {
       // A server older than this page answers 404 for the route itself: the document is untouched and still listed.
-      trashError.value = `This Brownie server cannot move documents to the trash yet, so nothing was changed and "${document.title}" is still here. The server needs to be updated first.`
+      trashError.value = `This Brownie server cannot move documents to the trash, so nothing was changed and "${document.title}" is still here. The server needs to be updated first.`
     } else if (brownieSaysNotThere(error)) {
       // Deleted for good from another tab or device: trying again could never work, so the row goes and the sentence says why.
       // Only Brownie's own explained answer says that; a bare 404 came from something in front of it.
@@ -110,6 +202,7 @@ watch(
   (status) => {
     if (status === 'authenticated') {
       void loadDocuments()
+      void loadNaming()
     }
   },
 )
@@ -172,16 +265,56 @@ const recentDays = computed<DayGroup[]>(() => {
       {{ session.status === 'authenticated' ? greeting : 'Welcome to Brownie!' }}
     </h1>
 
-    <!--
-      The upload action is the same link whoever is looking at it: a signed-out
-      visitor following it is sent to the sign-in page and brought back here to
-      the document they were starting, rather than being told in advance what
-      they are not allowed to do.
-    -->
-    <RouterLink class="button button--primary home__upload" to="/documents/new">
-      <AppIcon name="upload" :size="22" />
-      <span>Upload your documents</span>
-    </RouterLink>
+    <div class="home__upload-area">
+      <!--
+        Signed in, the button opens the file chooser for the form to fill. Signed out it is a link
+        to the sign-in page that brings the visitor back here, rather than a control that refuses.
+      -->
+      <template v-if="session.status === 'authenticated'">
+        <button
+          type="button"
+          class="button button--primary home__upload"
+          :aria-disabled="uploading ? 'true' : undefined"
+          :aria-describedby="uploadDescribedBy"
+          @click="chooseForm"
+        >
+          <AppIcon name="upload" :size="40" />
+          <span>Upload your documents</span>
+        </button>
+        <input
+          id="home-upload-input"
+          ref="fileInput"
+          class="visually-hidden"
+          type="file"
+          :accept="FORM_FILE_ACCEPT"
+          tabindex="-1"
+          aria-hidden="true"
+          @change="onFormChosen"
+        />
+      </template>
+      <RouterLink v-else class="button button--primary home__upload" :to="{ name: 'signin', query: { next: '/' } }">
+        <AppIcon name="upload" :size="40" />
+        <span>Upload your documents</span>
+      </RouterLink>
+      <p id="home-upload-kinds" class="home__upload-kinds">Word, PDF, Pages, OpenDocument or RTF</p>
+      <p v-if="session.status === 'authenticated' && namingByModel" id="home-upload-disclosure" class="home__upload-disclosure">
+        When you upload a form, its text is sent to our AI service so Brownie can find the places to fill.
+      </p>
+
+      <!--
+        The page's one polite live region: each step is read out as it starts. Its line is kept while it is
+        empty, so the list below does not move when a form is chosen; the turning ring beside it is only seen.
+      -->
+      <div class="home__upload-progress">
+        <span v-if="uploading" class="activity-indicator" aria-hidden="true"></span>
+        <p class="home__upload-status" role="status">{{ uploadStatus }}</p>
+      </div>
+      <p v-if="uploadError" class="field-error home__upload-error" role="alert">{{ uploadError }}</p>
+      <p v-if="uploadFinished" class="home__notice home__upload-finished">
+        Brownie learned "{{ uploadFinished.name }}" and started a document from it.
+        <RouterLink :to="documentLocation(uploadFinished.documentId, uploadFinished.notes)" @click="uploadFinished = null">Open it</RouterLink>.
+      </p>
+    </div>
 
     <section v-if="session.status === 'authenticated'" class="home__recent" aria-labelledby="recent-heading">
       <h2 id="recent-heading" class="home__recent-title">Recent documents</h2>
@@ -191,17 +324,16 @@ const recentDays = computed<DayGroup[]>(() => {
       </p>
       <p v-if="trashError" ref="trashErrorElement" class="field-error" role="alert" tabindex="-1">{{ trashError }}</p>
 
-      <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Loading documents…</p>
+      <p v-if="loadState === 'loading'" class="field-hint home__hint">Loading documents…</p>
       <p v-else-if="loadState === 'error'" class="field-error" role="alert">
         {{ loadError }}
       </p>
-      <p v-else-if="documents.length === 0 && removedFromList" class="field-hint">
+      <p v-else-if="documents.length === 0 && removedFromList" class="field-hint home__hint">
         There are no documents here now. Anything moved to the trash can be restored from the
         <RouterLink to="/trash">trash bin</RouterLink>.
       </p>
-      <p v-else-if="documents.length === 0" class="field-hint">
-        You don't have any documents yet. Upload your notes above, or
-        <RouterLink to="/documents/new">start one from a template</RouterLink>.
+      <p v-else-if="documents.length === 0" class="field-hint home__hint">
+        There are no documents here. Upload a form above to start one, or choose a template under My Templates.
       </p>
 
       <div v-for="day in recentDays" :key="day.key" class="home__day">
@@ -210,14 +342,14 @@ const recentDays = computed<DayGroup[]>(() => {
           <!-- The action sits beside the link, never inside it: a button nested in a link is neither. -->
           <li v-for="entry in day.documents" :key="entry.document.id" class="home__item">
             <RouterLink class="home__row" :to="`/documents/${entry.document.id}`">
-              <span class="home__tile" aria-hidden="true"><AppIcon name="document" :size="20" /></span>
+              <span class="home__tile" aria-hidden="true"><AppIcon name="document" :size="30" /></span>
               <span class="home__row-title" :title="entry.document.title">{{ entry.document.title }}</span>
               <span class="home__row-time">{{ entry.time }}</span>
             </RouterLink>
             <button
               :id="`home-trash-${entry.document.id}`"
               type="button"
-              class="icon-button"
+              class="icon-button home__trash"
               :disabled="trashingId !== null"
               @click="moveToTrash(entry.document)"
             >
@@ -232,38 +364,65 @@ const recentDays = computed<DayGroup[]>(() => {
 </template>
 
 <style scoped>
+/*
+ * Measured from the design at 1512 by 982: a 48px regular-weight greeting
+ * whose capitals start 174px down the window, a 78px pill 44px under it,
+ * and a list whose drawn part (its heading to the times) is 672px wide, with
+ * rows 59px apart. The design's column sits a little right of the middle of
+ * the page; this one is centred, so with the sidebar open it is about 15px
+ * left of where the drawing has it.
+ */
 .home {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-5);
   inline-size: 100%;
-  max-inline-size: 46rem;
+  max-inline-size: 64rem;
   margin-inline: auto;
-  padding-block-start: var(--space-6);
+  padding-block-start: clamp(var(--space-6), 14.25vh, 8.75rem);
 }
 
 .home__signin-error {
   inline-size: 100%;
+  max-inline-size: 45rem;
+  margin-block-end: var(--space-5);
   border-color: var(--color-error);
 }
 
 .home__greeting {
   margin: 0;
   font-size: var(--font-size-display);
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.15;
   text-align: center;
   text-wrap: balance;
 }
 
+/* The button, the line under it that says what is happening, and why it stopped, as one block. */
+.home__upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  inline-size: 100%;
+  margin-block-start: 2.625rem;
+}
+
+/*
+ * The design's own colour, not the darker action colour: white on it is
+ * 3.53:1, under the 4.5:1 ordinary text needs but over the 3:1 that text
+ * of 24px and up needs, and this label is 24px. The label must not shrink
+ * below that for this pairing to stay readable.
+ */
 .home__upload {
-  gap: var(--space-3);
-  min-block-size: 3.5rem;
-  padding-inline: var(--space-6);
+  gap: var(--space-5);
+  min-block-size: 4.875rem;
+  padding-block: var(--space-3);
+  padding-inline: var(--space-6) 4.5rem;
   border-radius: var(--radius-pill);
-  font-size: var(--font-size-lg);
-  font-weight: 500;
+  background: var(--color-cocoa-tile);
+  font-size: var(--font-size-xl);
+  font-weight: 400;
   /* A small lift under the pointer: enough to read as a control, not enough to be a performance. */
   transition:
     background-color var(--motion-fast) var(--motion-ease),
@@ -271,26 +430,92 @@ const recentDays = computed<DayGroup[]>(() => {
     box-shadow var(--motion-fast) var(--motion-ease);
 }
 
-.home__upload:hover {
+.home__upload:hover:not([aria-disabled='true']) {
+  background: var(--color-cocoa);
   translate: 0 -1px;
   box-shadow: 0 0.5rem 1rem rgb(42 41 36 / 0.12);
 }
 
-.home__upload:active {
+.home__upload:active:not([aria-disabled='true']) {
   translate: 0 0;
   box-shadow: none;
 }
 
+/* Busy, it answers a pointer no more than it answers a press. */
+.home__upload[aria-disabled='true']:hover {
+  background: var(--color-cocoa-tile);
+}
+
+/*
+ * Empty until a form is chosen, and then one line that changes, in the text
+ * colour and beside a turning ring, so it reads as something happening and
+ * not as one more hint. It stays in the page while empty, because a live
+ * region that only appears with its first message is not reliably read out,
+ * and its line's height is kept, so nothing under it moves when it fills.
+ */
+.home__upload-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-block-size: calc(var(--font-size-sm) * 1.5);
+  max-inline-size: 36rem;
+}
+
+.home__upload-status {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  text-align: center;
+}
+
+/* What the button takes, and where a form's text goes: quiet lines, still at full reading contrast. */
+.home__upload-kinds,
+.home__upload-disclosure {
+  margin: 0;
+  max-inline-size: 36rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+  text-wrap: balance;
+}
+
+.home__upload-error {
+  max-inline-size: 36rem;
+  margin: 0;
+  text-align: center;
+}
+
+/*
+ * Each row carries its trash control at its end, outside the part the design
+ * draws; the same room is left at the start, so the drawn part (heading,
+ * tiles, titles, times) is what sits in the middle of the page.
+ */
 .home__recent {
+  --home-row-action: calc(2rem + var(--space-1));
+
   inline-size: 100%;
-  margin-block-start: var(--space-5);
+  max-inline-size: calc(42.75rem + 2 * var(--home-row-action));
+  margin-block-start: 2.25rem;
+  padding-inline-start: var(--home-row-action);
 }
 
 .home__recent-title {
-  margin: 0 0 var(--space-3);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
+  margin: 0 0 var(--space-5);
+  font-size: var(--font-size-base);
+  font-weight: 500;
   color: var(--color-text-muted);
+}
+
+.home__hint {
+  margin: 0;
+  padding-inline-start: var(--space-4);
+}
+
+/* The day headings and their rows sit in from the section's own heading, as the design indents them. */
+.home__day {
+  padding-inline-start: var(--space-4);
 }
 
 .home__day + .home__day {
@@ -334,8 +559,8 @@ const recentDays = computed<DayGroup[]>(() => {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-4);
-  min-block-size: 3rem;
+  gap: var(--space-5);
+  min-block-size: 3.6875rem;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   color: var(--color-text);
@@ -355,8 +580,8 @@ const recentDays = computed<DayGroup[]>(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  inline-size: 2.25rem;
-  block-size: 2.25rem;
+  inline-size: 2.3125rem;
+  block-size: 2.3125rem;
   border-radius: var(--radius);
   background: var(--color-cocoa-tile);
   color: var(--color-surface);
@@ -366,7 +591,7 @@ const recentDays = computed<DayGroup[]>(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-size: var(--font-size-lg);
 }
 
 .home__row-time {
@@ -375,11 +600,43 @@ const recentDays = computed<DayGroup[]>(() => {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Quiet until wanted: the trash control shows when its row is under the
+ * pointer or holds the keyboard focus. It stays in the layout and in the Tab
+ * order while hidden, so focusing it is what shows it and nothing moves.
+ */
+.home__trash {
+  opacity: 0;
+  transition:
+    opacity var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.home__item:hover .home__trash,
+.home__item:focus-within .home__trash {
+  opacity: 1;
+}
+
+/* A touch screen has no hover to reveal it with, so there it is always shown. */
+@media (hover: none), (pointer: coarse) {
+  .home__trash {
+    opacity: 1;
+  }
+}
+
+/* A finger's larger control (see the shared icon button) takes more room at the row's end. */
+@media (pointer: coarse) {
+  .home__recent {
+    --home-row-action: calc(2.75rem + var(--space-1));
+  }
+}
+
 /* On a narrow screen the time moves under the title instead of squeezing it. */
 @container main (max-width: 26rem) {
   .home__row {
     grid-template-columns: auto minmax(0, 1fr);
-    gap: var(--space-3);
+    gap: var(--space-1) var(--space-3);
   }
 
   /* The tile spans both rows so it stays beside the pair, not above the time. */
@@ -391,8 +648,20 @@ const recentDays = computed<DayGroup[]>(() => {
     grid-column: 2;
   }
 
+  .home__recent {
+    padding-inline-start: 0;
+  }
+
+  .home__day {
+    padding-inline-start: 0;
+  }
+
+  /* The label keeps its 24px (see the button itself), so the room it needs comes out of the padding. */
   .home__upload {
     inline-size: 100%;
+    gap: var(--space-3);
+    padding-inline: var(--space-4);
+    text-wrap: balance;
   }
 }
 </style>

@@ -2,14 +2,13 @@ package io.github.vihuynh72.brownie.api.storage.azure;
 
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
 import io.github.vihuynh72.brownie.core.artifact.BlobAlreadyExistsException;
 import io.github.vihuynh72.brownie.storage.azure.AzureBlobStore;
 import io.github.vihuynh72.brownie.core.artifact.BlobSizeLimitExceededException;
 import io.github.vihuynh72.brownie.core.artifact.UploadResult;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -35,11 +34,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * blob behind at that key, whether the interruption is a stream failure
  * or this store's own size-limit check.
  */
-@Testcontainers
+@DockerTest
 class AzureBlobStoreTest {
 
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
+    static final String STORAGE_CONNECTION = SharedContainers.newAzuriteAccount();
 
     @Test
     void writeAndDigestStoresRetrievableContentOnTheHappyPath() throws IOException {
@@ -98,7 +96,7 @@ class AzureBlobStoreTest {
 
     private static AzureBlobStore newStore() {
         BlobServiceClient client =
-                new BlobServiceClientBuilder().connectionString(AZURITE.getConnectionString()).buildClient();
+                new BlobServiceClientBuilder().connectionString(STORAGE_CONNECTION).buildClient();
         return new AzureBlobStore(client);
     }
 

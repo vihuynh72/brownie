@@ -20,6 +20,9 @@ import io.github.vihuynh72.brownie.core.job.StagedOutput;
 import io.github.vihuynh72.brownie.core.job.StagedJobOutput;
 import io.github.vihuynh72.brownie.core.job.StagedOutputRequest;
 import io.github.vihuynh72.brownie.core.job.WorkerId;
+import io.github.vihuynh72.brownie.worker.testinfra.DockerTest;
+import io.github.vihuynh72.brownie.worker.testinfra.SharedContainers;
+import io.github.vihuynh72.brownie.worker.testinfra.TestDatabase;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -29,11 +32,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.azure.AzuriteContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import javax.sql.DataSource;
 import java.io.ByteArrayInputStream;
@@ -62,52 +60,37 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@Testcontainers
+@DockerTest
 class JdbcJobLeaseFaultInjectionIntegrationTest {
 
-    private static final String BOOTSTRAP_PASSWORD = "postgres_bootstrap_only";
     private static final String API_PASSWORD = "brownie_api_local_only";
     private static final String MIGRATION_PASSWORD = "brownie_migration_local_only";
     private static final String WORKER_PASSWORD = "brownie_worker_local_only";
     private static final String CONFIGURATION_HASH = "a".repeat(64);
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17")
-            .withDatabaseName("brownie")
-            .withUsername("postgres")
-            .withPassword(BOOTSTRAP_PASSWORD)
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(initScriptPath()), "/docker-entrypoint-initdb.d/01-app-roles.sql");
-
-    @Container
-    static final AzuriteContainer AZURITE = new AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.37.0");
+    static final TestDatabase DB = SharedContainers.newDatabase();
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", DB::jdbcUrl);
         registry.add("spring.datasource.username", () -> "brownie_worker");
         registry.add("spring.datasource.password", () -> WORKER_PASSWORD);
         registry.add("brownie.worker.jobs.max-attempts", () -> "3");
         registry.add("brownie.worker.jobs.max-lease", () -> "PT1M");
-        registry.add("brownie.storage.local-connection", AZURITE::getConnectionString);
+        registry.add("brownie.storage.local-connection", DB::azuriteConnectionString);
         registry.add("brownie.worker.outputs.reconciliation.enabled", () -> "false");
+        // The scheduled poller must not race this test's own claims.
+        registry.add("brownie.worker.generation.enabled", () -> "false");
     }
 
     @BeforeAll
     static void migrateQueueSchema() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
+                .dataSource(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)
                 .locations("filesystem:" + apiMigrationPath())
                 .target("20")
                 .load()
                 .migrate();
-    }
-
-    private static Path initScriptPath() {
-        return Path.of("").toAbsolutePath()
-                .getParent()
-                .getParent()
-                .resolve("infra/local/postgres/init/01-app-roles.sql");
     }
 
     private static Path apiMigrationPath() {
@@ -136,7 +119,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
         Fixture fixture = queueReadyJob();
         LeasedJob abandoned = claim(fixture, "worker-crashed", Duration.ofSeconds(1));
 
-        awaitLeaseExpiry(fixture.jobId());
+        expireLease(fixture.jobId());
         LeasedJob reclaimed = claim(fixture, "worker-restarted", Duration.ofMinutes(1));
 
         assertThat(abandoned.leaseToken().fencingToken()).isEqualTo(1);
@@ -159,7 +142,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
         StagedOutput duplicateWrite = jobLeaseRepository.recordStagedOutput(firstDelivery.leaseToken(), firstOutput).orElseThrow();
         assertThat(duplicateWrite.id()).isEqualTo(recorded.id());
 
-        awaitLeaseExpiry(fixture.jobId());
+        expireLease(fixture.jobId());
         LeasedJob recovered = claim(fixture, "worker-second", Duration.ofMinutes(1));
         assertThat(jobLeaseRepository.recordStagedOutput(firstDelivery.leaseToken(), firstOutput)).isEmpty();
         StagedOutput secondOutput = jobLeaseRepository
@@ -274,7 +257,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
                 abandoned, "compiled-document", new ByteArrayInputStream(abandonedBytes));
         assertThat(blobStore.sizeOf(abandonedOutput.stagedOutput().metadata().objectKey())).contains((long) abandonedBytes.length);
 
-        awaitLeaseExpiry(fixture.jobId());
+        expireLease(fixture.jobId());
         LeasedJob recovered = claim(fixture, "worker-recovered-output", Duration.ofMinutes(1));
         byte[] recoveredBytes = "Recovered verified output.".getBytes(StandardCharsets.UTF_8);
         JobOutputPublication recoveredPublication = jobOutputPublisher.stageAndPublish(
@@ -450,7 +433,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
         Fixture fixture = queueReadyJob();
         LeasedJob expired = claim(fixture, "worker-expired", Duration.ofSeconds(1));
 
-        awaitLeaseExpiry(fixture.jobId());
+        expireLease(fixture.jobId());
 
         assertThat(jobLeaseRepository.heartbeat(expired.leaseToken(), Duration.ofMinutes(1))).isFalse();
         assertThat(jobLeaseRepository.release(
@@ -676,7 +659,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private Fixture queueReadyJob() throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             connection.setAutoCommit(false);
             try {
                 long actorId = insertUser(connection);
@@ -695,7 +678,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private Fixture queueReadyJobInWorkspace(Fixture existing, long resourceId) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             connection.setAutoCommit(false);
             try {
                 JobTarget target = new JobTarget("queue-test-resource", resourceId, 1L);
@@ -711,7 +694,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private Fixture queueReadyDocumentJob() throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD)) {
             connection.setAutoCommit(false);
             try {
                 long actorId = insertUser(connection);
@@ -945,7 +928,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private long insertQueuedEvent(Fixture fixture) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         """
                         INSERT INTO job_event (workspace_id, job_id, sequence, event_type, state)
@@ -967,7 +950,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private void insertOutbox(long workspaceId, long jobId, long eventId, String eventType) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         """
                         INSERT INTO outbox_event (delivery_key, workspace_id, job_id, job_event_id, event_type)
@@ -984,7 +967,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private void setDeadlineAfter(long jobId, Duration duration) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         "UPDATE job SET deadline_at = clock_timestamp() + (? * interval '1 millisecond') WHERE id = ?")) {
             statement.setLong(1, duration.toMillis());
@@ -995,7 +978,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private void markTerminal(long jobId) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         "UPDATE job SET state = 'CANCELLED', lease_owner = NULL, lease_expires_at = NULL WHERE id = ?")) {
             statement.setLong(1, jobId);
@@ -1004,7 +987,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
     }
 
     private void requestCancellationAsMember(Fixture fixture) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_api", API_PASSWORD)) {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD)) {
             connection.setAutoCommit(false);
             try {
                 setCurrentUser(connection, fixture.actorId());
@@ -1039,6 +1022,21 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
                         result.getLong("fencing_token"),
                         result.getString("lease_owner"));
             }
+        }
+    }
+
+    /**
+     * Ends a live lease now, as its own clock would a moment later, so a
+     * test that only needs the lease to have lapsed does not sleep through
+     * it. A test that holds the job's row lock cannot update the row, and
+     * waits for the clock with {@link #awaitLeaseExpiry(long)} instead.
+     */
+    private void expireLease(long jobId) throws SQLException {
+        try (Connection connection = migrationConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "UPDATE job SET lease_expires_at = clock_timestamp() WHERE id = ? AND state = 'LEASED'")) {
+            statement.setLong(1, jobId);
+            assertThat(statement.executeUpdate()).isEqualTo(1);
         }
     }
 
@@ -1077,14 +1075,14 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
     }
 
     private boolean workerRoutineWaitsOnLock(String routineName) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        try (Connection connection = DB.superuserConnection();
                 PreparedStatement statement = connection.prepareStatement(
                         """
                         SELECT EXISTS (
                             SELECT 1
                             FROM pg_stat_activity
-                            WHERE usename = 'brownie_worker'
+                            WHERE datname = current_database()
+                              AND usename = 'brownie_worker'
                               AND wait_event_type = 'Lock'
                               AND query LIKE ?
                         )
@@ -1195,7 +1193,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
 
     private void assertEveryJobEventHasMatchingOutboxEvent(long jobId) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
                 PreparedStatement statement = connection.prepareStatement(
                         """
                         SELECT count(*)
@@ -1227,7 +1225,7 @@ class JdbcJobLeaseFaultInjectionIntegrationTest {
     }
 
     private Connection migrationConnection() throws SQLException {
-        return DriverManager.getConnection(POSTGRES.getJdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
     private void setCurrentUser(Connection connection, long userId) throws SQLException {

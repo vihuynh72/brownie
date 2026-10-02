@@ -1,6 +1,6 @@
 import type { RulePayloadRequest, RuleScopeRequest } from '@/api/client'
 
-/** Plain-language rendering of a rule's scope and payload, shared by template teaching and the document's read-only Rules tab. */
+/** Plain-language rendering of a rule's scope and payload, for the document's read-only Rules card. */
 export function describeScope(scope: RuleScopeRequest): string {
   if (scope.kind === 'WHOLE_TEMPLATE') return 'Whole template'
   return scope.fieldId ? `Field: ${scope.fieldId}` : 'One field'
@@ -32,11 +32,12 @@ const SOURCE_KIND_LABELS: Record<string, string> = {
  * page has no words for. Each of those rules is then described without the unknown part, so the sentence stays true
  * and never shows "undefined" or the server's own code for it.
  */
-export function describePayload(payload: RulePayloadRequest): string {
+export function describePayload(payload: RulePayloadRequest, fieldName: (fieldId: string) => string = (fieldId) => fieldId): string {
+  const forField = (fieldId: string | null | undefined, text: string): string => describeForField(fieldId ? fieldName(fieldId) : null, text)
   switch (payload.kind) {
     case 'REQUIRED_FIELDS': {
       const fieldIds = payload.fieldIds ?? []
-      return fieldIds.length > 0 ? `Require: ${fieldIds.join(', ')}` : 'Require fields to be filled in'
+      return fieldIds.length > 0 ? `Require: ${fieldIds.map(fieldName).join(', ')}` : 'Require fields to be filled in'
     }
     case 'MAX_TEXT_LENGTH':
       return forField(payload.fieldId, atMost(payload.maxCharacters, 'character', 'characters') ?? 'a length limit')
@@ -77,8 +78,8 @@ export function describePayload(payload: RulePayloadRequest): string {
 }
 
 /** "meeting.title: at most 5 items"; without a field name the description stands on its own instead of reading "undefined: ...". */
-function forField(fieldId: string | null | undefined, text: string): string {
-  if (fieldId) return `${fieldId}: ${text}`
+function describeForField(field: string | null, text: string): string {
+  if (field) return `${field}: ${text}`
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 

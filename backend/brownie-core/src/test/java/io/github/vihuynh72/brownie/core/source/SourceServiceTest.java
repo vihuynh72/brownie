@@ -366,7 +366,8 @@ class SourceServiceTest {
         @Override
         public ExtractionVersion saveComplete(
                 long workspaceId, long userId, long artifactId, String parserVersion,
-                io.github.vihuynh72.brownie.core.document.DocxStructuralGraph graph) {
+                io.github.vihuynh72.brownie.core.document.DocxStructuralGraph graph,
+                io.github.vihuynh72.brownie.core.document.DocxFeatureReport keptAsIs) {
             throw new UnsupportedOperationException("not used in this test");
         }
 

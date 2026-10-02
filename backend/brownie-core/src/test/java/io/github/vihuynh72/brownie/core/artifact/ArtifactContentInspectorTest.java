@@ -24,7 +24,7 @@ class ArtifactContentInspectorTest {
 
     @Test
     void classifiesAWellFormedOoxmlPackageAsDocx() throws IOException {
-        byte[] docx = zipOf(entry("[Content_Types].xml", "<Types/>"), entry("word/document.xml", "<w:document/>"));
+        byte[] docx = docxOf(entry("word/document.xml", "<w:document/>"));
 
         assertEquals(SupportedMediaType.DOCX, ArtifactContentInspector.inspect(stream(docx), 1_000_000, 500));
     }
@@ -164,7 +164,7 @@ class ArtifactContentInspectorTest {
         String asDeepAsAllowed = "<a>".repeat(depth - 1) + "</a>".repeat(depth - 1);
 
         byte[] tooDeep = zipOf(entry("[Content_Types].xml", "<Types/>"), entry("word/document.xml", deep));
-        byte[] allowed = zipOf(entry("[Content_Types].xml", "<Types/>"), entry("word/document.xml", asDeepAsAllowed));
+        byte[] allowed = docxOf(entry("word/document.xml", asDeepAsAllowed));
 
         UnsupportedArtifactTypeException refused = assertThrows(
                 UnsupportedArtifactTypeException.class,
@@ -190,8 +190,7 @@ class ArtifactContentInspectorTest {
 
         // What nearly every document written in Word contains: the template it was started from, on the author's own
         // disk. And a link in the text, which is a link and nothing more.
-        byte[] ordinary = zipOf(
-                entry("[Content_Types].xml", "<Types/>"),
+        byte[] ordinary = docxOf(
                 entry("word/_rels/settings.xml.rels", relationships(template, "file:///C:/Users/someone/AppData/Roaming/Microsoft/Templates/Normal.dotm")),
                 entry("word/_rels/document.xml.rels", relationships(
                         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", "https://example.org/agenda")));
@@ -315,7 +314,10 @@ class ArtifactContentInspectorTest {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(buffer)) {
             zip.putNextEntry(new ZipEntry("[Content_Types].xml"));
-            zip.write("<Types/>".getBytes());
+            zip.write(DOCUMENT_CONTENT_TYPES.getBytes());
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("_rels/.rels"));
+            zip.write(MAIN_DOCUMENT_RELATIONSHIP.getBytes());
             zip.closeEntry();
             zip.putNextEntry(new ZipEntry("word/media/blank.bmp"));
             zip.write(new byte[6 * 1024 * 1024]);
@@ -380,7 +382,7 @@ class ArtifactContentInspectorTest {
         byte[] hostile = zipOf(
                 entry("[Content_Types].xml", "<Types/>"),
                 entry("package/services/metadata/core-properties/0f1e.psmdcp", withDocumentType));
-        byte[] ordinary = zipOf(entry("[Content_Types].xml", "<Types/>"), entry("word/media/image1.svg", drawing));
+        byte[] ordinary = docxOf(entry("word/media/image1.svg", drawing));
 
         UnsupportedArtifactTypeException refused = assertThrows(
                 UnsupportedArtifactTypeException.class,
@@ -401,6 +403,27 @@ class ArtifactContentInspectorTest {
                 entry("word/documenX.xml", "<w:document>what Word opens</w:document>"));
         String text = new String(almost, java.nio.charset.StandardCharsets.ISO_8859_1);
         return text.replace("word/documenX.xml", "word/document.xml").getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+    }
+
+    static final String DOCUMENT_CONTENT_TYPES = "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+            + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+            + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+            + "<Override PartName=\"/word/document.xml\""
+            + " ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>";
+    static final String MAIN_DOCUMENT_RELATIONSHIP = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
+            + " Target=\"word/document.xml\"/></Relationships>";
+
+    /** A Word document's manifest and main relationship, then {@code parts}. */
+    @SafeVarargs
+    private static byte[] docxOf(java.util.Map.Entry<String, String>... parts) throws IOException {
+        java.util.List<java.util.Map.Entry<String, String>> all = new java.util.ArrayList<>();
+        all.add(entry("[Content_Types].xml", DOCUMENT_CONTENT_TYPES));
+        all.add(entry("_rels/.rels", MAIN_DOCUMENT_RELATIONSHIP));
+        all.addAll(java.util.List.of(parts));
+        @SuppressWarnings("unchecked")
+        java.util.Map.Entry<String, String>[] entries = all.toArray(new java.util.Map.Entry[0]);
+        return zipOf(entries);
     }
 
     private static java.util.Map.Entry<String, String> entry(String name, String content) {

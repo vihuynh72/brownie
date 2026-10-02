@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.capabilities;
 
+import io.github.vihuynh72.brownie.api.generation.FillSpotNamingSetting;
 import io.github.vihuynh72.brownie.core.retention.DeletionRepository;
 import io.github.vihuynh72.brownie.core.retention.DeletionService;
 import org.junit.jupiter.api.Test;
@@ -56,9 +57,23 @@ class DataPracticesControllerTest {
         assertThat(DataPracticesController.hoursRoundedUp(Duration.ofHours(1).plusNanos(1))).isEqualTo(2);
     }
 
+    /** Nothing asks before an uploaded form's text goes to the model, so the page is told whenever it does. */
+    @Test
+    void itSaysWhetherAnUploadedFormsTextIsSentToTheModel() {
+        Duration day = Duration.ofDays(1);
+        assertThat(controller(day, day, day, day, true).dataPractices().formTextSentToModel()).isTrue();
+        assertThat(controller(day, day, day, day, false).dataPractices().formTextSentToModel()).isFalse();
+    }
+
     private static DataPracticesController controller(Duration abandonedUpload, Duration refusedFile, Duration unusedFile, Duration auditRecord) {
+        return controller(abandonedUpload, refusedFile, unusedFile, auditRecord, false);
+    }
+
+    private static DataPracticesController controller(
+            Duration abandonedUpload, Duration refusedFile, Duration unusedFile, Duration auditRecord, boolean formTextSentToModel) {
         return new DataPracticesController(
-                new DeletionService(unusedRepository(), 14), abandonedUpload, refusedFile, unusedFile, auditRecord, "gpt-test", " ");
+                new DeletionService(unusedRepository(), 14), abandonedUpload, refusedFile, unusedFile, auditRecord, "gpt-test", " ",
+                new FillSpotNamingSetting(formTextSentToModel));
     }
 
     /** Reading the trash retention asks nothing of the repository, so any call reaching it is a mistake in this test. */
