@@ -9,14 +9,28 @@ import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, listDocuments: vi.fn(), trashDocument: vi.fn(), getCapabilities: vi.fn() }
+  return {
+    ...actual,
+    listDocuments: vi.fn(),
+    trashDocument: vi.fn(),
+    getCapabilities: vi.fn(),
+    listBatches: vi.fn(),
+  }
 })
 vi.mock('@/upload/learnAndStart', async () => {
   const actual = await vi.importActual<typeof import('@/upload/learnAndStart')>('@/upload/learnAndStart')
   return { ...actual, learnFormAndStartDocument: vi.fn() }
 })
 
-import { ApiRequestError, getCapabilities, listDocuments, trashDocument, type CapabilitiesResponse, type DeletionResponse } from '@/api/client'
+import {
+  ApiRequestError,
+  getCapabilities,
+  listBatches,
+  listDocuments,
+  trashDocument,
+  type CapabilitiesResponse,
+  type DeletionResponse,
+} from '@/api/client'
 import { learnFormAndStartDocument, type LearnOutcome, type LearnStep, type StepDetail } from '@/upload/learnAndStart'
 import { PDF_REFUSAL_SENTENCES, REFUSAL_SENTENCES } from '@/upload/fillableCopyWords'
 import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
@@ -45,6 +59,7 @@ async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement }
       { path: '/signin', name: 'signin', component: { template: '<div />' } },
       { path: '/trash', component: { template: '<div />' } },
       { path: '/documents/:id', component: { template: '<div />' } },
+      { path: '/batches/:batchId', component: { template: '<div />' } },
     ],
   })
   router.push(path)
@@ -88,6 +103,7 @@ describe('HomeView', () => {
     vi.mocked(trashDocument).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
+    vi.mocked(listBatches).mockReset().mockResolvedValue([])
     resetCapabilitiesCache()
   })
 
@@ -210,6 +226,83 @@ describe('HomeView', () => {
       'March Minutes',
       timeOf(today),
     ])
+  })
+
+  it('folds a batch\'s documents into one entry that names the batch and links to it', async () => {
+    const today = new Date()
+    vi.mocked(listDocuments).mockResolvedValue([
+      summary(101, 'Certificates, Amara', today.toISOString()),
+      summary(102, 'Certificates, Ben', today.toISOString()),
+      summary(1, 'Loose note', today.toISOString()),
+    ])
+    vi.mocked(listBatches).mockResolvedValue([
+      { id: 55, title: 'Club certificates', templateId: 1, templateVersionId: 1, rowCount: 2, createdCount: 2, createdAt: today.toISOString(), documentIds: [101, 102] },
+    ])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await flushPromises()
+
+    const rows = wrapper.findAll('.home__row')
+    expect(rows).toHaveLength(2)
+    const batchEntry = rows.find((row) => row.attributes('href') === '/batches/55')
+    expect(batchEntry?.text()).toContain('Club certificates')
+    expect(batchEntry?.text()).toContain('2 documents')
+    // A batch row carries no trash button: its batch is deleted as a batch, on its own page.
+    expect(wrapper.find('#home-trash-101').exists()).toBe(false)
+  })
+
+  it('offers the batch first when the newest document came from one', async () => {
+    const today = new Date()
+    vi.mocked(listDocuments).mockResolvedValue([
+      summary(101, 'Certificates, Amara', today.toISOString()),
+      summary(1, 'Loose note', new Date(Date.now() - 86400000).toISOString()),
+    ])
+    vi.mocked(listBatches).mockResolvedValue([
+      { id: 55, title: 'Club certificates', templateId: 1, templateVersionId: 1, rowCount: 1, createdCount: 1, createdAt: today.toISOString(), documentIds: [101] },
+    ])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await flushPromises()
+
+    const resume = wrapper.get('.home__resume')
+    expect(resume.text()).toContain('Club certificates')
+    expect(resume.text()).toContain('1 documents')
+    expect(resume.find('a[href="/batches/55"]').exists()).toBe(true)
+  })
+
+  it('lists documents plainly on a server that has no batch routes', async () => {
+    const today = new Date()
+    vi.mocked(listDocuments).mockResolvedValue([summary(1, 'March Minutes', today.toISOString())])
+    vi.mocked(listBatches).mockRejectedValue(
+      new ApiRequestError(404, {
+        status: 404, title: 'Not Found', code: 'NOT_FOUND', detail: 'No static resource api/v1/workspaces/7/batches.',
+        correlationId: 'c', fields: [], recoveryActions: [],
+      }),
+    )
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await flushPromises()
+
+    const rows = wrapper.findAll('.home__row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.text()).toContain('March Minutes')
+    expect(wrapper.find('.home__empty').exists()).toBe(false)
+  })
+
+  it('says a deleted batch\'s documents are still here', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+
+    const wrapper = await mountWithRouter('/?batchDeleted=Club%20certificates')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Deleted the batch "Club certificates" and its spreadsheet')
   })
 
   /** The page that used to start a document from a template is gone; the words point at where templates are now. */

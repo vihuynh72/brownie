@@ -5,7 +5,13 @@ import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
-import { ApiRequestError, listDocuments, trashDocument, type DocumentSummaryResponse } from '@/api/client'
+import {
+  ApiRequestError,
+  listBatches,
+  listDocuments,
+  trashDocument,
+  type DocumentSummaryResponse,
+} from '@/api/client'
 import { documentHandoffState } from '@/router/handoff'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { isPagesPackage } from '@/upload/fillableCopyWords'
@@ -28,6 +34,9 @@ const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'n
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
+// A batch page that deleted itself sends the person here with what it was called; the notice says what stays.
+const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string' ? route.query.batchDeleted : null))
+
 // A typographer's apostrophe, as the rest of the interface sets it.
 const greeting = computed(() =>
   session.firstName ? `What’s on your mind today, ${session.firstName}?` : 'What’s on your mind today?',
@@ -47,6 +56,38 @@ async function loadDocuments(): Promise<void> {
       describeCommonFailure(error, 'a way to list documents') ??
       'Brownie could not load your documents. If this keeps happening, let whoever runs this Brownie know.'
     loadState.value = 'error'
+  }
+  void loadBatches(workspaceId)
+}
+
+/**
+ * Which of the listed documents each batch made: documentId to the batch's
+ * id, title and made-count, so the recent list can fold a batch's
+ * documents into one entry. The list answer names each batch's documents
+ * itself, so no batch is read in detail for this. A server from before
+ * batches has no route to ask -- the list then simply stays one row per
+ * document, which is the same answer the map being empty gives.
+ */
+const batchOf = ref<Map<number, { batchId: number; title: string; count: number }>>(new Map())
+
+async function loadBatches(workspaceId: number): Promise<void> {
+  try {
+    const summaries = await listBatches(workspaceId)
+    const listed = new Set(documents.value.map((document) => document.id))
+    const map = new Map<number, { batchId: number; title: string; count: number }>()
+    for (const summary of summaries) {
+      // A batch's count on Home is how many of its documents are still
+      // listed here; the trashed ones are the trash bin's to show.
+      const kept = summary.documentIds.filter((id) => listed.has(id))
+      for (const id of kept) {
+        map.set(id, { batchId: summary.id, title: summary.title, count: kept.length })
+      }
+    }
+    batchOf.value = map
+  } catch (error) {
+    // routeMissing or any other failure: the document list stands on its own rather than half-grouped.
+    if (!(error instanceof ApiRequestError && error.routeMissing)) return
+    batchOf.value = new Map()
   }
 }
 
@@ -443,13 +484,50 @@ function dayHeading(date: Date, now: Date): string {
   return date.getFullYear() === now.getFullYear() ? thisYearFormatter.format(date) : otherYearFormatter.format(date)
 }
 
+/** One row in the recent list: a document on its own, or every document one batch made folded into its batch. */
+type RecentEntry =
+  | { kind: 'document'; document: DocumentSummaryResponse; time: string; at: number }
+  | { kind: 'batch'; batchId: number; title: string; count: number; time: string; at: number }
+
 interface DayGroup {
   key: string
   heading: string
-  documents: { document: DocumentSummaryResponse; time: string }[]
+  entries: RecentEntry[]
 }
 
 const newestFirst = computed(() => [...documents.value].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)))
+
+/**
+ * The documents as the list shows them, newest first: every document a
+ * batch made folds into one entry naming the batch, placed where its
+ * newest document would have stood.
+ */
+const recentEntries = computed<RecentEntry[]>(() => {
+  const entries: RecentEntry[] = []
+  const grouped = new Map<number, { title: string; count: number; newest: DocumentSummaryResponse }>()
+  for (const document of newestFirst.value) {
+    const batch = batchOf.value.get(document.id)
+    if (!batch) {
+      entries.push({ kind: 'document', document, time: timeFormatter.format(new Date(document.createdAt)), at: Date.parse(document.createdAt) })
+      continue
+    }
+    const group = grouped.get(batch.batchId)
+    if (group === undefined) {
+      grouped.set(batch.batchId, { title: batch.title, count: batch.count, newest: document })
+    }
+  }
+  for (const [batchId, group] of grouped) {
+    entries.push({
+      kind: 'batch',
+      batchId,
+      title: group.title,
+      count: group.count,
+      time: timeFormatter.format(new Date(group.newest.createdAt)),
+      at: Date.parse(group.newest.createdAt),
+    })
+  }
+  return entries.sort((a, b) => b.at - a.at)
+})
 
 /**
  * Newest first, split into the days they were created on. The grouping key
@@ -460,29 +538,36 @@ const newestFirst = computed(() => [...documents.value].sort((a, b) => Date.pars
 const recentDays = computed<DayGroup[]>(() => {
   const now = new Date()
   const groups = new Map<string, DayGroup>()
-  for (const document of newestFirst.value) {
-    const created = new Date(document.createdAt)
+  for (const entry of recentEntries.value) {
+    const created = new Date(entry.at)
     const key = `${created.getFullYear()}-${created.getMonth()}-${created.getDate()}`
     let group = groups.get(key)
     if (!group) {
-      group = { key, heading: dayHeading(created, now), documents: [] }
+      group = { key, heading: dayHeading(created, now), entries: [] }
       groups.set(key, group)
     }
-    group.documents.push({ document, time: timeFormatter.format(created) })
+    group.entries.push(entry)
   }
   return [...groups.values()]
 })
 
 /**
- * The document to offer first: the newest one. The list says only when each was made, so that is what "where you left
- * off" can honestly rest on, and the line under its title says when it was started, not when it was last worked on.
+ * What to offer first: the newest entry. Where that is a batch of
+ * documents the offer is the batch itself, which is where that work
+ * continues. The list says only when each was made, so that is what
+ * "where you left off" can honestly rest on, and the line under its title
+ * says when it was started, not when it was last worked on.
  */
 const resume = computed(() => {
-  const document = newestFirst.value[0]
-  if (!document) return null
-  const created = new Date(document.createdAt)
+  const entry = recentEntries.value[0]
+  if (!entry) return null
+  const created = new Date(entry.at)
   const day = dayHeading(created, new Date())
-  return { document, started: `Started ${day === 'Today' ? 'today' : day} at ${timeFormatter.format(created)}` }
+  const started = `Started ${day === 'Today' ? 'today' : day} at ${timeFormatter.format(created)}`
+  if (entry.kind === 'batch') {
+    return { kind: 'batch' as const, batchId: entry.batchId, title: entry.title, count: entry.count, started }
+  }
+  return { kind: 'document' as const, document: entry.document, title: entry.document.title, started }
 })
 
 /** The three cards that say how Brownie works are for someone with nothing yet; they make way for a form being learned. */
@@ -619,14 +704,21 @@ const showHowItWorks = computed(
     <section v-if="authenticated && resume" class="home__resume" aria-labelledby="resume-heading">
       <h2 id="resume-heading" class="home__resume-label">Continue where you left off</h2>
       <div class="home__resume-row">
-        <span class="doc-tile" aria-hidden="true"><AppIcon name="document-text" :size="22" /></span>
+        <span class="doc-tile" aria-hidden="true">
+          <AppIcon :name="resume.kind === 'batch' ? 'table' : 'document-text'" :size="22" />
+        </span>
         <div class="home__resume-text">
-          <p class="home__resume-title" :title="resume.document.title">{{ resume.document.title }}</p>
-          <p class="home__resume-started">{{ resume.started }}</p>
+          <p class="home__resume-title" :title="resume.title">{{ resume.title }}</p>
+          <p class="home__resume-started">
+            {{ resume.kind === 'batch' ? `${resume.count} documents · ` : '' }}{{ resume.started }}
+          </p>
         </div>
-        <RouterLink class="button button--primary button--small" :to="`/documents/${resume.document.id}`">
+        <RouterLink
+          class="button button--primary button--small"
+          :to="resume.kind === 'batch' ? `/batches/${resume.batchId}` : `/documents/${resume.document.id}`"
+        >
           <AppIcon name="arrow-right" :size="16" />
-          <span>Open <span class="visually-hidden">{{ resume.document.title }}</span></span>
+          <span>Open <span class="visually-hidden">{{ resume.title }}</span></span>
         </RouterLink>
       </div>
     </section>
@@ -648,6 +740,9 @@ const showHowItWorks = computed(
     <section v-if="authenticated" class="home__recent" aria-labelledby="recent-heading">
       <h2 id="recent-heading" class="home__section-title">Recent documents</h2>
 
+      <p v-if="deletedBatch" class="home__notice" tabindex="-1">
+        Deleted the batch "{{ deletedBatch }}" and its spreadsheet. The documents it made are still in your documents.
+      </p>
       <p v-if="trashNotice" ref="trashNoticeElement" class="home__notice" tabindex="-1">
         {{ trashNotice }} <RouterLink to="/trash">Restore it from the trash bin</RouterLink>.
       </p>
@@ -673,22 +768,34 @@ const showHowItWorks = computed(
         <h3 class="home__day-heading">{{ day.heading }}</h3>
         <ul class="home__list">
           <!-- The action sits beside the link, never inside it: a button nested in a link is neither. -->
-          <li v-for="entry in day.documents" :key="entry.document.id" class="home__item">
-            <RouterLink class="home__row" :to="`/documents/${entry.document.id}`">
-              <span class="doc-tile" aria-hidden="true"><AppIcon name="document-blank" :size="22" /></span>
-              <span class="home__row-title" :title="entry.document.title">{{ entry.document.title }}</span>
+          <li v-for="entry in day.entries" :key="entry.kind === 'batch' ? `batch-${entry.batchId}` : entry.document.id" class="home__item">
+            <RouterLink
+              v-if="entry.kind === 'batch'"
+              class="home__row"
+              :to="`/batches/${entry.batchId}`"
+            >
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="table" :size="22" /></span>
+              <span class="home__row-title" :title="entry.title">{{ entry.title }}</span>
+              <span class="home__row-count">{{ entry.count }} documents</span>
               <span class="home__row-time">{{ entry.time }}</span>
             </RouterLink>
-            <button
-              :id="`home-trash-${entry.document.id}`"
-              type="button"
-              class="icon-button home__trash"
-              :disabled="trashingId !== null"
-              @click="moveToTrash(entry.document)"
-            >
-              <AppIcon name="trash" :size="18" />
-              <span class="visually-hidden">Move {{ entry.document.title }} to the trash</span>
-            </button>
+            <template v-else>
+              <RouterLink class="home__row" :to="`/documents/${entry.document.id}`">
+                <span class="doc-tile" aria-hidden="true"><AppIcon name="document-blank" :size="22" /></span>
+                <span class="home__row-title" :title="entry.document.title">{{ entry.document.title }}</span>
+                <span class="home__row-time">{{ entry.time }}</span>
+              </RouterLink>
+              <button
+                :id="`home-trash-${entry.document.id}`"
+                type="button"
+                class="icon-button home__trash"
+                :disabled="trashingId !== null"
+                @click="moveToTrash(entry.document)"
+              >
+                <AppIcon name="trash" :size="18" />
+                <span class="visually-hidden">Move {{ entry.document.title }} to the trash</span>
+              </button>
+            </template>
           </li>
         </ul>
       </div>
@@ -1173,7 +1280,8 @@ const showHowItWorks = computed(
  */
 .home__row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* A document row is tile, title, time; a batch row adds its count between title and time. */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 1.375rem;
   min-block-size: 3.625rem;
@@ -1201,6 +1309,13 @@ const showHowItWorks = computed(
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/* A batch entry's document count sits beside its title in its own element, so a long title truncates and the count always shows. */
+.home__row-count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 /*
