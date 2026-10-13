@@ -17,7 +17,7 @@ describe('why a file was refused', () => {
   it.each([
     ['PASSWORD_PROTECTED', "This file is locked with a password, so Brownie can't open it. Open it, remove the password, save it, and upload it again."],
     ['RIGHTS_PROTECTED', "This file is protected by your organization's rights management, so Brownie can't open it."],
-    ['SPREADSHEET', 'This is a spreadsheet, not a document. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.'],
+    ['SPREADSHEET', "This is a spreadsheet, not a form. To make a document for each of its rows, open a template's menu under My Templates and choose Fill from a spreadsheet (Excel .xlsx or CSV)."],
     ['PRESENTATION', 'This is a presentation, not a document. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.'],
     [
       'NOT_A_DOCUMENT',
