@@ -21,6 +21,7 @@ import { formatBytes, loadCapabilities } from '@/capabilities'
 import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
 import {
   PAGES_PACKAGE_SENTENCE,
+  PDF_REFUSAL_SENTENCES,
   REFUSAL_SENTENCES,
   convertedFormatName,
   fillableFormRefusal,
@@ -115,6 +116,45 @@ export function learnStepWords(step: LearnStep, detail: StepDetail): string {
   }
 }
 
+export type LearnRowId = 'upload' | 'check' | 'learn' | 'template' | 'open'
+
+/**
+ * The list a person watches while a form is learned. It is shorter than the steps above because two of them are one
+ * piece of work to the person: reading the file and finding the places in it, then writing them down as a template,
+ * are both "learning the form". Each line says one thing before it is reached, one while it runs and one once it is
+ * done, so the list reads as a story that is being told rather than a set of labels that flip.
+ */
+const LEARN_ROWS: readonly { id: LearnRowId; steps: readonly LearnStep[]; done: string; active: string }[] = [
+  { id: 'upload', steps: ['uploading'], done: 'Uploaded', active: 'Uploading the file' },
+  { id: 'check', steps: ['checking'], done: 'Checked the file', active: 'Checking the file' },
+  {
+    id: 'learn',
+    steps: ['preparing-copy', 'learning'],
+    done: 'Learned the form',
+    active: 'Learning the form: finding where the values go',
+  },
+  { id: 'template', steps: ['preparing'], done: 'Got the template ready', active: 'Getting the template ready' },
+  { id: 'open', steps: ['opening'], done: 'Opened your document', active: 'Opening your document' },
+]
+
+/** One line of that list: finished, the one under way, or still to come. */
+export interface LearnRow {
+  id: LearnRowId
+  state: 'done' | 'active' | 'pending'
+  label: string
+}
+
+/** The whole list as it stands while `step` is under way; a busy server shows on the line that is waiting for it. */
+export function learnRows(step: LearnStep, detail: StepDetail): LearnRow[] {
+  const current = LEARN_ROWS.findIndex((row) => row.steps.includes(step))
+  return LEARN_ROWS.map((row, index): LearnRow => {
+    if (index < current) return { id: row.id, state: 'done', label: row.done }
+    if (index > current) return { id: row.id, state: 'pending', label: row.active }
+    const label = detail.waiting && row.id === 'learn' ? 'Learning the form: waiting for a free moment' : row.active
+    return { id: row.id, state: 'active', label }
+  })
+}
+
 const INITIAL_REVISION_REASON = 'Created from a form uploaded on Home.'
 
 /**
@@ -170,6 +210,37 @@ export async function learnFormAsTemplate(
 
 function refusalWords(error: unknown, file: File): string {
   return error instanceof Refusal ? error.sentence : `Could not upload "${file.name}". Try again.`
+}
+
+/** The refusals whose last sentence is what to do next, each found by the failure that gives it. */
+const ENDS_WITH_A_WAY_FORWARD: readonly string[] = [
+  REFUSAL_SENTENCES.PASSWORD_PROTECTED,
+  REFUSAL_SENTENCES.REMOTE_CONTENT,
+  PAGES_PACKAGE_SENTENCE,
+  PDF_REFUSAL_SENTENCES.ENCRYPTED,
+  PDF_REFUSAL_SENTENCES.XFA,
+  PDF_REFUSAL_SENTENCES.LAUNCH_ACTION,
+  PDF_REFUSAL_SENTENCES.EMBEDDED_FILES,
+  PDF_REFUSAL_SENTENCES.DOCUMENT_JAVASCRIPT,
+  PDF_REFUSAL_SENTENCES.TOO_LARGE,
+]
+
+/** A signed PDF is left as it is; the one way to a filled copy is a copy that was never signed. */
+const UNSIGNED_COPY_ADVICE = 'Upload the form from before it was signed, or ask whoever sent it for an unsigned copy.'
+
+/**
+ * A refusal in two parts, for a screen with room to show them apart: why Brownie did not take the file, and what the
+ * person can do about it. Only a refusal whose way forward is known from the failure itself is split, and where the
+ * sentence carries it already the two parts read back as that same sentence. Any other refusal is its reason alone,
+ * because guessing where the advice starts in a sentence the failure did not shape would sometimes be wrong.
+ */
+export function refusalParts(message: string): { reason: string; advice: string | null } {
+  if (message === PDF_REFUSAL_SENTENCES.SIGNED) return { reason: message, advice: UNSIGNED_COPY_ADVICE }
+  if (ENDS_WITH_A_WAY_FORWARD.includes(message)) {
+    const advice = message.slice(message.lastIndexOf('. ') + 2)
+    return { reason: message.slice(0, message.length - advice.length).trim(), advice }
+  }
+  return { reason: message, advice: null }
 }
 
 async function learnAndStart(
