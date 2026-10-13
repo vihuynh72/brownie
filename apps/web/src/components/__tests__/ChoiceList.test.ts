@@ -54,8 +54,47 @@ describe('ChoiceList', () => {
     expect(mount(ChoiceList, { props: base }).get('.choices__send').text()).toBe('Send other answer')
   })
 
+  it('is a card of its own, or sits without one inside a card that already holds it', () => {
+    const alone = mount(ChoiceList, { props: base })
+    expect(alone.classes()).toContain('msg-card')
+    expect(alone.classes()).not.toContain('choices--flush')
+
+    const inside = mount(ChoiceList, { props: { ...base, flush: true } })
+    expect(inside.classes()).toContain('choices--flush')
+    expect(inside.classes()).not.toContain('msg-card')
+    // Only its look changes: the group and its choices are the same.
+    expect(inside.get('[role="group"]').attributes('aria-label')).toBe(base.name)
+    expect(inside.findAll('.choices__option')).toHaveLength(2)
+  })
+
+  it('shows the send button only once something is typed, and not for a line that is empty again after sending', async () => {
+    const list = mount(ChoiceList, { props: base })
+    const send = () => list.get('.choices__send')
+    expect(send().classes()).toContain('choices__send--idle')
+
+    await list.get('#proposal-other').setValue('Use Friday')
+    expect(send().classes()).not.toContain('choices__send--idle')
+    expect(send().attributes('aria-disabled')).toBe('false')
+
+    await list.get('form').trigger('submit')
+    expect(send().classes()).toContain('choices__send--idle')
+
+    // While Brownie is busy, typed words wait: the button is there but not pressable.
+    await list.get('#proposal-other').setValue('Use Monday')
+    await list.setProps({ busy: true })
+    expect(send().classes()).not.toContain('choices__send--idle')
+    expect(send().attributes('aria-disabled')).toBe('true')
+  })
+
   it('passes an accessibility scan', async () => {
     const list = mount(ChoiceList, { props: base, attachTo: document.body })
+    expect(await axe(list.element as HTMLElement)).toHaveNoViolations()
+    list.unmount()
+  })
+
+  it('passes an accessibility scan inside a card too, with a line typed in', async () => {
+    const list = mount(ChoiceList, { props: { ...base, flush: true }, attachTo: document.body })
+    await list.get('#proposal-other').setValue('Use Friday')
     expect(await axe(list.element as HTMLElement)).toHaveNoViolations()
     list.unmount()
   })
