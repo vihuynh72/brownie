@@ -123,7 +123,7 @@ test('the trash bin opens from the sidebar and says how long anything moved ther
 
   await expect(page).toHaveURL(/\/trash$/)
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(/trash bin/i)
-  await expect(page.getByText(/can be restored exactly as they were for \d+ days/)).toBeVisible()
+  await expect(page.getByText(/Documents stay here for \d+ days/)).toBeVisible()
 })
 
 test('Chat sends you to where a document is started', async ({ page }) => {
@@ -132,5 +132,8 @@ test('Chat sends you to where a document is started', async ({ page }) => {
 
   await expect(page).toHaveURL(/\/chat$/)
   await expect(page.getByRole('heading', { name: 'Chat with Brownie' })).toBeVisible()
-  await expect(page.getByRole('main').getByRole('link', { name: 'Home', exact: true })).toBeVisible()
+  // The sidebar has its own "Home" link, so what proves this page loaded is something only the
+  // Chat page itself renders: its message box is there whether or not this workspace already has
+  // templates or documents, unlike the "Upload a form on Home" link that only appears without one.
+  await expect(page.getByRole('textbox', { name: 'How may I help you?' })).toBeVisible()
 })
