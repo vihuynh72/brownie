@@ -104,9 +104,9 @@ const CAPABILITIES = {
   trashRetentionDays: 30,
 }
 
-/** The paragraph under the heading that says how the trash bin works, as one line of text. */
+/** The paragraph under the heading that says how long things stay, as one line of text. */
 function explanation(wrapper: Awaited<ReturnType<typeof mountTrash>>): string {
-  const paragraph = wrapper.findAll('p').find((candidate) => candidate.text().startsWith('Documents you move here'))
+  const paragraph = wrapper.findAll('p').find((candidate) => candidate.text().startsWith('Documents stay here'))
   if (!paragraph) {
     throw new Error(`No explanation among: ${wrapper.text()}`)
   }
@@ -136,11 +136,21 @@ describe('TrashView', () => {
 
     expect(wrapper.get('h1').text()).toBe('Your trash bin is empty')
     expect(explanation(wrapper)).toBe(
-      'Documents you move here can be restored exactly as they were for 30 days. After that, or when you delete one ' +
-        'yourself, it is deleted for good together with its files and any source file that nothing else uses.',
+      'Documents stay here for 30 days, then Brownie deletes them for good. Templates stay until you restore them.',
     )
     expect(wrapper.find('ul').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  /** The sentence is what a person reads first: it must not change under them when the list arrives. */
+  it('says how long things stay while the list is still loading', async () => {
+    vi.mocked(listDeletions).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountTrash()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Loading the trash bin…')
+    expect(explanation(wrapper)).toContain('Documents stay here for 30 days, then')
     wrapper.unmount()
   })
 
@@ -150,14 +160,15 @@ describe('TrashView', () => {
     const wrapper = await mountTrash()
     await flushPromises()
 
-    expect(explanation(wrapper)).toContain('exactly as they were for a day. After that,')
+    expect(explanation(wrapper)).toContain('Documents stay here for a day, then Brownie deletes them for good.')
     wrapper.unmount()
   })
 
   /**
    * An older server's capabilities answer has no retention period at all.
-   * The sentence must still be whole: no "for  days", and no "After that"
-   * pointing back at a period it never named.
+   * The sentence must still be whole: no "for  days" and no gap where the
+   * number would have been; it sends the reader to the date on each row,
+   * which is always the real one.
    */
   it('explains the trash bin without a period when the server does not send one', async () => {
     const older: Partial<typeof CAPABILITIES> = { ...CAPABILITIES }
@@ -168,11 +179,10 @@ describe('TrashView', () => {
     await flushPromises()
 
     expect(explanation(wrapper)).toBe(
-      'Documents you move here can be restored exactly as they were at least until the date shown beside each one. ' +
-        'Soon after that date it is deleted for good together with its files and any source file that nothing else ' +
-        'uses; deleting one yourself does that straight away.',
+      'Documents stay here until the date shown beside each one, then Brownie deletes them for good. ' +
+        'Templates stay until you restore them.',
     )
-    expect(wrapper.text()).not.toMatch(/for\s+days|undefined|After that/)
+    expect(wrapper.text()).not.toMatch(/for\s+days|undefined/)
     wrapper.unmount()
   })
 
@@ -183,7 +193,7 @@ describe('TrashView', () => {
     await flushPromises()
 
     expect(explanation(wrapper)).toContain('until the date shown beside each one')
-    expect(wrapper.text()).not.toMatch(/for\s+days|After that/)
+    expect(wrapper.text()).not.toMatch(/for\s+days/)
     // The list itself still loaded: a missing period is not a failure of the page.
     expect(wrapper.get('h1').text()).toBe('Your trash bin is empty')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -206,6 +216,27 @@ describe('TrashView', () => {
     expect(wrapper.get('.trash__item').text()).toContain(`Deleted for good on ${purgeDay}.`)
     expect(wrapper.text()).toContain('The files of 1 deleted document are still being removed in the background.')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  /**
+   * Each row is a picture of its kind (decoration, so it says nothing to a screen reader), the name, one small
+   * line of dates, and the buttons; the list itself is named, since nothing else on the page is called "documents".
+   */
+  it('names its list, hides the decoration from a screen reader, and offers the way back', async () => {
+    vi.mocked(listDeletions).mockResolvedValue([entry({})])
+    const wrapper = await mountTrash()
+    await flushPromises()
+
+    const list = wrapper.get('ul[aria-label="Documents in the trash"]')
+    const row = list.get('li')
+    expect(row.get('.doc-tile').attributes('aria-hidden')).toBe('true')
+    expect(row.findAll('button').map((button) => button.text().replace(/\s+/g, ' ').trim())).toEqual([
+      'Restore March Minutes',
+      'Delete forever March Minutes',
+    ])
+    const back = wrapper.findAll('a').find((link) => link.text() === 'Back to your documents')
+    expect(back?.attributes('href')).toBe('/')
     wrapper.unmount()
   })
 
@@ -291,6 +322,67 @@ describe('TrashView', () => {
     expect(wrapper.find('.trash__item').exists()).toBe(false)
     expect(wrapper.get('.trash__notice').text()).toContain('Deleted "March Minutes" for good.')
     expect(wrapper.text()).toContain('The files of 1 deleted document are still being removed in the background.')
+    wrapper.unmount()
+  })
+
+  /** Escape is the keyboard's "Keep it": nothing is deleted and focus goes back to the button that asked. */
+  it('backs out of the question with Escape and puts focus back on the button that asked', async () => {
+    vi.mocked(listDeletions).mockResolvedValue([entry({})])
+    const wrapper = await mountTrash()
+    await flushPromises()
+
+    await buttonNamed(wrapper, 'Delete forever March Minutes').trigger('click')
+    await flushPromises()
+    const question = wrapper.get('[role="group"]')
+    expect(question.attributes('aria-label')).toBe('Delete March Minutes forever')
+
+    await question.trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+
+    expect(purgeDeletion).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="group"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(buttonNamed(wrapper, 'Delete forever March Minutes').element)
+    wrapper.unmount()
+  })
+
+  /** Only the row that was asked about turns into the question; the others stay what they were. */
+  it('puts the question in one row only, and marks that row', async () => {
+    vi.mocked(listDeletions).mockResolvedValue([entry({}), entry({ id: 41, targetId: 13, title: 'April Minutes' })])
+    const wrapper = await mountTrash()
+    await flushPromises()
+
+    await buttonNamed(wrapper, 'Delete forever April Minutes').trigger('click')
+    await flushPromises()
+
+    const rows = wrapper.findAll('.trash__item')
+    expect(rows.map((row) => row.classes('trash__item--confirming'))).toEqual([false, true])
+    expect(wrapper.findAll('[role="group"]')).toHaveLength(1)
+    expect(wrapper.findAll('button').filter((button) => button.text() === 'Yes, delete forever')).toHaveLength(1)
+    // The other row still offers both of its own buttons.
+    expect(buttonNamed(wrapper, 'Restore March Minutes').attributes('disabled')).toBeUndefined()
+    expect(buttonNamed(wrapper, 'Delete forever March Minutes').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  /** While the request runs, nothing on the page can be pressed twice, and the button says what is happening. */
+  it('says "Deleting…" and disables the buttons while deleting forever is under way', async () => {
+    vi.mocked(listDeletions).mockResolvedValue([entry({})])
+    let finish: (value: DeletionResponse) => void = () => {}
+    vi.mocked(purgeDeletion).mockReturnValue(new Promise((resolve) => (finish = resolve)))
+    const wrapper = await mountTrash()
+    await flushPromises()
+
+    await buttonNamed(wrapper, 'Delete forever March Minutes').trigger('click')
+    await flushPromises()
+    await buttonNamed(wrapper, 'Yes, delete forever').trigger('click')
+    await flushPromises()
+
+    expect(buttonNamed(wrapper, 'Deleting…').attributes('disabled')).toBeDefined()
+    expect(buttonNamed(wrapper, 'Keep it').attributes('disabled')).toBeDefined()
+
+    finish(entry({ state: 'PURGED', title: null, purgedAt: '2026-09-18T12:00:00Z', purgeAfter: null, pendingObjectCount: 0 }))
+    await flushPromises()
+    expect(wrapper.find('.trash__item').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -533,12 +625,13 @@ describe('TrashView', () => {
       expect(listTrashedTemplates).toHaveBeenCalledWith(7)
       const section = templatesSection(wrapper)
       expect(section.get('h2').text()).toBe('Templates')
+      expect(section.get('ul').attributes('aria-label')).toBe('Templates in the trash')
       expect(section.text().replace(/\s+/g, ' ')).toContain(
         'Documents made from a template keep working while it is in the trash. A template stays here until you restore it.',
       )
       expect(section.findAll('.trash__name').map((name) => name.text())).toEqual(['Club minutes', 'Grant report'])
       const day = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(TRASHED_AT))
-      expect(section.get('.trash__item .field-hint').text()).toBe(`Moved here ${day}.`)
+      expect(section.get('.trash__item .field-hint').text()).toBe(`Moved here ${day}. Stays until you restore it.`)
       expect(section.findAll('button').map((button) => button.text().replace(/\s+/g, ' ').trim())).toEqual([
         'Restore Club minutes',
         'Restore Grant report',
@@ -696,7 +789,7 @@ describe('TrashView', () => {
           'Reloading will not change that: the server needs to be updated and restarted.',
       )
       expect(section.find('.trash__item').exists()).toBe(false)
-      expect(section.text()).not.toMatch(/not yet|later|for now|coming soon/i)
+      expect(section.text()).not.toMatch(/not yet|later|for now|soon/i)
       expect(wrapper.get('h1').text()).toBe('Trash bin')
       expect(await axe(wrapper.element)).toHaveNoViolations()
       wrapper.unmount()

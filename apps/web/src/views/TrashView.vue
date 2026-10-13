@@ -62,6 +62,18 @@ const empty = computed(
 )
 
 /**
+ * What the page says about how long documents stay. The number is the one the
+ * server enforces, so the page never promises a different period. When the
+ * server does not send it (an older one), the sentence points at the date
+ * beside each row instead, which is always the real one.
+ */
+const lede = computed(
+  () =>
+    `${retention.value ? `Documents stay here for ${retention.value}` : 'Documents stay here until the date shown beside each one'}, ` +
+    'then Brownie deletes them for good. Templates stay until you restore them.',
+)
+
+/**
  * The same words describeCommonFailure uses for a server older than this
  * page, for the one way such a server shows it here without a missing
  * route: see loadTemplates.
@@ -150,11 +162,25 @@ async function loadTemplates(workspaceId: number): Promise<void> {
   }
 }
 
+/**
+ * The retention period is a nicety in the explanation; each row carries its own date either way. It is asked for
+ * before the list is, not after, so a period the app already knows is in the sentence from the first moment and the
+ * sentence does not change under the reader when the list arrives.
+ */
+async function loadRetention(): Promise<void> {
+  try {
+    retention.value = dayCount((await loadCapabilities()).trashRetentionDays)
+  } catch {
+    retention.value = null
+  }
+}
+
 async function load(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (workspaceId === undefined) {
     return
   }
+  void loadRetention()
   void loadTemplates(workspaceId)
   loadState.value = 'loading'
   loadError.value = null
@@ -166,12 +192,6 @@ async function load(): Promise<void> {
     loadError.value =
       describeCommonFailure(error, 'the trash bin') ??
       'Brownie could not load the trash bin. If this keeps happening, let whoever runs this Brownie know.'
-  }
-  // The retention period is a nicety in the explanation; each row carries its own date either way.
-  try {
-    retention.value = dayCount((await loadCapabilities()).trashRetentionDays)
-  } catch {
-    retention.value = null
   }
 }
 
@@ -336,41 +356,43 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
 
 <template>
   <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
-  <section v-if="session.status === 'anonymous'" class="card">
-    <p>Sign in to see your trash bin.</p>
-    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/trash' } }">Sign in</RouterLink>
+  <section v-if="session.status === 'anonymous'" class="page-column trash">
+    <div class="panel trash__signin">
+      <p>Sign in to see your trash bin.</p>
+      <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/trash' } }">Sign in</RouterLink>
+    </div>
   </section>
 
-  <section v-else class="trash" aria-labelledby="trash-heading">
-    <span class="trash__mark" aria-hidden="true"><AppIcon name="trash" :size="28" /></span>
-    <h1 id="trash-heading" class="trash__title">
-      {{ empty ? 'Your trash bin is empty' : 'Trash bin' }}
-    </h1>
-    <p v-if="retention">
-      Documents you move here can be restored exactly as they were for {{ retention }}. After that, or when you delete
-      one yourself, it is deleted for good together with its files and any source file that nothing else uses.
-    </p>
-    <p v-else>
-      Documents you move here can be restored exactly as they were at least until the date shown beside each one. Soon
-      after that date it is deleted for good together with its files and any source file that nothing else uses;
-      deleting one yourself does that straight away.
-    </p>
+  <section v-else class="page-column trash" aria-labelledby="trash-heading">
+    <div class="page-head">
+      <h1 id="trash-heading" class="page-title">
+        {{ empty ? 'Your trash bin is empty' : 'Trash bin' }}
+      </h1>
+      <p class="page-lede">{{ lede }}</p>
+    </div>
 
     <p v-if="notice" ref="noticeElement" class="trash__notice" tabindex="-1">
       {{ notice.text }}
       <RouterLink v-if="notice.documentId !== null" :to="`/documents/${notice.documentId}`">Open it</RouterLink>
     </p>
-    <p v-if="actionError" class="field-error" role="alert">{{ actionError }}</p>
+    <p v-if="actionError" class="field-error trash__status" role="alert">{{ actionError }}</p>
 
-    <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Loading the trash bin…</p>
-    <p v-else-if="loadState === 'error'" class="field-error" role="alert">{{ loadError }}</p>
+    <p v-if="loadState === 'loading'" class="field-hint trash__status" aria-live="polite">Loading the trash bin…</p>
+    <p v-else-if="loadState === 'error'" class="field-error trash__status" role="alert">{{ loadError }}</p>
     <!-- With nothing in the trash at all, the heading already says so. -->
-    <p v-else-if="loadState === 'loaded' && trashed.length === 0 && !empty" class="field-hint">
+    <p v-else-if="loadState === 'loaded' && trashed.length === 0 && !empty" class="trash__empty">
+      <AppIcon name="document-blank" :size="24" />
       No documents are in the trash.
     </p>
 
-    <ul v-if="trashed.length > 0" class="trash__list">
-      <li v-for="entry in trashed" :key="entry.id" class="trash__item">
+    <ul v-if="trashed.length > 0" class="panel panel--flush trash__list" aria-label="Documents in the trash">
+      <li
+        v-for="entry in trashed"
+        :key="entry.id"
+        class="trash__item"
+        :class="{ 'trash__item--confirming': confirmingId === entry.id }"
+      >
+        <span class="doc-tile" aria-hidden="true"><AppIcon name="document-text" :size="22" /></span>
         <div class="trash__text">
           <span class="trash__name" :title="titleOf(entry)">{{ titleOf(entry) }}</span>
           <span class="field-hint">{{ datesOf(entry) }}</span>
@@ -380,22 +402,23 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
           <button
             :id="`trash-restore-${entry.id}`"
             type="button"
-            class="button button--secondary"
+            class="button button--secondary button--small"
             :disabled="busyId !== null"
             @click="restore(entry)"
           >
-            <AppIcon name="restore" :size="18" />
+            <AppIcon name="restore" :size="16" />
             <!-- The space lives outside the hidden span: inside it, the compiler trims it and the name runs together. -->
             <span>Restore <span class="visually-hidden">{{ titleOf(entry) }}</span></span>
           </button>
           <button
             :id="`trash-delete-${entry.id}`"
             type="button"
-            class="button button--secondary trash__danger"
+            class="button button--quiet button--small"
             :disabled="busyId !== null"
             @click="askToDelete(entry)"
           >
-            Delete forever <span class="visually-hidden">{{ titleOf(entry) }}</span>
+            <AppIcon class="trash__icon-soft" name="trash" :size="16" />
+            <span>Delete forever <span class="visually-hidden">{{ titleOf(entry) }}</span></span>
           </button>
         </div>
 
@@ -405,13 +428,14 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
             <button
               :id="`trash-confirm-${entry.id}`"
               type="button"
-              class="button button--secondary trash__danger"
+              class="button button--danger button--small"
               :disabled="busyId !== null"
               @click="deleteForever(entry)"
             >
+              <AppIcon class="trash__icon-soft" name="trash" :size="16" />
               {{ busyId === entry.id ? 'Deleting…' : 'Yes, delete forever' }}
             </button>
-            <button type="button" class="button button--secondary" :disabled="busyId !== null" @click="keep(entry)">
+            <button type="button" class="button button--secondary button--small" :disabled="busyId !== null" @click="keep(entry)">
               Keep it
             </button>
           </div>
@@ -419,7 +443,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
       </li>
     </ul>
 
-    <p v-if="stillRemovingCount > 0" class="field-hint">
+    <p v-if="stillRemovingCount > 0" class="field-hint trash__removing">
       {{
         stillRemovingCount === 1
           ? 'The files of 1 deleted document are still being removed in the background.'
@@ -429,34 +453,38 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
     </p>
 
     <section class="trash__templates" aria-labelledby="trash-templates-heading">
-      <h2 id="trash-templates-heading" class="trash__subtitle">Templates</h2>
-      <p>
-        Documents made from a template keep working while it is in the trash. A template stays here until you restore
-        it.
-      </p>
+      <div class="trash__section-head">
+        <h2 id="trash-templates-heading" class="trash__subtitle">Templates</h2>
+        <p class="field-hint">
+          Documents made from a template keep working while it is in the trash. A template stays here until you restore
+          it.
+        </p>
+      </div>
 
-      <p v-if="templatesState === 'loading'" class="field-hint">Loading the templates in the trash…</p>
-      <p v-else-if="templatesState === 'older'" class="field-error" role="alert">{{ OLDER_SERVER_TEMPLATES }}</p>
-      <p v-else-if="templatesState === 'error'" class="field-error" role="alert">{{ templatesError }}</p>
-      <p v-else-if="templatesState === 'loaded' && trashedTemplates.length === 0 && !empty" class="field-hint">
+      <p v-if="templatesState === 'loading'" class="field-hint trash__status">Loading the templates in the trash…</p>
+      <p v-else-if="templatesState === 'older'" class="field-error trash__status" role="alert">{{ OLDER_SERVER_TEMPLATES }}</p>
+      <p v-else-if="templatesState === 'error'" class="field-error trash__status" role="alert">{{ templatesError }}</p>
+      <p v-else-if="templatesState === 'loaded' && trashedTemplates.length === 0 && !empty" class="trash__empty">
+        <AppIcon name="layout" :size="24" />
         No templates are in the trash.
       </p>
 
-      <ul v-if="trashedTemplates.length > 0" class="trash__list">
+      <ul v-if="trashedTemplates.length > 0" class="panel panel--flush trash__list" aria-label="Templates in the trash">
         <li v-for="template in trashedTemplates" :key="template.id" class="trash__item">
+          <span class="doc-tile" aria-hidden="true"><AppIcon name="layout" :size="22" /></span>
           <div class="trash__text">
             <span class="trash__name" :title="template.displayName">{{ template.displayName }}</span>
-            <span class="field-hint">Moved here {{ formatDay(template.trashedAt) }}.</span>
+            <span class="field-hint">Moved here {{ formatDay(template.trashedAt) }}. Stays until you restore it.</span>
           </div>
           <div class="trash__actions">
             <button
               :id="`trash-template-restore-${template.id}`"
               type="button"
-              class="button button--secondary"
+              class="button button--secondary button--small"
               :disabled="restoringTemplateId !== null"
               @click="restoreTrashedTemplate(template)"
             >
-              <AppIcon name="restore" :size="18" />
+              <AppIcon name="restore" :size="16" />
               <!-- The space lives outside the hidden span: inside it, the compiler trims it and the name runs together. -->
               <span>Restore <span class="visually-hidden">{{ template.displayName }}</span></span>
             </button>
@@ -465,126 +493,233 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
       </ul>
     </section>
 
-    <RouterLink class="button button--secondary" to="/">Back to your documents</RouterLink>
+    <RouterLink class="button button--quiet button--small trash__back" to="/">
+      <AppIcon name="arrow-left" :size="16" />
+      Back to your documents
+    </RouterLink>
   </section>
 </template>
 
 <style scoped>
+/*
+ * Everything on the page is one column of parts (the title block, a notice, each list, the note under a list, the
+ * templates, the way back). One grid gap sets the distance between them, and the few parts that adjust it say why
+ * where they are written; the single track is minmax(0, 1fr) so a long unbroken name can never push the page wider
+ * than the window.
+ */
 .trash {
-  inline-size: 100%;
-  max-inline-size: 42rem;
-  margin-inline: auto;
-  margin-block-start: var(--space-6);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  /* The shell's own side margins already keep the column off the window edge. */
+  --page-gutter: 0px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 1.25rem;
+  /* The shell already leaves 1.5rem above a page, and the shared column's 3.5rem on top of that sits the title too low; this puts its first line 67px below the top of the window. */
+  padding-block-start: 2.6875rem;
+}
+
+/*
+ * The grid's gap owns the space after the title block, so the lede carries none of its own below it. The block ends
+ * in a line of type, which carries a little leading under its last line, so it hands back a pixel of the gap: the
+ * visible space then matches the one between two cards.
+ */
+.trash .page-head {
+  margin-block-end: -0.0625rem;
+}
+
+.trash .page-lede {
+  margin-block: 0.625rem 0;
+}
+
+.trash__signin {
+  display: grid;
+  justify-items: start;
   gap: var(--space-3);
 }
 
-.trash__mark {
-  display: inline-flex;
+.trash__signin p {
+  margin: 0;
+}
+
+/* A line of state (loading, a failure) in the place the list will be. It is the message itself, not small print, so it takes the page's 14px body size rather than a hint's 12px. */
+.trash__status {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Said in the place a list would be, drawn as an empty slot rather than as a card, so it is never mistaken for a row. */
+.trash__empty {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  inline-size: 3rem;
-  block-size: 3rem;
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
-  color: var(--color-cocoa-strong);
-}
-
-.trash__title {
+  gap: 0.875rem;
   margin: 0;
-  font-size: var(--font-size-xl);
+  padding: 1.125rem 1.25rem;
+  border: 1px dashed var(--color-outline);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
 }
 
-.trash__templates {
-  inline-size: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
-  margin-block-start: var(--space-4);
+.trash__empty > svg {
+  flex: none;
 }
 
-.trash__subtitle {
-  margin: 0;
-  font-size: var(--font-size-lg);
-}
-
+/* What just happened, and where to go from it. The radius is the one a focused element is given, so focus does not change the corners. */
 .trash__notice {
   margin: 0;
-  padding: var(--space-2) var(--space-3);
+  padding: 0.75rem 1rem;
   border-radius: var(--radius);
   background: var(--color-cocoa-wash);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-/* The default link blue measures 4.48:1 on this wash, just under AA; the text colour is 11.96:1 and the underline still says "link". */
+/* The default link blue measures 4.48:1 on this wash, just under AA; the text colour is 10.17:1 and the underline still says "link". */
 .trash__notice a {
   color: var(--color-text);
+  font-weight: var(--font-weight-medium);
 }
 
 .trash__list {
-  list-style: none;
-  inline-size: 100%;
   margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  list-style: none;
 }
 
+/* The note about files still being removed belongs to the list above it, so it sits closer to it than the parts of the page do to each other. */
+.trash__removing {
+  margin: -0.5rem 0 0;
+}
+
+/*
+ * A row is the tile, the words and the buttons. While a delete is being confirmed the buttons give way to the
+ * question, which sits under the words and not under the tile, so the name stays exactly where the eye left it.
+ */
 .trash__item {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
+  column-gap: 0.875rem;
+  padding: 0.875rem 1rem;
+}
+
+.trash__item + .trash__item {
+  border-block-start: 1px solid var(--color-hairline);
+}
+
+/* The red wash runs the full width of the row, edge to edge of the list, so the question cannot be taken for part of another row. */
+.trash__item--confirming {
+  align-items: start;
+  background: var(--color-error-wash);
 }
 
 .trash__text {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0.125rem;
   min-inline-size: 0;
-  flex: 1 1 14rem;
+}
+
+/* A row is as tall as its two lines together, so the small line's leading is fixed here instead of inherited. */
+.trash__text .field-hint,
+.trash__section-head .field-hint {
+  line-height: 1.35;
+}
+
+.trash__item--confirming .trash__text {
+  grid-column: 2 / -1;
 }
 
 .trash__name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
 }
 
 .trash__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.trash__actions .button {
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .trash__confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  flex: 1 1 100%;
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 0.6875rem;
+  margin-block-start: 0.625rem;
 }
 
+.trash__confirm .trash__actions {
+  gap: var(--space-2);
+}
+
+/*
+ * The can is a decoration beside words that already say "delete": drawn at 60% so the label, not the picture,
+ * carries the weight. Under the pointer it comes to full strength, because the hover wash would otherwise leave it
+ * below the 3:1 a graphic needs (2.84:1 at 60%).
+ */
+.trash__icon-soft {
+  opacity: 0.6;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.button:hover > .trash__icon-soft {
+  opacity: 1;
+}
+
+/* Error red on the red wash measures 4.83:1, so the question stays readable as text, not only as a colour. */
 .trash__question {
   margin: 0;
-  font-weight: 500;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+  /* A file name with no spaces in it must wrap inside the row, not run out of it. */
+  overflow-wrap: anywhere;
 }
 
-/* The error red on the white surface measures about 5.9:1, so the label stays readable as text, not only as a colour. */
-.trash__danger {
-  border-color: var(--color-error);
-  color: var(--color-error);
+/* A line of small type carries its own leading below it, so a gap of 1.125rem reads as the same rhythm as the 1.25rem between cards. */
+.trash__templates {
+  display: grid;
+  gap: 1.125rem;
+}
+
+.trash__section-head {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.trash__section-head p {
+  margin: 0;
+}
+
+.trash__subtitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+}
+
+.trash__back {
+  justify-self: start;
+}
+
+/* With little room the buttons would squeeze the name to a few letters, so they drop under it, in line with it. */
+@container main (max-width: 38rem) {
+  .trash__item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .trash__item > .trash__actions {
+    grid-column: 2;
+    margin-block-start: 0.625rem;
+  }
 }
 </style>
