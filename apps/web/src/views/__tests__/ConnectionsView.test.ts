@@ -127,6 +127,17 @@ describe('ConnectionsView', () => {
     signIn()
   })
 
+  it('says in a line what Brownie uses the Google account for, under the page title', async () => {
+    const wrapper = await mountAt()
+
+    expect(wrapper.find('h1').text()).toBe('Connections')
+    expect(text(wrapper)).toContain(
+      'Brownie uses your Google account only where you allow it here, and only when you ask for it inside a document.',
+    )
+    expect(wrapper.find('section[aria-labelledby="connections-heading"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('offers to connect Google Calendar, quoting Google and saying what Brownie does, and passes an accessibility scan', async () => {
     const wrapper = await mountAt()
 
@@ -137,6 +148,21 @@ describe('ConnectionsView', () => {
     expect(wrapper.find('#connections-drive').exists()).toBe(false)
     expect(buttonNamed(wrapper, 'Connect Google Calendar').exists()).toBe(true)
     expect(await axe(wrapper.element)).toHaveNoViolations()
+    wrapper.unmount()
+  })
+
+  it('lays each card out as three labelled rows: what Google asks, what Brownie does, what Brownie may read', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection()])
+    const wrapper = await mountAt()
+
+    const section = wrapper.find('section[aria-labelledby="connections-calendar"]')
+    expect(section.findAll('dt').map((label) => label.text())).toEqual([
+      'Google asks you to allow',
+      'What Brownie does',
+      'What Brownie may read',
+    ])
+    expect(section.findAll('dd')).toHaveLength(3)
+    expect(section.find('dd').text()).toContain('"See the events on Google calendars you own."')
     wrapper.unmount()
   })
 
@@ -166,6 +192,80 @@ describe('ConnectionsView', () => {
     expect(wrapper.findAll('button').map((button) => button.text())).not.toContain('Connect Google Calendar')
     expect(await axe(wrapper.element)).toHaveNoViolations()
     wrapper.unmount()
+  })
+
+  describe('with all four accesses offered', () => {
+    beforeEach(() => {
+      vi.mocked(getCapabilities).mockResolvedValue(
+        capabilities(['CALENDAR_EVENTS', 'DRIVE_FILES', 'DRIVE_SAVING', 'CALENDAR_EVENT_CREATION']),
+      )
+    })
+
+    /** One of each state: Calendar and saving connected, Drive never connected, adding events paused. */
+    function fourStates(): ConnectionResponse[] {
+      return [
+        connection({ id: 3, access: 'CALENDAR_EVENT_CREATION', state: 'RECONNECT_REQUIRED', reconnectReason: 'TOKEN_REJECTED' }),
+        connection({ id: 2, access: 'DRIVE_SAVING', connectedAt: '2026-09-25T10:00:00Z' }),
+        connection({ id: 1, grants: [{ id: 9, type: 'CALENDAR', displayName: null, grantedAt: '2026-09-24T10:00:00Z' }] }),
+      ]
+    }
+
+    it('draws one card for each access, in the order Calendar, Drive, saving, adding events', async () => {
+      vi.mocked(listConnections).mockResolvedValue(fourStates())
+      const wrapper = await mountAt()
+
+      expect(wrapper.findAll('h2').map((heading) => heading.text())).toEqual([
+        'Google Calendar',
+        'Google Drive',
+        'Google Drive for saving',
+        'Google Calendar for adding events',
+      ])
+      wrapper.unmount()
+    })
+
+    it('says where each connection stands in one word beside its name, never by colour alone', async () => {
+      vi.mocked(listConnections).mockResolvedValue(fourStates())
+      const wrapper = await mountAt()
+
+      const chip = (id: string) => wrapper.find(`section[aria-labelledby="${id}"] .tag`).text()
+      expect(chip('connections-calendar')).toBe('Connected')
+      expect(chip('connections-drive')).toBe('Not connected')
+      expect(chip('connections-saving')).toBe('Connected')
+      expect(chip('connections-adding')).toBe('Paused')
+      // The paused one also says why, in words, and what to press.
+      const adding = wrapper.find('section[aria-labelledby="connections-adding"]')
+      expect(adding.text()).toContain('Needs connecting again.')
+      expect(adding.text()).toContain('seven days after you connected')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+      wrapper.unmount()
+    })
+
+    it('puts the attention edge on the paused card only, and a plain edge on the rest', async () => {
+      vi.mocked(listConnections).mockResolvedValue(fourStates())
+      const wrapper = await mountAt()
+
+      const attention = (id: string) => wrapper.find(`section[aria-labelledby="${id}"]`).classes('account--attention')
+      expect(attention('connections-adding')).toBe(true)
+      expect(attention('connections-calendar')).toBe(false)
+      expect(attention('connections-drive')).toBe(false)
+      expect(attention('connections-saving')).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('offers the main action on a card that is not connected or paused, and none on a connected one', async () => {
+      vi.mocked(listConnections).mockResolvedValue(fourStates())
+      const wrapper = await mountAt()
+
+      const connectAgain = buttonNamed(wrapper, 'Connect Google Calendar for adding events again')
+      expect(connectAgain.classes()).toContain('button--primary')
+      const choose = buttonNamed(wrapper, 'Choose files in Google Drive')
+      expect(choose.classes()).toContain('button--primary')
+      // Connected cards keep the guidance on where to use them, and no button to connect twice.
+      expect(wrapper.find('section[aria-labelledby="connections-calendar"] button').exists()).toBe(false)
+      expect(wrapper.find('section[aria-labelledby="connections-saving"] button').exists()).toBe(false)
+      expect(wrapper.find('section[aria-labelledby="connections-saving"]').text()).toContain('To save a document, open Export on it')
+      wrapper.unmount()
+    })
   })
 
   it.each([
@@ -200,6 +300,7 @@ describe('ConnectionsView', () => {
 
     expect(text(wrapper)).toContain('Needs connecting again.')
     expect(text(wrapper)).toContain('seven days after you connected')
+    expect(wrapper.find('section[aria-labelledby="connections-calendar"] .tag').text()).toBe('Paused')
     expect(buttonNamed(wrapper, 'Connect Google Calendar again').exists()).toBe(true)
     wrapper.unmount()
   })
@@ -285,9 +386,19 @@ describe('ConnectionsView', () => {
     ])
     const wrapper = await mountAt()
 
-    expect(text(wrapper)).toContain('Copies already brought into your documents stay with those documents')
+    // Before asking, one line says what disconnecting does; all of what follows from it waits for the question.
+    expect(text(wrapper)).toContain(
+      'Disconnects every Google connection here. Brownie will need your agreement again to read anything. Copies already in your documents stay.',
+    )
+    expect(text(wrapper)).not.toContain('Copies already brought into your documents stay with those documents')
     await buttonNamed(wrapper, 'Disconnect Google…').trigger('click')
     expect(document.activeElement?.id).toBe('connections-disconnect-confirm')
+    expect(text(wrapper)).toContain('Copies already brought into your documents stay with those documents')
+    // The question is what a screen reader reads with the button that answers it.
+    expect(wrapper.find('#connections-disconnect-confirm').attributes('aria-describedby')).toBe('connections-disconnect-question')
+    expect(wrapper.find('#connections-disconnect-question').text()).toBe(
+      'Disconnect every Google connection here? Brownie will need your agreement again to read anything.',
+    )
 
     await wrapper.find('[role="group"]').trigger('keydown', { key: 'Escape' })
     await flushPromises()
@@ -381,13 +492,55 @@ describe('ConnectionsView', () => {
     wrapper.unmount()
   })
 
-  it('says Google also asks to see the email address, and that a copy stays until every document holding it is deleted', async () => {
+  it('says Google also asks to see the email address', async () => {
     vi.mocked(listConnections).mockResolvedValue([connection()])
     const wrapper = await mountAt()
 
     expect(text(wrapper)).toContain('Google also asks to let Brownie see your email address')
-    expect(text(wrapper)).toContain('delete every document it was copied into')
-    expect(text(wrapper)).toContain('for that one Brownie cannot ask Google')
+    wrapper.unmount()
+  })
+
+  it('says, when asking to disconnect, that a copy stays until every document holding it is deleted, and what cannot be asked of Google', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection()])
+    const wrapper = await mountAt()
+
+    await buttonNamed(wrapper, 'Disconnect Google…').trigger('click')
+
+    const asking = wrapper.find('[role="group"]')
+    expect(asking.attributes('aria-label')).toBe('Disconnect Google')
+    expect(asking.text()).toContain('delete every document it was copied into')
+    expect(asking.text()).toContain('for that one Brownie cannot ask Google')
+    expect(asking.text()).toContain('Brownie asks Google to take back the access it still holds, and deletes that access whatever Google answers.')
+    wrapper.unmount()
+  })
+
+  it('adds what a change in a Google account leaves behind to that question only where saving or adding exists', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection({ id: 8, access: 'DRIVE_SAVING' })])
+    const withWrites = await mountAt()
+    await buttonNamed(withWrites, 'Disconnect Google…').trigger('click')
+    expect(withWrites.find('[role="group"]').text()).toContain(
+      'Files Brownie saved, text it added and events it added stay in your Google account.',
+    )
+    withWrites.unmount()
+
+    vi.mocked(listConnections).mockResolvedValue([connection()])
+    const readOnly = await mountAt()
+    await buttonNamed(readOnly, 'Disconnect Google…').trigger('click')
+    expect(readOnly.find('[role="group"]').text()).not.toContain('stay in your Google account')
+    readOnly.unmount()
+  })
+
+  it('passes an accessibility scan while asking to disconnect, and Keep connected gives the keyboard back', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection()])
+    const wrapper = await mountAt()
+
+    await buttonNamed(wrapper, 'Disconnect Google…').trigger('click')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    await buttonNamed(wrapper, 'Keep connected').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="group"]').exists()).toBe(false)
+    expect(document.activeElement?.id).toBe('connections-disconnect')
     wrapper.unmount()
   })
 
@@ -514,9 +667,27 @@ describe('ConnectionsView', () => {
       expect(buttonNamed(wrapper, 'Stop reading this file Minutes').exists()).toBe(true)
       expect(buttonNamed(wrapper, 'Choose more files in Google Drive').exists()).toBe(true)
       expect(wrapper.find('#connections-try-picker').exists()).toBe(false)
-      expect(text(wrapper)).toContain('Every file you chose in Google Drive is taken off your list too.')
       expect(await axe(wrapper.element)).toHaveNoViolations()
+
+      // What disconnecting does to the list is said when asking to disconnect.
+      await buttonNamed(wrapper, 'Disconnect Google…').trigger('click')
+      expect(wrapper.find('[role="group"]').text()).toContain('Every file you chose in Google Drive is taken off your list too.')
       wrapper.unmount()
+    })
+
+    it('draws more files as a quiet action on a connected Drive, and connecting as the main one when it is not', async () => {
+      vi.mocked(listConnections).mockResolvedValue([driveConnection()])
+      const connected = await mountAt()
+      expect(buttonNamed(connected, 'Choose more files in Google Drive').classes()).toContain('button--secondary')
+      expect(buttonNamed(connected, 'Choose more files in Google Drive').classes()).not.toContain('button--primary')
+      expect(connected.find('section[aria-labelledby="connections-drive"] .tag').text()).toBe('Connected')
+      connected.unmount()
+
+      vi.mocked(listConnections).mockResolvedValue([driveConnection({ state: 'RECONNECT_REQUIRED', reconnectReason: 'TOKEN_REJECTED' })])
+      const paused = await mountAt()
+      expect(buttonNamed(paused, 'Connect Google Drive again and choose files').classes()).toContain('button--primary')
+      expect(paused.find('section[aria-labelledby="connections-drive"] .tag').text()).toBe('Paused')
+      paused.unmount()
     })
 
     it("chooses files in Google's own picker, which comes back here", async () => {
@@ -639,13 +810,19 @@ describe('ConnectionsView', () => {
     wrapper.unmount()
   })
 
-  it('keeps saying Brownie never changes anything where saving is neither offered nor connected', async () => {
+  it('draws no saving or adding card, and says in each reading card that nothing is changed, where neither is offered or connected', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS', 'DRIVE_FILES']))
     const wrapper = await mountAt()
 
-    expect(text(wrapper)).toContain('Accounts outside Brownie that you let it read from. ')
+    expect(wrapper.findAll('h2').map((heading) => heading.text())).toEqual(['Google Calendar', 'Google Drive'])
     expect(wrapper.find('#connections-adding').exists()).toBe(false)
-    expect(text(wrapper)).toContain('never changes anything in them')
     expect(wrapper.find('#connections-saving').exists()).toBe(false)
+    expect(wrapper.find('section[aria-labelledby="connections-calendar"]').text()).toContain(
+      'Through this connection it never creates, changes or deletes an event',
+    )
+    expect(wrapper.find('section[aria-labelledby="connections-drive"]').text()).toContain(
+      'through this connection never changes, moves or deletes anything in your Drive',
+    )
     wrapper.unmount()
   })
 
@@ -654,8 +831,6 @@ describe('ConnectionsView', () => {
     vi.mocked(startGoogleConsent).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' })
     const wrapper = await mountAt()
 
-    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
-    expect(text(wrapper)).not.toContain('never changes anything in them')
     const section = wrapper.find('section[aria-labelledby="connections-saving"]')
     expect(section.find('h2').text()).toBe('Google Drive for saving')
     expect(section.text()).toContain('"See, edit, create, and delete only the specific Google Drive files you use with this app."')
@@ -678,7 +853,7 @@ describe('ConnectionsView', () => {
     expect(section.text()).toContain('Connected as me@example.org')
     expect(section.text()).toContain('Saving to Google Drive is not offered on this Brownie at the moment.')
     expect(section.find('button').exists()).toBe(false)
-    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
+    expect(section.text()).toContain('used only for saving a file you approve')
     wrapper.unmount()
   })
 
@@ -687,8 +862,6 @@ describe('ConnectionsView', () => {
     vi.mocked(startGoogleConsent).mockResolvedValue({ authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=2' })
     const wrapper = await mountAt()
 
-    expect(text(wrapper)).toContain('Accounts outside Brownie that you let it read from, or add to.')
-    expect(text(wrapper)).toContain('makes a change in them only when you approve that exact change')
     const section = wrapper.find('section[aria-labelledby="connections-adding"]')
     expect(section.find('h2').text()).toBe('Google Calendar for adding events')
     expect(section.text()).toContain('"See, create, change, and delete events on Google calendars you own."')
@@ -723,10 +896,36 @@ describe('ConnectionsView', () => {
     wrapper.unmount()
   })
 
+  it('says the accounts are loading, with no cards yet, until the list arrives', async () => {
+    let arrive: (list: ConnectionResponse[]) => void = () => undefined
+    vi.mocked(listConnections).mockReturnValue(new Promise<ConnectionResponse[]>((resolve) => (arrive = resolve)))
+    const wrapper = await mountAt()
+
+    expect(text(wrapper)).toContain('Loading your connected accounts…')
+    expect(wrapper.find('h2').exists()).toBe(false)
+
+    arrive([connection()])
+    await flushPromises()
+    expect(text(wrapper)).not.toContain('Loading your connected accounts…')
+    expect(wrapper.find('h2').text()).toBe('Google Calendar')
+    wrapper.unmount()
+  })
+
+  it('points to where Google lists what is connected, and back to the documents', async () => {
+    const wrapper = await mountAt()
+
+    const google = wrapper.find('a[href="https://myaccount.google.com/connections"]')
+    expect(google.text()).toBe('third-party connections')
+    expect(google.attributes('rel')).toBe('noopener noreferrer')
+    expect(wrapper.findAll('a').find((link) => link.text() === 'Back to your documents')?.attributes('href')).toBe('/')
+    wrapper.unmount()
+  })
+
   it('asks a signed-out visitor to sign in and come back here', async () => {
     useSessionStore().status = 'anonymous'
     const wrapper = await mountAt()
 
+    expect(text(wrapper)).toContain('Sign in to see the accounts you have connected to Brownie.')
     expect(wrapper.find('a').attributes('href')).toBe('/signin?next=/connections')
     expect(listConnections).not.toHaveBeenCalled()
     wrapper.unmount()
