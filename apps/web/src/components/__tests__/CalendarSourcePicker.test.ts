@@ -133,10 +133,15 @@ function text(wrapper: Wrapper): string {
   return wrapper.text().replace(/\s+/g, ' ')
 }
 
+/** What a button is called: its label when it has one (the row's button does), else the words on it, hidden ones included. */
+function nameOf(button: { attributes(key: string): string | undefined; text(): string }): string {
+  return (button.attributes('aria-label') ?? button.text()).replace(/\s+/g, ' ').trim()
+}
+
 function buttonNamed(wrapper: Wrapper, name: string) {
-  const found = wrapper.findAll('button').find((candidate) => candidate.text().replace(/\s+/g, ' ').trim() === name)
+  const found = wrapper.findAll('button').find((candidate) => nameOf(candidate) === name)
   if (!found) {
-    throw new Error(`No button named "${name}" among: ${wrapper.findAll('button').map((b) => b.text()).join(' | ')}`)
+    throw new Error(`No button named "${name}" among: ${wrapper.findAll('button').map(nameOf).join(' | ')}`)
   }
   return found
 }
@@ -196,6 +201,72 @@ describe('CalendarSourcePicker', () => {
     expect(listConnections).toHaveBeenCalledWith(7)
     // Opening only checks the connection; the calendar is read when the person asks for a stretch of days.
     expect(listCalendarEvents).not.toHaveBeenCalled()
+  })
+
+  it('is a row of the Add a source panel: its title names the button, its sentence describes it, and it opens what it controls', async () => {
+    vi.mocked(listConnections).mockResolvedValue([connection()])
+    const wrapper = await mountPicker()
+    const toggle = buttonNamed(wrapper, 'Copy an event from Google Calendar')
+
+    // The name is the title alone; the sentence under it is read after the name, not run into it.
+    expect(toggle.attributes('aria-label')).toBe('Copy an event from Google Calendar')
+    const about = document.getElementById(toggle.attributes('aria-describedby') ?? '')
+    expect(about?.textContent).toBe('Brownie lists the days you ask for and copies only the event you choose.')
+    expect(toggle.text()).toContain(about?.textContent)
+
+    const panel = wrapper.get('#calendar-picker-panel')
+    expect(toggle.attributes('aria-controls')).toBe('calendar-picker-panel')
+    expect(panel.isVisible()).toBe(false)
+    expect(wrapper.classes()).not.toContain('calendar-picker--open')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    await toggle.trigger('click')
+    await flushPromises()
+    expect(panel.isVisible()).toBe(true)
+    expect(wrapper.classes()).toContain('calendar-picker--open')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    await toggle.trigger('click')
+    expect(panel.isVisible()).toBe(false)
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('says it is checking the connection, and then reading the calendar, while it waits', async () => {
+    let known: (value: ConnectionResponse[]) => void = () => {}
+    vi.mocked(listConnections).mockReturnValue(new Promise((resolve) => (known = resolve)))
+    let read: (value: { timeZone: null; truncated: boolean; events: CalendarEventResponse[] }) => void = () => {}
+    vi.mocked(listCalendarEvents).mockReturnValue(new Promise((resolve) => (read = resolve)))
+    const wrapper = await mountPicker()
+    await buttonNamed(wrapper, 'Copy an event from Google Calendar').trigger('click')
+
+    expect(text(wrapper)).toContain('Checking your Google Calendar connection…')
+    expect(wrapper.find('form').exists()).toBe(false)
+    known([connection()])
+    await flushPromises()
+    expect(text(wrapper)).not.toContain('Checking your Google Calendar connection…')
+
+    await showEvents(wrapper)
+    expect(text(wrapper)).toContain('Reading your calendar…')
+    read({ timeZone: null, truncated: false, events: [event()] })
+    await flushPromises()
+    expect(text(wrapper)).not.toContain('Reading your calendar…')
+    expect(wrapper.find('#calendar-copy-evt1').exists()).toBe(true)
+  })
+
+  it('puts what connecting means, and the way to connect, together in one quiet card', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountPicker()
+    await buttonNamed(wrapper, 'Copy an event from Google Calendar').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.msg-card')
+    expect(card.text().replace(/\s+/g, ' ')).toContain(
+      'Google Calendar is not connected. Connecting asks Google to let Brownie see the events on calendars you own; ' +
+        'Brownie then reads only the days you ask for and copies only the event you choose.',
+    )
+    expect(card.get('a[href="/connections"]').text()).toBe('More about connections')
+    expect(card.get('#calendar-connect').text()).toBe('Connect Google Calendar')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
   it('offers to connect when Google Calendar is not connected, and sends the person back to this document', async () => {

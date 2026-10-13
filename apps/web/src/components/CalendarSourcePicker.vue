@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import AppIcon from '@/components/AppIcon.vue'
 import { loadCapabilities } from '@/capabilities'
 import { navigateTo, releaseIfStillHere } from '@/navigation'
 import {
@@ -203,7 +204,8 @@ async function showEvents(): Promise<void> {
 }
 
 const NO_EVENTS = 'No ordinary events on your main calendar in those days.'
-
+/** The row's name, spoken as the button's name and drawn as its title, so the two cannot drift apart. */
+const TITLE = 'Copy an event from Google Calendar'
 
 function importFailure(failure: unknown, event: CalendarEventResponse): string {
   if (failure instanceof ApiRequestError && !failure.routeMissing) {
@@ -257,44 +259,63 @@ async function copy(event: CalendarEventResponse): Promise<void> {
 </script>
 
 <template>
-  <div v-if="offered" class="calendar-picker">
+  <div v-if="offered" class="calendar-picker" :class="{ 'calendar-picker--open': open }">
+    <!--
+      The whole row is the button. Its name is the title alone, as it is drawn; the sentence under the title is what
+      the button says it does, read after the name rather than run into it.
+    -->
     <button
       type="button"
-      class="button button--secondary"
+      class="calendar-picker__toggle"
+      :aria-label="TITLE"
+      aria-describedby="calendar-picker-about"
       :aria-expanded="open"
       aria-controls="calendar-picker-panel"
       @click="toggle"
     >
-      Copy an event from Google Calendar
+      <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="calendar" :size="18" /></span>
+      <span class="calendar-picker__words">
+        <span class="calendar-picker__title">{{ TITLE }}</span>
+        <span id="calendar-picker-about" class="calendar-picker__about"
+          >Brownie lists the days you ask for and copies only the event you choose.</span
+        >
+      </span>
+      <AppIcon class="calendar-picker__chevron" :name="open ? 'chevron-down' : 'chevron-right'" :size="18" />
     </button>
 
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ listAnnouncement }}</p>
     <div v-show="open" id="calendar-picker-panel" class="calendar-picker__panel">
-      <p v-if="notice" ref="noticeElement" class="calendar-picker__notice" role="status" tabindex="-1">{{ notice }}</p>
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+      <p v-if="notice" ref="noticeElement" class="calendar-picker__notice" role="status" tabindex="-1">
+        <AppIcon name="check-circle" :size="18" />
+        <span>{{ notice }}</span>
+      </p>
+      <p v-if="error" class="calendar-picker__problem field-error" role="alert">
+        <AppIcon name="alert-circle" :size="16" />
+        <span>{{ error }}</span>
+      </p>
 
-      <p v-if="connectionState === 'loading'" class="field-hint" aria-live="polite">Checking your Google Calendar connection…</p>
+      <p v-if="connectionState === 'loading'" class="calendar-picker__progress field-hint" aria-live="polite">
+        <span class="activity-indicator" aria-hidden="true"></span>Checking your Google Calendar connection…
+      </p>
 
       <template v-else-if="connectionState === 'loaded'">
-        <template v-if="connection === null || connection.state !== 'ACTIVE'">
-          <p class="field-hint">
-            {{
-              connection === null
-                ? 'Google Calendar is not connected.'
-                : stateSentence(connection)
-            }}
-            Connecting asks Google to let Brownie see the events on calendars you own; Brownie then reads only the days you
-            ask for and copies only the event you choose.
-            <RouterLink to="/connections">More about connections</RouterLink>
-          </p>
-          <button id="calendar-connect" type="button" class="button button--primary" :disabled="busy" @click="connect">
-            {{ connection?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Calendar again' : 'Connect Google Calendar' }}
-          </button>
-        </template>
+        <div v-if="connection === null || connection.state !== 'ACTIVE'" class="msg-card calendar-picker__card">
+          <div class="msg-card__section calendar-picker__connect">
+            <p>{{ connection === null ? 'Google Calendar is not connected.' : stateSentence(connection) }}</p>
+            <p class="field-hint">
+              Connecting asks Google to let Brownie see the events on calendars you own; Brownie then reads only the days you
+              ask for and copies only the event you choose.
+              <RouterLink to="/connections">More about connections</RouterLink>
+            </p>
+            <button id="calendar-connect" type="button" class="button button--primary button--small" :disabled="busy" @click="connect">
+              {{ connection?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Calendar again' : 'Connect Google Calendar' }}
+            </button>
+          </div>
+        </div>
 
         <form v-else class="calendar-picker__window" @submit.prevent="showEvents">
           <label class="field-label" for="calendar-window">Which days</label>
-          <select id="calendar-window" v-model="choice">
+          <select id="calendar-window" v-model="choice" class="text-field">
             <option v-for="option in WINDOW_CHOICES" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
           <!-- Not disabled while reading: that would drop the focus it holds. A second press is ignored instead. -->
@@ -302,7 +323,9 @@ async function copy(event: CalendarEventResponse): Promise<void> {
         </form>
       </template>
 
-      <p v-if="listState === 'loading'" class="field-hint" aria-live="polite">Reading your calendar…</p>
+      <p v-if="listState === 'loading'" class="calendar-picker__progress field-hint" aria-live="polite">
+        <span class="activity-indicator" aria-hidden="true"></span>Reading your calendar…
+      </p>
       <template v-else-if="listState === 'loaded' && listing">
         <p v-if="listing.events.length === 0" class="field-hint">{{ NO_EVENTS }}</p>
         <template v-else>
@@ -311,18 +334,18 @@ async function copy(event: CalendarEventResponse): Promise<void> {
             a time for repeating ones.
           </p>
           <ul class="calendar-picker__events">
-            <li v-for="event in listing.events" :key="event.id" class="calendar-picker__event">
-              <div class="calendar-picker__text">
-                <span class="calendar-picker__title">{{ titleOf(event) }}</span>
-                <span class="field-hint">
+            <li v-for="event in listing.events" :key="event.id" class="source-chip calendar-picker__event">
+              <span class="source-chip__text">
+                <span class="source-chip__name">{{ titleOf(event) }}</span>
+                <span class="source-chip__meta">
                   {{ when(event) }}<template v-if="event.status === 'TENTATIVE'"> · tentative</template
                   ><template v-if="event.recurring"> · repeats</template>
                 </span>
-              </div>
+              </span>
               <button
                 :id="`calendar-copy-${event.id}`"
                 type="button"
-                class="button button--secondary"
+                class="button button--secondary button--small"
                 :disabled="busy"
                 @click="copy(event)"
               >
@@ -344,73 +367,176 @@ async function copy(event: CalendarEventResponse): Promise<void> {
 </template>
 
 <style scoped>
+/*
+ * One row of the Add a source panel: a tile, what the row does, and a chevron. Opening it gives the row the quiet inset
+ * shade and shows its content underneath, lined up with the words and clear of the tile.
+ */
 .calendar-picker {
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+/* Two open rows would run into one shade, so an open row keeps a little white between it and its neighbours. */
+.calendar-picker--open {
+  margin-block: 0.25rem;
+  background: var(--color-paper-soft);
+}
+
+/* The edge is transparent so a forced-colours display can still draw it; the padding is a pixel less to make room. */
+.calendar-picker__toggle {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin-block: var(--space-3);
+  align-items: center;
+  gap: 0.75rem;
+  inline-size: 100%;
+  padding-block: calc(0.75rem - 1px) calc(0.625rem - 1px);
+  padding-inline: calc(0.5625rem - 1px) calc(0.75rem - 1px);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+/* An open row already wears the shade, so only a closed one answers the pointer with it. */
+.calendar-picker__toggle[aria-expanded='false']:hover {
+  background: var(--color-paper-soft);
+}
+
+.calendar-picker__words {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 0.125rem;
+  min-inline-size: 0;
+}
+
+.calendar-picker__title {
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+.calendar-picker__about {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.calendar-picker__chevron {
+  flex: none;
+  color: var(--color-text-muted);
 }
 
 .calendar-picker__panel {
-  inline-size: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
+  display: grid;
+  justify-items: start;
+  gap: 0.625rem;
+  padding-block: 0.125rem 0.75rem;
+  padding-inline: 3.1875rem 0.75rem;
+}
+
+.calendar-picker__panel > * {
+  min-inline-size: 0;
 }
 
 .calendar-picker__panel p {
   margin: 0;
 }
 
+/* What was just done, said where the keyboard lands. */
 .calendar-picker__notice {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  inline-size: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-control);
+  background: var(--color-success-wash);
+  line-height: 1.4;
 }
 
+.calendar-picker__notice > svg {
+  margin-block-start: 0.0625rem;
+  color: var(--color-success);
+}
+
+.calendar-picker__problem,
+.calendar-picker__progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.calendar-picker__problem > svg {
+  margin-block-start: 0.0625rem;
+}
+
+.calendar-picker__progress {
+  align-items: center;
+}
+
+/* Not connected, or waiting to be connected again: a quiet card with what connecting means and the way to do it. */
+.calendar-picker__card {
+  inline-size: 100%;
+}
+
+.calendar-picker__connect {
+  display: grid;
+  justify-items: start;
+  gap: 0.5rem;
+}
+
+.calendar-picker__connect p {
+  line-height: 1.45;
+}
+
+.calendar-picker__connect .button {
+  margin-block-start: 0.25rem;
+}
+
+/* The days and the button share a line; on a panel too narrow for both, the button drops below the field. */
 .calendar-picker__window {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-2);
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  inline-size: 100%;
 }
 
 .calendar-picker__window .field-label {
   flex-basis: 100%;
+  margin: 0;
+}
+
+.calendar-picker__window .text-field {
+  flex: 1 1 14rem;
+  min-inline-size: 0;
 }
 
 .calendar-picker__events {
-  list-style: none;
+  display: grid;
+  gap: 0.5rem;
   inline-size: 100%;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  list-style: none;
 }
 
+/* An event's title and times wrap instead of being cut short, and the button drops below them on a narrow panel. */
 .calendar-picker__event {
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  inline-size: 100%;
 }
 
-.calendar-picker__text {
-  display: flex;
-  flex-direction: column;
-  min-inline-size: 0;
+.calendar-picker__event .source-chip__text {
   flex: 1 1 12rem;
 }
 
-.calendar-picker__title {
-  font-weight: 500;
+.calendar-picker__event .source-chip__name,
+.calendar-picker__event .source-chip__meta {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 </style>
