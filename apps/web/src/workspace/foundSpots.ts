@@ -11,20 +11,12 @@ import type { EditableField } from '@/workspace/layout'
  * holds for every document made from the form and for its later versions;
  * the template version says which places are kept.
  */
-/** How the page marks a place still to check: a label on a Word page, a dashed outline on a PDF's own page. */
-const CHECK_WORDS = {
-  DOCX: { one: 'Check the one marked Found by Brownie.', many: 'Check the ones marked Found by Brownie.' },
-  PDF: { one: 'Check the one with a dashed outline.', many: 'Check the ones with a dashed outline.' },
-} as const
-
 export function useFoundSpots(options: {
   fields: Ref<readonly EditableField[]>
   workspaceId: () => number | undefined
   templateId: () => number | null
   labelOf: (fieldId: string) => string
   announce: (text: string) => void
-  /** What kind of page the places are marked on, which says how they are marked. */
-  kind: () => 'DOCX' | 'PDF'
 }) {
   /** What the template version said was kept, and what was kept on this page since: a slower reload never brings a mark back. */
   const acceptedFromServer = ref<ReadonlySet<string>>(new Set())
@@ -120,20 +112,5 @@ export function useFoundSpots(options: {
     }
   }
 
-  /**
-   * The one line over the page while any place is still marked: how many Brownie found, or how many of
-   * them are left once some are kept, and how to tell which they are. Where the form had places of its
-   * own, the ones Brownie found are more beside them.
-   */
-  const bannerText = computed(() => {
-    const unchecked = uncheckedFieldIds.value.length
-    const found = foundFieldIds.value.length
-    const check = CHECK_WORDS[options.kind()][unchecked === 1 ? 'one' : 'many']
-    if (unchecked < found) return `${unchecked} of the ${found} places Brownie found ${unchecked === 1 ? 'is' : 'are'} not checked yet. ${check}`
-    const formHasItsOwn = options.fields.value.some((field) => (field.origin ?? 'FORM') === 'FORM')
-    const places = `${found}${formHasItsOwn ? ' more' : ''} ${found === 1 ? 'place' : 'places'}`
-    return `Brownie found ${places} to fill in. ${check}`
-  })
-
-  return { uncheckedFieldIds, uncheckedSet, keepPending, keepError, bannerText, setAccepted, keep, keepRenamed, keepAll }
+  return { uncheckedFieldIds, uncheckedSet, keepPending, keepError, setAccepted, keep, keepRenamed, keepAll }
 }
