@@ -35,6 +35,7 @@ vi.mock('@/api/client', async () => {
 
 import { suggestBox } from '@/api/client'
 import PdfFormPage from '@/components/workspace/PdfFormPage.vue'
+import FillSpot from '@/components/workspace/FillSpot.vue'
 
 type Spot = PdfLayoutResponse['spots'][number]
 
@@ -124,7 +125,18 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-function mountPage(options: { layout?: TemplateLayoutResponse; send?: (request: PdfSpotRequest) => Promise<PdfSpotResult>; pickingPoint?: boolean; found?: string[] } = {}) {
+function mountPage(
+  options: {
+    layout?: TemplateLayoutResponse
+    send?: (request: PdfSpotRequest) => Promise<PdfSpotResult>
+    pickingPoint?: boolean
+    found?: string[]
+    previewDrafts?: Record<string, string | string[]> | null
+    banner?: string
+    required?: string[]
+    questionCounts?: Record<string, number>
+  } = {},
+) {
   const send = vi.fn(options.send ?? (async (): Promise<PdfSpotResult> => ({ ok: true, focusId: null })))
   wrapper = mount(PdfFormPage, {
     attachTo: document.body,
@@ -133,16 +145,19 @@ function mountPage(options: { layout?: TemplateLayoutResponse; send?: (request: 
       layoutState: 'ready',
       fields: FIELDS,
       drafts: { 'full.name': 'Nguyễn Thị Minh Khai', company: '', 'member.id': '', 'signed.on': '' },
+      previewDrafts: options.previewDrafts ?? null,
       revisionFields: null,
-      requiredFieldIds: new Set(['full.name']),
+      requiredFieldIds: new Set(options.required ?? ['full.name']),
       lockedFieldIds: new Set<string>(),
       rowsLocked: false,
       selected: null,
       foundFieldIds: new Set(options.found ?? ['company']),
+      questionCounts: options.questionCounts,
       workspaceId: 7,
       sendSpotChanges: send,
       pickingPoint: options.pickingPoint ?? false,
     },
+    slots: options.banner === undefined ? undefined : { banner: options.banner },
   })
   return { wrapper, send }
 }
@@ -161,7 +176,7 @@ function rect(left: number, top: number, width: number, height: number): DOMRect
 
 /** The width the page view gives a page, as a browser lays it out in a pane `available` pixels wide. */
 function laidOutWidth(pageNumber: number, available: number): number {
-  const wrap = document.querySelector(`[data-page="${pageNumber}"]`)?.parentElement
+  const wrap = document.querySelector(`[data-page="${pageNumber}"]`)?.closest('.pdf-form-page__page-wrap')
   const css = /--pdf-page-width:\s*([^;]+)/.exec(wrap?.getAttribute('style') ?? '')?.[1]?.trim() ?? ''
   const fit = /^min\(100%, (\d+)px\)$/.exec(css)
   return fit ? Math.min(available, Number(fit[1])) : Number.parseFloat(css) || available
@@ -244,8 +259,8 @@ describe('PdfFormPage', () => {
     // Named for what goes there, and marked where Brownie found the place itself: by the shape of its outline,
     // which the legend names, since a label over the page would cover the form's own words; and in words in its description.
     expect(wrapper!.get('#edit-full\\.name').attributes('aria-label')).toBe('Full name, required')
-    expect(company.classes()).toContain('pdf-form-page__spot--found')
-    expect(wrapper!.get('[data-field-id="member.id"]').classes()).not.toContain('pdf-form-page__spot--found')
+    expect(company.get('.fill-spot').classes()).toContain('fill-spot--found')
+    expect(wrapper!.get('[data-field-id="member.id"] .fill-spot').classes()).not.toContain('fill-spot--found')
     expect(wrapper!.get('.pdf-form-page__legend').text()).toContain('Dashed outline: found by Brownie, check it')
     const described = (control.attributes('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '')
     expect(described.join(' ')).toContain('Found by Brownie; check that this is the right place.')
@@ -782,55 +797,329 @@ describe('PdfFormPage', () => {
     }
   })
 
-  it('marks a box Brownie found with a thin dashed line inside it, apart from its selection, until it is kept', async () => {
+  it('tells a box Brownie found from the others by its look, and the legend says what the look means, until it is kept', async () => {
     mountPage()
     await flushPromises()
 
-    // The mark is inside the box: part of the spot laid over the box, hidden from screen readers, which hear it in words.
+    // The spot itself draws the dashed edge; the form's own field is the other kind of outline, drawn by the page.
     const company = wrapper!.get('[data-field-id="company"]')
-    expect(company.get('.pdf-form-page__found-mark').attributes('aria-hidden')).toBe('true')
-    // Only the found box has one: not the box the person drew, nor the PDF's own field.
-    expect(wrapper!.findAll('.pdf-form-page__found-mark')).toHaveLength(1)
-    expect(wrapper!.get('.pdf-form-page__legend').text()).toContain('Dashed outline: found by Brownie, check it')
+    expect(company.get('.fill-spot').classes()).toContain('fill-spot--found')
+    expect(wrapper!.findAll('.fill-spot--found')).toHaveLength(1)
+    expect(wrapper!.get('[data-field-id="full.name"]').classes()).toContain('pdf-form-page__spot--own')
+    expect(company.classes()).not.toContain('pdf-form-page__spot--own')
+    const legend = wrapper!.get('.pdf-form-page__legend')
+    expect(legend.text()).toContain('Dashed outline: found by Brownie, check it')
+    expect(legend.text()).toContain('Solid outline: the PDF’s own form field')
+    expect(legend.findAll('[aria-hidden="true"]')).toHaveLength(2)
 
-    // The box the bar is about keeps its mark beside the selection's outline, so it still shows it was found.
+    // The box the bar is about is still known to be found.
     await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
-    expect(company.find('.pdf-form-page__found-mark').exists()).toBe(true)
+    expect(company.get('.fill-spot').classes()).toContain('fill-spot--found')
+    expect(company.classes()).toContain('pdf-form-page__spot--selected')
 
-    // In Edit boxes each box is a handle to move, with no mark.
+    // In Edit boxes each box is a handle to move, and none is marked found, so the legend does not explain a dashed outline.
     await wrapper!.findAll('button').find((button) => button.text() === 'Edit boxes')!.trigger('click')
     await flushPromises()
-    expect(wrapper!.find('.pdf-form-page__found-mark').exists()).toBe(false)
+    expect(wrapper!.find('.fill-spot--found').exists()).toBe(false)
+    expect(wrapper!.get('.pdf-form-page__legend').text()).not.toContain('Dashed outline')
+    expect(wrapper!.get('.pdf-form-page__legend').text()).toContain('Solid outline')
     await wrapper!.findAll('button').find((button) => button.text() === 'Cancel')!.trigger('click')
     await flushPromises()
 
-    // Kept: no mark, and the legend no longer explains one.
+    // Kept: no dashed look, and the legend no longer explains one.
     await wrapper!.setProps({ foundFieldIds: new Set<string>() })
-    expect(wrapper!.find('.pdf-form-page__found-mark').exists()).toBe(false)
-    expect(wrapper!.text()).not.toContain('Dashed outline')
+    expect(wrapper!.find('.fill-spot--found').exists()).toBe(false)
+    expect(wrapper!.get('.pdf-form-page__legend').text()).not.toContain('Dashed outline')
   })
 
-  it('draws the found mark on the box’s own edge, inside it, thinner than the outlines around a selected or focused box', () => {
-    // jsdom lays nothing out, so the rule itself is checked: a line inside the box can never reach the form's own
-    // words beside it or the rules of a table's cell, as an outline drawn outside the box did; on its edge, it
-    // never runs through the text typed in a small box, as a line further in did.
-    const source = Object.values(
-      import.meta.glob('../workspace/PdfFormPage.vue', { query: '?raw', import: 'default', eager: true }) as Record<string, string>,
-    )[0]!
-    const ruleOf = (selector: string) => new RegExp(`\\n${selector.replace(/[.()]/g, '\\$&')} \\{([^}]*)\\}`).exec(source)?.[1] ?? ''
-    const rule = ruleOf('.pdf-form-page__found-mark')
-    expect(rule).toContain('position: absolute;')
-    expect(rule).toContain('border: 1px dashed var(--color-cocoa);')
-    expect(rule).toContain('pointer-events: none;')
-    // A little in from the box's edges, clear of a colon right before it; the box drawn under it moves in by as
-    // much, so the line stays on its edge. More so in a cell, where the line is lighter and the box's only edge.
-    expect(rule).toContain('inset: 1px 3px;')
-    expect(ruleOf('.pdf-form-page__spot--found:not(:focus-within)')).toContain('padding: 1px 3px;')
-    const inCell = ruleOf('.pdf-form-page__spot--in-cell .pdf-form-page__found-mark')
-    expect(inCell).toContain('inset: 2px 4px;')
-    expect(inCell).toContain('border-color: color-mix(in srgb, var(--color-cocoa) 45%, transparent);')
-    expect(ruleOf('.pdf-form-page__spot--found.pdf-form-page__spot--in-cell:not(:focus-within)')).toContain('padding: 2px 4px;')
-    expect(source).not.toMatch(/spot--found[^{]*\{[^}]*outline/)
+  it('names no outline in its legend that the page does not show', async () => {
+    // No box found, and none of the form's own fields: nothing to explain.
+    mountPage({
+      layout: layout({ spots: [box('member.id', 'Member number', 1, { x: 470, y: 100, width: 80, height: 16 })] }),
+      found: [],
+    })
+    await flushPromises()
+    expect(wrapper!.find('.pdf-form-page__legend').exists()).toBe(false)
+  })
+
+  it('says how many places are filled and which mark means required, in a line of its own', async () => {
+    mountPage()
+    await flushPromises()
+    const line = wrapper!.get('.pdf-form-page__progress')
+    expect(line.text()).toContain('1 of 4 fill spots filled')
+    expect(line.text()).toContain('Required before export')
+    // The mark itself is only a picture of what the words say.
+    expect(line.get('[aria-hidden="true"]').text()).toBe('*')
+
+    wrapper!.unmount()
+    mountPage({ required: [] })
+    await flushPromises()
+    expect(wrapper!.get('.pdf-form-page__progress').text()).toBe('1 of 4 fill spots filled')
+  })
+
+  it('has the four tools in a row over the page, each with a picture and its name, and Next empty spot only while a place is empty', async () => {
+    mountPage()
+    await flushPromises()
+
+    const tools = wrapper!.get('.pdf-form-page__tools')
+    expect(tools.findAll('button').map((button) => button.text())).toEqual(['Next empty spot', 'Add a fill spot', 'Draw a box', 'Edit boxes'])
+    for (const button of tools.findAll('button')) {
+      expect(button.find('svg[aria-hidden="true"]').exists(), button.text()).toBe(true)
+      expect(button.classes()).toEqual(expect.arrayContaining(['button', 'button--secondary', 'button--small']))
+    }
+    // The tools sit above the pages.
+    expect(tools.element.compareDocumentPosition(wrapper!.get('.pdf-form-page__pages').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // With every place filled there is no next empty one to go to.
+    await wrapper!.setProps({ drafts: { 'full.name': 'A', company: 'B', 'member.id': 'C', 'signed.on': '2026-10-01' } })
+    expect(wrapper!.get('.pdf-form-page__tools').findAll('button').map((button) => button.text())).toEqual(['Add a fill spot', 'Draw a box', 'Edit boxes'])
+  })
+
+  it('goes to the next empty place in the order the keyboard meets them, and round to the first again', async () => {
+    mountPage()
+    await flushPromises()
+    const next = () => wrapper!.findAll('button').find((button) => button.text() === 'Next empty spot')!
+
+    const visited: (string | null)[] = []
+    for (let press = 0; press < 4; press++) {
+      await next().trigger('click')
+      visited.push(document.activeElement?.id ?? null)
+    }
+    // Full name holds a value, so it is passed over.
+    expect(visited).toEqual(['edit-company', 'edit-member.id', 'edit-signed.on', 'edit-company'])
+  })
+
+  it('puts the zoom ahead of the boxes for the keyboard, though it floats at the foot of the pages', async () => {
+    mountPage()
+    await flushPromises()
+    const zoom = wrapper!.get('[role="group"][aria-label="Zoom"]').element
+    expect(zoom.compareDocumentPosition(wrapper!.get('.pdf-form-page__spot').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(wrapper!.get('.pdf-form-page__tools').element.compareDocumentPosition(zoom) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows Done and Cancel in place of the other tools while boxes are being moved', async () => {
+    mountPage()
+    await flushPromises()
+    await wrapper!.findAll('button').find((button) => button.text() === 'Edit boxes')!.trigger('click')
+    await flushPromises()
+
+    const tools = wrapper!.get('.pdf-form-page__tools')
+    expect(tools.findAll('button').map((button) => button.text())).toEqual(['Done', 'Cancel'])
+    expect(tools.findAll('button')[0]!.classes()).toContain('button--primary')
+  })
+
+  it('has a place between the tools and the pages for what the screen has to say about the document', async () => {
+    mountPage({ banner: '<p id="note">Brownie found 1 more place to fill in.</p>' })
+    await flushPromises()
+
+    const note = wrapper!.get('#note')
+    expect(note.element.closest('.pdf-form-page__banner')).not.toBeNull()
+    expect(wrapper!.get('.pdf-form-page__tools').element.compareDocumentPosition(note.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(note.element.compareDocumentPosition(wrapper!.get('.pdf-form-page__pages').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect((await axe(wrapper!.element)).violations).toEqual([])
+  })
+
+  it('takes no room for a banner it was not given', async () => {
+    mountPage()
+    await flushPromises()
+    expect(wrapper!.find('.pdf-form-page__banner').exists()).toBe(false)
+  })
+
+  it('draws what Brownie proposes in the boxes as a preview that cannot be typed over, and leaves the rest as they are', async () => {
+    mountPage({ previewDrafts: { company: 'Brownie Bakery', 'member.id': ['not', 'for', 'a', 'box'], 'signed.on': '   ' } })
+    await flushPromises()
+
+    const company = wrapper!.get<HTMLTextAreaElement>('#edit-company')
+    expect(company.element.value).toBe('Brownie Bakery')
+    expect(company.element.readOnly).toBe(true)
+    expect(company.element.closest('.fill-spot')!.classList.contains('fill-spot--preview')).toBe(true)
+    const described = (company.attributes('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '')
+    expect(described.join(' ')).toContain('Proposed by Brownie')
+    // A list of values is for a table's rows, which a PDF form has none of; a blank proposal says nothing.
+    expect(wrapper!.get<HTMLTextAreaElement>('#edit-member\\.id').element.readOnly).toBe(false)
+    expect(wrapper!.get('#edit-signed\\.on').element.closest('.fill-spot')!.classList.contains('fill-spot--preview')).toBe(false)
+    // Not in the document: it is still empty, so the count says so.
+    expect(wrapper!.text()).toContain('1 of 4 fill spots filled')
+
+    await wrapper!.setProps({ previewDrafts: null })
+    expect(wrapper!.get<HTMLTextAreaElement>('#edit-company').element.value).toBe('')
+    expect(wrapper!.get<HTMLTextAreaElement>('#edit-company').element.readOnly).toBe(false)
+    expect((await axe(wrapper!.element)).violations).toEqual([])
+  })
+
+  it('works out for each box whether its text sits in the middle of it, as the export sits it', async () => {
+    mountPage()
+    await flushPromises()
+    const style = (fieldId: string) => wrapper!.get(`[data-field-id="${fieldId}"]`).attributes('style') ?? ''
+
+    // The form's own field takes one line, centred; the numbers are in points, which the page turns into pixels at any zoom.
+    expect(style('full.name')).toContain('--pdf-centred: 1')
+    expect(style('full.name')).toContain('--pdf-box-height: calc(16 * var(--pdf-point, 1px))')
+    expect(style('full.name')).toContain('--pdf-text-size: calc(11 * var(--pdf-point, 1px))')
+    expect(style('company')).toContain('--pdf-text-size: calc(9 * var(--pdf-point, 1px))')
+    expect(style('company')).toContain('--pdf-centred: 1')
+
+    // A value too long for one line of its box starts at the top of it instead.
+    await wrapper!.setProps({ drafts: { 'full.name': 'Nguyễn Thị Minh Khai', company: 'Brownie Bakery and Sons '.repeat(8), 'member.id': '', 'signed.on': '' } })
+    expect(style('company')).toContain('--pdf-centred: 0')
+    expect(style('full.name')).toContain('--pdf-centred: 1')
+  })
+
+  it('puts a rail beside each page: its number, and a tick for each line of places on it, level with the line', async () => {
+    mountPage()
+    await flushPromises()
+
+    const rails = wrapper!.findAll('.pdf-form-page__rail')
+    expect(rails.map((rail) => rail.get('.pdf-form-page__rail-number').text())).toEqual(['1', '2'])
+    // A mouse's way to a place, and nothing for a screen reader to hear or the keyboard to stop at.
+    for (const rail of rails) {
+      expect(rail.attributes('aria-hidden')).toBe('true')
+      expect(rail.findAll('button, a, input, textarea, [tabindex]')).toHaveLength(0)
+    }
+    // Company and Member number are on one line of page 1, Full name on the next; Signed on is alone on page 2.
+    const tops = (rail: number) => rails[rail]!.findAll('.pdf-form-page__tick').map((tick) => /top: ([\d.]+%)/.exec(tick.attributes('style') ?? '')?.[1])
+    expect(tops(0)).toEqual(['13.3838%', '18.4343%'])
+    expect(tops(1)).toEqual(['89.1414%'])
+    // Still empty on the first line and on the second page; filled on the second line.
+    const states = (rail: number) => rails[rail]!.findAll('.pdf-form-page__tick').map((tick) => tick.classes().find((name) => name.startsWith('pdf-form-page__tick--')))
+    expect(states(0)).toEqual(['pdf-form-page__tick--empty', 'pdf-form-page__tick--filled'])
+    expect(states(1)).toEqual(['pdf-form-page__tick--empty'])
+  })
+
+  it('shows on the rail which line holds the box in hand and which one needs a look', async () => {
+    mountPage()
+    await flushPromises()
+    const first = () => wrapper!.findAll('.pdf-form-page__tick').map((tick) => tick.classes().find((name) => name.startsWith('pdf-form-page__tick--')))
+
+    await wrapper!.setProps({ selected: { fieldId: 'member.id', rowIndex: null } })
+    expect(first()).toEqual(['pdf-form-page__tick--selected', 'pdf-form-page__tick--filled', 'pdf-form-page__tick--empty'])
+
+    const blocking = { authorship: 'USER_AUTHORED', evidenceSupport: 'MISSING', validation: 'BLOCKING', review: 'UNREVIEWED', lock: 'EDITABLE' }
+    await wrapper!.setProps({ selected: null, revisionFields: { 'full.name': { fieldState: blocking } } as never })
+    expect(first()).toEqual(['pdf-form-page__tick--empty', 'pdf-form-page__tick--attention', 'pdf-form-page__tick--empty'])
+
+    // Every place on the line holds a value: the tick says it is done.
+    await wrapper!.setProps({ revisionFields: null, drafts: { 'full.name': 'A', company: 'B', 'member.id': 'C', 'signed.on': '2026-10-01' } })
+    expect(first()).toEqual(['pdf-form-page__tick--filled', 'pdf-form-page__tick--filled', 'pdf-form-page__tick--filled'])
+  })
+
+  it('takes the pointer to the place a tick stands for: the first one on its line still waiting, else the first', async () => {
+    mountPage()
+    await flushPromises()
+    const ticks = wrapper!.findAll('.pdf-form-page__tick')
+
+    await ticks[0]!.trigger('click')
+    expect(document.activeElement).toBe(wrapper!.get('#edit-company').element)
+    await ticks[1]!.trigger('click')
+    expect(document.activeElement).toBe(wrapper!.get('#edit-full\\.name').element)
+    await ticks[2]!.trigger('click')
+    expect(document.activeElement).toBe(wrapper!.get('#edit-signed\\.on').element)
+    expect(wrapper!.emitted('select')!.map(([target]) => (target as { fieldId: string }).fieldId)).toEqual(['company', 'full.name', 'signed.on'])
+  })
+
+  it('sizes the selected box by its corners with the pointer, and sends the new size when the pointer is let go', async () => {
+    const { send } = mountPage({ send: async () => ({ ok: true, focusId: 'edit-company' }) })
+    await flushPromises()
+    const corners = () => wrapper!.findAll('.pdf-form-page__corner')
+
+    // Nothing is selected, and the PDF's own field keeps the place the form gives it: no corners for either.
+    expect(corners()).toHaveLength(0)
+    await wrapper!.setProps({ selected: { fieldId: 'full.name', rowIndex: null } })
+    expect(corners()).toHaveLength(0)
+
+    await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
+    expect(corners().map((corner) => corner.classes().find((name) => name.startsWith('pdf-form-page__corner--')))).toEqual([
+      'pdf-form-page__corner--nw',
+      'pdf-form-page__corner--ne',
+      'pdf-form-page__corner--sw',
+      'pdf-form-page__corner--se',
+    ])
+    expect(corners().every((corner) => corner.attributes('aria-hidden') === 'true')).toBe(true)
+
+    // The page is drawn at a pixel to the point, so the pointer's pixels are the box's points: Company is 153 by 16 at (306, 98).
+    const southEast = corners()[3]!
+    await pointer(southEast, 'pointerdown', { pointerId: 4, clientX: 459, clientY: 114 })
+    await pointer(southEast, 'pointermove', { pointerId: 4, clientX: 479, clientY: 124 })
+    expect(placedBox('company', 612, 792)).toEqual({ x: expect.closeTo(306, 1), y: expect.closeTo(98, 1), width: expect.closeTo(173, 1), height: expect.closeTo(26, 1) })
+    expect(send).not.toHaveBeenCalled()
+
+    await pointer(southEast, 'pointerup', { pointerId: 4, clientX: 479, clientY: 124 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![0]).toEqual({
+      kind: 'move',
+      label: 'Company',
+      changes: [{ kind: 'MOVE_BOX', fieldId: 'company', box: { x: 306, y: 98, width: 173, height: 26 } }],
+    })
+    expect(wrapper!.get('.pdf-form-page__status').text()).toBe('The box for Company was moved.')
+    expect(document.activeElement).toBe(wrapper!.get('#edit-company').element)
+  })
+
+  it('moves the corner it takes and keeps the opposite one, and a box dragged to nothing is not sent', async () => {
+    const { send } = mountPage()
+    await flushPromises()
+    await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
+    const northWest = wrapper!.findAll('.pdf-form-page__corner')[0]!
+
+    await pointer(northWest, 'pointerdown', { pointerId: 2, clientX: 306, clientY: 98 })
+    await pointer(northWest, 'pointermove', { pointerId: 2, clientX: 296, clientY: 90 })
+    expect(placedBox('company', 612, 792)).toEqual({ x: expect.closeTo(296, 1), y: expect.closeTo(90, 1), width: expect.closeTo(163, 1), height: expect.closeTo(24, 1) })
+    await pointer(northWest, 'pointermove', { pointerId: 2, clientX: 306, clientY: 98 })
+    await pointer(northWest, 'pointerup', { pointerId: 2, clientX: 306, clientY: 98 })
+    expect(send).not.toHaveBeenCalled()
+    expect(placedBox('company', 612, 792).width).toBeCloseTo(153, 1)
+  })
+
+  it('puts the box back and says why when the new size is refused, and when the pointer is taken away', async () => {
+    mountPage({ send: async () => ({ ok: false, message: 'That box covers another fill spot; move it a little.' }) })
+    await flushPromises()
+    await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
+    const southEast = wrapper!.findAll('.pdf-form-page__corner')[3]!
+
+    await pointer(southEast, 'pointerdown', { pointerId: 4, clientX: 459, clientY: 114 })
+    await pointer(southEast, 'pointermove', { pointerId: 4, clientX: 500, clientY: 130 })
+    await pointer(southEast, 'pointerup', { pointerId: 4, clientX: 500, clientY: 130 })
+    await flushPromises()
+    expect(wrapper!.get('[role="alert"]').text()).toBe('That box covers another fill spot; move it a little.')
+    expect(placedBox('company', 612, 792).width).toBeCloseTo(153, 1)
+
+    await pointer(southEast, 'pointerdown', { pointerId: 5, clientX: 459, clientY: 114 })
+    await pointer(southEast, 'pointermove', { pointerId: 5, clientX: 470, clientY: 120 })
+    await pointer(southEast, 'pointercancel', { pointerId: 5, clientX: 470, clientY: 120 })
+    expect(placedBox('company', 612, 792).width).toBeCloseTo(153, 1)
+  })
+
+  it('offers no corners while boxes are drawn or moved in Edit boxes, where they have handles of their own', async () => {
+    mountPage()
+    await flushPromises()
+    await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
+    expect(wrapper!.findAll('.pdf-form-page__corner')).toHaveLength(4)
+
+    await wrapper!.get('button[aria-pressed]').trigger('click')
+    expect(wrapper!.findAll('.pdf-form-page__corner')).toHaveLength(0)
+    await wrapper!.get('button[aria-pressed]').trigger('click')
+    expect(wrapper!.findAll('.pdf-form-page__corner')).toHaveLength(4)
+
+    await wrapper!.findAll('button').find((button) => button.text() === 'Edit boxes')!.trigger('click')
+    await flushPromises()
+    expect(wrapper!.findAll('.pdf-form-page__corner')).toHaveLength(0)
+  })
+
+  it('asks about a box’s text size in a card hung below that box, level with its right edge', async () => {
+    mountPage()
+    await flushPromises()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.matches('.pdf-form-page__spot')) return rect(306, 98, 153, 16)
+      if (this.tagName === 'DIALOG') return rect(0, 0, 340, 264)
+      return rect(0, Number(this.dataset.page ?? 0) === 2 ? 800 : 0, 612, 792)
+    })
+
+    ;(wrapper!.vm as unknown as { openRestyle: (fieldId: string) => void }).openRestyle('company')
+    await flushPromises()
+    const card = wrapper!.get('dialog')
+    expect(card.classes()).toEqual(expect.arrayContaining(['pdf-spot-dialog--popover', 'pdf-spot-dialog--anchored']))
+    // 14 points under the box's foot, and its right edge (459) is the card's: 459 - 340.
+    expect(card.attributes('style')).toContain('left: 119px')
+    expect(card.attributes('style')).toContain('top: 128px')
   })
 
   it("marks the found boxes that sit in a table's cells, so their line is drawn lighter there", async () => {
@@ -850,5 +1139,24 @@ describe('PdfFormPage', () => {
     expect(wrapper!.get('[data-field-id="company"]').classes()).toContain('pdf-form-page__spot--in-cell')
     expect(wrapper!.get('[data-field-id="member.id"]').classes()).toContain('pdf-form-page__spot--in-cell')
     expect(wrapper!.get('[data-field-id="full.name"]').classes()).not.toContain('pdf-form-page__spot--in-cell')
+  })
+
+  describe('questions Brownie has asked', () => {
+    it('tells a spot how many are open, whether its box is on a page or the form has no place for it', async () => {
+      mountPage({ questionCounts: { company: 2, 'member.id': 1, 'full.name': 0 } })
+      await flushPromises()
+      const onPage = Object.fromEntries(wrapper!.findAllComponents(FillSpot).map((spot) => [spot.props('inputId'), spot.props('questionCount')]))
+      expect(onPage['edit-company']).toBe(2)
+      expect(onPage['edit-member.id']).toBe(1)
+      expect(onPage['edit-full.name'] ?? 0).toBe(0)
+      expect(onPage['edit-signed.on'] ?? 0).toBe(0)
+
+      wrapper!.unmount()
+      mountPage({ layout: layout({ spots: [] }), questionCounts: { company: 2 } })
+      await flushPromises()
+      const listed = Object.fromEntries(wrapper!.findAllComponents(FillSpot).map((spot) => [spot.props('inputId'), spot.props('questionCount')]))
+      expect(listed['edit-company']).toBe(2)
+      expect(listed['edit-full.name'] ?? 0).toBe(0)
+    })
   })
 })

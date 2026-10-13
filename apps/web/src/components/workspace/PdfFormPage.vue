@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId,
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+import AppIcon from '@/components/AppIcon.vue'
 import FillSpot from '@/components/workspace/FillSpot.vue'
 import PdfSpotDialog from '@/components/workspace/PdfSpotDialog.vue'
 import {
@@ -14,17 +15,23 @@ import {
   type PdfPageAnchor,
   type TemplateLayoutResponse,
 } from '@/api/client'
-import { fieldLabel, stateFromAssist, type EditableField } from '@/workspace/layout'
+import { fieldLabel, formatDateLikeExport, stateNeedsAttention, type EditableField } from '@/workspace/layout'
 import {
+  DEFAULT_TEXT_STYLE,
   WORKING_WORDS,
   boxPlacement,
   boxesInCells,
   buildPdfFormModel,
+  centresLine,
   clampBox,
   describeBox,
+  dragCorner,
   nudgeBox,
   pagePoint,
+  spotLines,
   spotTextCss,
+  tickTop,
+  type BoxCorner,
   type BoxKey,
   type PdfPageModel,
   type PdfPageSpot,
@@ -54,6 +61,9 @@ const PDFJS_ASSETS = `${import.meta.env.BASE_URL}assets/pdfjs-${pdfjs.version}/`
  * It takes the same props and gives the same events as the page for a Word form, and adds what only a
  * PDF has: boxes the person draws, moves and sizes, and a point on a page that the chat's "here" means.
  * Every change to the boxes goes through `sendSpotChanges`; the page owns only the questions it asks.
+ *
+ * Over the pages sit their tools and the legend of the outlines on them; the slot `banner` is for what the
+ * screen has to say about the whole document, between those and the first page.
  */
 const props = defineProps<{
   layout: TemplateLayoutResponse | null
@@ -61,12 +71,16 @@ const props = defineProps<{
   layoutProblem?: string | null
   fields: EditableField[]
   drafts: Record<string, string | string[]>
+  /** What Brownie proposes and the document does not hold yet, by field: drawn in the boxes as a preview until it is approved or hidden. */
+  previewDrafts?: Record<string, string | string[]> | null
   revisionFields: DocumentRevisionResponse['fields'] | null
   requiredFieldIds: ReadonlySet<string>
   lockedFieldIds: ReadonlySet<string>
   rowsLocked: boolean
   selected: { fieldId: string; rowIndex: number | null } | null
   foundFieldIds?: ReadonlySet<string>
+  /** How many questions Brownie still has open about each field, by field id. */
+  questionCounts?: Readonly<Record<string, number>>
   /** The workspace the PDF and its template belong to. */
   workspaceId: number
   /** Makes a change to the form's fill spots; the result says where focus goes next, or why nothing changed. */
@@ -124,8 +138,15 @@ function stateOf(fieldId: string): FieldStateResponse | null {
   return props.revisionFields?.[fieldId]?.fieldState ?? null
 }
 
+/** What Brownie proposes for a box, to be drawn in it as a preview; null when there is nothing to show there. */
+function previewOf(fieldId: string): string | null {
+  const proposed = props.previewDrafts?.[fieldId]
+  return typeof proposed === 'string' && proposed.trim() !== '' ? proposed : null
+}
+
 function spotProps(fieldId: string, inputId: string, placeholder: string | null, styleCss: Record<string, string>) {
   const selected = props.selected
+  const preview = previewOf(fieldId)
   return {
     fieldId,
     rowIndex: null,
@@ -141,6 +162,8 @@ function spotProps(fieldId: string, inputId: string, placeholder: string | null,
     inputId,
     keysHintId,
     found: props.foundFieldIds?.has(fieldId) ?? false,
+    questionCount: props.questionCounts?.[fieldId] || undefined,
+    ...(preview === null ? {} : { preview }),
   }
 }
 
@@ -189,12 +212,14 @@ const progressText = computed(() => {
 
 const hasEmptyTarget = computed(() => targets.value.some((target) => isEmpty(target.fieldId) && !props.lockedFieldIds.has(target.fieldId)))
 const hasRequiredTarget = computed(() => targets.value.some((target) => props.requiredFieldIds.has(target.fieldId)))
-const hasAssistValue = computed(() => targets.value.some((target) => !isEmpty(target.fieldId) && stateFromAssist(stateOf(target.fieldId))))
 /**
  * A box on the pages Brownie found and nobody has checked yet: the legend says what its outline means. In Edit boxes
  * every box is a dashed handle and none is marked, so the legend says nothing of it there.
  */
 const hasFoundSpot = computed(() => model.value.spots.some((spot) => props.foundFieldIds?.has(spot.fieldId) ?? false))
+const showFoundLegend = computed(() => hasFoundSpot.value && mode.value !== 'edit')
+/** The PDF's own form fields on the pages: their outline is drawn solid, and the legend says so while there are any. */
+const showOwnLegend = computed(() => model.value.spots.some((spot) => spot.formField))
 
 function focusNextEmpty(): void {
   const list = targets.value
@@ -703,9 +728,15 @@ async function placeNewBox(page: PdfPageModel, drawn: PdfBox | null, point: PdfP
   openDialog({ kind: 'add', pageNumber: page.pageNumber, box, style: suggestion?.style ?? null, labelGuess: suggestion?.labelGuess ?? null })
 }
 
-function openDialog(next: PdfSpotDialogMode): void {
+function openDialog(next: PdfSpotDialogMode, beside: HTMLElement | null = null): void {
   problem.value = null
-  dialogRef.value?.open(next)
+  dialogRef.value?.open(next, beside)
+}
+
+/** The box laid over a place on the page, which a question about that place is asked beside; null when it is not on a page. */
+function spotElement(fieldId: string): HTMLElement | null {
+  const boxes = root.value?.querySelectorAll<HTMLElement>('.pdf-form-page__spot') ?? []
+  return [...boxes].find((box) => box.dataset.fieldId === fieldId) ?? null
 }
 
 function addWithKeyboard(): void {
@@ -747,33 +778,42 @@ function cancelEditing(): void {
   void nextTick(() => editButton.value?.focus())
 }
 
+/** Sends boxes that were moved or sized, all at once, and says how it went; the result says where focus goes next, or why nothing changed. */
+async function sendMoves(changes: { spot: PdfPageSpot; box: PdfBox }[]): Promise<PdfSpotResult> {
+  problem.value = null
+  status.value = WORKING_WORDS.move
+  const result = await props.sendSpotChanges({
+    kind: 'move',
+    label: changes[0]!.spot.label,
+    changes: changes.map(({ spot, box }) => ({ kind: 'MOVE_BOX', fieldId: spot.fieldId, box })),
+  })
+  if (result.ok) status.value = changes.length === 1 ? `The box for ${changes[0]!.spot.label} was moved.` : `${changes.length} boxes were moved.`
+  else {
+    problem.value = result.message
+    status.value = ''
+  }
+  return result
+}
+
+/** Whether a box is somewhere other than where the form has it. */
+function isMoved(spot: PdfPageSpot, box: PdfBox): boolean {
+  return ['x', 'y', 'width', 'height'].some((key) => box[key as keyof PdfBox] !== spot.box[key as keyof PdfBox])
+}
+
 async function finishEditing(): Promise<void> {
   if (editing.value) return
   const moved = movableSpots.value.filter((spot, index, all) => edited.value[spot.fieldId] && all.findIndex((other) => other.fieldId === spot.fieldId) === index)
-  const changes = moved
-    .map((spot) => ({ spot, box: edited.value[spot.fieldId]! }))
-    .filter(({ spot, box }) => ['x', 'y', 'width', 'height'].some((key) => box[key as keyof PdfBox] !== spot.box[key as keyof PdfBox]))
+  const changes = moved.map((spot) => ({ spot, box: edited.value[spot.fieldId]! })).filter(({ spot, box }) => isMoved(spot, box))
   if (changes.length === 0) {
     cancelEditing()
     return
   }
   editing.value = true
-  problem.value = null
-  status.value = WORKING_WORDS.move
   try {
-    const result = await props.sendSpotChanges({
-      kind: 'move',
-      label: changes[0]!.spot.label,
-      changes: changes.map(({ spot, box }) => ({ kind: 'MOVE_BOX', fieldId: spot.fieldId, box })),
-    })
-    if (!result.ok) {
-      problem.value = result.message
-      status.value = ''
-      return
-    }
+    const result = await sendMoves(changes)
+    if (!result.ok) return
     edited.value = {}
     mode.value = 'fill'
-    status.value = changes.length === 1 ? `The box for ${changes[0]!.spot.label} was moved.` : `${changes.length} boxes were moved.`
     await nextTick()
     focusById(result.focusId ?? changes[0]!.spot.inputId)
   } finally {
@@ -827,6 +867,71 @@ function onHandlePointerUp(event: PointerEvent, spot: PdfPageSpot, page: PdfPage
   status.value = describeBox(spot.label, boxOf(spot), page)
 }
 
+// ---- Sizing the selected box by its corners ---------------------------------------------------------
+
+const CORNERS: readonly BoxCorner[] = ['nw', 'ne', 'sw', 'se']
+
+/** Only a box Brownie drew can be sized; the PDF's own form fields keep the place and size the form gives them. */
+function canSizeByCorners(spot: PdfPageSpot): boolean {
+  return mode.value === 'fill' && !spot.formField && isSelected(spot.fieldId)
+}
+
+/** The corner being dragged: the box as shown when it was taken, and where the pointer was then. */
+const cornerDrag = ref<{ fieldId: string; corner: BoxCorner; pointerId: number; start: PdfPoint; from: PdfBox } | null>(null)
+
+function onCornerPointerDown(event: PointerEvent, spot: PdfPageSpot, page: PdfPageModel, corner: BoxCorner): void {
+  if (event.button !== 0 || editing.value) return
+  const start = shownPointOf(event, page)
+  if (!start) return
+  // Taken, the corner is not a place to focus: the box keeps the focus it has.
+  event.preventDefault()
+  ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  cornerDrag.value = { fieldId: spot.fieldId, corner, pointerId: event.pointerId, start, from: shownBoxOf(spot, page) }
+}
+
+function onCornerPointerMove(event: PointerEvent, spot: PdfPageSpot, page: PdfPageModel): void {
+  const current = cornerDrag.value
+  if (!current || current.fieldId !== spot.fieldId || current.pointerId !== event.pointerId) return
+  const point = shownPointOf(event, page)
+  if (!point) return
+  const shown = dragCorner(current.from, current.corner, point.x - current.start.x, point.y - current.start.y, page)
+  edited.value = { ...edited.value, [spot.fieldId]: clampBox(boxFromDisplayed(shown, page, page.rotation), page) }
+}
+
+/** The box goes back to where the form has it, whether the change was refused or the pointer was taken away. */
+function dropEdit(fieldId: string): void {
+  const { [fieldId]: _dropped, ...rest } = edited.value
+  edited.value = rest
+}
+
+function onCornerPointerCancel(spot: PdfPageSpot): void {
+  cornerDrag.value = null
+  dropEdit(spot.fieldId)
+}
+
+/** Letting go sends the new size on its own: a corner is for sizing one box at once, where Edit boxes is for several and can be called off. */
+async function onCornerPointerUp(event: PointerEvent, spot: PdfPageSpot): Promise<void> {
+  const current = cornerDrag.value
+  if (!current || current.fieldId !== spot.fieldId || current.pointerId !== event.pointerId) return
+  cornerDrag.value = null
+  const box = edited.value[spot.fieldId]
+  if (!box || !isMoved(spot, box)) {
+    dropEdit(spot.fieldId)
+    return
+  }
+  editing.value = true
+  try {
+    const result = await sendMoves([{ spot, box }])
+    dropEdit(spot.fieldId)
+    if (result.ok) {
+      await nextTick()
+      focusById(result.focusId ?? spot.inputId)
+    }
+  } finally {
+    editing.value = false
+  }
+}
+
 // ---- What the page offers the bar about a spot ---------------------------------------------------
 
 function spotFor(fieldId: string): PdfPageSpot | null {
@@ -846,13 +951,16 @@ function openRename(fieldId: string): void {
 function openRestyle(fieldId: string): void {
   const spot = spotFor(fieldId)
   if (!spot || spot.formField) return
-  openDialog({
-    kind: 'restyle',
-    fieldId,
-    label: labelOf(fieldId),
-    sizePt: spot.style?.sizePt ?? 11,
-    overflow: spot.overflow,
-  })
+  openDialog(
+    {
+      kind: 'restyle',
+      fieldId,
+      label: labelOf(fieldId),
+      sizePt: spot.style?.sizePt ?? DEFAULT_TEXT_STYLE.sizePt,
+      overflow: spot.overflow,
+    },
+    spotElement(fieldId),
+  )
 }
 
 function openRemove(fieldId: string): void {
@@ -875,8 +983,76 @@ function pageStyle(page: PdfPageModel): Record<string, string> {
   return { aspectRatio: `${page.shownWidth} / ${page.shownHeight}`, '--pdf-point': `calc(100cqw / ${page.shownWidth})` }
 }
 
+/**
+ * Where a box is on its page, and what its text needs to sit in it as the export sits it: the box's height and the text's
+ * size (in the page's points, as lengths), and whether a single line is centred in it, which the style of the box works the
+ * space above the line out from.
+ */
 function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, string> {
-  return boxPlacement(shownBoxOf(spot, page), page)
+  const shown = shownBoxOf(spot, page)
+  const sizePt = spot.style?.sizePt ?? DEFAULT_TEXT_STYLE.sizePt
+  // A date is drawn as the export prints it ("October 20, 2026"), which is longer than the value it is kept as.
+  const value = (previewOf(spot.fieldId) ?? valueOf(spot.fieldId)).trim()
+  const text = fieldsById.value.get(spot.fieldId)?.type === 'DATE' ? formatDateLikeExport(value) : value
+  const centred = centresLine(shown, sizePt, spot, text)
+  const points = (value: number) => `calc(${Math.round(value * 100) / 100} * var(--pdf-point, 1px))`
+  return { ...boxPlacement(shown, page), '--pdf-box-height': points(shown.height), '--pdf-text-size': points(sizePt), '--pdf-centred': centred ? '1' : '0' }
+}
+
+function isSelected(fieldId: string): boolean {
+  const selected = props.selected
+  return selected !== null && selected.fieldId === fieldId && selected.rowIndex === null
+}
+
+/**
+ * What a box is, so the page can draw its outline: one of the PDF's own fields, in a table's cell, the one in hand,
+ * or not to be pointed at while boxes are drawn or moved.
+ */
+function spotClasses(spot: PdfPageSpot): Record<string, boolean> {
+  return {
+    'pdf-form-page__spot--inert': mode.value !== 'fill',
+    'pdf-form-page__spot--own': spot.formField,
+    'pdf-form-page__spot--in-cell': cellKeys.value.has(spot.key),
+    'pdf-form-page__spot--selected': isSelected(spot.fieldId),
+  }
+}
+
+// ---- The rail beside each page ------------------------------------------------------------------
+
+type TickState = 'empty' | 'filled' | 'selected' | 'attention'
+
+/**
+ * One tick for each line of places on a page, level with the line: blue for the box in hand, red where something
+ * needs a look, honey where a place is still empty, cocoa when every place on the line holds a value.
+ */
+const rails = computed(() => {
+  const waiting = (fieldId: string) => isEmpty(fieldId) && !props.lockedFieldIds.has(fieldId)
+  return new Map(
+    pages.value.map((page) => [
+      page.pageNumber,
+      spotLines(page.spots).map((line) => {
+        const ids = line.map((spot) => spot.fieldId)
+        const state: TickState = ids.some(isSelected)
+          ? 'selected'
+          : ids.some((id) => stateNeedsAttention(stateOf(id)))
+            ? 'attention'
+            : ids.some(waiting)
+              ? 'empty'
+              : 'filled'
+        // A tick leads to the first place on its line that is still waiting, else to the line's first place.
+        return { key: line[0]!.key, top: tickTop(line, page), state, fieldId: (ids.find(waiting) ?? ids[0])! }
+      }),
+    ]),
+  )
+})
+
+function railOf(page: PdfPageModel): { key: string; top: string; state: TickState; fieldId: string }[] {
+  return rails.value.get(page.pageNumber) ?? []
+}
+
+function goToPlace(fieldId: string): void {
+  const spot = spotFor(fieldId)
+  if (spot) focusById(spot.inputId)
 }
 
 </script>
@@ -888,30 +1064,47 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
       {{ layoutState === 'loading' ? 'Loading the page…' : (layoutProblem ?? 'Brownie could not draw this form’s pages.') }}
     </p>
 
-    <div class="pdf-form-page__progress">
-      <p v-if="targets.length > 0" class="pdf-form-page__progress-text">{{ progressText }}</p>
-      <p v-if="hasRequiredTarget || hasAssistValue || (hasFoundSpot && mode !== 'edit')" class="pdf-form-page__legend">
-        <span v-if="hasRequiredTarget"><span class="pdf-form-page__legend-required" aria-hidden="true">*</span> Required before export</span>
-        <span v-if="hasAssistValue"><span class="pdf-form-page__legend-assist" aria-hidden="true">Aa</span> Filled by Brownie</span>
-        <span v-if="hasFoundSpot && mode !== 'edit'"><span class="pdf-form-page__legend-found" aria-hidden="true"></span> Dashed outline: found by Brownie, check it</span>
-      </p>
-      <div class="pdf-form-page__tools">
-        <button v-if="hasEmptyTarget && mode === 'fill'" type="button" class="button button--secondary" @click="focusNextEmpty">Next empty spot</button>
-        <template v-if="layout?.pdf && mode !== 'edit'">
-          <button type="button" class="button button--secondary" @click="addWithKeyboard">Add a fill spot</button>
-          <button ref="drawButton" type="button" class="button button--secondary" :aria-pressed="mode === 'draw' ? 'true' : 'false'" @click="toggleDraw">
-            Draw a box
-          </button>
-          <button v-if="movableSpots.length > 0" ref="editButton" type="button" class="button button--secondary" @click="startEditing">
-            Edit boxes
-          </button>
-        </template>
-        <template v-if="mode === 'edit'">
-          <button type="button" class="button button--primary" :aria-disabled="editing" @click="finishEditing">Done</button>
-          <button type="button" class="button button--secondary" :aria-disabled="editing" @click="cancelEditing">Cancel</button>
-        </template>
-      </div>
+    <!-- What can be done to the page, then what the outlines drawn on it mean. -->
+    <div class="pdf-form-page__tools">
+      <button v-if="hasEmptyTarget && mode === 'fill'" type="button" class="button button--secondary button--small" @click="focusNextEmpty">
+        <AppIcon name="chevron-down" :size="16" />Next empty spot
+      </button>
+      <template v-if="layout?.pdf && mode !== 'edit'">
+        <button type="button" class="button button--secondary button--small" @click="addWithKeyboard"><AppIcon name="plus" :size="16" />Add a fill spot</button>
+        <button
+          ref="drawButton"
+          type="button"
+          class="button button--secondary button--small"
+          :aria-pressed="mode === 'draw' ? 'true' : 'false'"
+          @click="toggleDraw"
+        >
+          <AppIcon name="select-box" :size="16" />Draw a box
+        </button>
+        <button v-if="movableSpots.length > 0" ref="editButton" type="button" class="button button--secondary button--small" @click="startEditing">
+          <AppIcon name="move" :size="16" />Edit boxes
+        </button>
+      </template>
+      <template v-if="mode === 'edit'">
+        <button type="button" class="button button--primary button--small" :aria-disabled="editing" @click="finishEditing">Done</button>
+        <button type="button" class="button button--secondary button--small" :aria-disabled="editing" @click="cancelEditing">Cancel</button>
+      </template>
     </div>
+    <p v-if="showFoundLegend || showOwnLegend" class="pdf-form-page__legend">
+      <span v-if="showFoundLegend" class="pdf-form-page__legend-item">
+        <span class="pdf-form-page__swatch pdf-form-page__swatch--found" aria-hidden="true"></span>Dashed outline: found by Brownie, check it
+      </span>
+      <span v-if="showOwnLegend" class="pdf-form-page__legend-item">
+        <span class="pdf-form-page__swatch pdf-form-page__swatch--own" aria-hidden="true"></span>Solid outline: the PDF’s own form field
+      </span>
+    </p>
+    <p v-if="targets.length > 0" class="pdf-form-page__progress">
+      <span>{{ progressText }}</span>
+      <span v-if="hasRequiredTarget"><span class="pdf-form-page__progress-required" aria-hidden="true">*</span> Required before export</span>
+    </p>
+
+    <!-- Whatever the page's owner has to say about the document as a whole, between the tools and the pages. -->
+    <div v-if="$slots.banner" class="pdf-form-page__banner"><slot name="banner" /></div>
+
     <p v-if="scanNote && mode !== 'edit'" class="pdf-form-page__scan-note">{{ scanNote }}</p>
     <p v-if="mode === 'edit' && formFieldCount > 0" class="field-hint pdf-form-page__notice">
       Boxes that belong to the PDF’s own form stay where the form puts them; Brownie cannot move them.
@@ -926,109 +1119,138 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
     <p v-if="drawState === 'loading'" class="field-hint pdf-form-page__notice" role="status">Drawing the pages…</p>
     <p v-if="drawError" class="field-error pdf-form-page__notice" role="alert">{{ drawError }}</p>
 
-    <!-- How large the pages are drawn. Each change is said in the status line; the size stays in view between the buttons. -->
-    <div v-if="pages.length > 0" class="pdf-form-page__zoom" role="group" aria-label="Zoom">
-      <button type="button" class="button button--secondary" :aria-pressed="zoom.kind === 'fit' ? 'true' : 'false'" @click="fitWidth">Fit width</button>
-      <button
-        type="button"
-        class="button button--secondary pdf-form-page__zoom-step"
-        :aria-disabled="zoomOutTo === null ? 'true' : undefined"
-        :aria-describedby="zoomLevelId"
-        @click="zoomBy('out')"
-      >
-        <span aria-hidden="true">−</span><span class="visually-hidden">Zoom out</span>
-      </button>
-      <span :id="zoomLevelId" class="pdf-form-page__zoom-level"><span class="visually-hidden">Shown at </span>{{ zoomLabel }}</span>
-      <button
-        type="button"
-        class="button button--secondary pdf-form-page__zoom-step"
-        :aria-disabled="zoomInTo === null ? 'true' : undefined"
-        :aria-describedby="zoomLevelId"
-        @click="zoomBy('in')"
-      >
-        <span aria-hidden="true">+</span><span class="visually-hidden">Zoom in</span>
-      </button>
-    </div>
-
-    <div
-      ref="pagesElement"
-      class="pdf-form-page__pages"
-      :class="{
-        'pdf-form-page__pages--drawing': mode === 'draw',
-        'pdf-form-page__pages--picking': pickingPoint && mode === 'fill',
-        'pdf-form-page__pages--across': acrossWidth > 0,
-      }"
-      @scroll="onPagesScroll"
-    >
-      <div v-for="page in pages" :key="page.pageNumber" class="pdf-form-page__page-wrap" :style="pageWrapStyle(page)">
-        <div :ref="(element) => setPageElement(page.pageNumber, element)" class="pdf-form-page__page" :style="pageStyle(page)" :data-page="page.pageNumber">
-          <canvas :ref="(element) => setCanvas(page.pageNumber, element)" class="pdf-form-page__canvas" role="img" :aria-label="pageName(page)"></canvas>
-          <!-- The paper itself: where a box is drawn, or the chat's "here" is picked, by pointer. Keyboard users have Add a fill spot. -->
-          <div
-            class="pdf-form-page__surface"
-            aria-hidden="true"
-            @click="onSurfaceClick($event, page)"
-            @pointerdown="onSurfacePointerDown($event, page)"
-            @pointermove="onSurfacePointerMove($event, page)"
-            @pointerup="onSurfacePointerUp($event, page)"
-            @pointercancel="drag = null"
-          ></div>
-          <template v-for="spot in page.spots" :key="spot.key">
-            <button
-              v-if="mode === 'edit' && !spot.formField"
-              type="button"
-              class="pdf-form-page__handle"
-              :style="spotBoxStyle(spot, page)"
-              :aria-label="`Move or resize ${spot.label}`"
-              :aria-describedby="handleHintId"
-              @keydown="onHandleKeydown($event, spot, page)"
-              @pointerdown="onHandlePointerDown($event, spot, page)"
-              @pointermove="onHandlePointerMove($event, spot, page)"
-              @pointerup="onHandlePointerUp($event, spot, page)"
-              @pointercancel="handleDrag = null"
-            >
-              <span class="pdf-form-page__handle-name" aria-hidden="true">{{ spot.label }}</span>
-              <span class="pdf-form-page__grip" aria-hidden="true"></span>
-            </button>
-            <div
-              v-else
-              class="pdf-form-page__spot"
-              :class="{
-                'pdf-form-page__spot--inert': mode !== 'fill',
-                'pdf-form-page__spot--found': foundFieldIds?.has(spot.fieldId),
-                'pdf-form-page__spot--in-cell': cellKeys.has(spot.key),
-              }"
-              :style="spotBoxStyle(spot, page)"
-              :data-field-id="spot.fieldId"
-            >
-              <FillSpot
-                v-bind="spotProps(spot.fieldId, spot.inputId, null, spotTextCss(spot.style))"
-                @update:value="onSpotInput(spot.fieldId, $event)"
-                @focus="onSpotFocus(spot.fieldId)"
-                @actions="onSpotActions(spot.fieldId)"
-              />
-              <span v-if="foundFieldIds?.has(spot.fieldId)" class="pdf-form-page__found-mark" aria-hidden="true"></span>
-            </div>
-          </template>
-          <div v-if="dragPlacement && dragPlacement.pageNumber === page.pageNumber" class="pdf-form-page__drawn" :style="dragPlacement.style" aria-hidden="true"></div>
-          <span v-if="pointMarker(page)" class="pdf-form-page__picked" :style="pointMarker(page)!" aria-hidden="true"></span>
+    <div v-if="pages.length > 0" class="pdf-form-page__sheets">
+      <!--
+        How large the pages are drawn. Each change is said in the status line; the size stays in view between the
+        buttons. It floats at the foot of the pages but comes first here, so the keyboard reaches it before the
+        boxes rather than after the last of them.
+      -->
+      <div class="pdf-form-page__dock" :class="{ 'pdf-form-page__dock--above-across': acrossWidth > 0 }">
+        <div class="pdf-form-page__zoom" role="group" aria-label="Zoom">
+          <button type="button" class="pdf-form-page__zoom-fit" :aria-pressed="zoom.kind === 'fit' ? 'true' : 'false'" @click="fitWidth">Fit width</button>
+          <button
+            type="button"
+            class="pdf-form-page__zoom-step"
+            :aria-disabled="zoomOutTo === null ? 'true' : undefined"
+            :aria-describedby="zoomLevelId"
+            @click="zoomBy('out')"
+          >
+            <AppIcon name="minus" :size="16" /><span class="visually-hidden">Zoom out</span>
+          </button>
+          <span :id="zoomLevelId" class="pdf-form-page__zoom-level"><span class="visually-hidden">Shown at </span>{{ zoomLabel }}</span>
+          <button
+            type="button"
+            class="pdf-form-page__zoom-step"
+            :aria-disabled="zoomInTo === null ? 'true' : undefined"
+            :aria-describedby="zoomLevelId"
+            @click="zoomBy('in')"
+          >
+            <AppIcon name="plus" :size="16" /><span class="visually-hidden">Zoom in</span>
+          </button>
         </div>
-        <details class="pdf-form-page__text">
-          <summary>Text on this page<span class="visually-hidden"> ({{ pageName(page).toLowerCase() }})</span></summary>
-          <p v-if="!page.hasText" class="field-hint">Brownie cannot read the words on this page, because it is a scan.</p>
-          <ol v-else class="pdf-form-page__lines">
-            <li v-for="line in page.lines" :key="line.index">{{ line.text }}</li>
-          </ol>
-        </details>
       </div>
-    </div>
 
-    <!--
-      The way across a page wider than the pane, kept at the foot of the view. Seen, not heard, and not a stop for
-      the Tab key: the keyboard moves across by going to a spot, and the page scrolls to show it.
-    -->
-    <div v-if="acrossWidth > 0" ref="acrossBar" class="pdf-form-page__across" aria-hidden="true" tabindex="-1" @scroll="onAcrossScroll">
-      <div :style="{ inlineSize: `${acrossWidth}px` }" class="pdf-form-page__across-width"></div>
+      <div
+        ref="pagesElement"
+        class="pdf-form-page__pages"
+        :class="{
+          'pdf-form-page__pages--drawing': mode === 'draw',
+          'pdf-form-page__pages--picking': pickingPoint && mode === 'fill',
+          'pdf-form-page__pages--across': acrossWidth > 0,
+        }"
+        @scroll="onPagesScroll"
+      >
+        <div v-for="page in pages" :key="page.pageNumber" class="pdf-form-page__page-wrap" :style="pageWrapStyle(page)">
+          <div class="pdf-form-page__frame">
+            <!--
+              Beside the page: its number, and a tick for each line of places on it, level with that line. Only a
+              mouse's way to a place: the places themselves are the way for everything else.
+            -->
+            <div class="pdf-form-page__rail" aria-hidden="true">
+              <span class="pdf-form-page__rail-number">{{ page.pageNumber }}</span>
+              <span class="pdf-form-page__rail-track"></span>
+              <span
+                v-for="tick in railOf(page)"
+                :key="tick.key"
+                class="pdf-form-page__tick"
+                :class="`pdf-form-page__tick--${tick.state}`"
+                :style="{ top: tick.top }"
+                @click="goToPlace(tick.fieldId)"
+              ></span>
+            </div>
+            <div :ref="(element) => setPageElement(page.pageNumber, element)" class="pdf-form-page__page" :style="pageStyle(page)" :data-page="page.pageNumber">
+              <canvas :ref="(element) => setCanvas(page.pageNumber, element)" class="pdf-form-page__canvas" role="img" :aria-label="pageName(page)"></canvas>
+              <!-- The paper itself: where a box is drawn, or the chat's "here" is picked, by pointer. Keyboard users have Add a fill spot. -->
+              <div
+                class="pdf-form-page__surface"
+                aria-hidden="true"
+                @click="onSurfaceClick($event, page)"
+                @pointerdown="onSurfacePointerDown($event, page)"
+                @pointermove="onSurfacePointerMove($event, page)"
+                @pointerup="onSurfacePointerUp($event, page)"
+                @pointercancel="drag = null"
+              ></div>
+              <template v-for="spot in page.spots" :key="spot.key">
+                <button
+                  v-if="mode === 'edit' && !spot.formField"
+                  type="button"
+                  class="pdf-form-page__handle"
+                  :style="spotBoxStyle(spot, page)"
+                  :aria-label="`Move or resize ${spot.label}`"
+                  :aria-describedby="handleHintId"
+                  @keydown="onHandleKeydown($event, spot, page)"
+                  @pointerdown="onHandlePointerDown($event, spot, page)"
+                  @pointermove="onHandlePointerMove($event, spot, page)"
+                  @pointerup="onHandlePointerUp($event, spot, page)"
+                  @pointercancel="handleDrag = null"
+                >
+                  <span class="pdf-form-page__handle-name" aria-hidden="true">{{ spot.label }}</span>
+                  <span class="pdf-form-page__grip" aria-hidden="true"></span>
+                </button>
+                <div v-else class="pdf-form-page__spot" :class="spotClasses(spot)" :style="spotBoxStyle(spot, page)" :data-field-id="spot.fieldId">
+                  <FillSpot
+                    v-bind="spotProps(spot.fieldId, spot.inputId, null, spotTextCss(spot.style))"
+                    @update:value="onSpotInput(spot.fieldId, $event)"
+                    @focus="onSpotFocus(spot.fieldId)"
+                    @actions="onSpotActions(spot.fieldId)"
+                  />
+                  <!-- The selected box can be sized by its corners with the pointer; the keyboard sizes it in Edit boxes. -->
+                  <template v-if="canSizeByCorners(spot)">
+                    <span
+                      v-for="corner in CORNERS"
+                      :key="corner"
+                      class="pdf-form-page__corner"
+                      :class="`pdf-form-page__corner--${corner}`"
+                      aria-hidden="true"
+                      @pointerdown="onCornerPointerDown($event, spot, page, corner)"
+                      @pointermove="onCornerPointerMove($event, spot, page)"
+                      @pointerup="onCornerPointerUp($event, spot)"
+                      @pointercancel="onCornerPointerCancel(spot)"
+                    ></span>
+                  </template>
+                </div>
+              </template>
+              <div v-if="dragPlacement && dragPlacement.pageNumber === page.pageNumber" class="pdf-form-page__drawn" :style="dragPlacement.style" aria-hidden="true"></div>
+              <span v-if="pointMarker(page)" class="pdf-form-page__picked" :style="pointMarker(page)!" aria-hidden="true"></span>
+            </div>
+          </div>
+          <details class="pdf-form-page__text">
+            <summary>Text on this page<span class="visually-hidden"> ({{ pageName(page).toLowerCase() }})</span></summary>
+            <p v-if="!page.hasText" class="field-hint">Brownie cannot read the words on this page, because it is a scan.</p>
+            <ol v-else class="pdf-form-page__lines">
+              <li v-for="line in page.lines" :key="line.index">{{ line.text }}</li>
+            </ol>
+          </details>
+        </div>
+      </div>
+
+      <!--
+        The way across a page wider than the pane, kept at the foot of the view. Seen, not heard, and not a stop for
+        the Tab key: the keyboard moves across by going to a spot, and the page scrolls to show it.
+      -->
+      <div v-if="acrossWidth > 0" ref="acrossBar" class="pdf-form-page__across" aria-hidden="true" tabindex="-1" @scroll="onAcrossScroll">
+        <div :style="{ inlineSize: `${acrossWidth}px` }" class="pdf-form-page__across-width"></div>
+      </div>
     </div>
 
     <div v-if="listed.length > 0" class="pdf-form-page__list">
@@ -1051,126 +1273,138 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
 
 <style scoped>
 .pdf-form-page {
+  /* The room left of the pages for their rail, where the screen leaves it: beside Brownie's panel, not in a narrow window. */
+  --rail-gutter: 0px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
   min-inline-size: 0;
 }
 
-.pdf-form-page__notice,
-.pdf-form-page__progress,
-.pdf-form-page__scan-note,
-.pdf-form-page__status,
-.pdf-form-page__zoom,
-.pdf-form-page__list {
-  inline-size: 100%;
-  max-inline-size: 50rem;
-  margin: 0 auto;
+@container main (min-width: 50rem) {
+  .pdf-form-page {
+    --rail-gutter: 3.125rem;
+  }
 }
 
-.pdf-form-page__status {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.pdf-form-page__progress {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-4);
-  min-block-size: 1.75rem;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-}
-
-.pdf-form-page__progress-text,
-.pdf-form-page__legend {
-  margin: 0;
-}
-
-.pdf-form-page__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-}
-
-.pdf-form-page__legend-required {
-  font-weight: 700;
-  color: var(--color-error);
-}
-
-.pdf-form-page__legend-assist {
-  padding: 0 0.2em;
-  border-block-end: 3px double var(--color-cocoa);
-  background: var(--color-cocoa-wash);
-  color: var(--color-text);
-}
+/* ---------- The tools over the page ---------- */
 
 .pdf-form-page__tools {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-inline-start: auto;
 }
 
-.pdf-form-page__tools .button,
-.pdf-form-page__zoom .button {
-  min-block-size: 1.75rem;
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-pill);
+/* A tool that is switched on says so by a thicker cocoa edge as well as its wash, so it never rests on colour alone. */
+.pdf-form-page__tools .button[aria-pressed='true'] {
+  --button-bg: var(--color-cocoa-wash);
+  --button-bg-hover: var(--color-cocoa-wash);
+  --button-border: var(--color-cocoa);
+  --button-border-hover: var(--color-cocoa);
+  box-shadow: inset 0 0 0 1px var(--color-cocoa);
+}
+
+/* What the two kinds of outline on the page mean: each swatch is drawn the way its outline is. */
+.pdf-form-page__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 1.0625rem;
+  margin: 0.5625rem 0 0;
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-  font-weight: 500;
+  line-height: 1.5;
 }
 
-/* A pressed toggle says so by its shape as well as its colour: a filled pill. */
-.pdf-form-page__tools .button[aria-pressed='true'],
-.pdf-form-page__zoom .button[aria-pressed='true'] {
-  border-color: var(--color-cocoa);
-  background: var(--color-cocoa-wash);
-  font-weight: 700;
+.pdf-form-page__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.pdf-form-page__swatch {
+  flex: none;
+  inline-size: 1.375rem;
+  block-size: 0.8125rem;
+  border-radius: 0.1875rem;
+}
+
+.pdf-form-page__swatch--found {
+  border: 1px dashed var(--color-honey-ink);
+}
+
+.pdf-form-page__swatch--own {
+  border: 1px solid var(--color-field-border);
+  background: var(--color-paper-soft);
+}
+
+.pdf-form-page__progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  margin: 0.5rem 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.pdf-form-page__progress-required {
+  color: var(--color-error);
+  font-weight: var(--font-weight-medium);
+}
+
+.pdf-form-page__banner {
+  margin-block-start: 0.75rem;
+}
+
+.pdf-form-page__banner:empty {
+  display: none;
+}
+
+.pdf-form-page__notice,
+.pdf-form-page__scan-note {
+  margin: 0.75rem 0 0;
 }
 
 .pdf-form-page__scan-note {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-honey-line);
-  border-radius: var(--radius);
-  background: var(--color-honey-faint);
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-md);
+  background: var(--color-honey-soft);
   font-size: var(--font-size-sm);
 }
 
-.pdf-form-page__zoom {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-1);
-  font-size: var(--font-size-xs);
-}
-
-.pdf-form-page__zoom .pdf-form-page__zoom-step {
-  min-inline-size: 1.75rem;
-  padding: 0;
-  font-size: var(--font-size-base);
-  line-height: 1;
-}
-
-.pdf-form-page__zoom-level {
-  min-inline-size: 3.25em;
+/* A live line takes no room until it has something to say. */
+.pdf-form-page__status {
+  margin: 0;
   color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
+  font-size: var(--font-size-sm);
+}
+
+.pdf-form-page__status:not(:empty) {
+  margin-block-start: 0.5rem;
+}
+
+/* ---------- The pages ---------- */
+
+.pdf-form-page__sheets {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin-block-start: 0.625rem;
 }
 
 /*
- * A page zoomed wider than the pane scrolls across here, under the notes and buttons, which stay put. The
- * padding keeps the page's edge inside the scrolling edge.
+ * A page zoomed wider than the pane scrolls across here, under the notes and buttons, which stay put. It reaches
+ * out over the room left of the pane by the width of the rail, so the pages line up with the tools above them
+ * and the rail sits in that room.
  */
 .pdf-form-page__pages {
   display: flex;
   flex-direction: column;
+  order: 1;
   gap: var(--space-5);
+  margin-inline-start: calc(-1 * var(--rail-gutter));
+  padding-block-end: var(--space-1);
+  padding-inline-start: var(--rail-gutter);
   overflow-x: auto;
-  padding: 2px 2px var(--space-1);
   scrollbar-width: thin;
   scrollbar-color: var(--color-scrollbar) transparent;
 }
@@ -1191,6 +1425,7 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
  */
 .pdf-form-page__across {
   position: sticky;
+  order: 2;
   inset-block-end: 0;
   z-index: 3;
   overflow-x: auto;
@@ -1229,27 +1464,31 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
 
 /*
  * As wide as its zoom makes it (--pdf-page-width): the pane's width up to an easy reading size, or a set width.
- * Centred while it fits; once wider than the pane, it starts at the pane's edge so all of it can be scrolled to.
+ * It starts at the pane's edge, under the tools, so all of a page wider than the pane can be scrolled to.
  */
 .pdf-form-page__page-wrap {
   inline-size: var(--pdf-page-width, 100%);
-  margin-inline: auto;
+}
+
+.pdf-form-page__frame {
+  position: relative;
 }
 
 /*
- * One page, the shape the PDF gives it at any width. It is the container its spots measure against:
- * --pdf-point is one point of the page as drawn, so a box's text keeps its size relative to the page. Its edge
- * is an outline, drawn outside it, so the page's picture, its boxes and the pointer all measure the same box.
+ * One page, the shape the PDF gives it at any width: flat white on the paper colour, the way the exported file
+ * is shown. It is the container its spots measure against: --pdf-point is one point of the page as drawn, so a
+ * box's text keeps its size relative to the page. The transparent outline is drawn by forced colours, where the
+ * page would otherwise lose its edge.
  */
 .pdf-form-page__page {
   container-type: inline-size;
   position: relative;
   inline-size: 100%;
   overflow: hidden;
-  outline: 1px solid var(--color-hairline);
   border-radius: 0.25rem;
-  background: #fff;
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-text) 6%, transparent);
+  background: var(--color-surface);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
 }
 
 .pdf-form-page__canvas {
@@ -1270,6 +1509,96 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
   touch-action: none;
 }
 
+/* ---------- The rail beside a page ---------- */
+
+/*
+ * A slim track level with the page, with its number above and a tick for each line of places on it. It hangs in the
+ * room to the page's left and is hidden from assistive technology: a tick is a mouse's way to the place Tab reaches.
+ */
+.pdf-form-page__rail {
+  display: none;
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 100%;
+  inline-size: 3.125rem;
+  pointer-events: none;
+}
+
+@container main (min-width: 50rem) {
+  .pdf-form-page__rail {
+    display: block;
+  }
+}
+
+.pdf-form-page__rail-track {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 1.0625rem;
+  inline-size: 0.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-track);
+}
+
+.pdf-form-page__rail-number {
+  position: absolute;
+  inset-block-start: 0.25rem;
+  inset-inline-start: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}
+
+/* Each tick is a small mark on the track inside a taller box, so there is something to aim a pointer at. */
+.pdf-form-page__tick {
+  --tick-ink: var(--color-honey);
+  --tick-width: 0.875rem;
+  --tick-height: 0.25rem;
+  position: absolute;
+  inset-inline-start: 0;
+  inline-size: 1.625rem;
+  block-size: 1.5rem;
+  transform: translateY(-50%);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pdf-form-page__tick::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 0;
+  inline-size: var(--tick-width);
+  block-size: var(--tick-height);
+  border-radius: var(--radius-pill);
+  background: var(--tick-ink);
+  transform: translateY(-50%);
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+/*
+ * Honey where something is left to fill, cocoa where it is filled; a line that needs a look, or holds the box in hand,
+ * is longer and thicker as well as another colour.
+ */
+.pdf-form-page__tick--filled {
+  --tick-ink: var(--color-cocoa-tile);
+}
+
+.pdf-form-page__tick--attention,
+.pdf-form-page__tick--selected {
+  --tick-width: 1rem;
+  --tick-height: 0.375rem;
+}
+
+.pdf-form-page__tick--attention {
+  --tick-ink: var(--color-error);
+}
+
+.pdf-form-page__tick--selected {
+  --tick-ink: var(--color-focus);
+}
+
+/* ---------- The boxes on a page ---------- */
+
 /* While drawing or moving, the page takes the pointer: the spots show where they are without catching it. */
 .pdf-form-page__pages--drawing .pdf-form-page__spot,
 .pdf-form-page__spot--inert {
@@ -1277,29 +1606,60 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
 }
 
 .pdf-form-page__spot {
+  /* How far a value sits in from its box's edge, as the export keeps it: a point in a box Brownie drew, three in a field of the form's own. */
+  --pdf-inset: calc(1 * var(--pdf-point, 1px));
+  /* Half of what a single line leaves of the box, once the text is at least the size it is typed in at; none for text that wraps. */
+  --pdf-pad-block: calc(
+    var(--pdf-centred, 0) * max(0px, (var(--pdf-box-height, 0px) - 1.15 * max(var(--pdf-min-text, 0px), var(--pdf-text-size, 0px))) / 2)
+  );
   position: absolute;
   box-sizing: border-box;
   line-height: 1.15;
 }
 
+.pdf-form-page__spot--own {
+  --pdf-inset: calc(3 * var(--pdf-point, 1px));
+}
+
+/* A box fills exactly the place the form has for it, and draws its look inside that, so the box seen is the box the export writes in. */
 .pdf-form-page__spot :deep(.fill-spot) {
+  --spot-radius: 0.125rem;
+  --spot-under: 0px;
   display: block;
   position: relative;
   inline-size: 100%;
   block-size: 100%;
+  margin: 0;
 }
 
-.pdf-form-page__spot :deep(.fill-spot__control) {
+.pdf-form-page__spot :deep(.fill-spot__field) {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  margin: 0;
+}
+
+.pdf-form-page__spot :deep(.fill-spot__control),
+.pdf-form-page__spot :deep(.fill-spot__date-text) {
+  padding-block: var(--pdf-pad-block);
+  padding-inline: calc(var(--pdf-inset) + var(--spot-room-start)) calc(var(--pdf-inset) + var(--spot-room-end));
+  line-height: 1.15;
+}
+
+/* The small pictures at the ends of a spot stay level with its line of text, wherever the box puts that line. */
+.pdf-form-page__spot :deep(.fill-spot__mark),
+.pdf-form-page__spot :deep(.fill-spot__lock) {
+  inset-block-start: calc(var(--pdf-pad-block) + 1px + (1lh - 12px) / 2);
+}
+
+.pdf-form-page__spot :deep(.fill-spot__control--text),
+.pdf-form-page__spot :deep(.fill-spot__date-text) {
   inline-size: 100%;
   block-size: 100%;
   min-inline-size: 0;
   max-inline-size: none;
-  padding: 0 0.15em;
-  border-radius: 0.1rem;
   field-sizing: fixed;
   overflow: hidden;
-  line-height: 1.15;
-  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
 }
 
 /*
@@ -1312,88 +1672,81 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
   z-index: 3;
 }
 
-.pdf-form-page__spot:focus-within :deep(.fill-spot__control) {
+.pdf-form-page__spot:focus-within :deep(.fill-spot),
+.pdf-form-page__spot:focus-within :deep(.fill-spot__field),
+.pdf-form-page__spot:focus-within :deep(.fill-spot__control--text) {
   block-size: auto;
   min-block-size: 100%;
 }
 
+/* Out of the way of the box: after it, level with its top corner. */
 .pdf-form-page__spot :deep(.fill-spot__required) {
   position: absolute;
   inset-block-start: -0.2em;
   inset-inline-end: -0.5em;
 }
 
-.pdf-form-page__spot :deep(.fill-spot__lock) {
-  position: absolute;
-  inset-block-start: 0.1em;
-  inset-inline-end: 0.1em;
-}
-
 /*
- * On a drawn page a label would cover the form's own words, which sit right above and beside its boxes; so a box
- * Brownie found is told by a thin dashed line instead, which the legend names. Its description says it in words,
- * and the bar about it asks the person to check it. The line is the box's own edge, inside it: a found box often
- * starts right after its label's colon or fills a table's cell, and a line outside it covered the colon and the
- * cell's rules; a line further in ran through the text typed in a small box. Drawn over the edge, it leaves the
- * lines inside it that say a box is filled, filled by Brownie or needs attention, and it sits apart from the
- * selected box's outline and the focus ring around it, so the box the bar is about still shows it was found.
- * While the box is typed in, it grows to hold the text and the focus ring marks it, so the line steps aside.
+ * A box Brownie found is told by its dashed outline, which the legend names, rather than a mark at its start: a
+ * mark would take room from the value, and the words round the box are the form's own. The description still says it.
  */
 .pdf-form-page__spot :deep(.fill-spot__found) {
   display: none;
 }
 
-.pdf-form-page__found-mark {
-  position: absolute;
-  inset: 1px 3px;
-  border: 1px dashed var(--color-cocoa);
-  border-radius: 1px;
-  pointer-events: none;
+.pdf-form-page__spot :deep(.fill-spot--found:not(.fill-spot--attention, .fill-spot--question)) {
+  --spot-room-start: 0px;
 }
 
-/*
- * A found box and its line are kept a little in from the box's own edges, clear of the colon just before it and
- * of a cell's rules round it; more so in a cell, which has the room. The value keeps its place on the page: only
- * the box drawn over it moves in.
- */
-.pdf-form-page__spot--found:not(:focus-within) {
-  padding: 1px 3px;
-}
-
-.pdf-form-page__spot--found.pdf-form-page__spot--in-cell:not(:focus-within) {
-  padding: 2px 4px;
-}
-
-/*
- * In a cell, the line is lighter and is the box's only edge, so beside the cell's own rules it reads as a mark
- * inside the cell rather than a second rule.
- */
-.pdf-form-page__spot--in-cell .pdf-form-page__found-mark {
-  inset: 2px 4px;
-  border-color: color-mix(in srgb, var(--color-cocoa) 45%, transparent);
-}
-
-.pdf-form-page__spot--found.pdf-form-page__spot--in-cell :deep(.fill-spot__control) {
-  border-color: transparent;
-}
-
-.pdf-form-page__spot:focus-within .pdf-form-page__found-mark {
+/* Two thin lines under a value from Brownie belong to a line of text; on a page its tint says it. */
+.pdf-form-page__spot :deep(.fill-spot--assist .fill-spot__field::after) {
   display: none;
 }
 
-/* A dashed edge means found on the pages, so an empty box keeps a solid one here. */
-.pdf-form-page__spot :deep(.fill-spot--empty:not(.fill-spot--locked) .fill-spot__control) {
-  border-style: solid;
+/*
+ * One of the form's own fields is drawn solid, and shows nothing of its own until it holds a value from Brownie: the
+ * page already has the field's look underneath. A place waiting on a question, a value that needs a look and a
+ * proposal keep the edge that says so.
+ */
+.pdf-form-page__spot--own :deep(.fill-spot:not(.fill-spot--attention, .fill-spot--question, .fill-spot--preview) .fill-spot__box) {
+  border-color: var(--color-field-border);
 }
 
-.pdf-form-page__legend-found {
-  display: inline-block;
-  inline-size: 1.25em;
-  block-size: 0.75em;
-  margin-inline: 0.15em 0.1em;
-  border: 1px dashed var(--color-cocoa);
-  border-radius: 1px;
-  vertical-align: -0.05em;
+.pdf-form-page__spot--own :deep(.fill-spot--empty:not(.fill-spot--attention, .fill-spot--question) .fill-spot__box) {
+  background: transparent;
+}
+
+/* The form's own words name each of its fields right beside it, so a field of its own that is empty shows no bracketed name. */
+.pdf-form-page__spot--own :deep(.fill-spot--empty .fill-spot__control::placeholder) {
+  color: transparent;
+}
+
+.pdf-form-page__spot--own :deep(.fill-spot--empty .fill-spot__date-text) {
+  color: transparent;
+}
+
+/* In a table's cell the dashed edge is lighter and a little in from the cell's own rules, so it reads as a mark inside the cell and not a second rule. */
+.pdf-form-page__spot--in-cell :deep(.fill-spot--found:not(.fill-spot--attention, .fill-spot--question, .fill-spot--preview) .fill-spot__field) {
+  inline-size: calc(100% - 8px);
+  block-size: calc(100% - 4px);
+  margin: 2px 4px;
+}
+
+.pdf-form-page__spot--in-cell :deep(.fill-spot--found:not(.fill-spot--attention, .fill-spot--question, .fill-spot--preview) .fill-spot__box) {
+  border-color: color-mix(in srgb, var(--color-honey-ink) 45%, transparent);
+}
+
+/*
+ * The box in hand, and the box being typed in: a blue edge two pixels thick just inside it, in place of the ring the
+ * control would draw round itself. The edge is what shows where the typing goes, with room to spare.
+ */
+.pdf-form-page__spot :deep(.fill-spot__control:focus-visible) {
+  box-shadow: var(--spot-inset);
+}
+
+.pdf-form-page__spot:is(.pdf-form-page__spot--selected, :focus-within) :deep(.fill-spot .fill-spot__box) {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
 }
 
 .pdf-form-page__drawn {
@@ -1414,7 +1767,46 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
   pointer-events: none;
 }
 
-/* In Edit boxes, each box Brownie drew is a button: dashed, with its name and a grip to size it. */
+/* The corners the selected box is sized by, centred on the box's own corners. */
+.pdf-form-page__corner {
+  position: absolute;
+  z-index: 4;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border: 1.5px solid var(--color-focus);
+  border-radius: 1px;
+  background: var(--color-surface);
+  touch-action: none;
+}
+
+/* A place to take hold of that is as large as a finger needs, round the small square that is drawn. */
+.pdf-form-page__corner::before {
+  content: '';
+  position: absolute;
+  inset: -0.5rem;
+}
+
+.pdf-form-page__corner--nw {
+  inset: -0.25rem auto auto -0.25rem;
+  cursor: nwse-resize;
+}
+
+.pdf-form-page__corner--ne {
+  inset: -0.25rem -0.25rem auto auto;
+  cursor: nesw-resize;
+}
+
+.pdf-form-page__corner--sw {
+  inset: auto auto -0.25rem -0.25rem;
+  cursor: nesw-resize;
+}
+
+.pdf-form-page__corner--se {
+  inset: auto -0.25rem -0.25rem auto;
+  cursor: nwse-resize;
+}
+
+/* In Edit boxes, each box Brownie drew is a button: dashed, with its name inside it, clear of the form's own words round it, and a grip to size it. */
 .pdf-form-page__handle {
   position: absolute;
   box-sizing: border-box;
@@ -1431,13 +1823,15 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
 
 .pdf-form-page__handle-name {
   position: absolute;
-  inset-block-end: 100%;
-  inset-inline-start: 0;
-  padding: 0 0.3em;
-  border-radius: var(--radius-pill);
-  background: var(--color-surface);
-  font-size: 0.6875rem;
-  font-weight: 600;
+  inset-block-start: 50%;
+  inset-inline: 0 0.9375rem;
+  padding-inline: 0.375rem 0.125rem;
+  overflow: hidden;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
   white-space: nowrap;
 }
 
@@ -1451,6 +1845,92 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
   background: var(--color-cocoa);
   cursor: nwse-resize;
 }
+
+/* ---------- The zoom ---------- */
+
+/*
+ * A pill that floats over the foot of the pages and stays there while they scroll. The dock is as tall as nothing,
+ * stuck to the foot of the view, so the pill rises from that edge without taking any room in the page. Over the page
+ * but under the card the screen keeps at the foot for the box in hand: where the last of the page scrolls up behind
+ * that card, the pill goes behind it rather than covering its buttons.
+ */
+.pdf-form-page__dock {
+  position: sticky;
+  order: 3;
+  inset-block-end: 0.5625rem;
+  z-index: 1;
+  block-size: 0;
+  pointer-events: none;
+}
+
+.pdf-form-page__dock--above-across {
+  inset-block-end: 1.3125rem;
+}
+
+.pdf-form-page__zoom {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-end: 0.9375rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-block-size: 2.0625rem;
+  padding: 0 0.375rem 0 0.5rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-chip);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  pointer-events: auto;
+}
+
+.pdf-form-page__zoom-fit,
+.pdf-form-page__zoom-step {
+  display: inline-grid;
+  place-items: center;
+  min-block-size: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.pdf-form-page__zoom-fit {
+  padding-inline: 0.25rem;
+}
+
+/* Fitting the width is the resting state; once a size has been chosen, the button that goes back to it is quieter. */
+.pdf-form-page__zoom-fit[aria-pressed='false'] {
+  color: var(--color-text-muted);
+}
+
+.pdf-form-page__zoom-step {
+  min-inline-size: 1.75rem;
+}
+
+.pdf-form-page__zoom-fit:hover,
+.pdf-form-page__zoom-step:hover:not([aria-disabled='true']) {
+  background: var(--color-paper-soft);
+}
+
+.pdf-form-page__zoom-step[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pdf-form-page__zoom-level {
+  min-inline-size: 2.125rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* ---------- The words of each page, and the places the pages have none for ---------- */
 
 .pdf-form-page__text {
   margin-block-start: var(--space-2);
@@ -1469,25 +1949,38 @@ function spotBoxStyle(spot: PdfPageSpot, page: PdfPageModel): Record<string, str
 }
 
 .pdf-form-page__list {
+  margin-block-start: var(--space-5);
   padding-block-start: var(--space-4);
   border-block-start: 1px solid var(--color-hairline);
 }
 
 .pdf-form-page__list-heading {
   margin: 0 0 var(--space-1);
-  font-size: var(--font-size-base);
-  font-weight: 600;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 .pdf-form-page__field-label {
   margin-inline-end: 0.35em;
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
 }
 
+/* A display that forces its own colours drops fills, which would erase the rail and the corners; they take the system's own. */
 @media (forced-colors: active) {
   .pdf-form-page__handle,
   .pdf-form-page__drawn {
     border-color: Highlight;
+  }
+
+  .pdf-form-page__rail-track,
+  .pdf-form-page__tick::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .pdf-form-page__corner {
+    border-color: Highlight;
+    background: Canvas;
   }
 }
 </style>
