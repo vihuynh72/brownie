@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, useId } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 import SpotDialogShell from '@/components/workspace/SpotDialogShell.vue'
 import { removeQuestion, workingWords } from '@/workspace/fillSpotWords'
 
@@ -60,45 +61,48 @@ async function confirm(): Promise<void> {
 </script>
 
 <template>
-  <SpotDialogShell ref="shell" :title="`Remove ${label}?`" :busy="busy" :described-by="`${ids}-question`">
-    <div class="spot-change">
-      <div :id="`${ids}-question`">
-        <p v-for="line in question" :key="line" class="spot-change__line">{{ line }}</p>
-      </div>
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <p class="spot-change__status" role="status">{{ status }}</p>
-      <div class="spot-change__buttons">
-        <button :id="`${ids}-cancel`" type="button" class="button button--secondary" :aria-disabled="busy ? 'true' : undefined" @click="!busy && shell?.close()">
-          Cancel
-        </button>
-        <button type="button" class="button button--primary" :aria-disabled="busy ? 'true' : undefined" @click="confirm">
-          {{ busy ? 'Removing…' : 'Remove the fill spot' }}
-        </button>
-      </div>
+  <SpotDialogShell
+    ref="shell"
+    caption="Remove a fill spot"
+    :title="`Remove ${label}?`"
+    danger
+    :busy="busy"
+    :status="status"
+    :error="error"
+    :described-by="`${ids}-question`"
+  >
+    <div :id="`${ids}-question`" class="panel panel--quiet spot-remove__question">
+      <p v-for="line in question" :key="line" class="spot-remove__line">{{ line }}</p>
     </div>
+
+    <template #foot>
+      <button :id="`${ids}-cancel`" type="button" class="button button--secondary" :aria-disabled="busy ? 'true' : undefined" @click="!busy && shell?.close()">
+        Cancel
+      </button>
+      <button type="button" class="button button--danger" :aria-disabled="busy ? 'true' : undefined" @click="confirm">
+        <AppIcon name="trash" :size="18" />{{ busy ? 'Removing…' : 'Remove the fill spot' }}
+      </button>
+    </template>
   </SpotDialogShell>
 </template>
 
 <style scoped>
-.spot-change {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+/* The question on the shared quiet panel: the first line, which asks, in red; what stays afterwards in plain words. */
+.spot-remove__question {
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
 }
 
-.spot-change__line {
-  margin: 0 0 var(--space-2);
-}
-
-.spot-change__status {
+.spot-remove__line {
   margin: 0;
 }
 
-.spot-change__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  margin-block-start: var(--space-2);
+.spot-remove__line + .spot-remove__line {
+  margin-block-start: 0.375rem;
+}
+
+.spot-remove__line:first-child {
+  color: var(--color-error);
+  font-weight: var(--font-weight-medium);
 }
 </style>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, useId } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 import SpotDialogShell from '@/components/workspace/SpotDialogShell.vue'
 import { MAX_SPOT_LABEL, spotLabelProblem, tidySpotLabel, workingWords } from '@/workspace/fillSpotWords'
 
@@ -17,6 +18,8 @@ const emit = defineEmits<{ renamed: [label: string] }>()
 
 const shell = ref<InstanceType<typeof SpotDialogShell> | null>(null)
 const ids = useId()
+/** The form the Rename button, which sits in the dialog's foot, submits. */
+const formId = `${ids}-form`
 const current = ref('')
 const label = ref('')
 const labelError = ref<string | null>(null)
@@ -69,14 +72,13 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <SpotDialogShell ref="shell" :title="`Rename ${current}`" :busy="busy">
-    <form class="spot-change" novalidate @submit.prevent="submit">
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+  <SpotDialogShell ref="shell" caption="Rename a fill spot" :title="`Rename ${current}`" :busy="busy" :status="status" :error="error">
+    <form :id="formId" class="spot-rename" novalidate @submit.prevent="submit">
       <label class="field-label" :for="`${ids}-label`">New name</label>
       <input
         :id="`${ids}-label`"
         v-model="label"
-        class="spot-change__input"
+        class="text-field"
         type="text"
         autocomplete="off"
         :aria-invalid="labelError ? 'true' : undefined"
@@ -86,47 +88,25 @@ async function submit(): Promise<void> {
       <p :id="`${ids}-hint`" class="field-hint">
         Up to {{ MAX_SPOT_LABEL }} characters. What it holds stays as it is, and new documents from this form use the new name.
       </p>
-      <p v-if="labelError" :id="`${ids}-error`" class="field-error" role="alert">{{ labelError }}</p>
-      <p class="spot-change__status" role="status">{{ status }}</p>
-      <div class="spot-change__buttons">
-        <button type="button" class="button button--secondary" :aria-disabled="busy ? 'true' : undefined" @click="!busy && shell?.close()">Cancel</button>
-        <button type="submit" class="button button--primary" :aria-disabled="busy ? 'true' : undefined">{{ busy ? 'Renaming…' : 'Rename' }}</button>
-      </div>
+      <p v-if="labelError" :id="`${ids}-error`" class="field-error spot-rename__error" role="alert">{{ labelError }}</p>
     </form>
+
+    <template #foot>
+      <button type="button" class="button button--secondary" :aria-disabled="busy ? 'true' : undefined" @click="!busy && shell?.close()">Cancel</button>
+      <button type="submit" class="button button--primary" :form="formId" :aria-disabled="busy ? 'true' : undefined">
+        <AppIcon name="pencil" :size="18" />{{ busy ? 'Renaming…' : 'Rename' }}
+      </button>
+    </template>
   </SpotDialogShell>
 </template>
 
 <style scoped>
-.spot-change {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+/* The hint takes its room above it from the shared field styles; the dialog's own padding spaces what follows. */
+.spot-rename .field-hint {
+  margin-block-end: 0;
 }
 
-.spot-change__input {
-  inline-size: 100%;
-  min-block-size: var(--control-height);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font: inherit;
-}
-
-.spot-change__input[aria-invalid='true'] {
-  border-color: var(--color-error);
-}
-
-.spot-change__status {
-  margin: 0;
-}
-
-.spot-change__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  margin-block-start: var(--space-2);
+.spot-rename__error {
+  margin: 0.25rem 0 0;
 }
 </style>
