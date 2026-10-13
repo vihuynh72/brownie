@@ -80,7 +80,7 @@ public class DocumentExtractionService {
             case DOCX -> new ExtractionResult.Docx(extractDocx(workspaceId, userId, artifactId));
             case PDF -> new ExtractionResult.Pdf(extractPdf(workspaceId, userId, artifactId));
             case PLAIN_TEXT -> new ExtractionResult.PlainText(extractPlainText(workspaceId, userId, artifactId));
-            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
+            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES, XLSX -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
         };
     }
 
@@ -91,7 +91,7 @@ public class DocumentExtractionService {
             case DOCX -> findLatest(workspaceId, userId, artifactId).map(ExtractionResult.Docx::new);
             case PDF -> findLatestPdf(workspaceId, userId, artifactId).map(ExtractionResult.Pdf::new);
             case PLAIN_TEXT -> findLatestPlainText(workspaceId, userId, artifactId).map(ExtractionResult.PlainText::new);
-            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
+            case DOTX, DOCM, DOTM, DOC, RTF, ODT, PAGES, XLSX -> throw new NotExtractableMediaTypeException(artifactId, mediaType);
         };
     }
 
