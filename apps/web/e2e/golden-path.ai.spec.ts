@@ -64,10 +64,12 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   const proposal = page.locator('.proposal')
   await expect(proposal.getByText('Here is what I found in transcript.txt:')).toBeVisible({ timeout: 15_000 })
   await expect(proposal.getByText(/Weekly Robotics Club Sync/i)).toBeVisible()
-  await expect(proposal.getByText(/^Row 1:/)).toBeVisible()
+  // The table's own rows, not a numbered "Row 1:" line: one of the two action items the transcript
+  // states explicitly must show up among them, however the model happened to word it.
+  await expect(proposal.getByText(/wiring.*practice robot/i)).toBeVisible()
 
   await page.getByRole('button', { name: /I approve, fill it in/ }).click()
-  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in \d+ values?\./)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in \d+ fill spots?\./)).toBeVisible({ timeout: 15_000 })
   await expect(page.getByLabel(/^Meeting title/)).toHaveValue(/Weekly Robotics Club Sync/i)
 
   // A value Brownie filled carries its evidence: the bar about the fill spot opens the cited passage.
