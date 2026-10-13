@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import DocumentPage from '@/components/workspace/DocumentPage.vue'
 import FillSpot from '@/components/workspace/FillSpot.vue'
@@ -158,11 +159,23 @@ function mountPage(overrides: Partial<PageProps> = {}): VueWrapper {
 afterEach(() => {
   wrapper?.unmount()
   wrapper = null
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 /** Finds a control by its element id; field ids hold dots, which a plain #id selector would read as classes. */
 function control(page: VueWrapper, id: string) {
   return page.get(`[id="${id}"]`)
+}
+
+type SpotWrapper = VueWrapper<InstanceType<typeof FillSpot>>
+
+/** The element ids of the spots whose props satisfy `test`, in reading order: what the page told each spot. */
+function spotsWhere(page: VueWrapper, test: (spot: SpotWrapper) => boolean): string[] {
+  return page
+    .findAllComponents(FillSpot)
+    .filter(test)
+    .map((spot) => spot.props('inputId'))
 }
 
 describe('DocumentPage', () => {
@@ -173,7 +186,8 @@ describe('DocumentPage', () => {
     expect(page.get('section').attributes('aria-labelledby')).toBe(page.get('h2').attributes('id'))
     const sheet = page.get('.document-page__sheet').element as HTMLElement
     expect(sheet.style.fontFamily).toContain('Liberation Sans')
-    expect(sheet.style.fontSize).toBe('1rem')
+    // An 11 point body is drawn at 14px (0.875rem); the rest keep their proportion to it.
+    expect(sheet.style.fontSize).toBe('0.875rem')
 
     const header = page.get('.document-page__header-part')
     expect(header.text()).toBe('Brownie Meeting Minutes Template')
@@ -202,7 +216,7 @@ describe('DocumentPage', () => {
 
     expect(page.findAll('.document-page__main-part p').some((p) => p.text() === '' && p.find('textarea').exists() === false)).toBe(true)
     expect(page.get('.document-page__footer-part').text()).toBe('Page 1')
-    expect(page.find('.document-page__others').exists()).toBe(false)
+    expect(page.find('.document-page__list--others').exists()).toBe(false)
   })
 
   it('draws the repeating row once per item and says "No rows yet." when there are none', async () => {
@@ -224,8 +238,10 @@ describe('DocumentPage', () => {
     await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
     const empty = page.findAll('.document-page__main-part tr')
     expect(empty).toHaveLength(2)
-    expect(empty[1]!.get('td').text()).toBe('No rows yet.')
+    expect(empty[1]!.get('td').text()).toContain('No rows yet.')
     expect(empty[1]!.get('td').attributes('colspan')).toBe('3')
+    // The way to the first row sits in that line, and it is still the page's only Add row.
+    expect(empty[1]!.get('td button').text()).toBe('Add row')
     expect(page.findAll('button').filter((button) => button.text() === 'Add row')).toHaveLength(1)
   })
 
@@ -254,6 +270,29 @@ describe('DocumentPage', () => {
     await page.findAll('button').find((button) => button.text() === 'Add row')!.trigger('click')
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(document.activeElement?.id).toBe('edit-action.item.task-2')
+  })
+
+  it('still moves focus into the new row when a proposal was previewing more rows than the document has', async () => {
+    // The document has no rows of its own yet; a proposal previews three, as "Show what I found" does.
+    const empty = drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] })
+    const page = mountPage({
+      drafts: empty,
+      previewDrafts: {
+        'action.item.task': ['One', 'Two', 'Three'],
+        'action.item.owner': ['A', 'B', 'C'],
+        'action.item.due': ['2026-10-01', '2026-10-02', '2026-10-03'],
+      },
+      'onAdd-row': () => {
+        // Adding a row edits the table, which drops its own proposal, same as the real page does.
+        void page.setProps({
+          drafts: { ...empty, 'action.item.task': [''], 'action.item.owner': [''], 'action.item.due': [''] },
+          previewDrafts: null,
+        })
+      },
+    })
+    await page.findAll('button').find((button) => button.text() === 'Add row')!.trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(document.activeElement?.id).toBe('edit-action.item.task-0')
   })
 
   it('repeats the numbered paragraph of the flowing template, keeping its spacing and bullet', () => {
@@ -364,8 +403,10 @@ describe('DocumentPage', () => {
     )
 
     await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
-    expect(page.get('tbody td').text()).toBe('No rows yet.')
+    expect(page.get('tbody td').text()).toContain('No rows yet.')
     expect(page.get('tbody td').attributes('colspan')).toBe('3')
+    expect(page.get('tbody td button').text()).toBe('Add row')
+    expect(page.findAll('button').filter((button) => button.text() === 'Add row')).toHaveLength(1)
   })
 
   it("names a spot by the form's own label wherever the page names it", () => {
@@ -391,7 +432,7 @@ describe('DocumentPage', () => {
   it('says there is nothing to fill in when there are no fields and no layout', () => {
     const page = mountPage({ layout: null, fields: [], drafts: {} })
     expect(page.text()).toContain('This document has no fill spots.')
-    expect(page.find('.document-page__progress').exists()).toBe(false)
+    expect(page.find('.document-page__status').exists()).toBe(false)
   })
 
   it('says the page is loading, not that it has no fill spots, while what it holds is still on its way', () => {
@@ -410,10 +451,8 @@ describe('DocumentPage', () => {
     expect(markOf('edit-meeting.title')?.textContent?.trim()).toMatch(/\*$/)
     expect(markOf('edit-meeting.title')?.getAttribute('aria-hidden')).toBe('true')
     expect(markOf('edit-meeting.location')).toBeNull()
-    const legend = page.get('.document-page__legend')
-    expect(legend.text()).toContain('Required before export')
-    // A value from Brownie is on the page, so its mark is explained too.
-    expect(legend.text()).toContain('Filled by Brownie')
+    expect(page.get('.document-page__legend').text()).toBe('* Required before export')
+    expect(page.get('.document-page__legend-required').attributes('aria-hidden')).toBe('true')
   })
 
   it('leaves the marks unexplained when no spot carries them', () => {
@@ -566,10 +605,9 @@ describe('DocumentPage', () => {
     expect(element.selectionStart).toBe(3)
   })
 
-  it('counts the filled spots and moves to the next empty one after the last focused, wrapping', async () => {
+  it('moves to the next empty spot after the last focused, wrapping, until none is left', async () => {
     const page = mountPage()
-    // Six scalar fields and three repeated fields over two rows: twelve values, of which eight hold one.
-    expect(page.get('.document-page__progress').text()).toContain('8 of 12 fill spots filled')
+    expect(page.get('.document-page__summary').text()).toBe('3 of 7 fill spots filled')
 
     const next = page.findAll('button').find((button) => button.text() === 'Next empty spot')!
     await next.trigger('click')
@@ -591,28 +629,13 @@ describe('DocumentPage', () => {
         'action.item.owner': ['Ana', 'Ben'],
       }),
     })
-    expect(page.get('.document-page__progress').text()).toContain('12 of 12 fill spots filled')
+    expect(page.get('.document-page__summary').text()).toBe('7 of 7 fill spots filled')
     expect(page.findAll('button').some((button) => button.text() === 'Next empty spot')).toBe(false)
   })
 
   it('passes over a locked empty spot when moving to the next empty one', async () => {
     const page = mountPage({ lockedFieldIds: new Set(['meeting.organization']) })
     await page.findAll('button').find((button) => button.text() === 'Next empty spot')!.trigger('click')
-    expect(document.activeElement?.id).toBe('edit-meeting.location')
-  })
-
-  it('marks each spot on a rail hidden from assistive technology, and focuses a spot from its mark', async () => {
-    const page = mountPage({ drafts: drafts({ 'action.item.due': ['2026-10-01', ''] }) })
-    const rail = page.get('.document-page__rail')
-    expect(rail.attributes('aria-hidden')).toBe('true')
-    const markers = rail.findAll('.document-page__marker')
-    expect(markers).toHaveLength(12)
-    expect(markers[0]!.classes()).toContain('document-page__marker--filled')
-    expect(markers[1]!.classes()).toContain('document-page__marker--empty')
-    expect(markers.at(-1)!.classes()).toContain('document-page__marker--attention')
-    expect(rail.find('button, a, [tabindex]').exists()).toBe(false)
-
-    await markers[3]!.trigger('click')
     expect(document.activeElement?.id).toBe('edit-meeting.location')
   })
 
@@ -633,24 +656,489 @@ describe('DocumentPage', () => {
     expect(await axe(page.element)).toHaveNoViolations()
   })
 
-  /** A place Brownie found itself says so in words beside it; a repeated one says it once, on its first row. */
-  it('marks the places Brownie found in words, a repeated one on its first row only', async () => {
+  /** A place Brownie found itself is marked on its spot; a repeated one is marked once, on its first row. */
+  it('marks the places Brownie found, a repeated one on its first row only', async () => {
     const page = mountPage({ foundFieldIds: new Set(['meeting.location', 'action.item.owner']) })
 
-    const marked = page.findAll('.fill-spot__found').map((badge) => badge.element.parentElement!.querySelector('.fill-spot__control')!.id)
-    expect(marked).toEqual(['edit-meeting.location', 'edit-action.item.owner-0'])
-    expect(page.get('.fill-spot__found').text()).toBe('Found by Brownie')
-    expect(control(page, 'edit-meeting.title').element.parentElement!.querySelector('.fill-spot__found')).toBeNull()
+    expect(spotsWhere(page, (spot) => spot.props('found') === true)).toEqual(['edit-meeting.location', 'edit-action.item.owner-0'])
     expect(await axe(page.element)).toHaveNoViolations()
 
     await page.setProps({ foundFieldIds: new Set<string>() })
-    expect(page.findAll('.fill-spot__found')).toHaveLength(0)
+    expect(spotsWhere(page, (spot) => spot.props('found') === true)).toEqual([])
+  })
+})
+
+// ---- The status line ------------------------------------------------------------------------------
+
+describe('DocumentPage: the status line', () => {
+  /** The text of an element without what `hidden` matches, in one line. */
+  function textWithout(element: Element, hidden: string): string {
+    const copy = element.cloneNode(true) as Element
+    copy.querySelectorAll(hidden).forEach((node) => node.remove())
+    return copy.textContent!.replace(/\s+/g, ' ').trim()
+  }
+  /** What the eye reads, and what assistive technology reads. */
+  const seen = (page: VueWrapper) => textWithout(page.get('.document-page__summary').element, '.visually-hidden')
+  const spoken = (page: VueWrapper) => textWithout(page.get('.document-page__summary').element, '[aria-hidden="true"]')
+  const summaryOf = seen
+
+  it('counts the table of rows once, however many columns and rows it has', () => {
+    // Six fields with one value each and one table: seven places, three of them filled.
+    expect(summaryOf(mountPage())).toBe('3 of 7 fill spots filled')
+  })
+
+  it('says "fill spot" for a single place', () => {
+    const page = mountPage({ layout: null, fields: [FIELDS[0]!], drafts: { 'meeting.title': '' } })
+    expect(summaryOf(page)).toBe('0 of 1 fill spot filled')
+  })
+
+  it('counts a table as filled only once it has rows and none of them holds a blank, and as a place while it has none', async () => {
+    const page = mountPage({ drafts: drafts({ 'action.item.owner': ['Ana', 'Ben'] }) })
+    expect(summaryOf(page)).toBe('4 of 7 fill spots filled')
+
+    await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
+    expect(summaryOf(page)).toBe('3 of 7 fill spots filled')
+  })
+
+  it('says how many of Brownie\'s values wait for a look and how many are accepted, only when there are some', async () => {
+    const page = mountPage()
+    expect(summaryOf(page)).toBe('3 of 7 fill spots filled')
+    expect(page.find('.document-page__summary [aria-hidden="true"]').exists()).toBe(false)
+
+    const columns = (review: FieldStateResponse['review']) => ({
+      'action.item.task': { type: 'TEXT' as const, cardinality: 'REPEATED' as const, values: ['Book the room', 'Send the agenda'], itemFieldStates: [state({ review }), state({ review })] },
+      'action.item.owner': { type: 'TEXT' as const, cardinality: 'REPEATED' as const, values: ['Ana', ''], itemFieldStates: [state({ review }), state({ review })] },
+      'action.item.due': { type: 'DATE' as const, cardinality: 'REPEATED' as const, values: ['2026-10-01', '2026-10-03'], itemFieldStates: [state({ review }), state({ review })] },
+    })
+    // The title and the table are Brownie's and nobody has looked; the date was typed, so it needs no look; the attendees are accepted.
+    await page.setProps({
+      revisionFields: {
+        'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Q3 planning', fieldState: state() },
+        'meeting.date': { type: 'DATE', cardinality: 'SCALAR', value: '2026-09-28', fieldState: state({ authorship: 'USER_AUTHORED', evidenceSupport: 'MISSING' }) },
+        'meeting.attendees': { type: 'TEXT', cardinality: 'SCALAR', value: 'Ana, Ben', fieldState: state({ review: 'ACCEPTED' }) },
+        ...columns('UNREVIEWED'),
+      },
+    })
+    expect(seen(page)).toBe('3 of 7 fill spots filled · 2 to review · 1 accepted')
+    // The dots are for the eye; assistive technology reads the counts as sentences.
+    expect(spoken(page)).toBe('3 of 7 fill spots filled. 2 to review. 1 accepted')
+
+    await page.setProps({
+      revisionFields: {
+        'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Q3 planning', fieldState: state({ review: 'ACCEPTED' }) },
+        'meeting.attendees': { type: 'TEXT', cardinality: 'SCALAR', value: 'Ana, Ben', fieldState: state({ review: 'ACCEPTED' }) },
+        ...columns('ACCEPTED'),
+      },
+    })
+    expect(seen(page)).toBe('3 of 7 fill spots filled · 3 accepted')
+  })
+
+  it('puts the count first, then what the red mark means, then the ways to the next gap and a new spot', () => {
+    const page = mountPage({ canAddSpots: true })
+    const status = page.get('.document-page__status').element
+    expect([...status.children].map((child) => child.className)).toEqual(['document-page__status-text', 'document-page__status-actions'])
+    expect([...status.firstElementChild!.children].map((child) => child.className)).toEqual(['document-page__summary', 'document-page__legend'])
+    expect(page.findAll('.document-page__status-actions button').map((button) => button.text())).toEqual(['Add a fill spot', 'Next empty spot'])
+  })
+
+  it('draws what the screen puts in the banner slot between the status line and the sheet', () => {
+    const page = mount(DocumentPage, {
+      props: {
+        layout: MINUTES_WITH_TABLE,
+        layoutState: 'ready',
+        fields: FIELDS,
+        drafts: drafts(),
+        revisionFields: null,
+        requiredFieldIds: new Set<string>(),
+        lockedFieldIds: new Set<string>(),
+        rowsLocked: false,
+        selected: null,
+      },
+      slots: { banner: '<div class="note">Brownie found places</div>' },
+      attachTo: document.body,
+    })
+    wrapper = page
+    const order = [...page.get('section').element.children].map((child) => child.className)
+    expect(order.indexOf('document-page__status')).toBeLessThan(order.indexOf('note'))
+    expect(order.indexOf('note')).toBeLessThan(order.indexOf('document-page__body'))
+  })
+
+  it('draws nothing in its place when the screen gives no banner', () => {
+    expect(mountPage().find('.note').exists()).toBe(false)
+    expect([...wrapper!.get('section').element.children].map((child) => child.className)).not.toContain('note')
+  })
+})
+
+// ---- The rail ---------------------------------------------------------------------------------------
+
+describe('DocumentPage: the rail', () => {
+  const rect = (top: number, height: number): DOMRect =>
+    ({ top, height, left: 0, width: 100, right: 100, bottom: top + height, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+
+  /** Lays the page out in the window's pixels: the sheet's top, and each control's [top, height] by element id ('add-row' for the button). */
+  function layOut(sheetTop: number, boxes: Record<string, [number, number]>): void {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('document-page__sheet')) return rect(sheetTop, 900)
+      const box = boxes[this.hasAttribute('data-add-row') ? 'add-row' : this.id]
+      return box ? rect(box[0], box[1]) : rect(0, 0)
+    })
+  }
+
+  const ticksOf = (page: VueWrapper) => page.findAll('.document-page__tick')
+  const tonesOf = (page: VueWrapper) => ticksOf(page).map((tick) => tick.classes().find((name) => name.startsWith('document-page__tick--'))!.replace('document-page__tick--', ''))
+
+  async function mountRail(overrides: Partial<PageProps> = {}): Promise<VueWrapper> {
+    const page = mountPage(overrides)
+    await nextTick()
+    return page
+  }
+
+  it('is hidden from assistive technology, numbers the page and holds nothing to tab to', async () => {
+    const page = await mountRail()
+    const rail = page.get('.document-page__rail')
+    expect(rail.attributes('aria-hidden')).toBe('true')
+    expect(rail.get('.document-page__page-number').text()).toBe('1')
+    expect(rail.find('button, a, input, [tabindex]').exists()).toBe(false)
+  })
+
+  it('has a tick for every fill spot, the table once, coloured by what is left to do', async () => {
+    const page = await mountRail({ drafts: drafts({ 'action.item.due': ['2026-10-01', '2026-10-03'] }) })
+    // Title, organization, date, location, attendees, decisions, then the table (its owner column has a blank).
+    expect(tonesOf(page)).toEqual(['filled', 'open', 'filled', 'open', 'filled', 'open', 'open'])
+
+    await page.setProps({ drafts: drafts({ 'action.item.owner': ['Ana', 'Ben'] }) })
+    expect(tonesOf(page).at(-1)).toBe('filled')
+  })
+
+  it('draws a tick thicker when a spot needs a look: a question, a value that cannot be saved, the one chosen', async () => {
+    const page = await mountRail({ questionCounts: { 'meeting.organization': 2 } })
+    expect(tonesOf(page)[1]).toBe('question')
+
+    // A blank date in a row cannot be saved, and a value that blocks export cannot be exported: both read as invalid.
+    await page.setProps({
+      drafts: drafts({ 'action.item.due': ['2026-10-01', ''] }),
+      revisionFields: { 'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Q3 planning', fieldState: state({ validation: 'BLOCKING' }) } },
+    })
+    expect(tonesOf(page)[0]).toBe('invalid')
+    expect(tonesOf(page).at(-1)).toBe('invalid')
+
+    // The same split a spot makes: a value turned down is red, and one that needs clarifying is a question.
+    await page.setProps({
+      drafts: drafts(),
+      revisionFields: {
+        'meeting.title': { type: 'TEXT', cardinality: 'SCALAR', value: 'Q3 planning', fieldState: state({ review: 'REJECTED' }) },
+        'meeting.date': { type: 'DATE', cardinality: 'SCALAR', value: '2026-09-28', fieldState: state({ review: 'NEEDS_CLARIFICATION' }) },
+      },
+    })
+    expect(tonesOf(page)[0]).toBe('invalid')
+    expect(tonesOf(page)[2]).toBe('question')
+
+    // What is chosen outranks the rest, and any row of the table chooses the table.
+    await page.setProps({ selected: { fieldId: 'action.item.owner', rowIndex: 1 } })
+    expect(tonesOf(page).at(-1)).toBe('selected')
+    await page.setProps({ selected: { fieldId: 'meeting.title', rowIndex: null } })
+    expect(tonesOf(page)[0]).toBe('selected')
+  })
+
+  it('keeps a spot with a proposed value open: it is a gap in the document until it is approved', async () => {
+    const page = await mountRail({ previewDrafts: { 'meeting.title': 'Fall build season kickoff' } })
+    expect(tonesOf(page)[0]).toBe('open')
+  })
+
+  it('puts each tick level with the first line of its spot, measured from the top of the sheet', async () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ lineHeight: '24px', borderTopWidth: '1px', paddingTop: '1px' }) as CSSStyleDeclaration)
+    layOut(100, {
+      'edit-meeting.title': [140, 24],
+      // Two lines tall: the tick stays with the first of them.
+      'edit-meeting.decisions': [300, 48],
+      'edit-action.item.task-0': [420, 24],
+    })
+    const page = await mountRail()
+    const tops = ticksOf(page).map((tick) => (tick.element as HTMLElement).style.top)
+    // Each is the spot's top, its border and padding, half a line, less the sheet's top.
+    expect(tops[0]).toBe('53px')
+    expect(tops[5]).toBe('214px')
+    // The table's tick stands level with its first row.
+    expect(tops[6]).toBe('333px')
+  })
+
+  it('measures again when the page reflows, even where the sheet itself keeps its size', async () => {
+    const observed: Element[] = []
+    let notify: () => void = () => {}
+    const disconnect = vi.fn()
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          notify = callback
+        }
+        observe(target: Element) {
+          observed.push(target)
+        }
+        disconnect = disconnect
+      },
+    )
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    // A line height the browser has not worked out (the keyword), so a spot is level with its whole height.
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ lineHeight: 'normal', borderTopWidth: '0px', paddingTop: '0px' }) as CSSStyleDeclaration)
+    layOut(100, { 'edit-meeting.title': [140, 24] })
+    const page = await mountRail()
+
+    // The sheet is watched, and so is every part of it, because a line wrapping above a spot moves it without resizing the sheet.
+    expect(observed).toContain(page.get('.document-page__sheet').element)
+    expect(observed).toContain(page.get('.document-page__main-part').element)
+    expect((ticksOf(page)[0]!.element as HTMLElement).style.top).toBe('52px')
+
+    layOut(100, { 'edit-meeting.title': [161, 24] })
+    notify()
+    await nextTick()
+    expect((ticksOf(page)[0]!.element as HTMLElement).style.top).toBe('73px')
+
+    page.unmount()
+    wrapper = null
+    expect(disconnect).toHaveBeenCalled()
+  })
+
+  it('measures again when a value changes, since it can move a spot onto another line without changing any part\'s height', async () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ lineHeight: 'normal', borderTopWidth: '0px', paddingTop: '0px' }) as CSSStyleDeclaration)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    layOut(100, { 'edit-meeting.attendees': [200, 24] })
+    const page = await mountRail()
+    expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('112px')
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      layOut(100, { 'edit-meeting.attendees': [221, 24] })
+      await page.setProps({ drafts: drafts({ 'meeting.attendees': 'Ana, Ben, Cleo, Dev, Eli, Fay, Gus, Hal' }) })
+      vi.advanceTimersByTime(200)
+      await nextTick()
+      expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('133px')
+
+      layOut(100, { 'edit-meeting.attendees': [242, 24] })
+      await page.setProps({ previewDrafts: { 'meeting.attendees': 'Ana, Ben, Cleo, Dev, Eli, Fay, Gus, Hal, Ira, Jo' } })
+      vi.advanceTimersByTime(200)
+      await nextTick()
+      expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('154px')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waits for a pause in a run of changes instead of measuring the whole page back for each one', async () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ lineHeight: 'normal', borderTopWidth: '0px', paddingTop: '0px' }) as CSSStyleDeclaration)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    layOut(100, { 'edit-meeting.attendees': [200, 24] })
+    const page = await mountRail()
+    expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('112px')
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      // Two keystrokes close together, each well inside the other's wait: neither should measure on its own.
+      layOut(100, { 'edit-meeting.attendees': [221, 24] })
+      await page.setProps({ drafts: drafts({ 'meeting.attendees': 'Ana, Ben, Cleo' }) })
+      vi.advanceTimersByTime(80)
+      await nextTick()
+      expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('112px')
+
+      layOut(100, { 'edit-meeting.attendees': [242, 24] })
+      await page.setProps({ drafts: drafts({ 'meeting.attendees': 'Ana, Ben, Cleo, Dev' }) })
+      vi.advanceTimersByTime(80)
+      await nextTick()
+      expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('112px')
+
+      // Once the pause is long enough, one measurement finds wherever the typing actually left things.
+      vi.advanceTimersByTime(200)
+      await nextTick()
+      expect((ticksOf(page)[4]!.element as HTMLElement).style.top).toBe('154px')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('has no ticks on a page with no fill spots', async () => {
+    const page = await mountRail({ layout: null, fields: [], drafts: {} })
+    expect(ticksOf(page)).toHaveLength(0)
+  })
+
+  it('takes a click on a tick to the spot, the table to its first row, or to Add row while it has none', async () => {
+    const page = await mountRail()
+    await ticksOf(page)[3]!.trigger('click')
+    expect(document.activeElement?.id).toBe('edit-meeting.location')
+    await ticksOf(page)[6]!.trigger('click')
+    expect(document.activeElement?.id).toBe('edit-action.item.task-0')
+
+    await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
+    await nextTick()
+    expect(ticksOf(page)).toHaveLength(7)
+    await ticksOf(page)[6]!.trigger('click')
+    expect(document.activeElement?.hasAttribute('data-add-row')).toBe(true)
+  })
+})
+
+// ---- What Brownie proposes ----------------------------------------------------------------------------
+
+describe('DocumentPage: a preview of what Brownie proposes', () => {
+  it('hands each spot what is proposed for it, a repeated place row by row, and nothing without a preview', () => {
+    const previews = (page: VueWrapper) => Object.fromEntries(page.findAllComponents(FillSpot).map((spot) => [spot.props('inputId'), spot.props('preview')]))
+    const none = previews(mountPage())
+    expect(Object.values(none).every((value) => value === null)).toBe(true)
+    wrapper!.unmount()
+
+    expect(Object.values(previews(mountPage({ previewDrafts: null }))).every((value) => value === null)).toBe(true)
+    wrapper!.unmount()
+
+    const page = mountPage({ previewDrafts: { 'meeting.location': 'Room 204', 'action.item.task': ['Order the kit', 'Book the room'], 'action.item.due': ['2026-10-13'] } })
+    const shown = previews(page)
+    expect(shown['edit-meeting.location']).toBe('Room 204')
+    expect(shown['edit-meeting.title']).toBeNull()
+    expect(shown['edit-action.item.task-0']).toBe('Order the kit')
+    expect(shown['edit-action.item.task-1']).toBe('Book the room')
+    // Only the first row has a proposed due date.
+    expect(shown['edit-action.item.due-0']).toBe('2026-10-13')
+    expect(shown['edit-action.item.due-1']).toBeNull()
+  })
+
+  it('is never written: typing and the values the page holds are left as they are', () => {
+    const page = mountPage({ previewDrafts: { 'meeting.title': 'Something else' } })
+    const title = page.findAllComponents(FillSpot).find((spot) => spot.props('inputId') === 'edit-meeting.title')!
+    expect(title.props('value')).toBe('Q3 planning')
+    expect(page.emitted('update-scalar')).toBeUndefined()
+  })
+
+  it('still counts a gap that holds a proposal as a gap, so the next empty spot walks through the proposals too', async () => {
+    const page = mountPage({ previewDrafts: { 'meeting.organization': 'Harborview Robotics Club' } })
+    await page.findAll('button').find((button) => button.text() === 'Next empty spot')!.trigger('click')
+    expect(document.activeElement?.id).toBe('edit-meeting.organization')
+  })
+
+  it('treats a blank proposal as none', () => {
+    const page = mountPage({ previewDrafts: { 'meeting.location': '   ', 'action.item.owner': ['', '  '] } })
+    expect(spotsWhere(page, (spot) => spot.props('preview') !== null)).toEqual([])
+  })
+
+  it('draws the rows a proposal carries that the document does not have yet, so they can be seen first', async () => {
+    const empty = { 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }
+    const page = mountPage({
+      drafts: drafts(empty),
+      previewDrafts: { 'action.item.task': ['One', 'Two', 'Three'], 'action.item.owner': ['A', 'B', 'C'], 'action.item.due': ['2026-10-01', '2026-10-02', '2026-10-03'] },
+    })
+    expect(page.findAll('.document-page__main-part tr')).toHaveLength(4)
+    expect(page.text()).not.toContain('No rows yet.')
+    expect(page.find('[id="edit-action.item.task-2"]').exists()).toBe(true)
+
+    // Hiding the preview takes them away again.
+    await page.setProps({ previewDrafts: null })
+    expect(page.findAll('.document-page__main-part tr')).toHaveLength(2)
+    expect(page.text()).toContain('No rows yet.')
+  })
+
+  it('does not count a proposal as filled, and does not flag the blank date of a row only proposed', async () => {
+    const empty = { 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }
+    const page = mountPage({
+      drafts: drafts(empty),
+      previewDrafts: { 'meeting.location': 'Room 204', 'action.item.task': ['One'], 'action.item.owner': ['A'], 'action.item.due': ['2026-10-01'] },
+    })
+    expect(page.get('.document-page__summary').text()).toBe('3 of 7 fill spots filled')
+    const due = page.findAllComponents(FillSpot).find((spot) => spot.props('inputId') === 'edit-action.item.due-0')!
+    expect(due.props('attention')).toBe(false)
+    await nextTick()
+    expect(page.findAll('.document-page__tick').at(-1)!.classes()).toContain('document-page__tick--open')
+  })
+})
+
+// ---- Questions ----------------------------------------------------------------------------------------
+
+describe('DocumentPage: questions Brownie has asked', () => {
+  it('tells a spot how many are open, a repeated place on its first row only', () => {
+    const page = mountPage({ questionCounts: { 'meeting.location': 2, 'action.item.owner': 1, 'meeting.title': 0 } })
+    const counts = Object.fromEntries(page.findAllComponents(FillSpot).map((spot) => [spot.props('inputId'), spot.props('questionCount')]))
+    expect(counts['edit-meeting.location']).toBe(2)
+    expect(counts['edit-action.item.owner-0']).toBe(1)
+    expect(counts['edit-action.item.owner-1'] ?? 0).toBe(0)
+    expect(counts['edit-meeting.title'] ?? 0).toBe(0)
+  })
+})
+
+// ---- Where the one Add row goes ---------------------------------------------------------------------
+
+describe('DocumentPage: the way to the first row', () => {
+  const addRows = (page: VueWrapper) => page.findAll('button').filter((button) => button.text() === 'Add row')
+
+  it('puts the one Add row in the first line that stands in for rows, however many there are', () => {
+    const twice = paragraph(
+      [text('Task: '), spot('action.item.task', '[task]'), text('   Owner: '), spot('action.item.owner', '[owner]'), text('   Due: '), spot('action.item.due', '[due date]')],
+      { repeating: true },
+    )
+    const layout: TemplateLayoutResponse = {
+      ...MINUTES_WITH_LIST,
+      parts: MINUTES_WITH_LIST.parts.map((part) => (part.kind === 'MAIN_DOCUMENT' ? { ...part, blocks: [...part.blocks, twice] } : part)),
+    }
+    const page = mountPage({ layout, drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
+    expect(page.findAll('.document-page__no-rows')).toHaveLength(2)
+    expect(addRows(page)).toHaveLength(1)
+    expect(page.findAll('.document-page__no-rows')[0]!.find('button').exists()).toBe(true)
+  })
+
+  it('moves to the line below the rows once there are some, and says why when a row is locked', async () => {
+    const page = mountPage({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }), rowsLocked: true })
+    expect(page.get('.document-page__no-rows button').attributes('disabled')).toBeDefined()
+    expect(page.get('.document-page__no-rows').text()).toContain('A row is locked, so rows cannot be added until it is unlocked.')
+
+    await page.setProps({ drafts: drafts() })
+    expect(page.find('.document-page__no-rows').exists()).toBe(false)
+    expect(addRows(page)).toHaveLength(1)
+    expect(page.get('.document-page__table-wrap').element.parentElement!.contains(addRows(page)[0]!.element)).toBe(true)
+  })
+
+  it('shows a table Brownie found as found while it has no rows, in words for assistive technology too', async () => {
+    const empty = { 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }
+    const page = mountPage({ drafts: drafts(empty), foundFieldIds: new Set(['action.item.owner']) })
+    expect(page.get('.document-page__table-wrap').classes()).toContain('document-page__table-wrap--found')
+    expect(page.get('.document-page__no-rows').text()).toContain('Found by Brownie.')
+
+    await page.setProps({ foundFieldIds: new Set<string>() })
+    expect(page.get('.document-page__table-wrap').classes()).not.toContain('document-page__table-wrap--found')
+    expect(page.get('.document-page__no-rows').text()).not.toContain('Found by Brownie.')
+  })
+
+  it('moves focus to the first row\'s first spot when the way to it was in the empty line, which goes with it', async () => {
+    const empty = { 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }
+    const page = mountPage({
+      drafts: drafts(empty),
+      'onAdd-row': () => {
+        void page.setProps({ drafts: drafts({ 'action.item.task': [''], 'action.item.owner': [''], 'action.item.due': [''] }) })
+      },
+    })
+    await page.get('.document-page__no-rows button').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(page.find('.document-page__no-rows').exists()).toBe(false)
+    expect(document.activeElement?.id).toBe('edit-action.item.task-0')
+  })
+
+  it('passes an accessibility scan with the status line, an empty table and a preview', async () => {
+    const empty = { 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }
+    const page = mountPage({
+      drafts: drafts(empty),
+      canAddSpots: true,
+      foundFieldIds: new Set(['action.item.owner']),
+      previewDrafts: { 'meeting.location': 'Room 204' },
+      questionCounts: { 'meeting.organization': 1 },
+    })
+    expect(await axe(page.element)).toHaveNoViolations()
   })
 })
 
 describe('FillSpot', () => {
   const base = {
-    fieldId: 'meeting.location',
     rowIndex: null,
     type: 'TEXT' as const,
     value: '',
