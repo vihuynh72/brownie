@@ -5881,6 +5881,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin: 0;
 }
 
+.rules-card__style .field-hint {
+  margin: 0;
+}
+
 .chip-list {
   display: flex;
   flex-wrap: wrap;
