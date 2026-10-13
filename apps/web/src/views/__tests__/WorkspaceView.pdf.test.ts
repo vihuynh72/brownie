@@ -246,7 +246,7 @@ async function focusSpot(id: string): Promise<void> {
 }
 
 function chatLines(): string[] {
-  return [...document.querySelectorAll('.chat-line--brownie p')].map((line) => (line.textContent ?? '').replace(/\s+/g, ' ').trim())
+  return [...document.querySelectorAll('.chat-line:not(.msg--user) p:not(.msg__who)')].map((line) => (line.textContent ?? '').replace(/\s+/g, ' ').trim())
 }
 
 beforeEach(() => {
@@ -400,6 +400,79 @@ describe('WorkspaceView with a PDF form', () => {
     expect(window.scrollBy).toHaveBeenLastCalledWith({ top: 132 })
   })
 
+  it('leaves the toolbar above the bar alone on a fresh page, but clears the bar in full once the person has already scrolled', async () => {
+    layouts.set(12, pdfLayout(12, [FULL_NAME, COMPANY]))
+    versions.set(12, version(12, [FULL_NAME, COMPANY]))
+    await mountPage()
+    const fullName = document.getElementById('edit-full.name')!
+    const company = document.getElementById('edit-company')!
+    const pane = document.getElementById('document-pane')!
+    const box = (top: number, height: number) =>
+      ({ top, left: 0, width: 300, height, right: 300, bottom: top + height, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+    // The same tall bar and the same covered box as above; only the pane's own scroll differs between the two spots.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('selection-bar')) return box(500, 200)
+      if (this === fullName || this === company) return box(600, 20)
+      if (this === pane) return box(0, 900)
+      return box(0, 0)
+    })
+    pane.style.overflowY = 'auto'
+    Object.defineProperty(pane, 'scrollHeight', { value: 2000, configurable: true })
+    Object.defineProperty(pane, 'clientHeight', { value: 900, configurable: true })
+    let scrollTop = 0
+    Object.defineProperty(pane, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      },
+    })
+    const scrollBy = vi.fn()
+    pane.scrollBy = scrollBy
+
+    // The pane has not scrolled yet, so the page's own toolbar above it is left in view: the bar is allowed
+    // to cover the found field instead, the way its "Found by Brownie" banner and controls already explain it.
+    await focusSpot('edit-full.name')
+    expect(scrollBy).not.toHaveBeenCalled()
+
+    // The person has since scrolled the pane some way down themselves, so a later spot's bar clears it in full.
+    scrollTop = 40
+    await focusSpot('edit-company')
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: 132 })
+  })
+
+  it("brings a field into view from Export's Go to no further than it needs, so the page's own toolbar is not what it covers", async () => {
+    layouts.set(12, pdfLayout(12, [FULL_NAME, COMPANY]))
+    versions.set(12, version(12, [FULL_NAME, COMPANY]))
+    vi.mocked(validateDocument).mockResolvedValue({
+      id: 501,
+      documentId: 1,
+      revisionId: 1,
+      templateId: 4,
+      templateVersionId: 12,
+      docxArtifactId: null,
+      docxSha256: null,
+      pdfArtifactId: 901,
+      pdfSha256: 'd'.repeat(64),
+      findings: [{ code: 'REQUIRED_FIELD_MISSING', severity: 'BLOCKING', fieldId: 'company', message: 'Company is required.' }],
+      hasUnresolvedBlocking: true,
+      createdAt: CREATED_AT,
+    } as never)
+    await mountPage()
+    const company = document.getElementById('edit-company')!
+    // Centring unconditionally, as the bar about a found field does, can scroll straight past a toolbar
+    // that sits right above this same pane, something "nearest" never does when the field is already on
+    // screen: this is the same scroll a direct click or Tab already does for it, asked for from Export instead.
+    const scrollIntoView = vi.fn()
+    company.scrollIntoView = scrollIntoView
+
+    await press('Export')
+    await press('Go to Company', 'dialog.export-dialog')
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    expect(document.activeElement).toBe(company)
+  })
+
   it('offers renaming, text size and removing for a box Brownie drew, and says a form’s own box keeps its look', async () => {
     layouts.set(12, pdfLayout(12, [FULL_NAME, COMPANY]))
     versions.set(12, version(12, [FULL_NAME, COMPANY]))
@@ -407,6 +480,8 @@ describe('WorkspaceView with a PDF form', () => {
 
     await focusSpot('edit-company')
     const bar = document.querySelector('section.selection-bar')!
+    // The pages keep their zoom at the same foot of the view, so the card rests above it.
+    expect(bar.classList.contains('selection-bar--above-zoom')).toBe(true)
     expect([...bar.querySelectorAll('[aria-labelledby="selection-bar-spot-label"] button')].map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim())).toEqual([
       'Rename… Company',
       'Text size… for Company',
@@ -480,7 +555,7 @@ describe('WorkspaceView with a PDF form', () => {
     await mountPage()
     expect(document.querySelectorAll('.fill-spot__found')).toHaveLength(1)
     // A PDF's own page marks a found box with a dashed outline, and the line over it says so.
-    expect(document.querySelector('.form-strip__text')?.textContent).toBe('Brownie found 1 more place to fill in. Check the one with a dashed outline.')
+    expect(document.querySelector('.form-strip__text')?.textContent).toBe('Brownie found 1 more place to fill in. Check the one with a dashed outline, then keep it.')
 
     await focusSpot('edit-company')
     await press('Rename… Company', 'section.selection-bar')
@@ -557,6 +632,8 @@ describe('WorkspaceView with a PDF form', () => {
     expect(executeAssist).toHaveBeenCalledWith(7, 1, 'fill in here for Company', 1, anchor)
     // The server's own words say what the chat did, as they do on a Word form.
     expect(chatLines()).toContain('Added a fill spot for Company on page 1. Forms you start from this template will have it too.')
+    // What "here" meant stays under the person's line once the box's hint is gone.
+    expect(document.querySelector('.chat-line__here')?.textContent).toBe('"Here" is the place you picked on page 1.')
     expect(document.getElementById('edit-company')).not.toBeNull()
     expect(button('Undo adding Company', '.chat-line')).toBeTruthy()
   })
