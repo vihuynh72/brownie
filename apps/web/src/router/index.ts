@@ -69,6 +69,18 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      path: '/templates/:templateId/fill-many',
+      name: 'fill-many',
+      component: () => import('@/views/FillManyView.vue'),
+      meta: { requiresSession: true },
+    },
+    {
+      path: '/batches/:batchId',
+      name: 'batch',
+      component: () => import('@/views/BatchView.vue'),
+      meta: { requiresSession: true },
+    },
+    {
       // A mistyped or stale link gets a page that says so and a way back, not a blank main region.
       path: '/:pathMatch(.*)*',
       name: 'not-found',

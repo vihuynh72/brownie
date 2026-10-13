@@ -39,6 +39,8 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
+  /** "Fill from a spreadsheet..." was chosen. */
+  fillMany: []
   /** "Move to Trash Bin" was chosen. */
   trash: []
   /** The menu should go; true when focus should go back to whatever opened it. */
@@ -181,6 +183,10 @@ onBeforeUnmount(() => {
       @keydown="onKeydown"
       @contextmenu.prevent
     >
+      <button type="button" role="menuitem" tabindex="-1" class="template-menu__item" @click="emit('fillMany')">
+        <AppIcon name="table" :size="18" />
+        <span>Fill from a spreadsheet...</span>
+      </button>
       <button type="button" role="menuitem" tabindex="-1" class="template-menu__item" @click="emit('trash')">
         <AppIcon name="trash" :size="18" />
         <span>Move to Trash Bin</span>
