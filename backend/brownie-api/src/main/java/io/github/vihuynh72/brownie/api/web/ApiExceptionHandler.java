@@ -77,6 +77,24 @@ import io.github.vihuynh72.brownie.core.support.SupportGrantNotFoundException;
 import io.github.vihuynh72.brownie.api.question.QuestionRequestValidationException;
 import io.github.vihuynh72.brownie.api.source.DocumentSourceRequestValidationException;
 import io.github.vihuynh72.brownie.core.question.QuestionNotFoundException;
+import io.github.vihuynh72.brownie.api.batch.BatchRequestValidationException;
+import io.github.vihuynh72.brownie.core.batch.BatchBusyException;
+import io.github.vihuynh72.brownie.core.batch.BatchComposeNotOfferedException;
+import io.github.vihuynh72.brownie.core.batch.BatchComposeUnavailableException;
+import io.github.vihuynh72.brownie.core.batch.BatchDuplicateMappingException;
+import io.github.vihuynh72.brownie.core.batch.BatchExportNotFoundException;
+import io.github.vihuynh72.brownie.core.batch.BatchExportNotReadyException;
+import io.github.vihuynh72.brownie.core.batch.BatchFieldNotFillableException;
+import io.github.vihuynh72.brownie.core.batch.BatchIdempotencyConflictException;
+import io.github.vihuynh72.brownie.core.batch.BatchNotFoundException;
+import io.github.vihuynh72.brownie.core.batch.BatchReaderChangedException;
+import io.github.vihuynh72.brownie.core.batch.BatchRequiredFieldsUnmappedException;
+import io.github.vihuynh72.brownie.core.batch.BatchSourceChangedException;
+import io.github.vihuynh72.brownie.core.batch.BatchTemplateNeedsListException;
+import io.github.vihuynh72.brownie.core.batch.BatchTemplateUnavailableException;
+import io.github.vihuynh72.brownie.core.batch.BatchUnknownColumnException;
+import io.github.vihuynh72.brownie.core.batch.BatchUnknownFieldException;
+import io.github.vihuynh72.brownie.core.batch.TableUnreadableException;
 import io.github.vihuynh72.brownie.core.revision.DocumentContentValidationException;
 import io.github.vihuynh72.brownie.core.revision.DocumentIdempotencyConflictException;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
@@ -681,6 +699,137 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_GATEWAY, request);
     }
 
+    /**
+     * A file that cannot be read as a table is a request that cannot be
+     * made sense of, not a server failure -- the reason says what the file
+     * failed to be, and the row number says where it stopped, when one did.
+     */
+    @ExceptionHandler(TableUnreadableException.class)
+    public ResponseEntity<Object> handleTableUnreadable(TableUnreadableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "TABLE_UNREADABLE");
+        problem.setProperty("reason", ex.reason().name());
+        if (ex.rowNumber() != null) {
+            problem.setProperty("rowNumber", ex.rowNumber());
+        }
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
+    @ExceptionHandler({BatchNotFoundException.class, BatchExportNotFoundException.class})
+    public ResponseEntity<Object> handleBatchNotFound(RuntimeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not Found");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "NOT_FOUND");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.NOT_FOUND, request);
+    }
+
+    /** Another step holds the workspace's lease; the batch waits, unchanged, for the next call. */
+    @ExceptionHandler(BatchBusyException.class)
+    public ResponseEntity<Object> handleBatchBusy(BatchBusyException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BATCH_BUSY");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The file or the reader a batch was made against has changed; filling further would quietly fill from something else. */
+    @ExceptionHandler({BatchSourceChangedException.class, BatchReaderChangedException.class})
+    public ResponseEntity<Object> handleBatchSourceMoved(RuntimeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, ex instanceof BatchSourceChangedException ? "BATCH_SOURCE_CHANGED" : "BATCH_READER_CHANGED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The pinned version is gone; rows are left PENDING so a fixed template can resume the step. */
+    @ExceptionHandler(BatchTemplateUnavailableException.class)
+    public ResponseEntity<Object> handleBatchTemplateUnavailable(BatchTemplateUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BATCH_TEMPLATE_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    @ExceptionHandler(BatchIdempotencyConflictException.class)
+    public ResponseEntity<Object> handleBatchIdempotencyConflict(BatchIdempotencyConflictException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BATCH_IDEMPOTENCY_CONFLICT");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The run is still working or finished with nothing to hand out; the download waits, not fails. */
+    @ExceptionHandler(BatchExportNotReadyException.class)
+    public ResponseEntity<Object> handleBatchExportNotReady(BatchExportNotReadyException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BATCH_EXPORT_NOT_READY");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /** The compose step where compose is not offered: a state answer, like a busy lease, not a bad request. */
+    @ExceptionHandler(BatchComposeUnavailableException.class)
+    public ResponseEntity<Object> handleBatchComposeUnavailable(BatchComposeUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "BATCH_COMPOSE_NOT_OFFERED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.CONFLICT, request);
+    }
+
+    /**
+     * A mapping that cannot produce fillable documents is refused whole:
+     * each reason names the fields or column it names, so the answer lists
+     * exactly what to change rather than a count of the failures.
+     */
+    @ExceptionHandler({
+            BatchRequiredFieldsUnmappedException.class, BatchFieldNotFillableException.class,
+            BatchUnknownFieldException.class, BatchUnknownColumnException.class,
+            BatchDuplicateMappingException.class, BatchTemplateNeedsListException.class,
+            BatchComposeNotOfferedException.class})
+    public ResponseEntity<Object> handleBatchMappingRefusal(RuntimeException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        problem.setTitle("Unprocessable Entity");
+        problem.setDetail(ex.getMessage());
+        switch (ex) {
+            case BatchRequiredFieldsUnmappedException e -> {
+                enrich(problem, "BATCH_REQUIRED_FIELD_UNMAPPED");
+                problem.setProperty("fields", e.fieldIds());
+            }
+            case BatchFieldNotFillableException e -> {
+                enrich(problem, "BATCH_FIELD_NOT_FILLABLE");
+                problem.setProperty("fieldId", e.fieldId());
+            }
+            case BatchUnknownFieldException e -> {
+                enrich(problem, "BATCH_FIELD_UNKNOWN");
+                problem.setProperty("fieldId", e.fieldId());
+            }
+            case BatchUnknownColumnException e -> {
+                enrich(problem, "BATCH_COLUMN_UNKNOWN");
+                problem.setProperty("column", e.column());
+            }
+            case BatchDuplicateMappingException e -> {
+                enrich(problem, "BATCH_DUPLICATE_MAPPING");
+                problem.setProperty("fieldId", e.fieldId());
+            }
+            case BatchTemplateNeedsListException e -> {
+                enrich(problem, "BATCH_TEMPLATE_NEEDS_LIST");
+                problem.setProperty("fields", e.fieldIds());
+            }
+            case BatchComposeNotOfferedException e -> enrich(problem, "BATCH_COMPOSE_NOT_OFFERED");
+            default -> enrich(problem, "UNPROCESSABLE");
+        }
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
+    }
+
     @ExceptionHandler({
             JobRequestValidationException.class, DocumentRequestValidationException.class,
             ValidationRequestValidationException.class, ExportRequestValidationException.class,
@@ -688,7 +837,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             DocumentSourceRequestValidationException.class, AssistRequestValidationException.class,
             DeletionRequestValidationException.class, SupportGrantRequestValidationException.class,
             ConnectionRequestValidationException.class, InvalidCalendarRequestException.class,
-            ActionRequestValidationException.class})
+            ActionRequestValidationException.class, BatchRequestValidationException.class})
     public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
