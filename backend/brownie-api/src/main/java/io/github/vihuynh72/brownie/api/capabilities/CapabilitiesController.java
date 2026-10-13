@@ -5,6 +5,7 @@ import io.github.vihuynh72.brownie.api.connector.DriveOffer;
 import io.github.vihuynh72.brownie.api.connector.GoogleConnectorSetup;
 import io.github.vihuynh72.brownie.api.generation.FillSpotNamingSetting;
 import io.github.vihuynh72.brownie.core.artifact.SupportedMediaType;
+import io.github.vihuynh72.brownie.core.batch.BatchService;
 import io.github.vihuynh72.brownie.core.connector.ConnectorAccess;
 import io.github.vihuynh72.brownie.core.retention.DeletionService;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,12 +65,22 @@ class CapabilitiesController {
             FormFileTypeResponse.of("pages", SupportedMediaType.PAGES),
             FormFileTypeResponse.of("pages", "application/x-iwork-pages-sffpages", SupportedMediaType.PAGES),
             FormFileTypeResponse.of("pdf", SupportedMediaType.PDF));
+    /**
+     * What a file chooser for a table to fill from may offer: a workbook as
+     * itself, or comma-separated text. CSV is only ever read from a plain
+     * text upload, so text/csv names it for chooser purposes alone.
+     */
+    private static final List<MediaTypeResponse> TABLE_FILE_TYPES = List.of(
+            MediaTypeResponse.from(SupportedMediaType.XLSX),
+            new MediaTypeResponse("text/csv", "csv"));
 
     private final long maxUploadBytes;
     private final int trashRetentionDays;
     private final List<String> googleConnectorAccess;
     private final List<String> googleActions;
     private final String fillSpotNaming;
+    private final int batchMaxRows;
+    private final boolean batchComposeOffered;
 
     CapabilitiesController(
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes,
@@ -77,7 +88,8 @@ class CapabilitiesController {
             GoogleConnectorSetup googleConnectorSetup,
             DriveOffer driveOffer,
             ConfiguredActionOffer actionOffer,
-            FillSpotNamingSetting fillSpotNamingSetting) {
+            FillSpotNamingSetting fillSpotNamingSetting,
+            BatchService batchService) {
         this.maxUploadBytes = maxUploadBytes;
         this.trashRetentionDays = deletionService.trashRetentionDays();
         this.googleConnectorAccess = Arrays.stream(ConnectorAccess.values())
@@ -91,6 +103,8 @@ class CapabilitiesController {
                 .toList();
         this.googleActions = actionOffer.names();
         this.fillSpotNaming = fillSpotNamingSetting.naming();
+        this.batchMaxRows = batchService.maxRows();
+        this.batchComposeOffered = batchService.composeOffered();
     }
 
     @GetMapping
@@ -104,7 +118,10 @@ class CapabilitiesController {
                 googleConnectorAccess,
                 googleActions,
                 FORM_FILE_TYPES,
-                fillSpotNaming);
+                fillSpotNaming,
+                TABLE_FILE_TYPES,
+                batchMaxRows,
+                batchComposeOffered);
     }
 
     /** How a form in this format is filled: as the Word document it is, as a Word copy converted from it, or as a PDF. */
@@ -150,6 +167,9 @@ class CapabilitiesController {
             List<String> googleConnectorAccess,
             List<String> googleActions,
             List<FormFileTypeResponse> formFileTypes,
-            String fillSpotNaming) {
+            String fillSpotNaming,
+            List<MediaTypeResponse> tableFileTypes,
+            int batchMaxRows,
+            boolean batchComposeOffered) {
     }
 }
