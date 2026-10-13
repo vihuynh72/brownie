@@ -596,10 +596,12 @@ class ArtifactServiceTest {
         FakeArtifactRepository repository = new FakeArtifactRepository();
         ArtifactService service =
                 new ArtifactService(repository, new FakeBlobStore(), new FakeMalwareScanner(), 1_000_000, Duration.ofHours(24));
+        // A macro-enabled workbook: plain .xlsx is a readable table source, so
+        // the still-refused kind stands in for spreadsheets as a whole.
         byte[] workbook = zipOf(Map.of(
                 "[Content_Types].xml",
                 "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\""
-                        + " ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
+                        + " ContentType=\"application/vnd.ms-excel.sheet.macroenabled.main+xml\"/></Types>",
                 "_rels/.rels",
                 "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\""
                         + " Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\""
