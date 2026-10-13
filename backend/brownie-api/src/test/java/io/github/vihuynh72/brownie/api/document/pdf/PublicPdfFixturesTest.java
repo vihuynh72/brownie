@@ -42,6 +42,7 @@ class PublicPdfFixturesTest {
         FIXTURES.put("fillable-application.pdf", PdfFormFixtures::fillableForm);
         FIXTURES.put("flat-application.pdf", PdfFormFixtures::flatForm);
         FIXTURES.put("scanned-note.pdf", () -> PdfFormFixtures.scannedPage(false));
+        FIXTURES.put("certificate-of-participation.pdf", PdfFormFixtures::certificateForm);
     }
 
     @Test
