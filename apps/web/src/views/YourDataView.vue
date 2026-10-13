@@ -89,8 +89,19 @@ const acceptedFilesSentence = computed(() => {
   if (!Array.isArray(types) || types.length === 0) return null
   const names = types.map((type) => type.extension.replace(/^\./, '').toUpperCase()).join(', ')
   const limit = capabilities.value?.maxUploadBytes
-  return typeof limit === 'number' && limit > 0 ? `${names}, up to ${formatBytes(limit)} each.` : `${names}.`
+  let sentence = typeof limit === 'number' && limit > 0 ? `${names}, up to ${formatBytes(limit)} each.` : `${names}.`
+  // A spreadsheet to fill one document per row from is a separate accept list the server only names where batches exist.
+  const tableTypes = capabilities.value?.tableFileTypes
+  if (Array.isArray(tableTypes) && tableTypes.length > 0) {
+    const rows = capabilities.value?.batchMaxRows
+    const limitWords = typeof rows === 'number' && rows > 0 ? `, up to ${rows} rows` : ''
+    sentence += ` To fill one document per row, an Excel .xlsx workbook or a CSV file${limitWords}.`
+  }
+  return sentence
 })
+
+/** Where writing a field's text from a row's notes is offered, that writing sends the row's values to the model. */
+const composeOffered = computed(() => capabilities.value?.batchComposeOffered === true)
 
 const googleOffered = computed(() => (offeredAccess(capabilities.value)?.length ?? 0) > 0)
 /**
@@ -354,6 +365,7 @@ watch(
           <ul class="your-data__list">
             <li>Your documents, every saved version of them, and the templates and rules you taught.</li>
             <li>The files you attach as sources, and the files Brownie makes from your documents (Word and PDF).</li>
+            <li>Spreadsheets you fill documents from in a batch, kept until you delete the batch, then removed within a day.</li>
             <li>Where each filled-in value came from in your sources, so you can check it.</li>
             <li>A record of each run: when it started, how it ended, and what it cost. Not what it said.</li>
             <li>
@@ -437,6 +449,10 @@ watch(
               <template v-if="modelLabel">{{ modelLabel }}</template>
               <template v-else>the AI service this Brownie is set up to use</template>
               to get an answer.
+              <template v-if="composeOffered"
+                >When you ask Brownie to write a field's text from a spreadsheet row's notes, that row's values are sent to
+                the same service for the writing.</template
+              >
               <template v-if="formTextSentToModel"
                 >When you upload a form, its text is sent to the same service, so Brownie can find the places to fill in and
                 name them. Nothing else is sent until you ask.</template
