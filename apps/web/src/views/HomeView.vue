@@ -2,13 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import type { IconName } from '@/components/icons'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { ApiRequestError, listDocuments, trashDocument, type DocumentSummaryResponse } from '@/api/client'
 import { documentHandoffState } from '@/router/handoff'
-import { loadCapabilities } from '@/capabilities'
-import { FORM_FILE_ACCEPT, learnFormAndStartDocument, learnStepWords } from '@/upload/learnAndStart'
-import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
+import { formatBytes, loadCapabilities } from '@/capabilities'
+import { isPagesPackage } from '@/upload/fillableCopyWords'
+import { FORM_FILE_ACCEPT, learnFormAndStartDocument, learnRows, learnStepWords, refusalParts } from '@/upload/learnAndStart'
+import { formUploadError, formUploadFinished, formUploadStep, type ChosenForm } from '@/upload/formUploadState'
 
 const session = useSessionStore()
 const route = useRoute()
@@ -26,7 +28,7 @@ const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'n
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
-// A typographer's apostrophe, as the design sets it.
+// A typographer's apostrophe, as the rest of the interface sets it.
 const greeting = computed(() =>
   session.firstName ? `What’s on your mind today, ${session.firstName}?` : 'What’s on your mind today?',
 )
@@ -53,33 +55,73 @@ onMounted(loadDocuments)
 // ---- Uploading a form ------------------------------------------------------------------------
 //
 // The file chooser belongs to a hidden input, opened by the big button, so the button can look
-// like the design and still be one ordinary control. While a form is being learned the button
-// says it is unavailable with aria-disabled rather than the disabled attribute, which would drop
-// the keyboard focus it holds; a press in that time does nothing.
+// like a single large control and still be one ordinary control. While a form is being learned the
+// button says it is unavailable with aria-disabled rather than the disabled attribute, which would
+// drop the keyboard focus it holds; a press in that time does nothing.
 
+const uploadButton = ref<HTMLButtonElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 // Kept outside the page (see formUploadState), so leaving Home mid-way loses neither the step nor how it ended.
 const uploadStep = formUploadStep
 const uploadError = formUploadError
 const uploadFinished = formUploadFinished
 const uploading = computed(() => uploadStep.value !== null)
-const uploadStatus = computed(() => (uploadStep.value ? learnStepWords(uploadStep.value.step, uploadStep.value.detail) : ''))
+const authenticated = computed(() => session.status === 'authenticated')
 
-// Where this deployment has the AI service name the places in an uploaded form, the form's text goes to it, and the
-// person is told so before they choose a file. Asked only once signed in: the question is about their uploads.
+// What this deployment says about uploads: how large a file may be, and whether the AI service names the places in
+// a form. Asked only once signed in: both are about the person's own uploads. Until it answers, or when it cannot,
+// nothing is claimed that it did not say.
 const namingByModel = ref(false)
-async function loadNaming(): Promise<void> {
+const uploadLimit = ref<string | null>(null)
+async function loadCapabilityNotes(): Promise<void> {
   try {
-    namingByModel.value = (await loadCapabilities()).fillSpotNaming === 'MODEL'
+    const capabilities = await loadCapabilities()
+    namingByModel.value = capabilities.fillSpotNaming === 'MODEL'
+    uploadLimit.value = capabilities.maxUploadBytes > 0 ? formatBytes(capabilities.maxUploadBytes) : null
   } catch {
-    // Unknown, and nothing is said; an upload that happens anyway is worded by the server's own answers.
     namingByModel.value = false
+    uploadLimit.value = null
   }
 }
 onMounted(() => {
-  if (session.status === 'authenticated') void loadNaming()
+  if (authenticated.value) void loadCapabilityNotes()
 })
-const uploadDescribedBy = computed(() => (namingByModel.value ? 'home-upload-kinds home-upload-disclosure' : 'home-upload-kinds'))
+
+/** The kinds of file the button takes, and how large one may be where the server said. */
+const kindsLine = computed(
+  () => `Word, PDF, Pages, OpenDocument or RTF${uploadLimit.value ? `, up to ${uploadLimit.value}` : ''}`,
+)
+// Where the AI service names the places in an uploaded form, the form's text goes to it, and the person is told so
+// before they choose a file. While a form is being learned there is no file left to choose, so the note waits.
+const showDisclosure = computed(() => authenticated.value && namingByModel.value && !uploading.value)
+const uploadDescribedBy = computed(() => (showDisclosure.value ? 'home-upload-kinds home-upload-disclosure' : 'home-upload-kinds'))
+
+const DROP_TITLE = 'Drop your form to start'
+const dropExplanation = computed(() => `${kindsLine.value}. Brownie makes a template and a document from it.`)
+
+// The page's one polite live region: each step is read out as it starts, and so is the drop zone. It stays in the
+// page while empty, because a live region that only appears with its first message is not reliably read out.
+const announcement = computed(() => {
+  if (dragging.value) return `${DROP_TITLE}. ${dropExplanation.value}`
+  if (uploadStep.value) return learnStepWords(uploadStep.value.step, uploadStep.value.detail)
+  return finishedAnnouncement.value
+})
+
+// A form can finish while this page is showing but its upload began on an earlier visit, so nothing opens the
+// document for the person; the notice appears, and the live region says so once. A notice that was already there
+// when the page opened is only there to be found.
+const finishedAnnouncement = ref('')
+watch(
+  () => formUploadFinished.value,
+  (now) => {
+    finishedAnnouncement.value = now ? finishedWords(now.fileName) : ''
+  },
+)
+
+function finishedWords(fileName: string): string {
+  return `Brownie learned “${fileName}” and started a document from it.`
+}
+
 // Someone who moves on while a form is being learned is not pulled back to it when it is ready: the
 // document is in their recent documents, and the template under My Templates, either way.
 let leftHome = false
@@ -89,38 +131,82 @@ onBeforeUnmount(() => {
   if (!uploading.value) uploadError.value = null
 })
 
+const KIND_BY_EXTENSION = new Map([
+  ['docx', 'Word'],
+  ['dotx', 'Word'],
+  ['docm', 'Word'],
+  ['dotm', 'Word'],
+  ['doc', 'Word'],
+  ['dot', 'Word'],
+  ['rtf', 'RTF'],
+  ['odt', 'OpenDocument'],
+  ['ott', 'OpenDocument'],
+  ['pages', 'Pages'],
+  ['pdf', 'PDF'],
+])
+
+/** The file as the cards name it. The kind comes from the name, which is what the person sees, not from the bytes. */
+function describeForm(file: File): ChosenForm {
+  const dot = file.name.lastIndexOf('.')
+  const extension = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : ''
+  return { name: file.name, kind: KIND_BY_EXTENSION.get(extension) ?? null, size: formatBytes(file.size) }
+}
+
+/** "Word • 48 KB • becomes a template and a document": what is known of the file, then what is happening to it. */
+function metaWords(form: ChosenForm, tail: string): string {
+  return [form.kind, form.size, tail].filter((part): part is string => part !== null).join(' • ')
+}
+
 function chooseForm(): void {
   if (uploading.value) return
   fileInput.value?.click()
 }
 
-async function onFormChosen(event: Event): Promise<void> {
+function onFormChosen(event: Event): void {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   // Cleared at once, so choosing the same file again after a refusal is still a change.
   input.value = ''
+  void uploadForm(file)
+}
+
+/** Choosing a file and dropping one both end here, so both are refused, and worded, alike. */
+async function uploadForm(file: File | undefined): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   if (!file || workspaceId === undefined || uploading.value) return
 
+  const form = describeForm(file)
+  const replacesACard = uploadError.value !== null || uploadFinished.value !== null
   uploadError.value = null
   uploadFinished.value = null
-  uploadStep.value = { step: 'uploading', detail: { mediaType: null, waiting: false } }
+  uploadStep.value = { step: 'uploading', detail: { mediaType: null, waiting: false }, form }
+  if (replacesACard) void keepFocusOnPage()
   const outcome = await learnFormAndStartDocument(workspaceId, file, (step, detail) => {
-    uploadStep.value = { step, detail }
+    uploadStep.value = { step, detail, form }
   })
   if (!outcome.ok) {
     uploadStep.value = null
-    uploadError.value = outcome.message
+    uploadError.value = { form, message: outcome.message }
     return
   }
   if (leftHome) {
     // Said on Home when the person comes back, with a way to the document, instead of lost.
-    uploadFinished.value = { documentId: outcome.documentId, name: outcome.name, notes: outcome.notes }
+    uploadFinished.value = { documentId: outcome.documentId, fileName: file.name, notes: outcome.notes }
     uploadStep.value = null
     return
   }
   await router.push(documentLocation(outcome.documentId, outcome.notes))
   uploadStep.value = null
+}
+
+/**
+ * A card or notice the form was chosen from ("Choose another file") is replaced by the next one, and takes the
+ * focus it held with it, which would leave a keyboard user at the top of the page. The button that starts every
+ * upload is the place to put it back.
+ */
+async function keepFocusOnPage(): Promise<void> {
+  await nextTick()
+  if (document.activeElement === document.body) uploadButton.value?.focus()
 }
 
 /**
@@ -133,6 +219,144 @@ function documentLocation(documentId: number, notes: string[]) {
     state: notes.length > 0 ? documentHandoffState({ attachedSources: [], sourceWarning: null, formNotes: notes }) : undefined,
   }
 }
+
+// What a person watching a form being learned sees: the file, then each step as it is reached.
+const learningRowsNow = computed(() => (uploadStep.value ? learnRows(uploadStep.value.step, uploadStep.value.detail) : []))
+// A marker alone is not announced, so each line says where it stands in words only a screen reader hears.
+const ROW_STATE_WORDS = { done: 'Done', active: 'In progress', pending: 'Not started' } as const
+
+/** A refusal in the two parts it can be shown in: why the file was not taken, and what the person can do next. */
+const refusal = computed(() => {
+  const failed = uploadError.value
+  return failed ? { form: failed.form, ...refusalParts(failed.message) } : null
+})
+
+/** "Open it, remove the password..." after "What you can do:" reads as the rest of that sentence. */
+function afterColon(sentence: string): string {
+  return sentence.charAt(0).toLowerCase() + sentence.slice(1)
+}
+
+/** Closing a card takes its buttons away, so focus goes back to the button that starts the next try. */
+async function dismissRefusal(): Promise<void> {
+  uploadError.value = null
+  await nextTick()
+  uploadButton.value?.focus()
+}
+
+async function dismissFinished(): Promise<void> {
+  uploadFinished.value = null
+  await nextTick()
+  uploadButton.value?.focus()
+}
+
+// ---- Dropping a form on the page -------------------------------------------------------------
+//
+// A file dragged over the page turns it into one large drop zone, and dropping it does what choosing it would. The
+// listeners are on the window, because a drag over any part of the page must be answered, and because a file that
+// is dropped where nothing answers is opened by the browser in place of the page, which would end a form being learned.
+// Only drags that carry files are looked at: a dragged link or a piece of selected text is none of this page's business.
+
+const dragging = ref(false)
+// The drop zone is drawn over the main region, which starts where the sidebar ends; measured when the drag arrives.
+const dropLeft = ref(0)
+const dropStyle = computed(() => ({ '--home-drop-left': `${dropLeft.value}px` }))
+// Every element the pointer crosses sends its own enter and leave, so the drag has left the page only when they balance.
+let dragDepth = 0
+
+function carriesFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+}
+
+/** Whether a dropped form would be taken: someone signed in, with nothing else being learned. */
+function canTakeForm(): boolean {
+  return authenticated.value && !uploading.value
+}
+
+function onDragEnter(event: DragEvent): void {
+  if (!carriesFiles(event)) return
+  event.preventDefault()
+  dragDepth += 1
+  if (!canTakeForm() || dragging.value) return
+  dropLeft.value = document.getElementById('main-content')?.getBoundingClientRect().left ?? 0
+  dragging.value = true
+}
+
+function onDragOver(event: DragEvent): void {
+  if (!carriesFiles(event)) return
+  // Without this the browser does not allow a drop here at all.
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = canTakeForm() ? 'copy' : 'none'
+}
+
+function onDragLeave(event: DragEvent): void {
+  if (!carriesFiles(event)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dragging.value = false
+}
+
+function onDrop(event: DragEvent): void {
+  if (!carriesFiles(event)) return
+  // Always claimed, so a form that is not taken is not opened by the browser in place of this page.
+  event.preventDefault()
+  dragDepth = 0
+  dragging.value = false
+  if (!canTakeForm()) return
+  const dropped = droppedForms(event)
+  if (dropped.length === 1) {
+    void uploadForm(dropped[0])
+  } else if (dropped.length > 1) {
+    uploadError.value = {
+      form: { name: `${dropped.length} files`, kind: null, size: null },
+      message: 'Brownie fills one form at a time. Drop or choose a single file.',
+    }
+  }
+}
+
+/**
+ * The files in a drop, without any folder. A folder arrives as a file with nothing in it, so it is told apart by what
+ * the browser says it is; a Pages document is one, and is kept so that the person is told why it cannot be used.
+ */
+function droppedForms(event: DragEvent): File[] {
+  const items = Array.from(event.dataTransfer?.items ?? []).filter((item) => item.kind === 'file')
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  return files.filter((file, index) => !(items[index]?.webkitGetAsEntry?.()?.isDirectory && !isPagesPackage(file)))
+}
+
+watch(uploading, (now) => {
+  if (!now) return
+  dragging.value = false
+  dragDepth = 0
+})
+
+onMounted(() => {
+  window.addEventListener('dragenter', onDragEnter)
+  window.addEventListener('dragover', onDragOver)
+  window.addEventListener('dragleave', onDragLeave)
+  window.addEventListener('drop', onDrop)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('dragenter', onDragEnter)
+  window.removeEventListener('dragover', onDragOver)
+  window.removeEventListener('dragleave', onDragLeave)
+  window.removeEventListener('drop', onDrop)
+})
+
+// ---- How Brownie works ----------------------------------------------------------------------
+
+/** The same three steps the sign-in page shows, so a visitor sees what the product does before they sign in. */
+const HOW_BROWNIE_WORKS: readonly { icon: IconName; title: string; text: string }[] = [
+  { icon: 'document-upload', title: 'Upload a form', text: 'Brownie learns where the values go and keeps the form’s own look.' },
+  {
+    icon: 'document-text',
+    title: 'Add your notes',
+    text: 'A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.',
+  },
+  {
+    icon: 'document-check',
+    title: 'Check and export',
+    text: 'You approve every value. Brownie exports exactly the version you approved.',
+  },
+]
 
 // ---- Recent documents ------------------------------------------------------------------------
 
@@ -202,7 +426,7 @@ watch(
   (status) => {
     if (status === 'authenticated') {
       void loadDocuments()
-      void loadNaming()
+      void loadCapabilityNotes()
     }
   },
 )
@@ -211,7 +435,7 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
 const thisYearFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
 const otherYearFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
-/** "Today" for today, otherwise the day itself -- the same heading the design groups rows under. */
+/** "Today" for today, otherwise the day itself. */
 function dayHeading(date: Date, now: Date): string {
   const sameDay =
     date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
@@ -225,6 +449,8 @@ interface DayGroup {
   documents: { document: DocumentSummaryResponse; time: string }[]
 }
 
+const newestFirst = computed(() => [...documents.value].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)))
+
 /**
  * Newest first, split into the days they were created on. The grouping key
  * is the local calendar date rather than the timestamp, so two documents
@@ -234,8 +460,7 @@ interface DayGroup {
 const recentDays = computed<DayGroup[]>(() => {
   const now = new Date()
   const groups = new Map<string, DayGroup>()
-  const sorted = [...documents.value].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  for (const document of sorted) {
+  for (const document of newestFirst.value) {
     const created = new Date(document.createdAt)
     const key = `${created.getFullYear()}-${created.getMonth()}-${created.getDate()}`
     let group = groups.get(key)
@@ -247,10 +472,27 @@ const recentDays = computed<DayGroup[]>(() => {
   }
   return [...groups.values()]
 })
+
+/**
+ * The document to offer first: the newest one. The list says only when each was made, so that is what "where you left
+ * off" can honestly rest on, and the line under its title says when it was started, not when it was last worked on.
+ */
+const resume = computed(() => {
+  const document = newestFirst.value[0]
+  if (!document) return null
+  const created = new Date(document.createdAt)
+  const day = dayHeading(created, new Date())
+  return { document, started: `Started ${day === 'Today' ? 'today' : day} at ${timeFormatter.format(created)}` }
+})
+
+/** The three cards that say how Brownie works are for someone with nothing yet; they make way for a form being learned. */
+const showHowItWorks = computed(
+  () => loadState.value === 'loaded' && documents.value.length === 0 && !uploading.value && uploadError.value === null,
+)
 </script>
 
 <template>
-  <div class="home">
+  <div class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
     <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
       This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
       should be, ask whoever invited you; signing in again with the same account will not change it.
@@ -261,8 +503,24 @@ const recentDays = computed<DayGroup[]>(() => {
       <RouterLink to="/signin">Try again</RouterLink>
     </p>
 
-    <h1 class="home__greeting">
-      {{ session.status === 'authenticated' ? greeting : 'Welcome to Brownie!' }}
+    <!-- A form that was finished while the person was elsewhere: a notice at the corner of the page, kept until it is used or closed. -->
+    <div v-if="uploadFinished" class="home__toast">
+      <AppIcon class="home__toast-check" name="check-circle" :size="18" />
+      <p class="home__toast-text">{{ finishedWords(uploadFinished.fileName) }}</p>
+      <RouterLink
+        class="home__toast-link"
+        :to="documentLocation(uploadFinished.documentId, uploadFinished.notes)"
+        @click="uploadFinished = null"
+        >Open it</RouterLink
+      >
+      <button type="button" class="icon-button" @click="dismissFinished">
+        <AppIcon name="close" :size="16" />
+        <span class="visually-hidden">Dismiss</span>
+      </button>
+    </div>
+
+    <h1 class="page-title home__greeting">
+      {{ authenticated ? greeting : 'Welcome to Brownie!' }}
     </h1>
 
     <div class="home__upload-area">
@@ -270,15 +528,16 @@ const recentDays = computed<DayGroup[]>(() => {
         Signed in, the button opens the file chooser for the form to fill. Signed out it is a link
         to the sign-in page that brings the visitor back here, rather than a control that refuses.
       -->
-      <template v-if="session.status === 'authenticated'">
+      <template v-if="authenticated">
         <button
+          ref="uploadButton"
           type="button"
           class="button button--primary home__upload"
           :aria-disabled="uploading ? 'true' : undefined"
           :aria-describedby="uploadDescribedBy"
           @click="chooseForm"
         >
-          <AppIcon name="upload" :size="40" />
+          <AppIcon name="upload" :size="30" />
           <span>Upload your documents</span>
         </button>
         <input
@@ -293,48 +552,122 @@ const recentDays = computed<DayGroup[]>(() => {
         />
       </template>
       <RouterLink v-else class="button button--primary home__upload" :to="{ name: 'signin', query: { next: '/' } }">
-        <AppIcon name="upload" :size="40" />
+        <AppIcon name="upload" :size="30" />
         <span>Upload your documents</span>
       </RouterLink>
-      <p id="home-upload-kinds" class="home__upload-kinds">Word, PDF, Pages, OpenDocument or RTF</p>
-      <p v-if="session.status === 'authenticated' && namingByModel" id="home-upload-disclosure" class="home__upload-disclosure">
+      <p id="home-upload-kinds" class="home__upload-kinds">{{ kindsLine }}</p>
+      <p v-if="showDisclosure" id="home-upload-disclosure" class="home__upload-disclosure">
+        <AppIcon name="info" :size="14" />
         When you upload a form, its text is sent to our AI service so Brownie can find the places to fill.
       </p>
-
-      <!--
-        The page's one polite live region: each step is read out as it starts. Its line is kept while it is
-        empty, so the list below does not move when a form is chosen; the turning ring beside it is only seen.
-      -->
-      <div class="home__upload-progress">
-        <span v-if="uploading" class="activity-indicator" aria-hidden="true"></span>
-        <p class="home__upload-status" role="status">{{ uploadStatus }}</p>
-      </div>
-      <p v-if="uploadError" class="field-error home__upload-error" role="alert">{{ uploadError }}</p>
-      <p v-if="uploadFinished" class="home__notice home__upload-finished">
-        Brownie learned "{{ uploadFinished.name }}" and started a document from it.
-        <RouterLink :to="documentLocation(uploadFinished.documentId, uploadFinished.notes)" @click="uploadFinished = null">Open it</RouterLink>.
-      </p>
+      <p class="visually-hidden home__status" role="status">{{ announcement }}</p>
     </div>
 
-    <section v-if="session.status === 'authenticated'" class="home__recent" aria-labelledby="recent-heading">
-      <h2 id="recent-heading" class="home__recent-title">Recent documents</h2>
+    <!-- While a form is being learned: which form, and each step as it is reached. -->
+    <div v-if="uploadStep" class="msg-card home__card home__card--learning">
+      <div class="home__card-head">
+        <span class="doc-tile" aria-hidden="true"><AppIcon name="document-text" :size="22" /></span>
+        <div class="home__card-text">
+          <p class="home__card-name" :title="uploadStep.form.name">{{ uploadStep.form.name }}</p>
+          <p class="home__card-meta">{{ metaWords(uploadStep.form, 'becomes a template and a document') }}</p>
+        </div>
+      </div>
+      <!-- How far along it is cannot be known, so the bar only shows that something is moving; the steps say what. -->
+      <div class="home__progress" aria-hidden="true"><span class="home__progress-bar"></span></div>
+      <ol class="step-list home__steps">
+        <li v-for="row in learningRowsNow" :key="row.id" class="step" :class="`step--${row.state}`">
+          <span class="step__marker" aria-hidden="true"></span>
+          <span class="step__label"><span class="visually-hidden">{{ ROW_STATE_WORDS[row.state] }}: </span>{{ row.label }}</span>
+        </li>
+      </ol>
+      <div class="panel--quiet home__note">
+        <AppIcon name="info" :size="16" />
+        <p>
+          You can leave this page, but keep this tab open. Brownie opens the document when it is ready, or it waits for you in
+          Recent documents.
+        </p>
+      </div>
+    </div>
+
+    <!-- After a form was refused: which form, why, and what to do. The reason is the alert; focus stays on the button that was pressed. -->
+    <div v-else-if="refusal" class="msg-card home__card home__card--refused">
+      <div class="home__card-head">
+        <span class="doc-tile home__alert-tile" aria-hidden="true"><AppIcon name="alert-circle" :size="20" /></span>
+        <div class="home__card-text">
+          <p class="home__card-name" :title="refusal.form.name">{{ refusal.form.name }}</p>
+          <p class="home__card-meta">{{ metaWords(refusal.form, 'not added') }}</p>
+        </div>
+        <button type="button" class="icon-button home__card-close" @click="dismissRefusal">
+          <AppIcon name="close" :size="18" />
+          <span class="visually-hidden">Close</span>
+        </button>
+      </div>
+      <p class="home__refusal-reason" role="alert">{{ refusal.reason }}</p>
+      <div v-if="refusal.advice" class="panel--quiet home__note home__note--advice">
+        <AppIcon name="info" :size="16" />
+        <p>What you can do: {{ afterColon(refusal.advice) }}</p>
+      </div>
+      <div class="home__card-actions">
+        <button type="button" class="button button--primary button--small" @click="chooseForm">
+          <AppIcon name="upload" :size="16" />
+          <span>Choose another file</span>
+        </button>
+        <button type="button" class="button button--quiet button--small" @click="dismissRefusal">Dismiss</button>
+      </div>
+    </div>
+
+    <section v-if="authenticated && resume" class="home__resume" aria-labelledby="resume-heading">
+      <h2 id="resume-heading" class="home__resume-label">Continue where you left off</h2>
+      <div class="home__resume-row">
+        <span class="doc-tile" aria-hidden="true"><AppIcon name="document-text" :size="22" /></span>
+        <div class="home__resume-text">
+          <p class="home__resume-title" :title="resume.document.title">{{ resume.document.title }}</p>
+          <p class="home__resume-started">{{ resume.started }}</p>
+        </div>
+        <RouterLink class="button button--primary button--small" :to="`/documents/${resume.document.id}`">
+          <AppIcon name="arrow-right" :size="16" />
+          <span>Open <span class="visually-hidden">{{ resume.document.title }}</span></span>
+        </RouterLink>
+      </div>
+    </section>
+
+    <section v-if="authenticated && showHowItWorks" class="home__how" aria-labelledby="how-heading">
+      <h2 id="how-heading" class="home__section-title">How Brownie works</h2>
+      <ol class="home__how-cards">
+        <li v-for="(step, index) in HOW_BROWNIE_WORKS" :key="step.title" class="panel home__how-card">
+          <p class="home__how-head">
+            <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon :name="step.icon" :size="18" /></span>
+            <span class="home__how-step">Step {{ index + 1 }}</span>
+          </p>
+          <h3 class="home__how-title">{{ step.title }}</h3>
+          <p class="home__how-text">{{ step.text }}</p>
+        </li>
+      </ol>
+    </section>
+
+    <section v-if="authenticated" class="home__recent" aria-labelledby="recent-heading">
+      <h2 id="recent-heading" class="home__section-title">Recent documents</h2>
 
       <p v-if="trashNotice" ref="trashNoticeElement" class="home__notice" tabindex="-1">
         {{ trashNotice }} <RouterLink to="/trash">Restore it from the trash bin</RouterLink>.
       </p>
-      <p v-if="trashError" ref="trashErrorElement" class="field-error" role="alert" tabindex="-1">{{ trashError }}</p>
+      <p v-if="trashError" ref="trashErrorElement" class="field-error home__problem" role="alert" tabindex="-1">{{ trashError }}</p>
 
-      <p v-if="loadState === 'loading'" class="field-hint home__hint">Loading documents…</p>
-      <p v-else-if="loadState === 'error'" class="field-error" role="alert">
+      <p v-if="loadState === 'loading'" class="home__hint">Loading documents…</p>
+      <p v-else-if="loadState === 'error'" class="field-error home__problem" role="alert">
         {{ loadError }}
       </p>
-      <p v-else-if="documents.length === 0 && removedFromList" class="field-hint home__hint">
-        There are no documents here now. Anything moved to the trash can be restored from the
-        <RouterLink to="/trash">trash bin</RouterLink>.
-      </p>
-      <p v-else-if="documents.length === 0" class="field-hint home__hint">
-        There are no documents here. Upload a form above to start one, or choose a template under My Templates.
-      </p>
+      <!-- While a first form is being learned, this box would say there are no documents right under the card making one. -->
+      <div v-else-if="documents.length === 0 && !(uploading && loadState === 'loaded')" class="home__empty">
+        <AppIcon name="document-blank" :size="24" />
+        <p v-if="removedFromList" class="home__hint">
+          There are no documents here now. Anything moved to the trash can be restored from the
+          <RouterLink to="/trash">trash bin</RouterLink>.
+        </p>
+        <p v-else class="home__hint">
+          There are no documents here. Upload a form above to start one, or choose a template under My Templates.
+        </p>
+      </div>
 
       <div v-for="day in recentDays" :key="day.key" class="home__day">
         <h3 class="home__day-heading">{{ day.heading }}</h3>
@@ -342,7 +675,7 @@ const recentDays = computed<DayGroup[]>(() => {
           <!-- The action sits beside the link, never inside it: a button nested in a link is neither. -->
           <li v-for="entry in day.documents" :key="entry.document.id" class="home__item">
             <RouterLink class="home__row" :to="`/documents/${entry.document.id}`">
-              <span class="home__tile" aria-hidden="true"><AppIcon name="document" :size="30" /></span>
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="document-blank" :size="22" /></span>
               <span class="home__row-title" :title="entry.document.title">{{ entry.document.title }}</span>
               <span class="home__row-time">{{ entry.time }}</span>
             </RouterLink>
@@ -360,26 +693,52 @@ const recentDays = computed<DayGroup[]>(() => {
         </ul>
       </div>
     </section>
+
+    <!--
+      Drawn on the body rather than inside the page, so that it is fixed to the window whatever sits between here and
+      the window: a container, a transform or a filter on an ancestor would make "fixed" mean fixed to that instead.
+      Decoration, so it is hidden from assistive technology; the button above stays the way to choose a file, and the
+      live region says the drop zone is open.
+    -->
+    <Teleport to="body">
+      <div v-if="dragging" class="home__drop" aria-hidden="true" :style="dropStyle">
+        <div class="home__drop-body">
+          <span class="home__drop-icon"><AppIcon name="document-upload" :size="40" /></span>
+          <p class="home__drop-title">{{ DROP_TITLE }}</p>
+          <p class="home__drop-text">{{ dropExplanation }}</p>
+          <p class="home__drop-note">
+            <AppIcon name="shield-check" :size="14" />
+            Locked, signed or damaged files are refused with the reason.
+          </p>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 /*
- * Measured from the design at 1512 by 982: a 48px regular-weight greeting
- * whose capitals start 174px down the window, a 78px pill 44px under it,
- * and a list whose drawn part (its heading to the times) is 672px wide, with
- * rows 59px apart. The design's column sits a little right of the middle of
- * the page; this one is centred, so with the sidebar open it is about 15px
- * left of where the drawing has it.
+ * One centred column, 728px wide, whose blocks each take the width they read best at: a form being learned is a
+ * narrower card than the list under it, and while there is nothing in the list yet the three cards that say how
+ * Brownie works use the full column. The top gap is a share of the window's height, so the greeting sits at the
+ * same place on a tall screen as on a short one.
  */
 .home {
+  /* The shell's own side margins already keep the column off the window edge. */
+  --page-gutter: 0px;
+  --home-column: 42.375rem;
+  /* The size of the quiet lines under the button: between the 12px of tags and the 14px of body text. */
+  --home-fine: 0.8125rem;
+  /* A row's trash control sits just outside the column, so the column itself lines up with the cards above it. */
+  --home-row-action: calc(2rem + var(--space-3));
   display: flex;
   flex-direction: column;
   align-items: center;
-  inline-size: 100%;
-  max-inline-size: 64rem;
-  margin-inline: auto;
-  padding-block-start: clamp(var(--space-6), 14.25vh, 8.75rem);
+  padding-block: clamp(var(--space-6), 13.1vh, 9rem) var(--space-8);
+}
+
+.home--wide {
+  --home-column: 45.5rem;
 }
 
 .home__signin-error {
@@ -390,179 +749,437 @@ const recentDays = computed<DayGroup[]>(() => {
 }
 
 .home__greeting {
-  margin: 0;
-  font-size: var(--font-size-display);
-  font-weight: 400;
-  line-height: 1.15;
   text-align: center;
   text-wrap: balance;
 }
 
-/* The button, the line under it that says what is happening, and why it stopped, as one block. */
+/* The button, the quiet lines under it, and the live region, as one block. */
 .home__upload-area {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-2);
   inline-size: 100%;
-  margin-block-start: 2.625rem;
+  margin-block-start: 1.375rem;
 }
 
 /*
- * The design's own colour, not the darker action colour: white on it is
- * 3.53:1, under the 4.5:1 ordinary text needs but over the 3:1 that text
- * of 24px and up needs, and this label is 24px. The label must not shrink
- * below that for this pairing to stay readable.
+ * The big button is the shared primary pill, drawn larger: 451px by 78px with its content set from the left, and a
+ * 20px label at the regular weight, which on this cocoa is 4.8:1 and so clear of the 4.5:1 any size of text needs.
  */
 .home__upload {
-  gap: var(--space-5);
-  min-block-size: 4.875rem;
-  padding-block: var(--space-3);
-  padding-inline: var(--space-6) 4.5rem;
-  border-radius: var(--radius-pill);
-  background: var(--color-cocoa-tile);
-  font-size: var(--font-size-xl);
+  --button-height: 4.875rem;
+  --button-pad: 1.75rem;
+  --button-icon: 1.875rem;
+  --button-gap: 1.5rem;
+  justify-content: flex-start;
+  inline-size: min(100%, 28.1875rem);
+  font-size: var(--font-size-lg);
   font-weight: 400;
-  /* A small lift under the pointer: enough to read as a control, not enough to be a performance. */
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    translate var(--motion-fast) var(--motion-ease),
-    box-shadow var(--motion-fast) var(--motion-ease);
-}
-
-.home__upload:hover:not([aria-disabled='true']) {
-  background: var(--color-cocoa);
-  translate: 0 -1px;
-  box-shadow: 0 0.5rem 1rem rgb(42 41 36 / 0.12);
-}
-
-.home__upload:active:not([aria-disabled='true']) {
-  translate: 0 0;
-  box-shadow: none;
-}
-
-/* Busy, it answers a pointer no more than it answers a press. */
-.home__upload[aria-disabled='true']:hover {
-  background: var(--color-cocoa-tile);
-}
-
-/*
- * Empty until a form is chosen, and then one line that changes, in the text
- * colour and beside a turning ring, so it reads as something happening and
- * not as one more hint. It stays in the page while empty, because a live
- * region that only appears with its first message is not reliably read out,
- * and its line's height is kept, so nothing under it moves when it fills.
- */
-.home__upload-progress {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-block-size: calc(var(--font-size-sm) * 1.5);
-  max-inline-size: 36rem;
-}
-
-.home__upload-status {
-  margin: 0;
-  color: var(--color-text);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  text-align: center;
 }
 
 /* What the button takes, and where a form's text goes: quiet lines, still at full reading contrast. */
 .home__upload-kinds,
 .home__upload-disclosure {
-  margin: 0;
-  max-inline-size: 36rem;
+  margin: 1.1875rem 0 0;
+  max-inline-size: 100%;
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--home-fine);
+  line-height: 1.4;
   text-align: center;
   text-wrap: balance;
 }
 
-.home__upload-error {
-  max-inline-size: 36rem;
+/* The note sits a hair further from the line above it than that line does from the button. */
+.home__upload-disclosure {
+  margin-block-start: 1.25rem;
+}
+
+/* The icon sits in the text itself, so on a narrow screen it stays with the first line instead of being left at the edge. */
+.home__upload-disclosure > svg,
+.home__drop-note > svg {
+  margin-inline-end: 0.25rem;
+  vertical-align: middle;
+}
+
+/* ---- A form being learned, and a form that was refused: the same card, told two ways ---- */
+
+.home__card {
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: 2.5625rem;
+  padding: 1.1875rem;
+}
+
+.home__card--learning {
+  --home-column: 34.8125rem;
+}
+
+/* The card's red edge is what says it is a refusal, and the words and the alert icon say it too. */
+.home__card--refused {
+  border-color: var(--color-error);
+}
+
+.home__card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.home__card-text {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.home__card-name {
   margin: 0;
-  text-align: center;
-}
-
-/*
- * Each row carries its trash control at its end, outside the part the design
- * draws; the same room is left at the start, so the drawn part (heading,
- * tiles, titles, times) is what sits in the middle of the page.
- */
-.home__recent {
-  --home-row-action: calc(2rem + var(--space-1));
-
-  inline-size: 100%;
-  max-inline-size: calc(42.75rem + 2 * var(--home-row-action));
-  margin-block-start: 2.25rem;
-  padding-inline-start: var(--home-row-action);
-}
-
-.home__recent-title {
-  margin: 0 0 var(--space-5);
+  overflow: hidden;
   font-size: var(--font-size-base);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home__card-meta {
+  margin: 0.0625rem 0 0;
   color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+/* The refused file's tile: the same rounded square as a document's, in the error colours. */
+.home__alert-tile {
+  background: var(--color-error-wash);
+  color: var(--color-error);
+}
+
+.home__alert-tile > svg {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+}
+
+.home__card-close {
+  align-self: flex-start;
+  margin-block-start: 0.1875rem;
+  margin-inline-end: -0.3125rem;
+}
+
+/* A track with a short stretch of honey running along it: busy, with no claim about how far there is to go. */
+.home__progress {
+  margin-block: 1rem;
+  block-size: 0.25rem;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-track);
+}
+
+.home__progress-bar {
+  display: block;
+  inline-size: 29%;
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--color-honey);
+  animation: home-progress 1.8s var(--motion-ease) infinite alternate;
+}
+
+/* The distance is a share of the bar's own width: 245% of 29% is the rest of the track. */
+@keyframes home-progress {
+  from {
+    translate: 0;
+  }
+
+  to {
+    translate: 245%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home__progress-bar {
+    animation: none;
+    translate: 113%;
+  }
+}
+
+/* A display that forces its own colours drops backgrounds, which would erase the track and the bar. */
+@media (forced-colors: active) {
+  .home__progress {
+    border: 1px solid CanvasText;
+  }
+
+  .home__progress-bar {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+}
+
+.home__steps {
+  margin-block-end: 1rem;
+}
+
+/* A note inside a card: an icon, then a sentence, on the quiet panel. */
+.home__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0.625rem 0.75rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.home__note > svg {
+  flex: none;
+}
+
+.home__note > p {
+  margin: 0;
+}
+
+.home__note--advice {
+  gap: 0.625rem;
+}
+
+.home__refusal-reason {
+  margin: 1.125rem 0 0;
+  font-size: var(--font-size-base);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.home__refusal-reason + .home__note {
+  margin-block-start: 0.875rem;
+}
+
+.home__card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-block-start: 0.875rem;
+}
+
+/* ---- Where the person left off ---- */
+
+.home__resume {
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: 2.375rem;
+  padding: 1rem 1.1875rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.home__resume-label {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+.home__resume-row {
+  display: flex;
+  align-items: center;
+  gap: 0.90625rem;
+  margin-block-start: var(--space-2);
+}
+
+.home__resume-text {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+/* One line when it fits and two when it does not, so beside the button on a narrow screen a title is not cut to a few letters. */
+.home__resume-title {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+/* As tall as a line of tags would be, so the card keeps its height whichever of the two a document has to say. */
+.home__resume-started {
+  display: flex;
+  align-items: center;
+  min-block-size: 1.375rem;
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+/* On a narrow screen the button goes under the title, in line with it, so the title keeps the whole width beside the tile. */
+@container main (max-width: 26rem) {
+  .home__resume-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .home__resume-row > .button {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+/* ---- How Brownie works ---- */
+
+.home__how {
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: 3.5rem;
+}
+
+.home__section-title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+/* Each card is as tall as its own words need, so a shorter one is not stretched to match a longer. */
+.home__how-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.0625rem;
+  align-items: start;
+  margin: 0.5625rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home__how-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0;
+}
+
+.home__how-step {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+.home__how-title {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+.home__how-text {
+  margin: 0.625rem 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+@container main (min-width: 40rem) {
+  .home__how-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ---- Recent documents ---- */
+
+.home__recent {
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: 1.5625rem;
+}
+
+.home__how + .home__recent {
+  margin-block-start: 1.8125rem;
+}
+
+/* Nothing yet: a dashed box rather than a card, so it reads as a place waiting to be filled and not as content. */
+.home__empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-block-start: var(--space-2);
+  padding: 1.125rem 1.375rem 1.125rem 1.25rem;
+  border: 1px dashed var(--color-outline);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-muted);
+}
+
+.home__empty > svg {
+  flex: none;
 }
 
 .home__hint {
   margin: 0;
-  padding-inline-start: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
 }
 
-/* The day headings and their rows sit in from the section's own heading, as the design indents them. */
+.home__problem {
+  margin: var(--space-3) 0 0;
+}
+
+.home__notice {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-cocoa-wash);
+}
+
+/* The shared link colour measures 4.47:1 on this wash, just under AA; the text colour is 10.17:1 and the underline still says "link". */
+.home__notice a {
+  color: var(--color-text);
+}
+
 .home__day {
-  padding-inline-start: var(--space-4);
+  margin-block-start: 0.78125rem;
 }
 
 .home__day + .home__day {
-  margin-block-start: var(--space-4);
+  margin-block-start: 0.6875rem;
 }
 
 .home__day-heading {
-  margin: 0 0 var(--space-1);
-  padding-inline-start: var(--space-3);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
+  margin: 0 0 0.4375rem;
+  padding-inline-start: 0.21875rem;
   color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
 }
 
 .home__list {
-  list-style: none;
   margin: 0;
   padding: 0;
+  list-style: none;
 }
 
 .home__item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-1);
+  column-gap: var(--space-3);
 }
 
-.home__notice {
-  margin: 0 0 var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
-}
-
-/* The default link blue measures 4.48:1 on this wash, just under AA; the text colour is 11.96:1 and the underline still says "link". */
-.home__notice a {
-  color: var(--color-text);
-}
-
+/*
+ * The content of a row sits a few pixels in from the column's edge, and the wash it takes under the pointer reaches
+ * a little past that edge, so the tile lines up with the heading and the cards above while the row still has
+ * room around what it holds.
+ */
 .home__row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-5);
-  min-block-size: 3.6875rem;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
+  gap: 1.375rem;
+  min-block-size: 3.625rem;
+  margin-inline: -0.5rem;
+  padding: var(--space-2) 1.21875rem var(--space-2) 0.71875rem;
+  border-radius: var(--radius-md);
   color: var(--color-text);
   text-decoration: none;
   transition: background-color var(--motion-fast) var(--motion-ease);
@@ -572,31 +1189,17 @@ const recentDays = computed<DayGroup[]>(() => {
   background: var(--color-cocoa-wash);
 }
 
-.home__row:hover .home__row-title {
-  text-decoration: underline;
-}
-
-.home__tile {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  inline-size: 2.3125rem;
-  block-size: 2.3125rem;
-  border-radius: var(--radius);
-  background: var(--color-cocoa-tile);
-  color: var(--color-surface);
-}
-
 .home__row-title {
   overflow: hidden;
+  font-size: var(--font-size-lg);
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--font-size-lg);
 }
 
 .home__row-time {
-  font-size: var(--font-size-sm);
   color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -625,10 +1228,16 @@ const recentDays = computed<DayGroup[]>(() => {
   }
 }
 
-/* A finger's larger control (see the shared icon button) takes more room at the row's end. */
+/* With room to spare the control hangs outside the column; without it, it takes its share of the row. */
+@container main (min-width: 48rem) {
+  .home__item {
+    margin-inline-end: calc(-1 * var(--home-row-action));
+  }
+}
+
 @media (pointer: coarse) {
-  .home__recent {
-    --home-row-action: calc(2.75rem + var(--space-1));
+  .home {
+    --home-row-action: calc(2.75rem + var(--space-3));
   }
 }
 
@@ -640,25 +1249,150 @@ const recentDays = computed<DayGroup[]>(() => {
   }
 
   /* The tile spans both rows so it stays beside the pair, not above the time. */
-  .home__tile {
+  .home__row > .doc-tile {
     grid-row: 1 / -1;
   }
 
   .home__row-time {
     grid-column: 2;
   }
+}
 
-  .home__recent {
-    padding-inline-start: 0;
+/* ---- A finished form, said at the corner of the page ---- */
+
+/*
+ * Placed against the region beside the sidebar, 25px in from its top right corner, so it keeps its place whatever the
+ * width of the window or of the sidebar; below the bar that holds the menu button when the sidebar is a drawer. It
+ * scrolls away with the top of the page instead of covering the list. A single line when there is room, and it
+ * wraps when there is not.
+ */
+.home__toast {
+  position: absolute;
+  inset-block-start: calc(var(--shell-bar-row, 0px) + 1.5625rem);
+  inset-inline-end: 1.5625rem;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-inline-size: calc(100% - 3.125rem);
+  padding: 0.375rem 0.5rem 0.375rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.home__toast-check {
+  flex: none;
+  color: var(--color-success);
+}
+
+.home__toast-text {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* Cocoa on white is 4.8:1; against the text beside it the weight and the colour tell it apart, and hover underlines it. */
+.home__toast-link {
+  flex: none;
+  color: var(--color-cocoa);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+}
+
+.home__toast-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- The drop zone ---- */
+
+/*
+ * Over the main region, 24px in from its edges and from the sidebar, in the page's own colour so that what is under
+ * it does not show through. It takes no pointer events: the drag is followed on the window, and the zone only has to
+ * be seen. The dashed frame is an outline drawn as a mask over a cocoa fill, which gives a dash 10px long and a gap
+ * 8px long (a dashed border draws its own, shorter ones) while the colour still comes from the shared token.
+ */
+.home__drop {
+  --home-fine: 0.8125rem;
+  position: fixed;
+  inset: 1.5rem 1.5rem 1.5rem calc(var(--home-drop-left, 0px) + 1.5rem);
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border-radius: 1.5rem;
+  background: var(--color-paper);
+  pointer-events: none;
+  animation: home-drop-in var(--motion-base) var(--motion-ease);
+}
+
+@keyframes home-drop-in {
+  from {
+    opacity: 0;
   }
+}
 
-  .home__day {
-    padding-inline-start: 0;
+.home__drop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-cocoa);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Crect width='100%25' height='100%25' rx='24' ry='24' fill='none' stroke='black' stroke-width='4' stroke-dasharray='10 8'/%3E%3C/svg%3E")
+    center / 100% 100% no-repeat;
+}
+
+/* A display that forces its own colours drops backgrounds, which would erase a frame drawn as one. */
+@media (forced-colors: active) {
+  .home__drop::before {
+    forced-color-adjust: none;
+    background: CanvasText;
   }
+}
 
-  /* The label keeps its 24px (see the button itself), so the room it needs comes out of the padding. */
+.home__drop-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.home__drop-icon {
+  display: grid;
+  place-items: center;
+  inline-size: 5.5rem;
+  block-size: 5.5rem;
+  border-radius: 50%;
+  background: var(--color-cocoa-soft);
+  color: var(--color-cocoa);
+}
+
+.home__drop-title {
+  margin: var(--space-3) 0 0;
+  font-size: var(--font-size-2xl);
+  line-height: 1.2;
+}
+
+.home__drop-text {
+  max-inline-size: 34rem;
+  margin: 0.875rem 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+}
+
+.home__drop-note {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--home-fine);
+  line-height: 1.4;
+}
+
+/* On a narrow screen the label keeps its size, so the room it needs comes out of the gap and the padding. */
+@container main (max-width: 26rem) {
   .home__upload {
-    inline-size: 100%;
     gap: var(--space-3);
     padding-inline: var(--space-4);
     text-wrap: balance;

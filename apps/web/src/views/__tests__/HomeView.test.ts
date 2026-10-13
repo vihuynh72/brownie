@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory, type Router } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
@@ -18,6 +18,7 @@ vi.mock('@/upload/learnAndStart', async () => {
 
 import { ApiRequestError, getCapabilities, listDocuments, trashDocument, type CapabilitiesResponse, type DeletionResponse } from '@/api/client'
 import { learnFormAndStartDocument, type LearnOutcome, type LearnStep, type StepDetail } from '@/upload/learnAndStart'
+import { PDF_REFUSAL_SENTENCES, REFUSAL_SENTENCES } from '@/upload/fillableCopyWords'
 import { formUploadError, formUploadFinished, formUploadStep } from '@/upload/formUploadState'
 import { resetCapabilitiesCache } from '@/capabilities'
 import { readDocumentHandoff } from '@/router/handoff'
@@ -31,6 +32,8 @@ function capabilities(fillSpotNaming?: CapabilitiesResponse['fillSpotNaming']): 
 }
 
 let router: Router
+// Every page mounted here listens to the window's drags until it is unmounted, so a test's drag must find only its own.
+const mounted = new Set<VueWrapper>()
 
 async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement } = '/') {
   const path = typeof pathOrOptions === 'string' ? pathOrOptions : '/'
@@ -46,8 +49,19 @@ async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement }
   })
   router.push(path)
   await router.isReady()
-  return mount(HomeView, { ...mountOptions, global: { plugins: [router] } })
+  const wrapper = mount(HomeView, { ...mountOptions, global: { plugins: [router] } })
+  mounted.add(wrapper)
+  const unmount = wrapper.unmount.bind(wrapper)
+  wrapper.unmount = () => {
+    mounted.delete(wrapper)
+    unmount()
+  }
+  return wrapper
 }
+
+afterEach(() => {
+  for (const wrapper of [...mounted]) wrapper.unmount()
+})
 
 function signedIn(): void {
   const session = useSessionStore()
@@ -65,6 +79,8 @@ function summary(id: number, title: string, createdAt: string) {
   return { id, title, templateId: 1, templateVersionId: 1, currentRevisionId: 1, createdAt }
 }
 
+const timeOf = (date: Date) => new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+
 describe('HomeView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -75,7 +91,6 @@ describe('HomeView', () => {
     resetCapabilitiesCache()
   })
 
-  /** A visitor who is not signed in gets the same front door, not a wall: the upload action is still there to follow. */
   /** Reloading cannot help with any of these, so the page must not say it will. */
   it.each([
     [
@@ -96,6 +111,9 @@ describe('HomeView', () => {
 
     expect(wrapper.get('[role="alert"]').text()).toContain(expected)
     expect(wrapper.text()).not.toContain('reloading')
+    // Not knowing what is in the list is not the same as there being nothing in it.
+    expect(wrapper.find('.home__how').exists()).toBe(false)
+    expect(wrapper.find('.home__empty').exists()).toBe(false)
   })
 
   /** Signed out, the same button is a way to sign in that comes back here, rather than a control that refuses. */
@@ -112,9 +130,12 @@ describe('HomeView', () => {
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
-    // What the button takes is said to everyone; what happens to a form's text is asked about only once signed in.
+    // What the button takes is said to everyone; how large a file may be, and what happens to a form's text, are
+    // asked about only once signed in.
     expect(wrapper.get('.home__upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
     expect(getCapabilities).not.toHaveBeenCalled()
+    expect(wrapper.find('.home__how').exists()).toBe(false)
+    expect(wrapper.find('.home__recent').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -183,11 +204,16 @@ describe('HomeView', () => {
     expect(rows[0]!.text()).toContain('March Minutes')
     expect(rows[0]!.attributes('href')).toBe('/documents/2')
     expect(rows[1]!.text()).toContain('Older Minutes')
-    expect(rows[0]!.text()).toContain(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(today))
+    expect(rows[0]!.text()).toContain(timeOf(today))
+    // Only what the list really says: a title and a time, with nothing made up beneath them.
+    expect(rows[0]!.findAll('span:not(.visually-hidden)').map((part) => part.text()).filter(Boolean)).toEqual([
+      'March Minutes',
+      timeOf(today),
+    ])
   })
 
   /** The page that used to start a document from a template is gone; the words point at where templates are now. */
-  it('says where a first document comes from when there are none', async () => {
+  it('says where a first document comes from when there are none, and shows how Brownie works', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
     signedIn()
 
@@ -198,6 +224,98 @@ describe('HomeView', () => {
       'There are no documents here. Upload a form above to start one, or choose a template under My Templates.',
     )
     expect(wrapper.find('.home__hint a').exists()).toBe(false)
+
+    const how = wrapper.get('.home__how')
+    expect(how.get('h2').text()).toBe('How Brownie works')
+    expect(how.findAll('.home__how-card').map((card) => card.get('.home__how-step').text() + ' ' + card.get('h3').text())).toEqual([
+      'Step 1 Upload a form',
+      'Step 2 Add your notes',
+      'Step 3 Check and export',
+    ])
+    expect(how.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
+    expect(how.text()).toContain('A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.')
+    expect(how.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
+    // Nothing to continue from yet.
+    expect(wrapper.find('.home__resume').exists()).toBe(false)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** A returning person would see the cards flash and vanish if they were drawn before the list had answered. */
+  it('does not show how Brownie works until the list has said there is nothing in it', async () => {
+    vi.mocked(listDocuments).mockReturnValue(new Promise(() => {}))
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.find('.home__how').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Loading documents…')
+  })
+
+  it('leaves out how Brownie works for someone who has documents', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([summary(1, 'March Minutes', '2026-03-01T10:00:00Z')])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.find('.home__how').exists()).toBe(false)
+    expect(wrapper.find('.home__empty').exists()).toBe(false)
+  })
+
+  /** The list says only when each document was made, so that is all "where you left off" can honestly rest on. */
+  it('offers the newest document first, says when it was started, and shows no counts the list does not give', async () => {
+    const today = new Date()
+    vi.mocked(listDocuments).mockResolvedValue([
+      summary(1, 'Older Minutes', new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()),
+      summary(2, 'March Minutes', today.toISOString()),
+    ])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    const resume = wrapper.get('.home__resume')
+    expect(resume.get('h2').text()).toBe('Continue where you left off')
+    expect(resume.get('.home__resume-title').text()).toBe('March Minutes')
+    expect(resume.get('.home__resume-started').text()).toBe(`Started today at ${timeOf(today)}`)
+    const open = resume.get('a')
+    expect(open.attributes('href')).toBe('/documents/2')
+    // The button says "Open"; the document it opens is part of its name for anyone who hears it out of context.
+    expect(open.text()).toBe('Open March Minutes')
+    expect(resume.find('.tag').exists()).toBe(false)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('names the day an older newest document was started, not "today"', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([summary(1, 'Older Minutes', '2020-03-02T12:00:00Z')])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    const started = wrapper.get('.home__resume-started').text()
+    expect(started).toMatch(/^Started .+ at .+/)
+    expect(started).not.toContain('today')
+    expect(started).toContain('Mar 2, 2020')
+  })
+
+  it('moves on to the next newest document when the one it offered goes to the trash', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([
+      summary(1, 'March Minutes', '2026-03-01T10:00:00Z'),
+      summary(2, 'April Minutes', '2026-04-01T10:00:00Z'),
+    ])
+    vi.mocked(trashDocument).mockResolvedValue(trashedEntry(40, 2, 'April Minutes'))
+    signedIn()
+    const wrapper = await mountWithRouter({ attachTo: document.body })
+    await flushPromises()
+    expect(wrapper.get('.home__resume-title').text()).toBe('April Minutes')
+
+    await trashButton(wrapper, 'April Minutes').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.home__resume-title').text()).toBe('March Minutes')
+    expect(wrapper.get('.home__resume a').attributes('href')).toBe('/documents/1')
   })
 
   /** Someone who just moved their last document to the trash has had documents; "not yet" would tell them it is gone. */
@@ -211,13 +329,14 @@ describe('HomeView', () => {
     await trashButton(wrapper, 'March Minutes').trigger('click')
     await flushPromises()
 
-    const empty = wrapper.findAll('.field-hint').find((hint) => hint.text().startsWith('There are no documents here'))
+    const empty = wrapper.findAll('.home__hint').find((hint) => hint.text().startsWith('There are no documents here'))
     expect(empty).toBeDefined()
     expect(empty!.text().replace(/\s+/g, ' ')).toBe(
       'There are no documents here now. Anything moved to the trash can be restored from the trash bin.',
     )
     expect(empty!.get('a').attributes('href')).toBe('/trash')
     expect(wrapper.text()).not.toContain('Upload a form above')
+    expect(wrapper.find('.home__resume').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
     wrapper.unmount()
   })
@@ -380,6 +499,13 @@ describe('HomeView: uploading a form', () => {
     document.body.innerHTML = ''
   })
 
+  /** A file as a browser hands it over: its own name and bytes, with the size said for it. */
+  function formFile(name: string, size = 4): File {
+    const file = new File(['x'], name)
+    Object.defineProperty(file, 'size', { value: size })
+    return file
+  }
+
   async function chooseFile(wrapper: Awaited<ReturnType<typeof mountWithRouter>>, file: File): Promise<void> {
     const input = wrapper.get('input[type="file"]')
     Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
@@ -410,9 +536,31 @@ describe('HomeView: uploading a form', () => {
     expect(input.attributes('aria-hidden')).toBe('true')
     const button = wrapper.get('button.home__upload')
     expect(button.text()).toBe('Upload your documents')
-    // The kinds of file it takes are said under it in plain words, and read out with it.
-    expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
+    // The kinds of file it takes, and how large one may be, are said under it in plain words, and read out with it.
+    expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF, up to 10 MB')
     expect(button.attributes('aria-describedby')).toBe('home-upload-kinds')
+  })
+
+  /** An older server does not say how large a file may be; a limit it did not state must not be made up. */
+  it.each([
+    ['a size it does not send', { ...capabilities('RULES'), maxUploadBytes: undefined as unknown as number }],
+    ['a size of nothing', { ...capabilities('RULES'), maxUploadBytes: 0 }],
+  ])('says only which kinds of file it takes when the server gives %s', async (_case, answer) => {
+    signedIn()
+    vi.mocked(getCapabilities).mockResolvedValue(answer)
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
+  })
+
+  it('says only which kinds of file it takes when it cannot ask the server', async () => {
+    signedIn()
+    vi.mocked(getCapabilities).mockRejectedValue(new TypeError('Failed to fetch'))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
   })
 
   /** Where the AI service names the places found, a form's text goes to it; the person reads that before choosing a file. */
@@ -455,8 +603,8 @@ describe('HomeView: uploading a form', () => {
   })
 
   /**
-   * Learning a form takes several requests, one of them a render; the line under the button says which
-   * part is under way, and the button, which keeps the keyboard focus, does nothing until it is over.
+   * Learning a form takes several requests, one of them a render; the card under the button names the form and says
+   * which part is under way, and the button, which keeps the keyboard focus, does nothing until it is over.
    */
   it('says each step as it starts, keeps the button unavailable, and opens the new document', async () => {
     signedIn()
@@ -471,38 +619,60 @@ describe('HomeView: uploading a form', () => {
     const button = wrapper.get('button.home__upload')
     ;(button.element as HTMLButtonElement).focus()
 
-    const file = new File(['docx'], 'Club minutes.docx')
+    const file = formFile('Club minutes.docx', 49152)
     await chooseFile(wrapper, file)
 
     expect(learnFormAndStartDocument).toHaveBeenCalledWith(7, file, expect.any(Function))
     const status = wrapper.get('[role="status"]')
     expect(status.text()).toBe('Uploading…')
-    // Set apart from the hints above it by a turning ring beside it, which is seen and not read out.
-    const ring = wrapper.get('.home__upload-progress .activity-indicator')
-    expect(ring.attributes('aria-hidden')).toBe('true')
-    expect(status.element.contains(ring.element)).toBe(false)
+    // The line that is read out is not drawn: the card shows the same thing.
+    expect(status.classes()).toContain('visually-hidden')
     expect(button.attributes('aria-disabled')).toBe('true')
     expect(button.attributes('disabled')).toBeUndefined()
     expect(document.activeElement).toBe(button.element)
+
+    const card = wrapper.get('.home__card--learning')
+    expect(card.get('.home__card-name').text()).toBe('Club minutes.docx')
+    expect(card.get('.home__card-meta').text()).toBe('Word • 48 KB • becomes a template and a document')
+    expect(card.get('.home__progress').attributes('aria-hidden')).toBe('true')
 
     const openChooser = vi.spyOn(wrapper.get('input[type="file"]').element as HTMLInputElement, 'click')
     await button.trigger('click')
     expect(openChooser).not.toHaveBeenCalled()
 
-    const steps: [LearnStep, StepDetail, string][] = [
-      ['checking', { mediaType: 'PAGES', waiting: false }, 'Checking the file…'],
-      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…'],
-      ['preparing-copy', { mediaType: 'PAGES', waiting: true }, 'Waiting for a free moment…'],
-      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…'],
-      ['learning', { mediaType: 'PAGES', waiting: false }, 'Learning the form…'],
-      ['preparing', { mediaType: 'PAGES', waiting: false }, 'Getting the template ready…'],
-      ['opening', { mediaType: 'PAGES', waiting: false }, 'Opening your document…'],
+    const rows = () => card.findAll('.step').map((row) => [row.classes().find((name) => name.startsWith('step--')), row.text()])
+    expect(rows()).toEqual([
+      ['step--active', 'In progress: Uploading the file'],
+      ['step--pending', 'Not started: Checking the file'],
+      ['step--pending', 'Not started: Learning the form: finding where the values go'],
+      ['step--pending', 'Not started: Getting the template ready'],
+      ['step--pending', 'Not started: Opening your document'],
+    ])
+
+    const steps: [LearnStep, StepDetail, string, string][] = [
+      ['checking', { mediaType: 'PAGES', waiting: false }, 'Checking the file…', 'Checking the file'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…', 'Learning the form: finding where the values go'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: true }, 'Waiting for a free moment…', 'Learning the form: waiting for a free moment'],
+      ['preparing-copy', { mediaType: 'PAGES', waiting: false }, 'Opening your Pages file and finding where the values go…', 'Learning the form: finding where the values go'],
+      ['learning', { mediaType: 'PAGES', waiting: false }, 'Learning the form…', 'Learning the form: finding where the values go'],
+      ['preparing', { mediaType: 'PAGES', waiting: false }, 'Getting the template ready…', 'Getting the template ready'],
+      ['opening', { mediaType: 'PAGES', waiting: false }, 'Opening your document…', 'Opening your document'],
     ]
-    for (const [step, detail, words] of steps) {
+    for (const [step, detail, words, activeLine] of steps) {
       report(step, detail)
       await nextTick()
       expect(status.text()).toBe(words)
+      const active = card.findAll('.step--active')
+      expect(active).toHaveLength(1)
+      expect(active[0]!.text()).toBe(`In progress: ${activeLine}`)
     }
+    expect(rows().map(([state]) => state)).toEqual(['step--done', 'step--done', 'step--done', 'step--done', 'step--active'])
+    expect(card.findAll('.step--done').map((row) => row.text())).toEqual([
+      'Done: Uploaded',
+      'Done: Checked the file',
+      'Done: Learned the form',
+      'Done: Got the template ready',
+    ])
     expect(await axe(wrapper.element)).toHaveNoViolations()
 
     finish({ ok: true, documentId: 77, name: 'Club minutes', notes: [] })
@@ -511,6 +681,84 @@ describe('HomeView: uploading a form', () => {
     expect(router.currentRoute.value.fullPath).toBe('/documents/77')
     expect(readDocumentHandoff()).toBeNull()
     wrapper.unmount()
+  })
+
+  /** The card is the one place the person is told what they may do while it runs, and it must be true to what the page does. */
+  it('tells the person they can leave while the form is learned, and keeps the cards for first-timers out of the way', async () => {
+    signedIn()
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    expect(wrapper.find('.home__how').exists()).toBe(true)
+
+    await chooseFile(wrapper, formFile('Club minutes.docx'))
+
+    const note = wrapper.get('.home__card--learning .home__note')
+    expect(note.text()).toBe(
+      'You can leave this page, but keep this tab open. Brownie opens the document when it is ready, or it waits for you in Recent documents.',
+    )
+    // The cards for someone with nothing yet, and a box saying there are no documents, would only crowd the card.
+    expect(wrapper.find('.home__how').exists()).toBe(false)
+    expect(wrapper.find('.home__empty').exists()).toBe(false)
+    // The section itself stays, so a trash notice reached while nothing is listed is not pulled out from under it.
+    expect(wrapper.find('.home__recent').exists()).toBe(true)
+  })
+
+  /**
+   * Trashing the last document leaves a notice that undoes it, unread until the person follows or
+   * closes it; starting the next upload is not that, so the notice must still be there afterwards.
+   */
+  it('keeps the trash-undo notice in view when an upload starts before it was dismissed', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([summary(1, 'March Minutes', '2026-03-01T10:00:00Z')])
+    vi.mocked(trashDocument).mockResolvedValue(trashedEntry(40, 1, 'March Minutes'))
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await trashButton(wrapper, 'March Minutes').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.home__notice').text()).toContain('Moved "March Minutes" to the trash.')
+
+    await chooseFile(wrapper, formFile('Club minutes.docx'))
+
+    const notice = wrapper.find('.home__notice')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toContain('Moved "March Minutes" to the trash.')
+    expect(notice.get('a').attributes('href')).toBe('/trash')
+  })
+
+  it('keeps the documents already listed in view while a form is learned', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([summary(1, 'March Minutes', '2026-03-01T10:00:00Z')])
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await chooseFile(wrapper, formFile('Club minutes.docx'))
+
+    expect(wrapper.find('.home__card--learning').exists()).toBe(true)
+    expect(wrapper.findAll('.home__row-title').map((title) => title.text())).toEqual(['March Minutes'])
+  })
+
+  /** What the person is told before choosing a file has nothing to say while there is no file left to choose. */
+  it('puts the note about the AI service away while a form is learned, and brings it back after', async () => {
+    signedIn()
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities('MODEL'))
+    let finish: (outcome: LearnOutcome) => void = () => {}
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise((resolve) => (finish = resolve)))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    expect(wrapper.find('#home-upload-disclosure').exists()).toBe(true)
+
+    await chooseFile(wrapper, formFile('Minutes.docx'))
+    expect(wrapper.find('#home-upload-disclosure').exists()).toBe(false)
+    expect(wrapper.get('button.home__upload').attributes('aria-describedby')).toBe('home-upload-kinds')
+
+    finish({ ok: false, message: 'Brownie could not read this file. It may be damaged: open it, save it again, and upload it again.' })
+    await flushPromises()
+    // A refusal sends the person back to the button, so what they are told before choosing is there again.
+    expect(wrapper.find('#home-upload-disclosure').exists()).toBe(true)
   })
 
   /** What Brownie found and changed is news about the form, not a warning: the page it opens on shows it under its own heading. */
@@ -531,35 +779,168 @@ describe('HomeView: uploading a form', () => {
     expect(readDocumentHandoff()).toEqual({ attachedSources: [], sourceWarning: null, formNotes: notes })
   })
 
-  it('says why a form could not be used, clears the progress line, and lets the person choose another', async () => {
+  it.each([
+    ['Club minutes.docx', 'Word'],
+    ['Old minutes.DOC', 'Word'],
+    ['Notes.rtf', 'RTF'],
+    ['Minutes.odt', 'OpenDocument'],
+    ['Minutes.pages', 'Pages'],
+    ['Budget.pdf', 'PDF'],
+  ])('names %s as a %s file on the card', async (name, kind) => {
     signedIn()
-    vi.mocked(learnFormAndStartDocument).mockResolvedValue({
-      ok: false,
-      message: 'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.',
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await chooseFile(wrapper, formFile(name, 1536))
+
+    expect(wrapper.get('.home__card-meta').text()).toBe(`${kind} • 1.5 KB • becomes a template and a document`)
+  })
+
+  it('names only what it knows of a file whose kind or size it cannot tell', async () => {
+    signedIn()
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await chooseFile(wrapper, formFile('Notes', 0.5))
+
+    expect(wrapper.get('.home__card-name').text()).toBe('Notes')
+    expect(wrapper.get('.home__card-meta').text()).toBe('becomes a template and a document')
+  })
+
+  describe('when a form is refused', () => {
+    const SIGNED = PDF_REFUSAL_SENTENCES.SIGNED
+
+    async function refused(message: string, file = formFile('Club budget form.pdf', 1258291)) {
+      signedIn()
+      vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: false, message })
+      const wrapper = await mountWithRouter({ attachTo: document.body })
+      await flushPromises()
+      const upload = wrapper.get('button.home__upload')
+      ;(upload.element as HTMLButtonElement).focus()
+      await chooseFile(wrapper, file)
+      await flushPromises()
+      return { wrapper, upload }
+    }
+
+    it('names the form, says why it was not added and what to do, and lets the person choose another', async () => {
+      const { wrapper, upload } = await refused(SIGNED)
+
+      const card = wrapper.get('.home__card--refused')
+      expect(card.get('.home__card-name').text()).toBe('Club budget form.pdf')
+      expect(card.get('.home__card-meta').text()).toBe('PDF • 1.2 MB • not added')
+      // The reason is the alert, word for word as the rest of the app says it, and is all the alert says.
+      expect(wrapper.get('[role="alert"]').text()).toBe(SIGNED)
+      expect(card.get('.home__note').text()).toBe(
+        'What you can do: upload the form from before it was signed, or ask whoever sent it for an unsigned copy.',
+      )
+      expect(card.findAll('button').map((button) => button.text())).toEqual(['Close', 'Choose another file', 'Dismiss'])
+      // Nothing is learned, so no step is under way, and the button is ready for another try.
+      expect(wrapper.find('.home__card--learning').exists()).toBe(false)
+      expect(wrapper.get('[role="status"]').text()).toBe('')
+      expect(upload.attributes('aria-disabled')).toBeUndefined()
+      expect(router.currentRoute.value.fullPath).toBe('/')
+      // The button that was pressed keeps the focus: it is the way to try again, and the alert has been read out.
+      expect(document.activeElement).toBe(upload.element)
+      // A refusal is not the first visit: the page does not offer the cards for someone with nothing yet.
+      expect(wrapper.find('.home__how').exists()).toBe(false)
+      expect(wrapper.text()).toContain('There are no documents here.')
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+      wrapper.unmount()
     })
-    const wrapper = await mountWithRouter({ attachTo: document.body })
-    await flushPromises()
 
-    await chooseFile(wrapper, new File(['%PDF'], 'form.pdf'))
-    await flushPromises()
+    it('puts the steps to take in a panel of their own when the failure gives them', async () => {
+      const { wrapper } = await refused(REFUSAL_SENTENCES.PASSWORD_PROTECTED, formFile('Locked minutes.docx'))
 
-    expect(wrapper.get('[role="alert"]').text()).toBe(
-      'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.',
-    )
-    expect(wrapper.get('[role="status"]').text()).toBe('')
-    expect(wrapper.find('.activity-indicator').exists()).toBe(false)
-    expect(wrapper.get('button.home__upload').attributes('aria-disabled')).toBeUndefined()
-    expect(router.currentRoute.value.fullPath).toBe('/')
-    expect(await axe(wrapper.element)).toHaveNoViolations()
+      expect(wrapper.get('[role="alert"]').text()).toBe("This file is locked with a password, so Brownie can't open it.")
+      expect(wrapper.get('.home__note').text()).toBe(
+        'What you can do: open it, remove the password, save it, and upload it again.',
+      )
+      expect(wrapper.get('.home__card-meta').text()).toBe('Word • 4 bytes • not added')
+      wrapper.unmount()
+    })
 
-    // The reason belongs to the file it was about: choosing another takes it away.
-    vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 79, name: 'Minutes', notes: [] })
-    await chooseFile(wrapper, new File(['docx'], 'Minutes.docx'))
-    await flushPromises()
+    it('shows a sentence whose way forward the failure does not give as one piece, with no panel', async () => {
+      const message = 'Could not upload "Club budget form.pdf". Brownie could not be reached. Check your connection, then try again.'
+      const { wrapper } = await refused(message)
 
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    expect(router.currentRoute.value.fullPath).toBe('/documents/79')
-    wrapper.unmount()
+      expect(wrapper.get('[role="alert"]').text()).toBe(message)
+      expect(wrapper.find('.home__note').exists()).toBe(false)
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+      wrapper.unmount()
+    })
+
+    it('opens the file chooser again from "Choose another file", and leaves the card until another file is chosen', async () => {
+      const { wrapper } = await refused(SIGNED)
+      const openChooser = vi.spyOn(wrapper.get('input[type="file"]').element as HTMLInputElement, 'click').mockImplementation(() => {})
+
+      await wrapper.get('.home__card--refused .home__card-actions button').trigger('click')
+
+      expect(openChooser).toHaveBeenCalledTimes(1)
+      expect(wrapper.find('.home__card--refused').exists()).toBe(true)
+
+      // The reason belongs to the file it was about: choosing another takes it away.
+      vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: true, documentId: 79, name: 'Minutes', notes: [] })
+      await chooseFile(wrapper, formFile('Minutes.docx'))
+      await flushPromises()
+
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(wrapper.find('.home__card--refused').exists()).toBe(false)
+      expect(router.currentRoute.value.fullPath).toBe('/documents/79')
+      wrapper.unmount()
+    })
+
+    /** Choosing from the card replaces the card, and the button that was pressed goes with it. */
+    it('keeps the focus on the page when "Choose another file" is used and the next form starts to be learned', async () => {
+      const { wrapper, upload } = await refused(SIGNED)
+      const choose = wrapper.get('.home__card--refused .home__card-actions button')
+      ;(choose.element as HTMLButtonElement).focus()
+      expect(document.activeElement).toBe(choose.element)
+
+      vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+      await chooseFile(wrapper, formFile('Minutes.docx'))
+      await flushPromises()
+
+      expect(wrapper.find('.home__card--refused').exists()).toBe(false)
+      expect(document.activeElement).toBe(upload.element)
+      wrapper.unmount()
+    })
+
+    it.each([
+      ['"Dismiss"', 'Dismiss'],
+      ['the close button', 'Close'],
+    ])('takes the card away with %s, and puts the focus back on the upload button', async (_case, label) => {
+      const { wrapper, upload } = await refused(SIGNED)
+      ;(wrapper.get('.home__card--refused .home__card-close').element as HTMLButtonElement).focus()
+
+      const button = wrapper.findAll('.home__card--refused button').find((candidate) => candidate.text() === label)
+      await button!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('.home__card--refused').exists()).toBe(false)
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(document.activeElement).toBe(upload.element)
+      wrapper.unmount()
+    })
+
+    /** A refusal already shown here is not said again on the next visit; one that came while the person was away is. */
+    it('does not say a refusal again on the next visit, but says one that came while the person was away', async () => {
+      const { wrapper } = await refused(SIGNED)
+      wrapper.unmount()
+
+      const next = await mountWithRouter()
+      await flushPromises()
+      expect(next.find('.home__card--refused').exists()).toBe(false)
+      next.unmount()
+
+      formUploadError.value = { form: { name: 'Away.pdf', kind: 'PDF', size: '4 bytes' }, message: SIGNED }
+      const back = await mountWithRouter()
+      await flushPromises()
+      expect(back.get('.home__card-name').text()).toBe('Away.pdf')
+      expect(back.get('[role="alert"]').text()).toBe(SIGNED)
+      back.unmount()
+    })
   })
 
   it('does not pull someone who has left Home back to the document once it is ready', async () => {
@@ -577,17 +958,23 @@ describe('HomeView: uploading a form', () => {
     await flushPromises()
 
     expect(push).not.toHaveBeenCalled()
+    // It is said on Home for when they come back, under the name of the file they chose.
+    expect(formUploadFinished.value).toEqual({ documentId: 80, fileName: 'Minutes.docx', notes: ['Brownie found 1 place to fill in.'] })
   })
 
   /** Coming back to Home, the person finds the document it made, and opening it from there still brings its notes. */
   it('offers the document made while the person was away, with its notes', async () => {
     signedIn()
-    formUploadFinished.value = { documentId: 80, name: 'Minutes', notes: ['Brownie found 1 place to fill in.'] }
+    formUploadFinished.value = { documentId: 80, fileName: 'Minutes.docx', notes: ['Brownie found 1 place to fill in.'] }
     const wrapper = await mountWithRouter()
     await flushPromises()
 
-    expect(wrapper.get('.home__upload-finished').text()).toBe('Brownie learned "Minutes" and started a document from it. Open it.')
-    await wrapper.get('.home__upload-finished a').trigger('click')
+    const toast = wrapper.get('.home__toast')
+    expect(toast.get('p').text()).toBe('Brownie learned “Minutes.docx” and started a document from it.')
+    expect(toast.get('a').text()).toBe('Open it')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    await toast.get('a').trigger('click')
     await flushPromises()
 
     expect(router.currentRoute.value.fullPath).toBe('/documents/80')
@@ -595,8 +982,74 @@ describe('HomeView: uploading a form', () => {
     expect(formUploadFinished.value).toBeNull()
   })
 
+  /**
+   * A form can finish while its page is showing yet nothing opens the document for the person: the upload began on an
+   * earlier visit. The notice appears, and the live region says so, once.
+   */
+  it('says in the live region that a form has finished when it does so while the page is showing, and only then', async () => {
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    expect(wrapper.get('[role="status"]').text()).toBe('')
+
+    formUploadFinished.value = { documentId: 80, fileName: 'Minutes.docx', notes: [] }
+    await nextTick()
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Brownie learned “Minutes.docx” and started a document from it.')
+    expect(wrapper.findAll('[role="status"], [aria-live="polite"]')).toHaveLength(1)
+
+    await wrapper.get('.home__toast button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="status"]').text()).toBe('')
+  })
+
+  it('does not read out a notice that was already there when the page opened', async () => {
+    signedIn()
+    formUploadFinished.value = { documentId: 80, fileName: 'Minutes.docx', notes: [] }
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.find('.home__toast').exists()).toBe(true)
+    expect(wrapper.get('[role="status"]').text()).toBe('')
+  })
+
+  it('keeps that notice until it is used or closed, and puts the focus back on the upload button when it is closed', async () => {
+    signedIn()
+    formUploadFinished.value = { documentId: 80, fileName: 'Minutes.docx', notes: [] }
+    const wrapper = await mountWithRouter({ attachTo: document.body })
+    await flushPromises()
+    expect(wrapper.find('.home__toast').exists()).toBe(true)
+
+    const close = wrapper.get('.home__toast button')
+    expect(close.text()).toBe('Dismiss')
+    ;(close.element as HTMLButtonElement).focus()
+    await close.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.home__toast').exists()).toBe(false)
+    expect(formUploadFinished.value).toBeNull()
+    expect(document.activeElement).toBe(wrapper.get('button.home__upload').element)
+    wrapper.unmount()
+  })
+
+  it('takes the notice away when the person chooses another form, and keeps the focus on the page if it held it', async () => {
+    signedIn()
+    formUploadFinished.value = { documentId: 80, fileName: 'Minutes.docx', notes: [] }
+    vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+    const wrapper = await mountWithRouter({ attachTo: document.body })
+    await flushPromises()
+    ;(wrapper.get('.home__toast button').element as HTMLButtonElement).focus()
+
+    await chooseFile(wrapper, formFile('Invoice.docx'))
+    await flushPromises()
+
+    expect(wrapper.find('.home__toast').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('button.home__upload').element)
+    wrapper.unmount()
+  })
+
   /** More than one polite region on a page and a screen reader queues them against each other. */
-  it('has one polite live region, and it is the line under the upload button', async () => {
+  it('has one polite live region, and it is not drawn', async () => {
     signedIn()
     vi.mocked(listDocuments).mockReturnValue(new Promise(() => {}))
     const wrapper = await mountWithRouter()
@@ -605,10 +1058,233 @@ describe('HomeView: uploading a form', () => {
     expect(wrapper.text()).toContain('Loading documents…')
     const live = wrapper.findAll('[aria-live="polite"], [role="status"]')
     expect(live).toHaveLength(1)
-    expect(live[0]!.classes()).toContain('home__upload-status')
-    // Its line is there before anything is chosen, holding the room the steps will take, with no ring yet.
-    expect(live[0]!.element.parentElement?.classList).toContain('home__upload-progress')
-    expect(wrapper.find('.activity-indicator').exists()).toBe(false)
+    expect(live[0]!.classes()).toContain('home__status')
+    // Its line is there before anything is chosen, because a region that only appears with its first message is not reliably read out.
+    expect(live[0]!.text()).toBe('')
+    expect(live[0]!.classes()).toContain('visually-hidden')
+  })
+
+  describe('dropping a form on the page', () => {
+    const DROP_WORDS =
+      'Drop your form to start. Word, PDF, Pages, OpenDocument or RTF, up to 10 MB. Brownie makes a template and a document from it.'
+
+    /** A drag as the browser reports it: what it carries, and, for files, whether each is a folder. */
+    function drag(
+      type: string,
+      carries: { files?: File[]; folders?: boolean[]; types?: string[] } = {},
+    ): Event & { dataTransfer: { dropEffect: string } } {
+      const files = carries.files ?? []
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', {
+        value: {
+          types: carries.types ?? (files.length > 0 ? ['Files'] : ['text/plain']),
+          files,
+          items: files.map((_file, index) => ({
+            kind: 'file',
+            webkitGetAsEntry: () => ({ isDirectory: carries.folders?.[index] ?? false }),
+          })),
+          dropEffect: 'none',
+        },
+      })
+      return event as Event & { dataTransfer: { dropEffect: string } }
+    }
+
+    const zone = () => document.body.querySelector('.home__drop')
+
+    async function pageReady() {
+      signedIn()
+      const wrapper = await mountWithRouter()
+      await flushPromises()
+      return wrapper
+    }
+
+    it('turns the page into a drop zone while a file is dragged over it, and says so in the one live region', async () => {
+      const wrapper = await pageReady()
+      expect(zone()).toBeNull()
+
+      const enter = drag('dragenter', { files: [formFile('Minutes.docx')] })
+      window.dispatchEvent(enter)
+      await nextTick()
+
+      expect(zone()).not.toBeNull()
+      // The zone is decoration, hidden from assistive technology; the live region says it is open.
+      expect(zone()!.getAttribute('aria-hidden')).toBe('true')
+      expect(zone()!.querySelector('.home__drop-title')!.textContent).toBe('Drop your form to start')
+      expect(zone()!.querySelector('.home__drop-text')!.textContent).toBe(
+        'Word, PDF, Pages, OpenDocument or RTF, up to 10 MB. Brownie makes a template and a document from it.',
+      )
+      expect(zone()!.querySelector('.home__drop-note')!.textContent?.trim()).toBe(
+        'Locked, signed or damaged files are refused with the reason.',
+      )
+      expect(wrapper.get('[role="status"]').text()).toBe(DROP_WORDS)
+      expect(wrapper.findAll('[role="status"], [aria-live="polite"]')).toHaveLength(1)
+      expect(enter.defaultPrevented).toBe(true)
+      expect(await axe(document.body)).toHaveNoViolations()
+
+      window.dispatchEvent(drag('dragleave', { files: [formFile('Minutes.docx')] }))
+      await nextTick()
+
+      expect(zone()).toBeNull()
+      expect(wrapper.get('[role="status"]').text()).toBe('')
+    })
+
+    it('stays open while the drag crosses from one element to the next, and closes when it leaves the page', async () => {
+      await pageReady()
+      const files = [formFile('Minutes.docx')]
+
+      window.dispatchEvent(drag('dragenter', { files }))
+      window.dispatchEvent(drag('dragenter', { files }))
+      window.dispatchEvent(drag('dragleave', { files }))
+      await nextTick()
+      expect(zone()).not.toBeNull()
+
+      window.dispatchEvent(drag('dragleave', { files }))
+      await nextTick()
+      expect(zone()).toBeNull()
+    })
+
+    it('answers a drag over the page with permission to copy, and leaves anything that is not a file alone', async () => {
+      await pageReady()
+
+      const over = drag('dragover', { files: [formFile('Minutes.docx')] })
+      window.dispatchEvent(over)
+      expect(over.defaultPrevented).toBe(true)
+      expect(over.dataTransfer.dropEffect).toBe('copy')
+
+      for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
+        const text = drag(type, { types: ['text/plain', 'text/uri-list'] })
+        window.dispatchEvent(text)
+        expect(text.defaultPrevented).toBe(false)
+      }
+      await nextTick()
+      expect(zone()).toBeNull()
+      expect(learnFormAndStartDocument).not.toHaveBeenCalled()
+    })
+
+    /** Choosing a file and dropping one end in the same place, so both are taken and refused alike. */
+    it('treats a drop exactly like choosing the file', async () => {
+      vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+      const wrapper = await pageReady()
+      const file = formFile('Minutes.docx', 49152)
+
+      window.dispatchEvent(drag('dragenter', { files: [file] }))
+      await nextTick()
+      const drop = drag('drop', { files: [file] })
+      window.dispatchEvent(drop)
+      await nextTick()
+
+      expect(drop.defaultPrevented).toBe(true)
+      expect(learnFormAndStartDocument).toHaveBeenCalledTimes(1)
+      expect(learnFormAndStartDocument).toHaveBeenCalledWith(7, file, expect.any(Function))
+      expect(zone()).toBeNull()
+      expect(wrapper.get('.home__card-name').text()).toBe('Minutes.docx')
+      expect(wrapper.get('.home__card-meta').text()).toBe('Word • 48 KB • becomes a template and a document')
+      expect(wrapper.get('button.home__upload').attributes('aria-disabled')).toBe('true')
+    })
+
+    it('refuses a dropped form in the same words as a chosen one', async () => {
+      vi.mocked(learnFormAndStartDocument).mockResolvedValue({ ok: false, message: PDF_REFUSAL_SENTENCES.SIGNED })
+      const wrapper = await pageReady()
+
+      window.dispatchEvent(drag('drop', { files: [formFile('Club budget form.pdf', 1258291)] }))
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toBe(PDF_REFUSAL_SENTENCES.SIGNED)
+      expect(wrapper.get('.home__card-meta').text()).toBe('PDF • 1.2 MB • not added')
+    })
+
+    /** A form being learned is not interrupted: the drop is claimed, so the browser does not open the file in its place. */
+    it('ignores a drop while another form is being learned, and does not show the drop zone', async () => {
+      vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+      const wrapper = await pageReady()
+      await chooseFile(wrapper, formFile('First.docx'))
+      const second = [formFile('Second.docx')]
+
+      window.dispatchEvent(drag('dragenter', { files: second }))
+      const over = drag('dragover', { files: second })
+      window.dispatchEvent(over)
+      await nextTick()
+      expect(zone()).toBeNull()
+      expect(over.dataTransfer.dropEffect).toBe('none')
+
+      const drop = drag('drop', { files: second })
+      window.dispatchEvent(drop)
+      await nextTick()
+
+      expect(drop.defaultPrevented).toBe(true)
+      expect(learnFormAndStartDocument).toHaveBeenCalledTimes(1)
+      expect(wrapper.get('.home__card-name').text()).toBe('First.docx')
+    })
+
+    it('closes the drop zone when the form that was dropped on it starts to be learned', async () => {
+      vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+      await pageReady()
+      const files = [formFile('Minutes.docx')]
+
+      window.dispatchEvent(drag('dragenter', { files }))
+      await nextTick()
+      expect(zone()).not.toBeNull()
+      window.dispatchEvent(drag('drop', { files }))
+      await nextTick()
+
+      expect(zone()).toBeNull()
+    })
+
+    it('ignores a dropped folder, and says why a dropped Pages document that is one cannot be used', async () => {
+      vi.mocked(learnFormAndStartDocument).mockReturnValue(new Promise(() => {}))
+      await pageReady()
+
+      window.dispatchEvent(drag('drop', { files: [formFile('Old minutes', 0)], folders: [true] }))
+      await flushPromises()
+      expect(learnFormAndStartDocument).not.toHaveBeenCalled()
+
+      // A Pages document on a Mac is a folder; it goes on so that the person is told why it cannot be uploaded.
+      const pages = formFile('Minutes.pages', 0)
+      window.dispatchEvent(drag('drop', { files: [pages], folders: [true] }))
+      await flushPromises()
+      expect(learnFormAndStartDocument).toHaveBeenCalledWith(7, pages, expect.any(Function))
+    })
+
+    it('takes one form at a time, and says so when several are dropped', async () => {
+      const wrapper = await pageReady()
+
+      window.dispatchEvent(drag('drop', { files: [formFile('One.docx'), formFile('Two.pdf')] }))
+      await flushPromises()
+
+      expect(learnFormAndStartDocument).not.toHaveBeenCalled()
+      expect(wrapper.get('.home__card-name').text()).toBe('2 files')
+      expect(wrapper.get('.home__card-meta').text()).toBe('not added')
+      expect(wrapper.get('[role="alert"]').text()).toBe('Brownie fills one form at a time. Drop or choose a single file.')
+    })
+
+    it('offers nothing to someone who is not signed in, and still keeps the browser from opening a dropped file', async () => {
+      const session = useSessionStore()
+      session.status = 'anonymous'
+      const wrapper = await mountWithRouter()
+
+      const enter = drag('dragenter', { files: [formFile('Minutes.docx')] })
+      window.dispatchEvent(enter)
+      const drop = drag('drop', { files: [formFile('Minutes.docx')] })
+      window.dispatchEvent(drop)
+      await nextTick()
+
+      expect(zone()).toBeNull()
+      expect(drop.defaultPrevented).toBe(true)
+      expect(learnFormAndStartDocument).not.toHaveBeenCalled()
+      expect(wrapper.find('.home__card').exists()).toBe(false)
+    })
+
+    it('stops listening to the window when the page is left', async () => {
+      const wrapper = await pageReady()
+      wrapper.unmount()
+
+      const enter = drag('dragenter', { files: [formFile('Minutes.docx')] })
+      window.dispatchEvent(enter)
+      await nextTick()
+
+      expect(zone()).toBeNull()
+      expect(enter.defaultPrevented).toBe(false)
+    })
   })
 })
 
