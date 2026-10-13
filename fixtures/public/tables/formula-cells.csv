@@ -1,0 +1,6 @@
+Name,Note
+"=SUM(1,2)",starts with an equals sign
+"+42",starts with a plus
+"-3",starts with a minus
+"@handle",starts with an at sign
+"	=1+1",starts with a tab
