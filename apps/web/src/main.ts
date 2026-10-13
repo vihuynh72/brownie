@@ -5,6 +5,7 @@ import router from './router'
 import { onSessionEnded } from './api/client'
 import { useSessionStore } from './stores/session'
 import './styles/tokens.css'
+import './styles/primitives.css'
 
 const app = createApp(App)
 const pinia = createPinia()

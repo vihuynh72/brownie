@@ -1,0 +1,901 @@
+/*
+ * The shared component classes. The list of what exists, with each class's modifiers and a line of use, is the style
+ * guide at the top of tokens.css; the colours, radii and shadows used here are the tokens defined there.
+ */
+
+/*
+ * Small glyphs drawn from the stylesheet, so an empty tile, a chat turn or a progress row needs no icon of its own.
+ * Each is an outline in a 24-unit box, used as a mask: the element's background colour shows through the shape.
+ */
+:root {
+  --glyph-page: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3C/svg%3E");
+  --glyph-done: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10.875'/%3E%3Cpath d='m8.9 12 2.3 2.3 4-4.2'/%3E%3C/svg%3E");
+  --glyph-ring: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10.875' stroke-dasharray='55 13.4'/%3E%3C/svg%3E");
+  --glyph-sparkles: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z'/%3E%3Cpath d='M20 3v4'/%3E%3Cpath d='M22 5h-4'/%3E%3Cpath d='M4 17v2'/%3E%3Cpath d='M5 18H3'/%3E%3C/svg%3E");
+  --glyph-stop: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Crect x='9' y='9' width='6' height='6' rx='1'/%3E%3C/svg%3E");
+}
+
+/* ---------- Buttons ---------- */
+
+/*
+ * A pill. The look is carried by a handful of properties that each variant resets, so hover, pressed and the
+ * faded state are written once. A bare .button is the white outline look.
+ */
+.button {
+  --button-height: var(--control-height);
+  --button-block: 0.5rem;
+  --button-pad: 1.125rem;
+  --button-trim: 0px;
+  --button-icon: 1.25rem;
+  --button-gap: 0.375rem;
+  --button-bg: var(--color-surface);
+  --button-border: var(--color-outline);
+  --button-ink: var(--color-text);
+  --button-bg-hover: var(--color-paper-soft);
+  --button-border-hover: var(--color-text-faint);
+  --button-bg-active: var(--color-paper-deep);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--button-gap);
+  min-block-size: var(--button-height);
+  /* A filled button trims the 1px edge off its side padding, so filled and outline pills have the same label room. */
+  padding: var(--button-block) calc(var(--button-pad) - var(--button-trim));
+  border: 1px solid var(--button-border);
+  border-radius: var(--radius-pill);
+  background: var(--button-bg);
+  color: var(--button-ink);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.button > svg {
+  flex: none;
+  inline-size: var(--button-icon);
+  block-size: var(--button-icon);
+}
+
+.button:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--button-bg-hover);
+  border-color: var(--button-border-hover);
+}
+
+.button:active:not(:disabled):not([aria-disabled='true']) {
+  background: var(--button-bg-active);
+}
+
+.button--secondary {
+  /* The default look, spelled out so a screen can say what it means. */
+  --button-bg: var(--color-surface);
+  --button-border: var(--color-outline);
+  --button-ink: var(--color-text);
+}
+
+.button--primary {
+  --button-trim: 1px;
+  --button-bg: var(--color-cocoa);
+  --button-border: var(--color-cocoa);
+  --button-ink: var(--color-surface);
+  --button-bg-hover: var(--color-cocoa-strong);
+  --button-border-hover: var(--color-cocoa-strong);
+  --button-bg-active: color-mix(in srgb, var(--color-cocoa-strong) 82%, black);
+}
+
+.button--quiet {
+  --button-bg: transparent;
+  --button-border: transparent;
+  --button-ink: var(--color-text);
+  --button-bg-hover: var(--color-cocoa-wash);
+  --button-border-hover: transparent;
+  --button-bg-active: color-mix(in srgb, var(--color-cocoa-wash) 90%, black);
+}
+
+.button--danger {
+  --button-trim: 1px;
+  --button-bg: var(--color-error);
+  --button-border: var(--color-error);
+  --button-ink: var(--color-surface);
+  --button-bg-hover: var(--color-error-strong);
+  --button-border-hover: var(--color-error-strong);
+  --button-bg-active: color-mix(in srgb, var(--color-error-strong) 82%, black);
+}
+
+.button--small {
+  --button-height: var(--control-height-small);
+  --button-block: 0.25rem;
+  --button-pad: 0.875rem;
+  --button-icon: 1rem;
+}
+
+/*
+ * A button that is busy or not ready yet but keeps the focus it holds says so with aria-disabled
+ * rather than the disabled attribute (which would drop that focus); it looks the same either way.
+ */
+.button:disabled,
+.button[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/*
+ * A square control carrying only an icon. The minimum size is the 24x24
+ * CSS pixels WCAG 2.5.8 asks of a target, set as a minimum rather than a
+ * fixed size so a larger glyph or a translated label can still grow it.
+ */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--icon-button-size);
+  min-block-size: var(--icon-button-size);
+  padding: var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.icon-button:hover {
+  background: var(--color-cocoa-wash);
+  color: var(--color-text);
+}
+
+/* A finger needs more room than a mouse pointer does. */
+@media (pointer: coarse) {
+  :root {
+    --icon-button-size: 2.75rem;
+  }
+}
+
+/* ---------- Tags ---------- */
+
+/* A small label chip. The edge is transparent so a forced-colours display can still draw it. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  min-block-size: 1.375rem;
+  padding: 0 0.4375rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-deep);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.tag > svg {
+  flex: none;
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+/* A leading icon has a little air inside its box, so the tag gives it a pixel back on that side. */
+.tag > svg:first-child {
+  margin-inline-start: -0.0625rem;
+}
+
+.tag--cocoa {
+  background: var(--color-cocoa-soft);
+  color: var(--color-cocoa-strong);
+}
+
+.tag--honey {
+  background: var(--color-honey-soft);
+  color: var(--color-honey-ink);
+}
+
+.tag--success {
+  background: var(--color-success-wash);
+  color: var(--color-success);
+}
+
+.tag--error {
+  background: var(--color-error-wash);
+  color: var(--color-error);
+}
+
+.tag--info {
+  background: var(--color-info-wash);
+  color: var(--color-focus);
+}
+
+/* ---------- Document tile ---------- */
+
+/*
+ * A rounded cocoa square holding a white glyph. Left empty it draws a page; give it an icon (an svg child) to draw
+ * another glyph at the same size. The glyph is a whole number of pixels (22, 18 and 14), because a mask scaled to a
+ * fractional box is drawn too large.
+ */
+.doc-tile {
+  --doc-tile-size: 2.3125rem;
+  --doc-tile-radius: 0.4375rem;
+  --doc-tile-glyph: 1.375rem;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--doc-tile-size);
+  block-size: var(--doc-tile-size);
+  border-radius: var(--doc-tile-radius);
+  background: var(--color-cocoa-tile);
+  color: var(--color-surface);
+}
+
+.doc-tile--medium {
+  --doc-tile-size: 1.875rem;
+  --doc-tile-radius: 0.375rem;
+  --doc-tile-glyph: 1.125rem;
+}
+
+.doc-tile--small {
+  --doc-tile-size: 1.5rem;
+  --doc-tile-radius: 0.3125rem;
+  --doc-tile-glyph: 0.875rem;
+}
+
+.doc-tile:not(:has(> svg))::before {
+  content: '';
+  inline-size: var(--doc-tile-glyph);
+  block-size: var(--doc-tile-glyph);
+  background: currentColor;
+  mask: var(--glyph-page) center / contain no-repeat;
+}
+
+.doc-tile > svg {
+  inline-size: var(--doc-tile-glyph);
+  block-size: var(--doc-tile-glyph);
+}
+
+/* A display that forces its own colours drops the mask's background, which would erase the empty tile's page glyph; hand it the text colour. */
+@media (forced-colors: active) {
+  .doc-tile:not(:has(> svg))::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+/* ---------- Text field ---------- */
+
+.field-label {
+  display: block;
+  margin-block-end: 0.25rem;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+.field-hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.field-error {
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.text-field + .field-hint,
+.text-field + .field-error {
+  margin-block-start: 0.4375rem;
+}
+
+/*
+ * The edge is the field's only visible boundary, so it is the darker --color-field-border (3:1 against the card).
+ * Focus and invalid thicken it to 2px by adding a second pixel inside, so nothing around the field moves.
+ */
+.text-field {
+  display: block;
+  inline-size: 100%;
+  min-block-size: var(--control-height);
+  padding: 0 0.75rem;
+  border: 1px solid var(--color-field-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+textarea.text-field {
+  min-block-size: 5rem;
+  padding-block: 0.5rem;
+  resize: vertical;
+}
+
+.text-field::placeholder {
+  color: var(--color-text-faint);
+  opacity: 1;
+}
+
+.text-field:disabled {
+  background: var(--color-paper-soft);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.text-field:focus {
+  border-color: var(--color-focus);
+  box-shadow: inset 0 0 0 1px var(--color-focus);
+  outline: none;
+}
+
+.text-field[aria-invalid='true'],
+.text-field--invalid {
+  border-color: var(--color-error);
+  box-shadow: inset 0 0 0 1px var(--color-error);
+}
+
+/* Still red, but a focused invalid field also gets the standard ring so a keyboard user can find it. */
+.text-field[aria-invalid='true']:focus,
+.text-field--invalid:focus {
+  box-shadow:
+    inset 0 0 0 1px var(--color-error),
+    var(--focus-ring);
+}
+
+/* Forced colours drop shadows, and the thicker edge above is one; outline the focused field in the system colour. */
+@media (forced-colors: active) {
+  .text-field:focus {
+    outline: 3px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
+/* ---------- Progress rows ---------- */
+
+.step-list {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.step__marker {
+  position: relative;
+  flex: none;
+  inline-size: 1.0625rem;
+  block-size: 1.0625rem;
+}
+
+.step__marker::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.step--done .step__marker::before {
+  background: var(--color-success);
+  mask: var(--glyph-done) center / 100% 100% no-repeat;
+}
+
+.step--active {
+  color: var(--color-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.step--active .step__marker::before {
+  /* The turning ring is a hair smaller than the check and the empty ring, so it looks the same size while it moves. */
+  inset: 1px;
+  background: var(--color-cocoa);
+  mask: var(--glyph-ring) center / 100% 100% no-repeat;
+  animation: activity-turn 0.9s linear infinite;
+}
+
+/* A step that already holds its own .activity-indicator takes that ring in place of the drawn one. */
+.step__marker:has(> .activity-indicator)::before {
+  content: none;
+}
+
+.step__marker > .activity-indicator {
+  position: absolute;
+  inset: 1px;
+  inline-size: auto;
+  block-size: auto;
+}
+
+.step--pending {
+  color: var(--color-text-faint);
+}
+
+.step--pending .step__marker::before {
+  border: 1.5px solid var(--color-field-border);
+}
+
+/*
+ * A small turning ring beside words that say something is under way. The words carry the meaning; the ring
+ * only shows that it is still going, so under a reduced-motion preference it stands still.
+ */
+.activity-indicator {
+  display: inline-block;
+  flex: none;
+  inline-size: 0.875em;
+  block-size: 0.875em;
+  background: var(--color-cocoa);
+  mask: var(--glyph-ring) center / 100% 100% no-repeat;
+  animation: activity-turn 0.9s linear infinite;
+}
+
+@keyframes activity-turn {
+  to {
+    rotate: 1turn;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-indicator,
+  .step--active .step__marker::before {
+    animation: none;
+  }
+}
+
+/* A display that forces its own colours drops backgrounds, which would erase a drawn ring; hand it the text colour. */
+@media (forced-colors: active) {
+  .activity-indicator,
+  .step--done .step__marker::before,
+  .step--active .step__marker::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .step--pending .step__marker::before {
+    border-color: CanvasText;
+  }
+}
+
+/* ---------- Dialog ---------- */
+
+/*
+ * For a native <dialog> opened with showModal(). Display is set only while it is open, so a closed dialog stays
+ * hidden. The width is a property so a screen can ask for any size; the three usual ones are modifiers.
+ */
+.dialog {
+  --dialog-width: 35rem;
+  inline-size: min(var(--dialog-width), calc(100vw - 2rem));
+  max-block-size: calc(100dvh - 3rem);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+
+.dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog::backdrop {
+  background: var(--scrim, rgb(0 0 0 / 0.27));
+}
+
+.dialog--medium {
+  --dialog-width: 40rem;
+}
+
+.dialog--wide {
+  --dialog-width: 62.5rem;
+}
+
+.dialog__head {
+  position: relative;
+  display: grid;
+  flex: none;
+  align-content: start;
+  /* Room on the right so a long title never runs under the close button. */
+  padding: 1.5rem 3.5rem 0.25rem 1.5rem;
+}
+
+.dialog__head--ruled {
+  padding-block-end: 1.1875rem;
+  border-block-end: 1px solid var(--color-hairline);
+}
+
+.dialog__title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+}
+
+.dialog__subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+/* Stacked in either order, the two lines sit a few pixels apart, tighter when the small line comes first. */
+.dialog__title + .dialog__subtitle {
+  margin-block-start: 0.3125rem;
+}
+
+.dialog__subtitle + .dialog__title {
+  margin-block-start: 0.125rem;
+}
+
+/* Put an .icon-button here; it sits in the top right corner, 19px in from each edge. */
+.dialog__close {
+  position: absolute;
+  inset-block-start: 1.1875rem;
+  inset-inline-end: 1.1875rem;
+}
+
+.dialog__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: 0.875rem 1.5rem;
+  overflow-y: auto;
+}
+
+.dialog__body--flush {
+  padding: 0;
+}
+
+.dialog__foot {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  padding: 0.25rem 1.5rem 1.5rem;
+}
+
+/* ---------- Chat ---------- */
+
+.msg--brownie {
+  display: grid;
+  gap: 0.875rem;
+}
+
+.msg__who {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+.msg__who::before {
+  content: '';
+  flex: none;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  background: var(--color-cocoa);
+  mask: var(--glyph-sparkles) center / contain no-repeat;
+}
+
+/* A display that forces its own colours drops the mask's background, which would erase the sparkle; hand it the text colour. */
+@media (forced-colors: active) {
+  .msg__who::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+.msg__body {
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.msg__body > * {
+  margin: 0;
+}
+
+.msg__body > * + * {
+  margin-block-start: 0.75rem;
+}
+
+.msg--user {
+  inline-size: fit-content;
+  max-inline-size: 80%;
+  margin-inline-start: auto;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-bubble-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bubble);
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.msg-card {
+  overflow: hidden;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.msg-card__section {
+  padding: 0.75rem 1rem;
+}
+
+.msg-card__section + .msg-card__section {
+  border-block-start: 1px solid var(--color-hairline);
+}
+
+.msg-card__section--soft {
+  background: var(--color-paper-soft);
+}
+
+.source-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  padding: 0.5625rem 0.75rem 0.4375rem 0.625rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.source-chip__text {
+  display: grid;
+  gap: 0.28125rem;
+  min-inline-size: 0;
+}
+
+.source-chip__name,
+.source-chip__meta {
+  overflow: hidden;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-chip__name {
+  font-size: 0.8125rem;
+}
+
+.source-chip__meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* ---------- Composer ---------- */
+
+/*
+ * The message box. Its edge is the pale outline, which is only decoration here: the placeholder and the buttons
+ * inside name it. Focus anywhere inside thickens the edge to a 2px cocoa line.
+ */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1875rem;
+  padding: 1rem 0.75rem 0.75rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.composer:focus-within {
+  border-color: var(--color-cocoa);
+  box-shadow: inset 0 0 0 1px var(--color-cocoa);
+}
+
+/* Forced colours make every border the same system colour, so focus is outlined in the system's own focus colour. */
+@media (forced-colors: active) {
+  .composer:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+.composer__input {
+  display: block;
+  inline-size: 100%;
+  min-block-size: 1.4375em;
+  max-block-size: 10rem;
+  padding: 0 var(--space-1);
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-base);
+  line-height: 1.4375;
+  resize: none;
+  field-sizing: content;
+}
+
+.composer__input::placeholder {
+  color: var(--color-text-faint);
+  opacity: 1;
+}
+
+/* The card shows focus for the whole box, so the field inside draws none of its own. */
+.composer__input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.composer__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-block-size: 2.25rem;
+}
+
+/* The tool glyphs are 24px, in the main text colour and with a heavier line than the icons in text, so they read at a glance beside the send button. */
+.composer__tools .icon-button {
+  color: var(--color-text);
+}
+
+.composer__tools .icon-button > svg {
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  stroke-width: 2;
+}
+
+/*
+ * The send button is a circle. Empty (aria-disabled) it is a pale disc with a quiet arrow; ready it is cocoa with
+ * a white arrow; --busy swaps the arrow for a stop glyph and keeps the cocoa fill.
+ */
+.composer__send {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-cocoa);
+  color: var(--color-surface);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.composer__send > svg {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+}
+
+.composer__send:hover:not([aria-disabled='true']) {
+  background: var(--color-cocoa-strong);
+}
+
+.composer__send[aria-disabled='true'] {
+  background: var(--color-paper-deep);
+  color: var(--color-text-faint);
+  cursor: not-allowed;
+}
+
+.composer__send--busy,
+.composer__send--busy[aria-disabled='true'] {
+  background: var(--color-cocoa);
+  color: var(--color-surface);
+  cursor: progress;
+}
+
+.composer__send--busy > svg {
+  display: none;
+}
+
+.composer__send--busy::after {
+  content: '';
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  background: currentColor;
+  mask: var(--glyph-stop) center / contain no-repeat;
+}
+
+/* A finger needs more room than a mouse pointer does. */
+@media (pointer: coarse) {
+  .composer__send {
+    inline-size: 2.75rem;
+    block-size: 2.75rem;
+  }
+}
+
+/* ---------- Page scaffolding ---------- */
+
+/*
+ * A centred column for a whole page. The width is a property; the gutter keeps text off the window edge on a
+ * narrow screen, where the column simply gets as wide as the window allows.
+ */
+.page-column {
+  --page-gutter: 1.5rem;
+  inline-size: 100%;
+  max-inline-size: calc(var(--page-column-width, 47.5rem) + 2 * var(--page-gutter));
+  margin-inline: auto;
+  padding: 3.5rem var(--page-gutter) 4rem;
+}
+
+.page-column--narrow {
+  --page-column-width: 45.5rem;
+}
+
+.page-column--wide {
+  --page-column-width: 62.5rem;
+}
+
+.page-head--center {
+  text-align: center;
+}
+
+.page-title {
+  margin: 0;
+  font-size: var(--font-size-display);
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.page-title--small {
+  font-size: var(--font-size-2xl);
+  line-height: 1.2;
+}
+
+.page-lede {
+  margin: 0.625rem 0 1.125rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+}
+
+.page-lede--small {
+  margin-block-start: 0.5rem;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+/* A white card with a hairline edge; a list inside it brings its own rows. */
+.panel,
+.card {
+  padding: 1.125rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.panel--flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.panel--quiet {
+  padding: 0.75rem 0.875rem;
+  border-color: transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-paper-soft);
+}
