@@ -78,6 +78,17 @@ export type SourceOriginResponse = components['schemas']['SourceOriginResponse']
 export type ActionResponse = components['schemas']['ActionResponse']
 export type DriveSaveKind = components['schemas']['DriveSaveRequest']['kind']
 export type CalendarEventRequest = components['schemas']['CalendarEventRequest']
+export type ReadTableRequest = components['schemas']['ReadTableRequest']
+export type TableReadingResponse = components['schemas']['TableReadingResponse']
+export type CreateBatchRequest = components['schemas']['CreateBatchRequest']
+export type BatchResponse = components['schemas']['BatchResponse']
+export type BatchSummaryResponse = components['schemas']['BatchSummaryResponse']
+export type BatchRowResponse = components['schemas']['BatchRowResponse']
+export type BatchStepResponse = components['schemas']['BatchStepResponse']
+export type BatchAcceptResponse = components['schemas']['BatchAcceptResponse']
+export type BatchExportResponse = components['schemas']['BatchExportResponse']
+export type BatchExportItemResponse = components['schemas']['BatchExportItemSchema']
+export type BatchExportStepResponse = components['schemas']['BatchExportStepResponse']
 export type ApiError = components['schemas']['Error']
 
 /**
@@ -933,4 +944,124 @@ export function artifactPreviewUrl(workspaceId: number, artifactId: number): str
 /** The excerpt one of this document's values cites; 404 unless the span cites one of the document's own sources. */
 export function getEvidenceExcerpt(workspaceId: number, documentId: number, spanId: number): Promise<EvidenceExcerptResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/evidence/${spanId}`)
+}
+
+/**
+ * Reads an uploaded spreadsheet or CSV as a table, once per ask -- the
+ * preview a person maps columns from before a batch is made. Answers 422
+ * TABLE_UNREADABLE with a `reason` (and a row number where one applies)
+ * for a file that is not a readable table, and 404 with `routeMissing`
+ * on a server from before batches.
+ */
+export function readArtifactTable(
+  workspaceId: number,
+  artifactId: number,
+  body: ReadTableRequest = {},
+): Promise<TableReadingResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/artifacts/${artifactId}/table`, { method: 'POST', body })
+}
+
+/**
+ * Makes a batch that fills one document per data row of the upload. The
+ * template version must be the template's current one; the batch pins it.
+ * Idempotent on the key: asking again answers with the same batch, and the
+ * same key on a different request is refused 409.
+ */
+export function createBatch(
+  workspaceId: number,
+  idempotencyKey: string,
+  body: CreateBatchRequest,
+): Promise<BatchResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches`, {
+    method: 'POST',
+    body,
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
+/** The workspace's batches, newest first, with how many of each one's rows have documents. */
+export function listBatches(workspaceId: number): Promise<BatchSummaryResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches`)
+}
+
+/** One batch with every row's state: the page asks again after each step, rather than adding step results up itself. */
+export function getBatch(workspaceId: number, batchId: number): Promise<BatchResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}`)
+}
+
+/**
+ * Removes the batch and its spreadsheet; the documents it made stay.
+ * Answers 204, 404 when the batch is not there (or not the caller's), and
+ * 409 BATCH_BUSY while a step holds the workspace's lease.
+ */
+export function deleteBatch(workspaceId: number, batchId: number): Promise<void> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}`, { method: 'DELETE' })
+}
+
+/**
+ * One bounded fill step: makes documents for the next rows still PENDING.
+ * `remaining` in the answer says whether to call again; 409 BATCH_BUSY is
+ * worth a short wait and another ask. Refused 409 TEMPLATE_TRASHED while
+ * the template is in the Trash Bin, and 409 BATCH_SOURCE_CHANGED or
+ * BATCH_READER_CHANGED when the file or its reading moved on -- either
+ * means a new batch, never a retry.
+ */
+export function fillBatchStep(workspaceId: number, batchId: number): Promise<BatchStepResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/fill`, { method: 'POST' })
+}
+
+/** One bounded accept step: every row that is ready gets its accept revision; the rest are listed with their reasons. */
+export function acceptBatchStep(workspaceId: number, batchId: number): Promise<BatchAcceptResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/accept`, { method: 'POST' })
+}
+
+/** One bounded check step: validates documents whose current revision no manifest covers. Counts under the render rate class. */
+export function checkBatchStep(workspaceId: number, batchId: number): Promise<BatchStepResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/check`, { method: 'POST' })
+}
+
+/**
+ * One bounded compose step: rows whose compose is still PENDING get a
+ * suggestion from the model, which a person still reviews. Offered only
+ * where the deployment switched it on; 422 BATCH_COMPOSE_NOT_OFFERED
+ * elsewhere, and the step stops early on NO_ALLOWANCE.
+ */
+export function composeBatchStep(workspaceId: number, batchId: number): Promise<BatchStepResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/compose`, { method: 'POST' })
+}
+
+/**
+ * Makes an export run over the batch in one format: RUNNING, with one item
+ * per row, each pending item bound to the document's bytes as they are
+ * now. Idempotent on the key.
+ */
+export function createBatchExport(
+  workspaceId: number,
+  batchId: number,
+  idempotencyKey: string,
+  format: 'DOCX' | 'PDF' | 'BOTH',
+): Promise<BatchExportResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports`, {
+    method: 'POST',
+    body: { format },
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+}
+
+/** One bounded advance step over the run's pending items; `state` says when the run is COMPLETE. Counts under the render rate class. */
+export function advanceBatchExport(
+  workspaceId: number,
+  batchId: number,
+  exportId: number,
+): Promise<BatchExportStepResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports/${exportId}/advance`, { method: 'POST' })
+}
+
+export function getBatchExport(workspaceId: number, batchId: number, exportId: number): Promise<BatchExportResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports/${exportId}`)
+}
+
+/** Not a fetch wrapper -- the session cookie authenticates this URL directly as a link's href, like an artifact download. */
+export function batchExportDownloadUrl(workspaceId: number, batchId: number, exportId: number): string {
+  return `/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports/${exportId}/download`
 }

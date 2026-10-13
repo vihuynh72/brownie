@@ -14,7 +14,9 @@ export const REFUSAL_SENTENCES = {
   PASSWORD_PROTECTED:
     "This file is locked with a password, so Brownie can't open it. Open it, remove the password, save it, and upload it again.",
   RIGHTS_PROTECTED: "This file is protected by your organization's rights management, so Brownie can't open it.",
-  SPREADSHEET: `This is a spreadsheet, not a document. ${WHAT_BROWNIE_FILLS}`,
+  SPREADSHEET:
+    "This is a spreadsheet, not a form. To make a document for each of its rows, open a template's menu under " +
+    'My Templates and choose Fill from a spreadsheet (Excel .xlsx or CSV).',
   PRESENTATION: `This is a presentation, not a document. ${WHAT_BROWNIE_FILLS}`,
   NOT_A_DOCUMENT:
     'Brownie can fill Word (.docx, .doc), RTF, OpenDocument (.odt) and Pages documents, and PDF forms. ' +
@@ -147,6 +149,8 @@ export function fillableFormRefusal(problem: FillableFormProblem | null | undefi
   switch (problem?.code) {
     case 'NOT_A_WORD_PROCESSING_DOCUMENT':
       return `This file is not a document Brownie can fill in. ${WHAT_BROWNIE_FILLS}`
+    case 'UNSUPPORTED_MEDIA_TYPE':
+      return refusalSentence(problem.reason)
     case 'FORMAT_DISABLED': {
       const named = converterFormatName(typeof problem.format === 'string' ? problem.format : null) ?? format
       return `This Brownie does not open ${named ? `${named} files` : 'files of this kind'} right now. Open the file, ${SAVE_AS_WORD}.`

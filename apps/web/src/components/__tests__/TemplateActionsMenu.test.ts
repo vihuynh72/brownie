@@ -37,8 +37,12 @@ function menuElement(): HTMLElement {
   return menu
 }
 
-function item(): HTMLElement {
-  return menuElement().querySelector<HTMLElement>('[role="menuitem"]')!
+function items(): HTMLElement[] {
+  return Array.from(menuElement().querySelectorAll<HTMLElement>('[role="menuitem"]'))
+}
+
+function item(index = 0): HTMLElement {
+  return items()[index]!
 }
 
 function press(key: string, target: Element = document.activeElement ?? document.body): KeyboardEvent {
@@ -74,13 +78,16 @@ describe('TemplateActionsMenu', () => {
     Reflect.deleteProperty(document.documentElement, 'clientHeight')
   })
 
-  it('is a menu named by the button that opened it, with its one item focused', async () => {
+  it('is a menu named by the button that opened it, with its first item focused', async () => {
     wrapper = await mountMenu()
 
     const menu = menuElement()
     expect(menu.id).toBe('template-actions-menu')
     expect(menu.getAttribute('aria-labelledby')).toBe('template-more-1')
-    expect(item().textContent?.trim()).toBe('Move to Trash Bin')
+    expect(items().map((entry) => entry.textContent?.trim())).toEqual([
+      'Fill from a spreadsheet...',
+      'Move to Trash Bin',
+    ])
     // Items are reached with the arrow keys, not with Tab.
     expect(item().getAttribute('tabindex')).toBe('-1')
     expect(document.activeElement).toBe(item())
@@ -124,17 +131,22 @@ describe('TemplateActionsMenu', () => {
   it('focuses the last item when it was opened from the end', async () => {
     wrapper = await mountMenu({ startAt: 'last' })
 
-    expect(document.activeElement).toBe(item())
+    expect(document.activeElement).toBe(item(items().length - 1))
   })
 
   it('keeps focus on its items with the arrow keys, Home and End', async () => {
     wrapper = await mountMenu()
 
-    for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
-      const event = press(key)
-      expect(event.defaultPrevented).toBe(true)
-      expect(document.activeElement).toBe(item())
-    }
+    press('ArrowDown')
+    expect(document.activeElement).toBe(item(1))
+    press('ArrowDown')
+    expect(document.activeElement).toBe(item(0))
+    press('ArrowUp')
+    expect(document.activeElement).toBe(item(1))
+    press('End')
+    expect(document.activeElement).toBe(item(1))
+    press('Home')
+    expect(document.activeElement).toBe(item(0))
     expect(wrapper.emitted('close')).toBeUndefined()
   })
 
@@ -164,9 +176,21 @@ describe('TemplateActionsMenu', () => {
   it('says "Move to Trash Bin" was chosen when its item is pressed', async () => {
     wrapper = await mountMenu()
 
-    item().click()
+    item(1).click()
 
     expect(wrapper.emitted('trash')).toHaveLength(1)
+  })
+
+  it('says "Fill from a spreadsheet..." was chosen by keyboard, reached from the last item', async () => {
+    wrapper = await mountMenu({ startAt: 'last' })
+
+    // Opened on the last item; ArrowUp puts focus on "Fill from a spreadsheet...", which is then pressed.
+    press('ArrowUp')
+    expect(document.activeElement).toBe(item(0))
+    ;(document.activeElement as HTMLElement).click()
+
+    expect(wrapper.emitted('fillMany')).toHaveLength(1)
+    expect(wrapper.emitted('trash')).toBeUndefined()
   })
 
   it('asks to close on a press outside it, but not on its own button or inside it', async () => {

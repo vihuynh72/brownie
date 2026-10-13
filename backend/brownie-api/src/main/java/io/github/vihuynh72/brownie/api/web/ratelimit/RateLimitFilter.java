@@ -46,12 +46,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final String ID = "[^/]+";
     private static final Pattern MODEL = Pattern.compile(
             "^/api/v1/workspaces/" + ID + "/(?:documents/" + ID + "/(?:assist/execute|generations|generations/" + ID + "/resume)"
-                    + "|jobs/" + ID + "/(?:resume|retry))$");
+                    + "|jobs/" + ID + "/(?:resume|retry)|batches/" + ID + "/compose)$");
     private static final Pattern RENDER = Pattern.compile(
             "^/api/v1/workspaces/" + ID + "/(?:documents/" + ID + "/(?:validate|export|fill-spots|revisions/" + ID + "/compile)"
-                    + "|templates/" + ID + "/versions|artifacts/" + ID + "/fillable-form)$");
+                    + "|templates/" + ID + "/versions|artifacts/" + ID + "/fillable-form"
+                    + "|batches/" + ID + "/(?:check|exports/" + ID + "/advance))$");
     private static final Pattern UPLOAD = Pattern.compile(
-            "^/api/v1/workspaces/" + ID + "/(?:uploads(?:/" + ID + "/(?:content|complete))?|artifacts/" + ID + "/extraction)$");
+            "^/api/v1/workspaces/" + ID + "/(?:uploads(?:/" + ID + "/(?:content|complete))?|artifacts/" + ID + "/(?:extraction|table))$");
     /** Every route that makes Brownie call Google, whatever its method: the consent callback and everything under a Google connection. */
     private static final Pattern CONNECTOR = Pattern.compile(
             "^/api/v1/(?:connectors/google/callback|workspaces/" + ID + "/connections/google(?:/.*)?)$");

@@ -47,6 +47,66 @@ public class RevisionService {
             DocumentContent initialContent,
             Map<String, List<Long>> initialEvidence,
             String initialRevisionReason) {
+        return createDocument(
+                workspaceId,
+                userId,
+                idempotencyKey,
+                requestHash,
+                title,
+                templateId,
+                templateVersionId,
+                initialContent,
+                initialEvidence,
+                Authorship.USER_AUTHORED,
+                initialRevisionReason);
+    }
+
+    /**
+     * Creates a document whose initial values came from an outside
+     * record rather than from a person typing them -- a batch fill from
+     * one spreadsheet row is the caller. The field states say so:
+     * {@link Authorship#IMPORTED} on every value, and since a cell is
+     * not a cited source span there is never evidence, which leaves
+     * every field {@link EvidenceSupport#MISSING}. Everything else --
+     * idempotent replay, the active-version and trashed-template checks,
+     * content validation -- is exactly what a person's own creation gets.
+     */
+    public DocumentMutationResult createImportedDocument(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            String title,
+            long templateId,
+            long templateVersionId,
+            DocumentContent initialContent,
+            String initialRevisionReason) {
+        return createDocument(
+                workspaceId,
+                userId,
+                idempotencyKey,
+                requestHash,
+                title,
+                templateId,
+                templateVersionId,
+                initialContent,
+                Map.of(),
+                Authorship.IMPORTED,
+                initialRevisionReason);
+    }
+
+    private DocumentMutationResult createDocument(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            String title,
+            long templateId,
+            long templateVersionId,
+            DocumentContent initialContent,
+            Map<String, List<Long>> initialEvidence,
+            Authorship authorship,
+            String initialRevisionReason) {
         Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
                 workspaceId,
                 userId,
@@ -65,7 +125,7 @@ public class RevisionService {
         DocumentContentValidator.validate(initialContent, templateVersion.fieldDefinitions());
         DocumentContentValidator.validateEvidence(initialContent, initialEvidence);
         Map<FieldItemRef, FieldState> initialFieldStates = computeFieldStates(
-                Map.of(), initialContent, initialContent.fields().keySet(), initialEvidence, Authorship.USER_AUTHORED);
+                Map.of(), initialContent, initialContent.fields().keySet(), initialEvidence, authorship);
         return documentRepository.createIdempotently(
                 workspaceId,
                 userId,
@@ -249,6 +309,50 @@ public class RevisionService {
                 workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, ref,
                 state -> new FieldState(state.authorship(), state.evidenceSupport(), state.validation(), decision, state.lock()),
                 editReason);
+    }
+
+    /**
+     * The many-ref form of {@link #recordReviewDecision}: one new revision
+     * that applies a review decision to every {@link FieldItemRef} named,
+     * the way {@link #applyValidationResults} writes one run's results at
+     * once. A batch accept uses it to mark a whole document reviewed in a
+     * single durable step, so a crash can never leave half the document
+     * accepted; a ref it is not given keeps whatever review state it
+     * already had.
+     */
+    public DocumentMutationResult recordReviewDecisions(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long expectedRevisionId,
+            Map<FieldItemRef, ReviewState> decisions,
+            String editReason) {
+        Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
+                workspaceId, userId, DocumentCommandType.EDIT_CONTENT, idempotencyKey, requestHash);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        documentRepository.find(workspaceId, userId, documentId).orElseThrow(() -> new DocumentNotFoundException(documentId));
+        DocumentRevision current = requireCurrentRevision(workspaceId, userId, documentId);
+        if (current.id() != expectedRevisionId) {
+            throw new DocumentRevisionConflictException(documentId, expectedRevisionId, current.id());
+        }
+        Map<FieldItemRef, FieldState> nextFieldStates = new LinkedHashMap<>(current.fieldStates());
+        for (Map.Entry<FieldItemRef, ReviewState> entry : decisions.entrySet()) {
+            FieldItemRef ref = entry.getKey();
+            FieldState previous = nextFieldStates.get(ref);
+            if (previous == null) {
+                throw new IllegalArgumentException(
+                        "Document " + documentId + " revision " + current.id() + " has no state for " + ref + ".");
+            }
+            nextFieldStates.put(ref, new FieldState(
+                    previous.authorship(), previous.evidenceSupport(), previous.validation(), entry.getValue(), previous.lock()));
+        }
+        return documentRepository.appendRevisionIdempotently(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, null,
+                current.content(), current.evidence(), nextFieldStates, editReason);
     }
 
     /**

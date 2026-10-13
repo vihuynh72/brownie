@@ -284,6 +284,62 @@ The Google Docs API has to be enabled in the Google Cloud project for the
 converted-Doc check and additions to work, and `calendar.events.owned` added to
 the project's consent screen for adding events.
 
+## Filling many documents from a spreadsheet
+
+A template's "..." menu under My Templates has **Fill from a
+spreadsheet...**, which opens a page that makes one document per row of
+an Excel workbook (`.xlsx`) or a UTF-8 CSV. The chooser's file kinds and
+the most rows one batch may hold come from `GET /api/v1/capabilities`
+(`tableFileTypes`, `batchMaxRows`), and the upload itself is bound by the
+same `maxUploadBytes` as any other file. `BROWNIE_BATCH_MAX_ROWS` sets the
+row bound (500 when unset; 1 to 2000 is accepted).
+
+The page uploads the file, asks the server to read it as a table (`POST
+/api/v1/workspaces/{w}/artifacts/{a}/table` -- the same read the batch
+repeats when it fills), shows the columns and the first rows as the
+documents would read them, and refuses to start while a required place
+has no column or the template has a required place that takes a list,
+which a row can never fill. Creating the batch pins the template's
+current version, the file, the sheet, the header choice, the date order,
+the reader's version and the mapping, so a batch still fills the way it
+was made even after the template or its file moves on.
+
+Everything after creation happens in bounded steps while the page is
+open: `POST .../batches/{b}/fill` (and `/accept`, `/check`, `/compose`,
+`/exports` and `/exports/{e}/advance`) each does a piece of the work and
+answers how many rows are left, and the page asks again until none are.
+Leaving the page stops the loop without losing anything; pressing the
+same button on the batch page (`/batches/{id}`) picks the work up where
+it stopped, and so does choosing the batch again on Home, where a
+batch's documents fold into one entry. One workspace runs one batch step
+at a time; a second is answered `BATCH_BUSY`, which the page waits out.
+Deleting a batch removes the batch; its spreadsheet file is removed
+within a day by the unused-file sweep, and the documents it made stay.
+
+**Approve and export** streams a ZIP while it downloads (never assembled
+in memory): one file per exported document in the format chosen (Word,
+PDF or both for a Word template; PDF only for a PDF one), plus a
+`rows.csv` giving each item's row number, document title, outcome, file
+names and their SHA-256 -- and, for a row left out, the reason. A cell
+written there that starts like a formula is prefixed with a quote, so
+opening the file cannot run it. Rows whose
+document blocks export, has a suggestion waiting, or changed after the
+approval are left out and listed on the batch page. A batch document
+trashed between check and export is left out the same way, and the batch
+itself keeps working while the template is in the Trash Bin -- only
+making new documents from it refuses.
+
+Writing a field's text with the model from another column's notes (a
+COMPOSE mapping) is off by default and only appears where
+`BROWNIE_BATCH_COMPOSE_OFFERED=true` **and** the deployment has a model
+configured. Each row is one model request -- every compose field of a
+row goes in together -- charged to the workspace's monthly allowance
+(see the next section); measured at about 475 input and 26 output
+tokens a row, roughly $0.0001 a row on gpt-6-luna, so a batch of many
+rows can still spend the month quickly. What it writes never lands
+directly in a document but arrives as a suggestion a person accepts per
+row.
+
 ## Trash, deletion, and file housekeeping
 
 A document's row on the home page has a "Move to the trash" action. A

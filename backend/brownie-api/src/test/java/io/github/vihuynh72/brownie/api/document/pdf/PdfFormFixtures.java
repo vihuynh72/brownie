@@ -51,6 +51,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -163,6 +164,62 @@ public final class PdfFormFixtures {
             form.getFields().add(signature);
             return write(doc);
         }
+    }
+
+    /**
+     * A certificate of participation a batch fills one of per member:
+     * AcroForm text fields for the same five places the Word version's
+     * content controls tag -- member.name, award.title, award.date (given a
+     * date format so it reads as a date field), club.name and citation.
+     * Dotted names sit under nonterminal fields the way "applicant.phone"
+     * does in {@link #fillableForm()}.
+     */
+    public static byte[] certificateForm() throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            PDAcroForm form = newForm(doc);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                writeLine(cs, helvetica(), 14, 72, 720, "Certificate of Participation");
+                writeLine(cs, helvetica(), 11, 72, 660, "Member:");
+                writeLine(cs, helvetica(), 11, 72, 620, "Award:");
+                writeLine(cs, helvetica(), 11, 72, 580, "Date awarded:");
+                writeLine(cs, helvetica(), 11, 72, 540, "Club:");
+                writeLine(cs, helvetica(), 11, 72, 500, "Citation:");
+            }
+            nestedTextFields(form, page, "member", Map.of("name", new float[] {170, 654, 250, 20}));
+            Map<String, float[]> awardFields = new LinkedHashMap<>();
+            awardFields.put("title", new float[] {170, 614, 250, 20});
+            awardFields.put("date", new float[] {170, 574, 150, 20});
+            PDTextField date = nestedTextFields(form, page, "award", awardFields).get("date");
+            date.getCOSObject().setItem(COSName.AA, formatScript("AFDate_FormatEx(\"mm/dd/yyyy\");"));
+            nestedTextFields(form, page, "club", Map.of("name", new float[] {170, 534, 250, 20}));
+            PDTextField citation = textField(form, page, "citation", new float[] {170, 440, 340, 50}, "/Helv 11 Tf 0 g");
+            citation.setMultiline(true);
+            return write(doc);
+        }
+    }
+
+    /**
+     * A nonterminal field {@code parent} holding one text field per name in
+     * {@code fields}, so the form names them {@code parent.name} -- the same
+     * shape "applicant.phone" takes in {@link #fillableForm()}.
+     */
+    private static Map<String, PDTextField> nestedTextFields(PDAcroForm form, PDPage page, String parent, Map<String, float[]> fields) {
+        PDNonTerminalField group = new PDNonTerminalField(form);
+        group.setPartialName(parent);
+        Map<String, PDTextField> made = new LinkedHashMap<>();
+        fields.forEach((name, rect) -> {
+            PDTextField field = new PDTextField(form);
+            field.setPartialName(name);
+            field.setDefaultAppearance("/Helv 11 Tf 0 g");
+            placeWidget(field.getWidgets().get(0), page, rect);
+            field.getCOSObject().setItem(COSName.PARENT, group.getCOSObject());
+            made.put(name, field);
+        });
+        group.setChildren(List.copyOf(made.values()));
+        form.getFields().add(group);
+        return made;
     }
 
     /** The widget of the name field in {@link #fieldOverPrintedBlank()}, laid over the printed underscores. */

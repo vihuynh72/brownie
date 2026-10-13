@@ -1492,6 +1492,195 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/artifacts/{artifactId}/table": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reads a READY artifact as a table, once per ask: the preview a person confirms before a batch is created against it. A spreadsheet artifact is read as a workbook (a chosen sheet, or the first visible one); a plain text artifact is read as strict RFC 4180 CSV with the delimiter detected from its first record. Anything else, or a file past the bounds, answers 422 TABLE_UNREADABLE with the reason. */
+        post: operations["readArtifactTable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The workspace's batches, newest first, with the documents each has made so far. */
+        get: operations["listBatches"];
+        put?: never;
+        /** Creates a batch filling one document per data row of a table: the template pinned to the version the request names (which must be the template's current one), the upload the table was read from, the column-to-field mapping, and the read settings. The table is read again as it will be during fill before the batch is made, and every required field must be answered by a mapped column. The same Idempotency-Key answers with the same batch. */
+        post: operations["createBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A batch with every row's state. */
+        get: operations["getBatch"];
+        put?: never;
+        post?: never;
+        /** Removes the batch's records only. The documents its fill made are not the batch's and stay; the spreadsheet it read becomes unreferenced and the ordinary sweep collects it in time. */
+        delete: operations["deleteBatch"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/fill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runs the fill step once: bounded work within the request, holding the workspace's one step lease, leaving whatever it cannot reach PENDING. The caller loops until remaining is zero; a closed tab pauses the batch and reopening continues it. The file is re-read and proven to be the same bytes read the same way before a row is filled. */
+        post: operations["fillBatchStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runs the accept step once: every row ready for it gets one review revision marking all of its current items ACCEPTED. A row is ready when its document stands, it is not already accepted, no proposal waits on it, nothing it carries is AI-written, nothing is empty or blocking, and it has either no problems or changed content since fill. Every other row is reported SKIPPED with the reason. Bounded like fill; the caller loops while remaining is above zero. */
+        post: operations["acceptBatchStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runs the check step once: every made row without a manifest on its current revision is validated, so check state in the detail read is fresh before an export. Bounded like fill; the caller loops while remaining is above zero. */
+        post: operations["checkBatchStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Runs the compose step once, where compose is offered: for every made row with COMPOSE cells still PENDING, one bounded model call writes the fields those cells ask for, and the result waits on the document as a proposal. A row whose notes are all blank is marked NOT_NEEDED without a call; a row whose allowance ran out is left NO_ALLOWANCE and the step stops, leaving everything else untouched. */
+        post: operations["composeBatchStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creates an export run for the batch: one item per row, in the one format the request names, RUNNING until advance resolves every item. Each item records the content hash it is made against so a document changed before its turn is reported, not shipped. */
+        post: operations["createBatchExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/exports/{exportId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** An export run with every item's outcome. */
+        get: operations["getBatchExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/exports/{exportId}/advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Advances the run once under the workspace's step lease: each PENDING item is checked, approved and exported, or resolved with the reason it cannot ship -- BLOCKED, SUGGESTION_WAITING, CHANGED, DOCUMENT_GONE. When nothing remains the run is COMPLETE. Bounded like fill; the caller loops while remaining is above zero. */
+        post: operations["advanceBatchExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/batches/{batchId}/exports/{exportId}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Streams the run's archive: one file per EXPORTED item, named by row number and a sanitized title, and a rows.csv listing every row's outcome with formula-risk cells prefixed '. Every file's bytes are verified against its receipt's hash as they stream. */
+        get: operations["downloadBatchExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1941,7 +2130,7 @@ export interface components {
              * @description What the bytes are, never what the name or the browser said. DOC covers a Word 97-2003 template (.dot) too, and ODT an OpenDocument template (.ott). Only DOCX is read for its structure; DOTX, DOCM, DOTM, DOC, RTF, ODT and PAGES are filled through a Word copy made from them.
              * @enum {string|null}
              */
-            detectedMediaType?: "DOCX" | "DOTX" | "DOCM" | "DOTM" | "DOC" | "RTF" | "ODT" | "PAGES" | "PDF" | "PLAIN_TEXT" | null;
+            detectedMediaType?: "DOCX" | "DOTX" | "DOCM" | "DOTM" | "DOC" | "RTF" | "ODT" | "PAGES" | "PDF" | "PLAIN_TEXT" | "XLSX" | null;
             displayFilename?: string | null;
             rejectionReason?: string | null;
         };
@@ -2535,6 +2724,15 @@ export interface components {
              * @enum {string}
              */
             fillSpotNaming?: "MODEL" | "RULES";
+            /** @description What a file chooser for a spreadsheet to fill a batch from may offer: a workbook as itself, or comma-separated text (which arrives as a plain-text upload). A server from before batches leaves it out. */
+            tableFileTypes?: {
+                mediaType: string;
+                extension: string;
+            }[];
+            /** @description The most data rows one batch may hold. */
+            batchMaxRows?: number;
+            /** @description Whether a batch may ask the model to write a field's value from a row's other cells. */
+            batchComposeOffered?: boolean;
         };
         /** @description A place selected on a PDF form's page: page pageNumber, and either a point (points, on the page as stored, before it is turned, origin at the top-left of its visible area, Y down: the convention boxes use) or one of the page's lines by its index in the page layout. Exactly one of point and lineIndex. */
         PdfPageAnchor: {
@@ -3055,6 +3253,282 @@ export interface components {
             /** @description Whether an uploaded form's text is sent to the model, without a further request, so Brownie can find the places to fill in and name them. A server from before that leaves it out, and sends nothing. */
             formTextSentToModel?: boolean;
         };
+        /** @description How to read an uploaded file as a table; all fields optional. */
+        ReadTableRequest: {
+            /** @description The sheet to read for a workbook; absent reads the first visible one. */
+            sheet?: string;
+            /** @description Whether the first non-blank row names the columns; absent asks the reader to detect it. */
+            hasHeaderRow?: boolean;
+            /**
+             * @description Which way a numeric date like 03/04/2025 reads; absent reads month-first.
+             * @enum {string}
+             */
+            dateOrder?: "MDY" | "DMY";
+        };
+        CreateBatchRequest: {
+            /** Format: int64 */
+            templateId: number;
+            /**
+             * Format: int64
+             * @description Must equal the template's current active version; a batch pins it.
+             */
+            templateVersionId: number;
+            /**
+             * Format: int64
+             * @description A READY upload of the spreadsheet or CSV.
+             */
+            artifactId: number;
+            sheet?: string;
+            hasHeaderRow?: boolean;
+            /** @enum {string} */
+            dateOrder?: "MDY" | "DMY";
+            mapping: {
+                fieldId: string;
+                /** @description The table column's 0-based index. */
+                column: number;
+                /**
+                 * @description VALUE takes the cell as read; COMPOSE asks the model, when offered. Absent reads as VALUE.
+                 * @enum {string}
+                 */
+                mode?: "VALUE" | "COMPOSE";
+            }[];
+            /** @description The 0-based column whose cell names each made document, when set. */
+            titleColumn?: number;
+        };
+        TableReadingResponse: {
+            /** Format: int64 */
+            artifactId: number;
+            /** @enum {string} */
+            format: "XLSX" | "CSV";
+            /** @description The exact reader that produced this, so a batch can tell when a re-read would differ. */
+            readerVersion: string;
+            sheetNames: string[];
+            sheet: string | null;
+            hasHeaderRow: boolean;
+            ambiguousDates: boolean;
+            columns: {
+                index: number;
+                letter: string;
+                name: string;
+                /** @enum {string} */
+                inferredType: "TEXT" | "DATE" | "NUMBER" | "EMPTY";
+                blankCount: number;
+            }[];
+            /** @description Non-blank data rows -- the count a batch would make. */
+            rowCount: number;
+            blankRowCount: number;
+            /** @description The first 20 data rows. */
+            previewRows: {
+                rowNumber: number;
+                blank: boolean;
+                cells: {
+                    display: string;
+                    /** Format: date */
+                    date?: string | null;
+                    /** @enum {string|null} */
+                    problem?: "FORMULA_WITHOUT_RESULT" | "ERROR_VALUE" | null;
+                }[];
+            }[];
+            notices: {
+                /** @enum {string} */
+                code: "DUPLICATE_ROWS" | "BLANK_ROWS" | "FORMULAS_WITHOUT_RESULTS" | "ERROR_VALUES" | "AMBIGUOUS_DATES";
+                rows: number[];
+            }[];
+            maxRows: number;
+        };
+        BatchSummaryResponse: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            rowCount: number;
+            createdCount: number;
+            /** Format: date-time */
+            createdAt: string;
+            documentIds: number[];
+        };
+        BatchRowResponse: {
+            /** @description The row number the person sees in the sheet or file. */
+            rowNumber: number;
+            /** @enum {string} */
+            state: "PENDING" | "CREATED" | "SKIPPED_BLANK" | "FAILED" | "DOCUMENT_DELETED";
+            /** Format: int64 */
+            documentId?: number | null;
+            /** Format: int64 */
+            initialRevisionId?: number | null;
+            documentTitle: string | null;
+            /** @description The document exists and is not in the trash. */
+            documentPresent: boolean;
+            /** Format: int64 */
+            currentRevisionId: number | null;
+            /** @description Every current item reviewed ACCEPTED on a non-empty document. */
+            accepted: boolean;
+            /** @description Any current item was written AI_COMPOSED or MIXED. */
+            aiComposed: boolean;
+            /** @description A PROPOSED patch proposal waits on the document. */
+            suggestionWaiting: boolean;
+            /** @description Codes, field ids and columns only -- never a cell's text. */
+            problems: {
+                /** @enum {string} */
+                code: "NOT_A_DATE" | "FORMULA_WITHOUT_RESULT" | "ERROR_VALUE" | "CONTENT_REFUSED" | "RESPONSE_UNREADABLE" | "NOTHING_COMPOSED" | "MODEL_UNAVAILABLE" | "DOCUMENT_GONE";
+                fieldId?: string | null;
+                column?: number | null;
+            }[];
+            /** @enum {string} */
+            composeState: "NOT_NEEDED" | "PENDING" | "PROPOSED" | "FAILED" | "NO_ALLOWANCE";
+            /** Format: int64 */
+            proposalId?: number | null;
+            check: {
+                /** @enum {string} */
+                state: "NOT_CHECKED" | "CHECKED";
+                blocking: number;
+                warnings: number;
+                notes: number;
+                firstBlocking: {
+                    code: string | null;
+                    fieldId: string | null;
+                } | null;
+            };
+            /** @description Required fields still empty -- the blocking count before any check runs. */
+            preCheckBlocking: number;
+            /** @description Questions the latest generation run left open; zero with no run. */
+            openQuestions: number;
+            lastExport: {
+                /** Format: int64 */
+                exportId: number;
+                /** @enum {string} */
+                outcome: "PENDING" | "EXPORTED" | "BLOCKED" | "SUGGESTION_WAITING" | "CHANGED" | "NOT_CREATED" | "DOCUMENT_GONE" | "FAILED";
+            } | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        BatchResponse: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            /** Format: int64 */
+            templateId: number;
+            /** Format: int64 */
+            templateVersionId: number;
+            /** Format: int64 */
+            sourceArtifactId: number;
+            /** @enum {string} */
+            tableFormat: "XLSX" | "CSV";
+            sheetName?: string | null;
+            hasHeaderRow: boolean;
+            /** @enum {string} */
+            dateOrder: "MDY" | "DMY";
+            mapping: {
+                fieldId: string;
+                column: number;
+                /** @enum {string} */
+                mode: "VALUE" | "COMPOSE";
+            }[];
+            titleColumn?: number | null;
+            rowCount: number;
+            /** Format: date-time */
+            createdAt: string;
+            rows: components["schemas"]["BatchRowResponse"][];
+        };
+        BatchStepResponse: {
+            /** @description Rows this step moved. */
+            processed: number;
+            /** @description Rows still PENDING; the caller loops until this is zero. */
+            remaining: number;
+            /** @description Set only when render capacity, not the step, ran out -- wait this long and call again. */
+            retryAfterMs?: number | null;
+            /** @description The rows this step touched, as they now stand. */
+            rows: components["schemas"]["BatchStepRowResponse"][];
+        };
+        BatchStepRowResponse: {
+            rowNumber: number;
+            /** @enum {string} */
+            state: "PENDING" | "CREATED" | "SKIPPED_BLANK" | "FAILED" | "DOCUMENT_DELETED";
+            /** Format: int64 */
+            documentId?: number | null;
+            /** Format: int64 */
+            initialRevisionId?: number | null;
+            problems: {
+                /** @enum {string} */
+                code: "NOT_A_DATE" | "FORMULA_WITHOUT_RESULT" | "ERROR_VALUE" | "CONTENT_REFUSED" | "RESPONSE_UNREADABLE" | "NOTHING_COMPOSED" | "MODEL_UNAVAILABLE" | "DOCUMENT_GONE";
+                fieldId?: string | null;
+                column?: number | null;
+            }[];
+            /** @enum {string} */
+            composeState: "NOT_NEEDED" | "PENDING" | "PROPOSED" | "FAILED" | "NO_ALLOWANCE";
+            /** Format: int64 */
+            proposalId?: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        BatchAcceptResponse: {
+            /** @description Rows that got their accept revision in this step. */
+            processed: number;
+            /** @description Rows still accept-eligible; the caller loops until this is zero. */
+            remaining: number;
+            retryAfterMs?: number | null;
+            /** @description Every row's verdict in this step. */
+            rows: {
+                rowNumber: number;
+                /** @enum {string} */
+                state: "PENDING" | "CREATED" | "SKIPPED_BLANK" | "FAILED" | "DOCUMENT_DELETED";
+                /** Format: int64 */
+                documentId?: number | null;
+                /** @enum {string} */
+                result: "ACCEPTED" | "SKIPPED";
+                /**
+                 * @description Why a skipped row was skipped; null on ACCEPTED.
+                 * @enum {string|null}
+                 */
+                code: "SUGGESTION_WAITING" | "AI_COMPOSED" | "BLOCKING" | "HAS_PROBLEMS" | "NOT_CREATED" | "DOCUMENT_GONE" | "ALREADY_ACCEPTED" | null;
+            }[];
+        };
+        CreateBatchExportRequest: {
+            /**
+             * @description The one format every item of the run ships in.
+             * @enum {string}
+             */
+            format: "DOCX" | "PDF" | "BOTH";
+        };
+        BatchExportItemSchema: {
+            rowNumber: number;
+            /** @enum {string} */
+            outcome: "PENDING" | "EXPORTED" | "BLOCKED" | "SUGGESTION_WAITING" | "CHANGED" | "NOT_CREATED" | "DOCUMENT_GONE" | "FAILED";
+            /** Format: int64 */
+            exportReceiptId: number | null;
+            /** @description Codes and field ids only -- never a cell's or a person's text. */
+            detail: string | null;
+        };
+        BatchExportResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            batchId: number;
+            /** @enum {string} */
+            format: "DOCX" | "PDF" | "BOTH";
+            /** @enum {string} */
+            state: "RUNNING" | "COMPLETE";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            completedAt: string | null;
+            items: components["schemas"]["BatchExportItemSchema"][];
+        };
+        BatchExportStepResponse: {
+            /** @description Items this advance resolved. */
+            processed: number;
+            /** @description Items still PENDING; the caller loops until this is zero. */
+            remaining: number;
+            /** @description Set only when render capacity, not the step, ran out. */
+            retryAfterMs?: number | null;
+            /** @enum {string} */
+            state: "RUNNING" | "COMPLETE";
+            /** @description Every item's outcome as it now stands. */
+            items: components["schemas"]["BatchExportItemSchema"][];
+        };
     };
     responses: {
         /** @description Request validation failed. */
@@ -3134,6 +3608,8 @@ export interface components {
         VersionId: number;
         QuestionId: number;
         RuleId: number;
+        BatchId: number;
+        ExportId: number;
         IdempotencyKey: string;
     };
     requestBodies: never;
@@ -6539,6 +7015,442 @@ export interface operations {
             };
             /** @description No such change of the caller's (code NOT_FOUND). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readArtifactTable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                artifactId: components["parameters"]["ArtifactId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReadTableRequest"];
+            };
+        };
+        responses: {
+            /** @description The table as it read, with a preview of its first rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableReadingResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The artifact is not READY, so its bytes cannot be read (code CONFLICT). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TABLE_UNREADABLE: the file could not be read as a table; reason says why, and rowNumber names where it stopped when it did. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batches. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchSummaryResponse"][];
+                };
+            };
+        };
+    };
+    createBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The batch as made, with every row's starting state. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description The template is in the trash (TEMPLATE_TRASHED), the version named is not the template's current one (TEMPLATE_VERSION_MOVED_ON), the artifact is not READY (CONFLICT), or the idempotency key was already used for a different request (BATCH_IDEMPOTENCY_CONFLICT). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The table could not be read (TABLE_UNREADABLE with its reason), or the mapping cannot fill this template: BATCH_FIELD_UNKNOWN, BATCH_DUPLICATE_MAPPING, BATCH_COLUMN_UNKNOWN, BATCH_FIELD_NOT_FILLABLE, BATCH_TEMPLATE_NEEDS_LIST, BATCH_REQUIRED_FIELD_UNMAPPED or BATCH_COMPOSE_NOT_OFFERED. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch and its rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    fillBatchStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What this step moved and what is left. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchStepResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY), the file's bytes changed since the batch was made (BATCH_SOURCE_CHANGED), the reader that made it is no longer running (BATCH_READER_CHANGED), or the pinned template version is gone (BATCH_TEMPLATE_UNAVAILABLE) or trashed (TEMPLATE_TRASHED); rows are left PENDING. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    acceptBatchStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What this step moved and every row's verdict. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchAcceptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    checkBatchStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What this step moved and what is left. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchStepResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    composeBatchStep: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What this step moved and what is left. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchStepResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY), or compose is not offered on this deployment (BATCH_COMPOSE_NOT_OFFERED). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createBatchExport: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBatchExportRequest"];
+            };
+        };
+        responses: {
+            /** @description The run as created, with every item PENDING or already excluded. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchExportResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY), or the idempotency key was already used for a different request (BATCH_IDEMPOTENCY_CONFLICT). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The format is not one this template exports (EXPORT_FORMAT_NOT_OFFERED). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getBatchExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+                exportId: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run and its items. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchExportResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    advanceBatchExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+                exportId: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What this advance resolved and what is left. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchExportStepResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Another step holds the workspace's lease (BATCH_BUSY). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    downloadBatchExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                batchId: components["parameters"]["BatchId"];
+                exportId: components["parameters"]["ExportId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The archive. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The run is not COMPLETE or has no EXPORTED items (BATCH_EXPORT_NOT_READY). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -121,6 +121,12 @@ public class FillableFormService {
         if (mediaType == SupportedMediaType.PDF) {
             return pdfFormPreparer.prepare(workspaceId, userId, artifactId);
         }
+        // A workbook is a thing a batch reads as a table, not a form to fill;
+        // it is refused as a spreadsheet, like any upload that is one.
+        if (mediaType == SupportedMediaType.XLSX) {
+            throw new UnsupportedArtifactTypeException(
+                    UnsupportedArtifactTypeException.Reason.SPREADSHEET, "Artifact " + artifactId + " is a spreadsheet.");
+        }
         if (mediaType == null || mediaType.wordRoute() == WordRoute.NONE) {
             throw new NotAFillableFormException(NotAFillableFormException.Code.NOT_A_WORD_PROCESSING_DOCUMENT, artifactId);
         }

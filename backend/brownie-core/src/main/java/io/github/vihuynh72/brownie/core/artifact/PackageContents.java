@@ -182,6 +182,8 @@ final class PackageContents {
                 return ContentInspection.of(SupportedMediaType.DOCM);
             case "application/vnd.ms-word.template.macroenabledtemplate.main+xml":
                 return ContentInspection.of(SupportedMediaType.DOTM);
+            case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml":
+                return classifyWorkbook();
             default:
                 break;
         }
@@ -192,6 +194,28 @@ final class PackageContents {
             throw refused(Reason.PRESENTATION, "Package is a presentation.");
         }
         throw refused(Reason.NOT_A_DOCUMENT, "Package's main part is not a word-processing document.");
+    }
+
+    /**
+     * A plain .xlsx workbook is accepted so a batch can read it as a table;
+     * the macro-enabled and other spreadsheet main-part types still fall
+     * through to the spreadsheet refusal below. Two things a real .xlsx
+     * never contains are refused outright here rather than left for a
+     * reader to trip on: external link parts, which a parser could be
+     * induced to fetch, and a VBA project part, which the format forbids
+     * and whose presence means the file is not what its main part claims.
+     */
+    private ContentInspection classifyWorkbook() {
+        for (String name : entryNames) {
+            String part = name.toLowerCase(Locale.ROOT);
+            if (part.startsWith("xl/externallinks/")) {
+                throw refused(Reason.REMOTE_CONTENT, "Workbook refers to content held outside the file.");
+            }
+            if (part.endsWith("vbaproject.bin")) {
+                throw refused(Reason.DAMAGED, "Workbook contains a macro part its format forbids.");
+            }
+        }
+        return ContentInspection.of(SupportedMediaType.XLSX);
     }
 
     private ContentInspection classifyOpenDocument() {

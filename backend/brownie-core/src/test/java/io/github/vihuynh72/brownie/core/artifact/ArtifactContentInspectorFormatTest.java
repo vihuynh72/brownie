@@ -60,11 +60,33 @@ class ArtifactContentInspectorFormatTest {
     }
 
     @Test
-    void aWorkbookOrAPresentationIsRefusedAsWhatItIsInsteadOfPassingForAWordFile() {
-        assertRefused(Reason.SPREADSHEET, () -> ooxml("xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"));
+    void aWorkbookOrAPresentationIsRefusedAsWhatItIsInsteadOfPassingForAWordFile() throws IOException {
+        // A plain workbook is a table a batch can fill from; every other spreadsheet kind stays refused.
+        assertEquals(SupportedMediaType.XLSX,
+                inspect(ooxml("xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml")).mediaType());
         assertRefused(Reason.SPREADSHEET, () -> ooxml("xl/workbook.xml", "application/vnd.ms-excel.sheet.macroEnabled.main+xml"));
+        assertRefused(Reason.SPREADSHEET, () -> ooxml("xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"));
+        assertRefused(Reason.SPREADSHEET, () -> ooxml("xl/workbook.xml", "application/vnd.ms-excel.sheet.binary.macroEnabled.main+xml"));
         assertRefused(Reason.PRESENTATION, () -> ooxml("ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"));
         assertRefused(Reason.PRESENTATION, () -> ooxml("ppt/presentation.xml", "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml"));
+    }
+
+    @Test
+    void aWorkbookHoldingWhatARealOneNeverHasIsRefusedForItsParts() {
+        // External-link parts are what a parser could be induced to fetch; a VBA part belongs to a
+        // macro-enabled format this one cannot be.
+        assertRefused(Reason.REMOTE_CONTENT, () -> zip(
+                part("[Content_Types].xml", contentTypes("/xl/workbook.xml",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml")),
+                part("_rels/.rels", mainRelationship("xl/workbook.xml")),
+                part("xl/workbook.xml", "<workbook/>"),
+                part("xl/externalLinks/externalLink1.xml", "<externalLink/>")));
+        assertRefused(Reason.DAMAGED, () -> zip(
+                part("[Content_Types].xml", contentTypes("/xl/workbook.xml",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml")),
+                part("_rels/.rels", mainRelationship("xl/workbook.xml")),
+                part("xl/workbook.xml", "<workbook/>"),
+                part("xl/vbaProject.bin", "vba")));
     }
 
     @Test

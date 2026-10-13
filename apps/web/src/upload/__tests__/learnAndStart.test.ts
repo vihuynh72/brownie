@@ -541,7 +541,7 @@ describe('learnFormAndStartDocument', () => {
   })
 
   it.each([
-    ['SPREADSHEET', 'This is a spreadsheet, not a document. Brownie can fill Word, RTF, OpenDocument and Pages documents, and PDF forms.'],
+    ['SPREADSHEET', "This is a spreadsheet, not a form. To make a document for each of its rows, open a template's menu under My Templates and choose Fill from a spreadsheet (Excel .xlsx or CSV)."],
     ['PASSWORD_PROTECTED', "This file is locked with a password, so Brownie can't open it. Open it, remove the password, save it, and upload it again."],
     [
       undefined,

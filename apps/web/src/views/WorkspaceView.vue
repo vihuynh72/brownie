@@ -2276,6 +2276,16 @@ async function onSourceFileChosen(event: Event): Promise<void> {
       sourceUploadOpen.value = true
       return
     }
+    // A spreadsheet is an accepted upload but never a readable source: the fill-many flow is its way in, so the
+    // sentence points there rather than asking for a plain-text file the person may not have.
+    if (completed.detectedMediaType === 'XLSX') {
+      sourceUploadError.value =
+        "That file was not attached: a spreadsheet can't be used as a source. To make documents from its rows, " +
+        "open a template's menu and choose Fill from a spreadsheet."
+      sourceUploadState.value = 'error'
+      sourceUploadOpen.value = true
+      return
+    }
     await extractArtifact(workspaceId, allocated.id)
     const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
     sourcesAddedHere.add(attached.id)
@@ -5865,6 +5875,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .rules-card__caption {
   margin: 0 0 0.3125rem;
   color: var(--color-text-muted);
+}
+
+.rules-card__style .field-hint {
+  margin: 0;
 }
 
 .rules-card__style .field-hint {

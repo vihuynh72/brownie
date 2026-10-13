@@ -541,6 +541,19 @@ function onRowContextMenu(template: TemplateResponse, event: MouseEvent): void {
 }
 
 /**
+ * "Fill from a spreadsheet..." opens the flow that makes one document per
+ * row for the template the menu named. The menu goes without handing
+ * focus back: the page it opens takes focus itself.
+ */
+function fillFromSpreadsheet(): void {
+  const chosen = menu.value?.template
+  menu.value = null
+  closeIfDrawer()
+  if (!chosen) return
+  void router.push(`/templates/${chosen.id}/fill-many`)
+}
+
+/**
  * Moves the template the menu was opened for to the Trash Bin. Documents
  * already made from it keep working, so this asks nothing first, and the
  * notice says where to find it again.
@@ -764,6 +777,7 @@ async function moveToTrash(): Promise<void> {
           :anchor="menu.anchor"
           :point="menu.point"
           :start-at="menu.startAt"
+          @fill-many="fillFromSpreadsheet"
           @trash="moveToTrash"
           @close="closeMenu"
         />

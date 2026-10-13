@@ -110,8 +110,17 @@ function openMenuElement(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="menu"]')
 }
 
-function trashItem(): HTMLElement {
+/** The menu's first item, which focus lands on when the menu opens. */
+function firstItem(): HTMLElement {
   const item = document.querySelector<HTMLElement>('[role="menuitem"]')
+  if (!item) throw new Error('The menu is not open')
+  return item
+}
+
+function trashItem(): HTMLElement {
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (candidate) => candidate.textContent?.trim() === 'Move to Trash Bin',
+  )
   if (!item) throw new Error('The menu is not open')
   return item
 }
@@ -550,7 +559,10 @@ describe('AppSidebar', () => {
     expect(more.getAttribute('aria-expanded')).toBe('true')
     expect(more.getAttribute('aria-controls')).toBe(menu.id)
     const items = menu.querySelectorAll('[role="menuitem"]')
-    expect(Array.from(items).map((item) => item.textContent?.trim())).toEqual(['Move to Trash Bin'])
+    expect(Array.from(items).map((item) => item.textContent?.trim())).toEqual([
+      'Fill from a spreadsheet...',
+      'Move to Trash Bin',
+    ])
     expect(document.activeElement).toBe(items[0])
   })
 
@@ -560,7 +572,7 @@ describe('AppSidebar', () => {
 
     pressOnFocused('ArrowDown')
     await flushPromises()
-    expect(document.activeElement).toBe(trashItem())
+    expect(document.activeElement).toBe(firstItem())
 
     const escape = pressOnFocused('Escape')
     await flushPromises()
@@ -597,7 +609,7 @@ describe('AppSidebar', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(openMenuElement()!.getAttribute('aria-labelledby')).toBe('template-more-1')
-    expect(document.activeElement).toBe(trashItem())
+    expect(document.activeElement).toBe(firstItem())
 
     pressOnFocused('Escape')
     await flushPromises()
@@ -617,7 +629,7 @@ describe('AppSidebar', () => {
     const menu = openMenuElement()!
     expect(menu.style.top).toBe('300px')
     expect(menu.style.left).toBe('120px')
-    expect(document.activeElement).toBe(trashItem())
+    expect(document.activeElement).toBe(firstItem())
     Reflect.deleteProperty(document.documentElement, 'clientWidth')
     Reflect.deleteProperty(document.documentElement, 'clientHeight')
   })

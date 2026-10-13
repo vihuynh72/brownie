@@ -332,6 +332,22 @@ class FillableFormIntegrationTest {
         problemCode(post(fillableFormPath(member, 987654321L)), member, 404);
     }
 
+    @Test
+    void anUploadedWorkbookIsRefusedAsASpreadsheetByTheFillableFormRoute() throws Exception {
+        // A workbook the upload took in as a table source is still not a
+        // fillable form; the refusal says what it is in the same shape any
+        // unsupported file gets.
+        Member member = signIn("subject-workbook-refusal");
+        long upload = uploadAndFinalize(member, Files.readAllBytes(sampleTable("members-200.xlsx")), "members.xlsx");
+
+        JsonNode refused = readJson(mockMvc.perform(post(fillableFormPath(member, upload))
+                        .cookie(member.session()).with(csrf()))
+                .andExpect(status().isUnsupportedMediaType())
+                .andReturn());
+        assertThat(refused.get("code").asText()).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+        assertThat(refused.get("reason").asText()).isEqualTo("SPREADSHEET");
+    }
+
     // ---------------------------------------------------------------- template, document and compile
 
     private long createDraft(Member member, JsonNode form) throws Exception {
@@ -502,12 +518,20 @@ class FillableFormIntegrationTest {
     }
 
     private static Path sampleForm(String fileName) {
+        return publicFixture("forms", fileName);
+    }
+
+    private static Path sampleTable(String fileName) {
+        return publicFixture("tables", fileName);
+    }
+
+    private static Path publicFixture(String kind, String fileName) {
         Path current = Path.of("").toAbsolutePath();
-        while (current != null && !Files.isDirectory(current.resolve("fixtures/public/forms"))) {
+        while (current != null && !Files.isDirectory(current.resolve("fixtures/public/" + kind))) {
             current = current.getParent();
         }
         assertThat(current).as("repository root").isNotNull();
-        Path path = current.resolve("fixtures/public/forms").resolve(fileName);
+        Path path = current.resolve("fixtures/public/" + kind).resolve(fileName);
         assertThat(path).isRegularFile();
         return path;
     }
