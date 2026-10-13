@@ -6,12 +6,16 @@ import {
   boxesInCells,
   buildPdfFormModel,
   clampBox,
+  centresLine,
   describeBox,
+  dragCorner,
   normalizeSpotLabel,
   nudgeBox,
   readingOrder,
   spotChangeFailure,
+  spotLines,
   spotTextCss,
+  tickTop,
 } from '@/workspace/pdfPage'
 
 type Spot = PdfLayoutResponse['spots'][number]
@@ -127,6 +131,73 @@ describe('readingOrder', () => {
       [300, 104],
       [50, 140],
     ])
+  })
+})
+
+describe('spotLines and tickTop', () => {
+  const shown = (x: number, y: number, height = 20) => ({ shown: { x, y, width: 50, height } })
+
+  it('groups the places along one line, the lines from the top and each from the left', () => {
+    const lines = spotLines([shown(300, 104), shown(50, 140), shown(50, 100), shown(200, 96)])
+    expect(lines.map((line) => line.map((item) => [item.shown.x, item.shown.y]))).toEqual([
+      [
+        [50, 100],
+        [200, 96],
+        [300, 104],
+      ],
+      [[50, 140]],
+    ])
+    // Grouping the places a second time, in the order they came out, finds the same lines.
+    expect(spotLines(lines.flat()).map((line) => line.length)).toEqual([3, 1])
+  })
+
+  it('marks a line level with the middle of its highest box, or of its first line when the box is tall', () => {
+    const page = { shownHeight: 800 }
+    // A box 30 points tall is marked at its middle, 15 points down; 100 + 15 = 115 of 800.
+    expect(tickTop([shown(50, 100, 30)], page)).toBe('14.375%')
+    // A box 76 points tall is marked at its first line, 16 points down: 200 + 16 = 216 of 800.
+    expect(tickTop([shown(50, 200, 76)], page)).toBe('27%')
+    // Of two boxes on a line the higher one decides.
+    expect(tickTop([shown(300, 104, 20), shown(50, 100, 30)], page)).toBe('14.375%')
+  })
+})
+
+describe('dragCorner', () => {
+  const page = { shownWidth: 612, shownHeight: 792 }
+  const box = { x: 100, y: 200, width: 150, height: 40 }
+
+  it('moves the corner that is dragged and keeps the opposite one where it is', () => {
+    expect(dragCorner(box, 'se', 20, 10, page)).toEqual({ x: 100, y: 200, width: 170, height: 50 })
+    expect(dragCorner(box, 'nw', -20, -10, page)).toEqual({ x: 80, y: 190, width: 170, height: 50 })
+    expect(dragCorner(box, 'ne', 20, -10, page)).toEqual({ x: 100, y: 190, width: 170, height: 50 })
+    expect(dragCorner(box, 'sw', -20, 10, page)).toEqual({ x: 80, y: 200, width: 170, height: 50 })
+  })
+
+  it('stops a corner at the page edge, and where the box is at its smallest', () => {
+    expect(dragCorner(box, 'nw', -500, -500, page)).toEqual({ x: 0, y: 0, width: 250, height: 240 })
+    expect(dragCorner(box, 'se', 900, 900, page)).toEqual({ x: 100, y: 200, width: 512, height: 592 })
+    // Dragged past the opposite side, the box stays as small as it may be, on that side.
+    expect(dragCorner(box, 'se', -400, -400, page)).toEqual({ x: 100, y: 200, width: 8, height: 8 })
+    expect(dragCorner(box, 'nw', 400, 400, page)).toEqual({ x: 242, y: 232, width: 8, height: 8 })
+  })
+})
+
+describe('centresLine', () => {
+  it('centres a single line in one of the form’s own fields, and starts a field made for several lines at the top', () => {
+    expect(centresLine({ width: 240 }, 11, { multiline: false, formField: true }, 'Maya Lin')).toBe(true)
+    expect(centresLine({ width: 240 }, 11, { multiline: false, formField: true }, '')).toBe(true)
+    expect(centresLine({ width: 240 }, 11, { multiline: false, formField: true }, 'x'.repeat(200))).toBe(true)
+    expect(centresLine({ width: 240 }, 11, { multiline: true, formField: true }, 'Maya Lin')).toBe(false)
+  })
+
+  it('centres a value in a box Brownie drew while it fits one line, and starts it at the top once it wraps', () => {
+    // 10 pt text, 502 points of room across a 504 point box: about 96 characters fit.
+    const kind = { multiline: true, formField: false }
+    expect(centresLine({ width: 504 }, 10, kind, 'Drivetrain kit with 4 motors')).toBe(true)
+    expect(centresLine({ width: 504 }, 10, kind, 'x'.repeat(96))).toBe(true)
+    expect(centresLine({ width: 504 }, 10, kind, 'x'.repeat(97))).toBe(false)
+    // An empty box shows its short bracketed name.
+    expect(centresLine({ width: 80 }, 11, { multiline: false, formField: false }, '')).toBe(true)
   })
 })
 

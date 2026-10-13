@@ -158,7 +158,7 @@ onBeforeUnmount(() => {
           aria-controls="app-sidebar"
           @click="openSidebar"
         >
-          <AppIcon :name="docked ? 'panel-expand' : 'menu'" />
+          <AppIcon :name="docked ? 'panel-expand' : 'menu'" :size="24" />
           <span class="visually-hidden">{{ openLabel }}</span>
         </button>
         <RouterLink v-if="!docked" class="shell__brand" to="/">Brownie</RouterLink>
@@ -169,24 +169,39 @@ onBeforeUnmount(() => {
         class="shell__main"
         :class="{ 'shell__main--under-bar': docked && !sidebarOpen, 'shell__main--after-bar': !docked }"
       >
-        <section v-if="session.status === 'error'" class="card" role="alert">
-          <h1>Could not confirm your sign-in</h1>
-          <p>{{ session.lastError }}</p>
+        <section v-if="session.status === 'error'" class="panel shell__notice" role="alert">
+          <h1 class="shell__notice-title">Could not confirm your sign-in</h1>
+          <p class="shell__notice-text">{{ session.lastError }}</p>
           <button type="button" class="button button--primary" @click="session.loadIdentity()">Try again</button>
         </section>
         <!-- Every page reads the workspace from the identity; with none, each would sit on its loading message. -->
         <section
           v-else-if="session.status === 'authenticated' && session.personalWorkspaceId === undefined"
-          class="card"
+          class="panel shell__notice"
           role="alert"
         >
-          <h1>No workspace for this account</h1>
-          <p>You are signed in, but Brownie found no workspace for you. Signing out and in again creates one.</p>
+          <h1 class="shell__notice-title">No workspace for this account</h1>
+          <p class="shell__notice-text">
+            You are signed in, but Brownie found no workspace for you. Signing out and in again creates one.
+          </p>
         </section>
         <template v-else>
-          <section v-if="session.sessionEnded" ref="sessionEndedRef" class="card" role="alert" tabindex="-1">
-            <p>Your session has ended, so nothing more can be saved or changed until you sign in again.</p>
-            <RouterLink :to="{ name: 'signin', query: { next: router.currentRoute.value.fullPath } }">Sign in again</RouterLink>
+          <section
+            v-if="session.sessionEnded"
+            ref="sessionEndedRef"
+            class="panel shell__notice shell__notice--banner"
+            role="alert"
+            tabindex="-1"
+          >
+            <p class="shell__notice-text">
+              Your session has ended, so nothing more can be saved or changed until you sign in again.
+            </p>
+            <RouterLink
+              class="button button--primary"
+              :to="{ name: 'signin', query: { next: router.currentRoute.value.fullPath } }"
+            >
+              Sign in again
+            </RouterLink>
           </section>
           <!--
             A document's page is drawn afresh for each document: the same page reused for another one
@@ -221,7 +236,7 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: rgb(42 41 36 / 0.32);
+  background: var(--scrim);
   animation: scrim-in var(--motion-base) var(--motion-ease);
 }
 
@@ -240,15 +255,26 @@ onBeforeUnmount(() => {
 
 /*
  * Beside a collapsed docked sidebar the only control here is the one that brings it back, so it sits
- * in the page's top corner, as the design draws it, instead of taking a row of its own. The page
- * below is told how much of that corner it covers (see .shell__main--under-bar).
+ * in the page's top corner instead of taking a row of its own. Its glyph is centred 26px from the
+ * top: a page that shares this row (the document's toolbar) centres its own controls on that line,
+ * so the two read as one row. The page below is told how much of that corner it covers (see
+ * .shell__main--under-bar).
  */
 .shell__bar--floating {
   position: absolute;
-  inset-block-start: var(--space-3);
+  inset-block-start: 0.5625rem;
   inset-inline-start: var(--space-3);
   z-index: 5;
   padding: 0;
+}
+
+/* The glyph is the text colour at 60%, like the icons in the sidebar it brings back, and full strength under the pointer. */
+.shell__bar .icon-button {
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+.shell__bar .icon-button:hover {
+  color: var(--color-text);
 }
 
 /* Docked and open, the sidebar carries its own collapse control and this one has nothing to say. */
@@ -257,7 +283,7 @@ onBeforeUnmount(() => {
 }
 
 .shell__brand {
-  font-weight: 700;
+  font-weight: var(--font-weight-medium);
   font-size: var(--font-size-lg);
   color: var(--color-text);
   text-decoration: none;
@@ -295,13 +321,68 @@ onBeforeUnmount(() => {
   --shell-bar-inline: calc(var(--space-3) + var(--icon-button-size) + var(--space-2));
 }
 
+/*
+ * --icon-button-size is a minimum, not the open-sidebar button's real height: its 24px glyph plus the
+ * icon button's own padding and border (--space-1 and 1px on each side) renders at 34px, two pixels past
+ * that minimum. A page that fills the window height (the chat and document pages) reads this row's
+ * height from here, so it is published as what the button actually measures rather than what the token
+ * promises -- a page that trusted the token would come up two pixels short and scroll where it should not.
+ */
 .shell__main--after-bar {
-  --shell-bar-row: calc(var(--space-3) + var(--icon-button-size));
+  --shell-bar-row: calc(var(--space-3) + 1.5rem + 2 * var(--space-1) + 2px);
 }
 
 @media (min-width: 40rem) {
   .shell__main {
     --shell-gutter-inline: var(--space-6);
   }
+}
+
+/*
+ * The shell's own messages: the identity could not be confirmed, the account has no workspace, the
+ * session ended. The first two stand in for the page, so they sit where a page's title would; the
+ * third is a banner above whatever page is still showing, in the width of a page of text.
+ */
+.shell__notice {
+  inline-size: min(100%, 32rem);
+  margin: var(--space-6) auto 0;
+  padding: var(--space-5);
+}
+
+.shell__notice-title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+}
+
+.shell__notice-text {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+}
+
+.shell__notice > .button {
+  margin-block-start: var(--space-4);
+}
+
+.shell__notice--banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  inline-size: min(100%, 47.5rem);
+  margin-block: 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.shell__notice--banner > .shell__notice-text {
+  flex: 1 1 18rem;
+  margin: 0;
+  color: var(--color-text);
+}
+
+.shell__notice--banner > .button {
+  margin: 0;
 }
 </style>

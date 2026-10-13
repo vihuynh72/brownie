@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { resetCapabilitiesCache } from '@/capabilities'
 import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
+import { PAGES_PACKAGE_SENTENCE, PDF_REFUSAL_SENTENCES, REFUSAL_SENTENCES } from '@/upload/fillableCopyWords'
 import {
   learnFormAndStartDocument,
   learnFormAsTemplate,
+  learnRows,
   learnStepWords,
   nameOf,
+  refusalParts,
   uniqueName,
   type LearnStep,
   type StepDetail,
@@ -804,6 +807,114 @@ describe('learnStepWords', () => {
     expect(learnStepWords('preparing-copy', { mediaType: null, waiting: false })).toBe('Finding where the values go…')
     expect(learnStepWords('preparing-copy', { mediaType: 'DOTX', waiting: false })).toBe('Finding where the values go…')
     expect(learnStepWords('preparing-copy', { mediaType: 'PAGES', waiting: true })).toBe('Waiting for a free moment…')
+  })
+})
+
+describe('learnRows', () => {
+  const FIVE_LABELS = [
+    'Uploaded',
+    'Checked the file',
+    'Learning the form: finding where the values go',
+    'Getting the template ready',
+    'Opening your document',
+  ]
+
+  /** What the list shows with `step` under way: every line before it done, it active, every line after it pending. */
+  it.each([
+    ['uploading', ['active', 'pending', 'pending', 'pending', 'pending']],
+    ['checking', ['done', 'active', 'pending', 'pending', 'pending']],
+    ['preparing-copy', ['done', 'done', 'active', 'pending', 'pending']],
+    ['learning', ['done', 'done', 'active', 'pending', 'pending']],
+    ['preparing', ['done', 'done', 'done', 'active', 'pending']],
+    ['opening', ['done', 'done', 'done', 'done', 'active']],
+  ] as const)('shows the lines as they stand while the step %s is under way', (step, states) => {
+    const rows = learnRows(step, { mediaType: 'DOCX', waiting: false })
+
+    expect(rows.map((row) => row.state)).toEqual(states)
+    expect(rows.map((row) => row.id)).toEqual(['upload', 'check', 'learn', 'template', 'open'])
+  })
+
+  /** Reading the file and writing the template down are both "learning the form", so one line covers the two steps. */
+  it('keeps one line for reading the form and writing it down, with the same words before and during', () => {
+    const reading = learnRows('preparing-copy', { mediaType: 'DOCX', waiting: false })
+    const writing = learnRows('learning', { mediaType: 'DOCX', waiting: false })
+
+    expect(reading.map((row) => row.label)).toEqual(FIVE_LABELS)
+    expect(writing.map((row) => row.label)).toEqual(FIVE_LABELS)
+    expect(learnRows('checking', { mediaType: 'DOCX', waiting: false })[2]?.label).toBe(FIVE_LABELS[2])
+  })
+
+  it('says each line in the past once it is done', () => {
+    const rows = learnRows('opening', { mediaType: 'PDF', waiting: false })
+
+    expect(rows.slice(0, 4).map((row) => row.label)).toEqual([
+      'Uploaded',
+      'Checked the file',
+      'Learned the form',
+      'Got the template ready',
+    ])
+    expect(rows[4]?.label).toBe('Opening your document')
+  })
+
+  it('says on the line that is waiting for a free moment when the server is too busy to start', () => {
+    const rows = learnRows('preparing-copy', { mediaType: 'PAGES', waiting: true })
+
+    expect(rows[2]).toEqual({ id: 'learn', state: 'active', label: 'Learning the form: waiting for a free moment' })
+    expect(rows.filter((row) => row.state === 'active')).toHaveLength(1)
+  })
+})
+
+describe('refusalParts', () => {
+  /** The refusals whose last sentence is what to do next: found by the failure's own sentence, never by guessing. */
+  const WITH_A_WAY_FORWARD = [
+    REFUSAL_SENTENCES.PASSWORD_PROTECTED,
+    REFUSAL_SENTENCES.REMOTE_CONTENT,
+    PAGES_PACKAGE_SENTENCE,
+    PDF_REFUSAL_SENTENCES.ENCRYPTED,
+    PDF_REFUSAL_SENTENCES.XFA,
+    PDF_REFUSAL_SENTENCES.LAUNCH_ACTION,
+    PDF_REFUSAL_SENTENCES.EMBEDDED_FILES,
+    PDF_REFUSAL_SENTENCES.DOCUMENT_JAVASCRIPT,
+    PDF_REFUSAL_SENTENCES.TOO_LARGE,
+  ]
+
+  it.each(WITH_A_WAY_FORWARD)('splits "%s" into why and what to do, which read back as the same sentence', (sentence) => {
+    const { reason, advice } = refusalParts(sentence)
+
+    expect(advice).not.toBeNull()
+    expect(`${reason} ${advice}`).toBe(sentence)
+    expect(reason.endsWith('.')).toBe(true)
+    expect(advice).toMatch(/^[A-Z].*\.$/)
+    // The advice is the one closing sentence, so nothing of the reason is left inside it.
+    expect(advice!.slice(0, -1)).not.toContain('. ')
+  })
+
+  it('splits a locked Word file into the reason and the steps to take', () => {
+    expect(refusalParts(REFUSAL_SENTENCES.PASSWORD_PROTECTED)).toEqual({
+      reason: "This file is locked with a password, so Brownie can't open it.",
+      advice: 'Open it, remove the password, save it, and upload it again.',
+    })
+  })
+
+  /** The app's own sentence for a signed PDF stops at the reason; the way forward is the one thing that is added. */
+  it('adds the way forward to a signed PDF and leaves its reason as the app says it everywhere else', () => {
+    expect(refusalParts(PDF_REFUSAL_SENTENCES.SIGNED)).toEqual({
+      reason: 'This PDF has been signed. Filling it in would break the signature, so Brownie leaves it as it is.',
+      advice: 'Upload the form from before it was signed, or ask whoever sent it for an unsigned copy.',
+    })
+  })
+
+  it.each([
+    REFUSAL_SENTENCES.RIGHTS_PROTECTED,
+    REFUSAL_SENTENCES.SPREADSHEET,
+    REFUSAL_SENTENCES.NOT_A_DOCUMENT,
+    REFUSAL_SENTENCES.DAMAGED,
+    PDF_REFUSAL_SENTENCES.DAMAGED,
+    'This file is larger than the 10 MB upload limit, so it was not uploaded.',
+    'Could not upload "Club minutes.docx". Brownie could not be reached. Check your connection, then try again.',
+    '',
+  ])('leaves "%s" as one piece, because the failure does not say where its advice starts', (sentence) => {
+    expect(refusalParts(sentence)).toEqual({ reason: sentence, advice: null })
   })
 })
 

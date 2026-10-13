@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 import FillSpot from '@/components/workspace/FillSpot.vue'
 import FillHereBar from '@/components/workspace/FillHereBar.vue'
+import RowsLine from '@/components/workspace/RowsLine.vue'
 import SpotContextMenu from '@/components/workspace/SpotContextMenu.vue'
 import { codePointLength, type PagePoint } from '@/workspace/anchors'
 import { usePageSelection } from '@/workspace/pageSelection'
@@ -13,7 +15,6 @@ import {
   pageBaseHalfPoints,
   pageSheetCss,
   stateFromAssist,
-  stateNeedsAttention,
   styleToCss,
   type CssStyle,
   type EditableField,
@@ -21,15 +22,19 @@ import {
   type PageFieldList,
   type PageInline,
   type PageParagraph,
+  type PageRow,
   type PageSpot,
+  type PageTable,
   type PageText,
 } from '@/workspace/layout'
 
 /**
  * The document as a page: the template's own text in its own styles, with a fill spot wherever a
  * value goes, so the person fills the document where it will read rather than in a form beside it.
- * Without a layout (an older server, a template that could not be drawn, or while it loads) the same
- * fields are listed as "Label: value" lines and a rows table, so editing never waits on the drawing.
+ * Above the sheet a status line says how far along the page is; beside it a rail shows where every
+ * fill spot sits and whether it still needs a value. Without a layout (an older server, a template
+ * that could not be drawn, or while it loads) the same fields are listed as "Label: value" lines and
+ * a rows table, so editing never waits on the drawing.
  *
  * The page holds no values of its own: every edit is reported to the parent, which owns the drafts,
  * the saving and the row actions (remove, move), and passes the values back down.
@@ -51,12 +56,24 @@ const props = defineProps<{
   /** A repeated item is locked, so no row can be edited. */
   rowsLocked: boolean
   selected: { fieldId: string; rowIndex: number | null } | null
-  /** Places Brownie found itself that the person has not yet said are right; each carries a "Found by Brownie" badge. */
+  /** Places Brownie found itself that the person has not yet said are right; each is marked as a place Brownie found. */
   foundFieldIds?: ReadonlySet<string>
   /** New fill spots can be added to this page: "Add a fill spot", and "Fill in here" on its text. */
   canAddSpots?: boolean
   /** A dialog about a new fill spot is over the page, so the "Fill in here" bar stands down. */
   fillHereHidden?: boolean
+  /**
+   * Values Brownie has proposed that are not in the document yet, shaped like `drafts`. Each shows in its spot as a
+   * preview and nothing here is ever written back; null shows none.
+   */
+  previewDrafts?: Record<string, string | string[]> | null
+  /** How many questions Brownie still has open about each field, by field id. */
+  questionCounts?: Readonly<Record<string, number>>
+}>()
+
+defineSlots<{
+  /** Whatever the screen shows between the status line and the sheet, such as a note about the form. */
+  banner?: () => unknown
 }>()
 
 const emit = defineEmits<{
@@ -90,12 +107,20 @@ function labelOf(fieldId: string): string {
   return fieldLabel(fieldsById.value.get(fieldId) ?? { fieldId })
 }
 
-/** Rows are the repeated fields' items; the longest column decides, so no typed item is ever hidden. */
+const hasRepeatedFields = computed(() => props.fields.some((field) => field.cardinality === 'REPEATED'))
+
+/**
+ * Rows are the repeated fields' items; the longest column decides, so no typed item is ever hidden. A
+ * proposal that carries rows the document does not have yet draws them too, so they can be seen first.
+ */
 const rowCount = computed(() => {
   let count = 0
   for (const field of props.fields) {
-    const draft = field.cardinality === 'REPEATED' ? props.drafts[field.fieldId] : undefined
-    if (Array.isArray(draft)) count = Math.max(count, draft.length)
+    if (field.cardinality !== 'REPEATED') continue
+    for (const source of [props.drafts, props.previewDrafts]) {
+      const value = source?.[field.fieldId]
+      if (Array.isArray(value)) count = Math.max(count, value.length)
+    }
   }
   return count
 })
@@ -103,6 +128,20 @@ const rowCount = computed(() => {
 const model = computed(() =>
   props.layout ? buildPageModel(props.layout, props.fields, rowCount.value) : buildFallbackModel(props.fields, rowCount.value),
 )
+
+/**
+ * Rows the document itself has, not counting a proposal's own: "Add row" always adds to the document, so whether
+ * it worked has to be answered from this, not from `rowCount`, which a pending proposal can inflate on its own.
+ */
+const realRowCount = computed(() => {
+  let count = 0
+  for (const field of props.fields) {
+    if (field.cardinality !== 'REPEATED') continue
+    const value = props.drafts[field.fieldId]
+    if (Array.isArray(value)) count = Math.max(count, value.length)
+  }
+  return count
+})
 
 type Section =
   | { key: string; place: 'header' | 'main' | 'footer'; blocks: PageBlock[] }
@@ -119,7 +158,19 @@ const sections = computed<Section[]>(() => {
   ]
 })
 
-const sheetCss = computed(() => pageSheetCss(props.layout))
+/**
+ * The template's text is drawn at 14px for its 11 point body, so a line across the sheet holds about as many
+ * characters as it does on paper; every other size keeps its proportion to that.
+ */
+const TEXT_SCALE = 0.875
+
+const sheetCss = computed(() => {
+  const css = pageSheetCss(props.layout)
+  // A page without a layout has no size of its own to scale: its list of lines is drawn at the same size.
+  const size = /^(\d+(?:\.\d+)?)rem$/.exec(css.fontSize ?? '')
+  css.fontSize = `${Math.round((size ? Number(size[1]) : 1) * TEXT_SCALE * 10000) / 10000}rem`
+  return css
+})
 
 /*
  * Run styles are worked out once per template style, not on every keystroke: a fill spot whose props
@@ -214,6 +265,54 @@ function paragraphCss(paragraph: PageParagraph): CssStyle {
   return css
 }
 
+// ---- Tables ---------------------------------------------------------------------------------------
+
+/** A row the filler repeats, or the line that stands in for it while there are no rows. */
+function isRepeatingRow(row: PageRow): boolean {
+  return row.noRowsColumns > 0 || row.cells.some((cell) => cell.paragraphs.some((paragraph) => paragraph.repeats))
+}
+
+/** A table whose first row names the columns of the rows below it. */
+function hasHeaderRow(table: PageTable): boolean {
+  const [first] = table.rows
+  return first !== undefined && !isRepeatingRow(first) && table.rows.some(isRepeatingRow)
+}
+
+/** The table stands in for rows it does not have yet. */
+function hasNoRowsLine(table: PageTable): boolean {
+  return table.rows.some((row) => row.noRowsColumns > 0)
+}
+
+/** Brownie found the table's places itself and the person has not yet said they are right. */
+const repeatsFound = computed(() =>
+  props.fields.some((field) => field.cardinality === 'REPEATED' && props.foundFieldIds?.has(field.fieldId) === true),
+)
+
+/**
+ * Where the one "Add row" button goes while there are no rows: the first line on the page that stands in for them,
+ * so the way to the first row sits where the rows will be. Null once there are rows (the button follows them), or
+ * where no line stands in for them.
+ */
+const addRowHome = computed<string | null>(() => {
+  if (rowCount.value > 0) return null
+  for (const section of sections.value) {
+    if (section.place === 'list') {
+      if (section.list.columns.length > 0) return section.list.addRow ? 'list' : null
+      continue
+    }
+    for (const block of section.blocks) {
+      if (block.kind === 'paragraph' && block.noRows) return block.key
+      if (block.kind !== 'table') continue
+      for (const row of block.rows) {
+        if (row.noRowsColumns > 0) return row.key
+        const inCell = row.cells.flatMap((cell) => cell.paragraphs).find((paragraph) => paragraph.noRows)
+        if (inCell) return inCell.key
+      }
+    }
+  }
+  return null
+})
+
 // ---- One fill spot ------------------------------------------------------------------------------
 
 function valueOf(spot: PageSpot): string {
@@ -224,6 +323,18 @@ function valueOf(spot: PageSpot): string {
 
 function isEmpty(spot: PageSpot): boolean {
   return valueOf(spot).trim() === ''
+}
+
+/** What Brownie has proposed for this spot, shown without being written; null when there is nothing to show. */
+function previewOf(spot: PageSpot): string | null {
+  const proposed = props.previewDrafts?.[spot.fieldId]
+  const value = spot.rowIndex === null ? (typeof proposed === 'string' ? proposed : undefined) : Array.isArray(proposed) ? proposed[spot.rowIndex] : undefined
+  return value !== undefined && value.trim() !== '' ? value : null
+}
+
+function openQuestionsAbout(fieldId: string): number {
+  const count = props.questionCounts?.[fieldId]
+  return typeof count === 'number' && count > 0 ? count : 0
 }
 
 function stateOf(spot: PageSpot): FieldStateResponse | null {
@@ -242,9 +353,12 @@ function lockedHintOf(spot: PageSpot): string | undefined {
   return 'A row is locked, so rows cannot be edited until it is unlocked.'
 }
 
-/** A blank date in a row cannot be saved (a blank is not a date), so it is marked before the save is refused. */
+/**
+ * A blank date in a row cannot be saved (a blank is not a date), so it is marked before the save is refused. A
+ * row only Brownie has proposed so far is not in the document, so its blank is not one to mark.
+ */
 function needsRowValue(spot: PageSpot): boolean {
-  return spot.rowIndex !== null && fieldsById.value.get(spot.fieldId)?.type === 'DATE' && isEmpty(spot)
+  return spot.rowIndex !== null && fieldsById.value.get(spot.fieldId)?.type === 'DATE' && isEmpty(spot) && previewOf(spot) === null
 }
 
 function isSelected(spot: PageSpot): boolean {
@@ -253,6 +367,9 @@ function isSelected(spot: PageSpot): boolean {
 }
 
 function spotProps(spot: PageSpot, muted = false) {
+  // A repeated place is marked once, on its first row, rather than on every row of the table.
+  const firstRow = spot.rowIndex === null || spot.rowIndex === 0
+  const questions = firstRow ? openQuestionsAbout(spot.fieldId) : 0
   return {
     fieldId: spot.fieldId,
     rowIndex: spot.rowIndex,
@@ -269,8 +386,9 @@ function spotProps(spot: PageSpot, muted = false) {
     attention: needsRowValue(spot),
     inputId: spot.inputId,
     keysHintId,
-    // A repeated place is marked once, on its first row, rather than on every row of the table.
-    found: (spot.rowIndex === null || spot.rowIndex === 0) && (props.foundFieldIds?.has(spot.fieldId) ?? false),
+    found: firstRow && (props.foundFieldIds?.has(spot.fieldId) ?? false),
+    preview: previewOf(spot),
+    questionCount: questions > 0 ? questions : undefined,
   }
 }
 
@@ -333,22 +451,26 @@ watch(
   },
 )
 
-function focusSpot(inputId: string): void {
-  const target = window.document.getElementById(inputId)
-  if (!(target instanceof HTMLElement) || !sheet.value?.contains(target)) return
+function focusElement(target: HTMLElement | null | undefined): void {
+  if (!target) return
   target.scrollIntoView?.({ block: 'center' })
   target.focus()
+}
+
+function focusSpot(inputId: string): void {
+  const target = window.document.getElementById(inputId)
+  if (target instanceof HTMLElement && sheet.value?.contains(target)) focusElement(target)
 }
 
 // ---- Rows ---------------------------------------------------------------------------------------
 
 /** The new row's first spot takes focus, so a keyboard user carries on typing where the row appeared. */
 async function onAddRow(): Promise<void> {
-  const before = rowCount.value
+  const before = realRowCount.value
   emit('add-row')
   await nextTick()
-  if (rowCount.value <= before) return
-  const first = model.value.spots.find((spot) => spot.rowIndex === rowCount.value - 1)
+  if (realRowCount.value <= before) return
+  const first = model.value.spots.find((spot) => spot.rowIndex === realRowCount.value - 1)
   if (first) focusSpot(first.inputId)
 }
 
@@ -367,15 +489,67 @@ const targets = computed(() => {
   return result
 })
 
+/**
+ * A fill spot as the person counts it: a field with one value, or the table of rows, which is one place to fill
+ * however many columns it has.
+ */
+interface Place {
+  key: string
+  /** Each value it holds, in reading order; none for a table that has no rows yet. */
+  spots: PageSpot[]
+  table: boolean
+}
+
+/** The table's key starts with a line break, which no field id has, so it never clashes with a field's. */
+const TABLE_KEY = '\nrows'
+
+const places = computed(() => {
+  const result: Place[] = []
+  let table: Place | null = null
+  for (const spot of targets.value) {
+    if (spot.rowIndex === null) {
+      result.push({ key: spot.fieldId, spots: [spot], table: false })
+    } else {
+      if (!table) {
+        table = { key: TABLE_KEY, spots: [], table: true }
+        result.push(table)
+      }
+      table.spots.push(spot)
+    }
+  }
+  if (!table && hasRepeatedFields.value) result.push({ key: TABLE_KEY, spots: [], table: true })
+  return result
+})
+
+/** A table is filled once it has rows and none of them has a blank; any other place, once it holds a value. */
+function isFilled(place: Place): boolean {
+  return place.spots.length > 0 && place.spots.every((spot) => !isEmpty(spot))
+}
+
 const progressText = computed(() => {
-  const total = targets.value.length
-  const filled = targets.value.filter((spot) => !isEmpty(spot)).length
+  const total = places.value.length
+  const filled = places.value.filter(isFilled).length
   return `${filled} of ${total} ${total === 1 ? 'fill spot' : 'fill spots'} filled`
+})
+
+/**
+ * What is left for the person to decide: values Brownie wrote that nobody has looked at yet, and values someone
+ * has accepted. A value the person typed needs no review of its own, so it is in neither unless it was accepted.
+ */
+const reviewCounts = computed(() => {
+  let toReview = 0
+  let accepted = 0
+  for (const place of places.value) {
+    const states = place.spots.filter((spot) => !isEmpty(spot)).map((spot) => stateOf(spot))
+    if (states.length === 0) continue
+    if (states.some((state) => stateFromAssist(state) && state?.review === 'UNREVIEWED')) toReview++
+    else if (states.every((state) => state?.review === 'ACCEPTED')) accepted++
+  }
+  return { toReview, accepted }
 })
 
 const hasEmptyTarget = computed(() => targets.value.some((spot) => isEmpty(spot) && !isLocked(spot)))
 const hasRequiredTarget = computed(() => targets.value.some((spot) => props.requiredFieldIds.has(spot.fieldId)))
-const hasAssistValue = computed(() => targets.value.some((spot) => !isEmpty(spot) && stateFromAssist(stateOf(spot))))
 
 /** Moves to the next empty spot after the one last focused, wrapping to the top; a locked spot cannot be filled, so it is passed over. */
 function focusNextEmpty(): void {
@@ -390,72 +564,196 @@ function focusNextEmpty(): void {
   }
 }
 
-/** Where each spot sits down the sheet, from 0 (top) to 1 (bottom), keyed by element id. */
-const markerPositions = ref<Record<string, number>>({})
+/** How a place shows on the rail: the strongest thing to say about it wins, and each tone differs in shape as well as colour. */
+type Tone = 'open' | 'filled' | 'question' | 'invalid' | 'selected'
+
+/** The split a spot makes: red for what cannot be saved or exported, or was turned down; honey with a question mark for what is being asked about. */
+function isInvalid(spot: PageSpot): boolean {
+  const state = stateOf(spot)
+  return state?.validation === 'BLOCKING' || state?.review === 'REJECTED' || needsRowValue(spot)
+}
+
+function isQuestioned(place: Place): boolean {
+  if (place.spots.some((spot) => stateOf(spot)?.review === 'NEEDS_CLARIFICATION')) return true
+  if (!place.table) return openQuestionsAbout(place.spots[0]!.fieldId) > 0
+  return props.fields.some((field) => field.cardinality === 'REPEATED' && openQuestionsAbout(field.fieldId) > 0)
+}
+
+function toneOf(place: Place): Tone {
+  if (place.spots.some(isSelected)) return 'selected'
+  if (place.spots.some(isInvalid)) return 'invalid'
+  if (isQuestioned(place)) return 'question'
+  // A value Brownie only proposes is still a gap in the document, whatever the spot holds now.
+  if (place.spots.some((spot) => previewOf(spot) !== null)) return 'open'
+  return isFilled(place) ? 'filled' : 'open'
+}
+
+/** Where each place sits down the sheet, in pixels from its top, keyed by place. */
+const tickTops = ref<Record<string, number>>({})
+
+/** The control the rail's tick for a place stands level with and goes to: its first spot, or "Add row" for a table with no rows. */
+function railTarget(place: Place): HTMLElement | null {
+  const root = sheet.value
+  if (!root) return null
+  const first = place.spots[0]
+  const element = first ? window.document.getElementById(first.inputId) : root.querySelector<HTMLElement>('[data-add-row]')
+  return element instanceof HTMLElement && root.contains(element) ? element : null
+}
+
+/** The middle of a text control's first line, in pixels from `origin`, so a tick stays with the first of the lines a long value wraps onto; for anything else, the middle of its box. */
+function firstLineMiddle(element: HTMLElement, origin: number): number {
+  const box = element.getBoundingClientRect()
+  if (!(element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement)) return box.top + box.height / 2 - origin
+  const style = window.getComputedStyle(element)
+  const lineHeight = Number.parseFloat(style.lineHeight)
+  const inset = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.paddingTop) || 0)
+  const line = Number.isFinite(lineHeight) ? Math.min(lineHeight, box.height - inset) : box.height - inset
+  return box.top + inset + line / 2 - origin
+}
 
 function measure(): void {
   const root = sheet.value
   if (!root) return
-  const box = root.getBoundingClientRect()
-  const positions: Record<string, number> = {}
-  for (const spot of model.value.spots) {
-    const element = window.document.getElementById(spot.inputId)
-    if (!element || !root.contains(element)) continue
-    const rect = element.getBoundingClientRect()
-    positions[spot.inputId] = box.height > 0 ? Math.min(1, Math.max(0, (rect.top + rect.height / 2 - box.top) / box.height)) : 0
+  const origin = root.getBoundingClientRect().top
+  const tops: Record<string, number> = {}
+  for (const place of places.value) {
+    const element = railTarget(place)
+    if (element) tops[place.key] = Math.round(firstLineMiddle(element, origin) * 2) / 2
   }
-  markerPositions.value = positions
+  const known = tickTops.value
+  const keys = Object.keys(tops)
+  if (keys.length !== Object.keys(known).length || keys.some((key) => known[key] !== tops[key])) tickTops.value = tops
 }
 
-const markers = computed(() =>
-  model.value.spots.map((spot) => ({
-    id: spot.inputId,
-    top: `${Math.round((markerPositions.value[spot.inputId] ?? 0) * 1000) / 10}%`,
-    tone: stateNeedsAttention(stateOf(spot)) || needsRowValue(spot) ? 'attention' : isEmpty(spot) ? 'empty' : 'filled',
-  })),
+const ticks = computed(() =>
+  places.value.flatMap((place) => {
+    const top = tickTops.value[place.key]
+    return top === undefined ? [] : [{ place, top, tone: toneOf(place) }]
+  }),
 )
 
+/** A tick takes the pointer to the same control the keyboard reaches by Tab. */
+function goToPlace(place: Place): void {
+  const target = railTarget(place)
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) focusSpot(target.id)
+  else focusElement(target)
+}
+
 let resizeObserver: ResizeObserver | null = null
+let measureQueued = false
+let measureFrame = 0
+let measureDebounce = 0
+
+/** At most one measurement per frame, however many things moved at once. */
+function scheduleMeasure(): void {
+  if (measureQueued) return
+  measureQueued = true
+  const run = () => {
+    measureQueued = false
+    measureFrame = 0
+    measure()
+  }
+  if (typeof window.requestAnimationFrame === 'function') measureFrame = window.requestAnimationFrame(run)
+  else run()
+}
+
+/**
+ * The sheet's own height can stay put (it is never shorter than a page) while a line wraps and pushes the spots
+ * below it down, so the parts of the page are watched as well as the sheet.
+ */
+function watchSheet(): void {
+  const root = sheet.value
+  if (!resizeObserver || !root) return
+  resizeObserver.disconnect()
+  resizeObserver.observe(root)
+  for (const part of Array.from(root.children)) resizeObserver.observe(part)
+}
 
 onMounted(() => {
   measure()
-  // The sheet changes height when a value wraps onto another line or the window narrows; the markers follow.
-  if (typeof ResizeObserver !== 'undefined' && sheet.value) {
-    resizeObserver = new ResizeObserver(() => measure())
-    resizeObserver.observe(sheet.value)
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(scheduleMeasure)
+    watchSheet()
   }
+  // The text is set again when the page's typeface arrives, which can move every line after the first.
+  const fonts = window.document.fonts
+  fonts?.addEventListener?.('loadingdone', scheduleMeasure)
+  void fonts?.ready?.then(scheduleMeasure)
 })
 
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  window.document.fonts?.removeEventListener?.('loadingdone', scheduleMeasure)
+  if (measureFrame !== 0) window.cancelAnimationFrame?.(measureFrame)
+  window.clearTimeout(measureDebounce)
+})
 
-watch(model, () => void nextTick(measure))
+watch(model, () =>
+  void nextTick(() => {
+    watchSheet()
+    scheduleMeasure()
+  }),
+)
+
+/*
+ * A value that changes (typed, undone, proposed) can move a spot to the next line without changing the height of
+ * any part. Typing is many such changes in a row, so this waits for a short pause in them rather than reading
+ * every place on the page back for each keystroke.
+ */
+watch(
+  () => [props.drafts, props.previewDrafts],
+  () => {
+    window.clearTimeout(measureDebounce)
+    measureDebounce = window.setTimeout(scheduleMeasure, 200)
+  },
+  { deep: true },
+)
 </script>
 
 <template>
   <section class="document-page" :aria-labelledby="headingId">
     <h2 :id="headingId" class="visually-hidden">Document</h2>
-    <p v-if="!layout && layoutState === 'unavailable'" class="field-hint document-page__notice" role="status">
-      {{ layoutProblem ? `${layoutProblem} Its fill spots are listed instead.` : "Brownie could not draw this template's layout, so its fill spots are listed instead." }}
+    <p v-if="!layout && layoutState === 'unavailable'" class="document-page__notice" role="status">
+      <AppIcon name="info" :size="16" />
+      <span>{{ layoutProblem ? `${layoutProblem} Its fill spots are listed instead.` : "Brownie could not draw this template's layout, so its fill spots are listed instead." }}</span>
     </p>
-    <div v-if="targets.length > 0 || canAddSpots" class="document-page__progress">
-      <p v-if="targets.length > 0" class="document-page__progress-text">{{ progressText }}</p>
-      <!-- What the marks on the page mean; each spot also says it in words to assistive technology. -->
-      <p v-if="hasRequiredTarget || hasAssistValue" class="document-page__legend">
-        <span v-if="hasRequiredTarget"><span class="document-page__legend-required" aria-hidden="true">*</span> Required before export</span>
-        <span v-if="hasAssistValue"><span class="document-page__legend-assist" aria-hidden="true">Aa</span> Filled by Brownie</span>
-      </p>
-      <span class="document-page__progress-actions">
-        <button v-if="hasEmptyTarget" type="button" class="button button--secondary" @click="focusNextEmpty">Next empty spot</button>
-        <button v-if="canAddSpots" type="button" class="button button--secondary" @click="emit('add-spot')">Add a fill spot</button>
+
+    <div v-if="places.length > 0 || canAddSpots" class="document-page__status">
+      <div class="document-page__status-text">
+        <!-- The dots are for the eye; assistive technology hears the counts as sentences. -->
+        <p v-if="places.length > 0" class="document-page__summary">
+          {{ progressText
+          }}<template v-if="reviewCounts.toReview > 0"
+            ><span class="visually-hidden">. </span><span aria-hidden="true"> · </span>{{ reviewCounts.toReview }} to review</template
+          ><template v-if="reviewCounts.accepted > 0"
+            ><span class="visually-hidden">. </span><span aria-hidden="true"> · </span>{{ reviewCounts.accepted }} accepted</template
+          >
+        </p>
+        <!-- What the red mark beside a spot means; each required spot also says it in words to assistive technology. -->
+        <p v-if="hasRequiredTarget" class="document-page__legend">
+          <span class="document-page__legend-required" aria-hidden="true">*</span> Required before export
+        </p>
+      </div>
+      <span class="document-page__status-actions">
+        <button v-if="canAddSpots" type="button" class="button button--secondary button--small" @click="emit('add-spot')">
+          <AppIcon name="plus" :size="16" />Add a fill spot
+        </button>
+        <button v-if="hasEmptyTarget" type="button" class="button button--secondary button--small" @click="focusNextEmpty">
+          <AppIcon name="chevron-down" :size="16" />Next empty spot
+        </button>
       </span>
     </div>
+
+    <slot name="banner" />
+
     <!-- Why a place chosen on the page cannot take a fill spot; in the tree while spots can be added, so it is heard when it changes. -->
     <p v-if="canAddSpots" class="document-page__tool-message" :class="{ 'visually-hidden': !pageMessage }" role="status">{{ pageMessage }}</p>
     <p :id="keysHintId" class="visually-hidden">{{ actionsKey }} moves to the bar about this spot.</p>
 
     <div ref="pageBody" class="document-page__body">
       <div ref="sheet" class="document-page__sheet" :style="sheetCss" @contextmenu="onContextMenu" @pointerdown="onPointerDown">
-        <p v-if="sections.length === 0" class="field-hint" :role="layoutState === 'loading' ? 'status' : undefined">
+        <p v-if="sections.length === 0" class="document-page__quiet" :role="layoutState === 'loading' ? 'status' : undefined">
+          <span v-if="layoutState === 'loading'" class="activity-indicator" aria-hidden="true"></span>
           {{ layoutState === 'loading' ? 'Loading the page…' : 'This document has no fill spots.' }}
         </p>
         <template v-for="section in sections" :key="section.key">
@@ -472,8 +770,8 @@ watch(model, () => void nextTick(measure))
               <span class="document-page__field-label">{{ labelOf(spot.fieldId) }}:</span>
               <FillSpot v-bind="spotProps(spot)" @update:value="onSpotInput(spot, $event)" @focus="onSpotFocus(spot)" @actions="onSpotActions(spot)" />
             </p>
-            <div v-if="section.list.columns.length > 0" class="document-page__table-wrap">
-              <table class="document-page__table">
+            <div v-if="section.list.columns.length > 0" class="document-page__table-wrap" :class="{ 'document-page__table-wrap--found': repeatsFound && section.list.rows.length === 0 }">
+              <table class="document-page__table document-page__table--headed">
                 <thead>
                   <tr>
                     <th v-for="fieldId in section.list.columns" :key="fieldId" scope="col">{{ labelOf(fieldId) }}</th>
@@ -486,15 +784,14 @@ watch(model, () => void nextTick(measure))
                     </td>
                   </tr>
                   <tr v-if="section.list.rows.length === 0">
-                    <td :colspan="section.list.columns.length" class="document-page__no-rows">No rows yet.</td>
+                    <td :colspan="section.list.columns.length" class="document-page__no-rows">
+                      <RowsLine empty :found="repeatsFound" :locked="rowsLocked" :button="addRowHome === 'list'" @add="onAddRow" />
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <div v-if="section.list.addRow" class="document-page__add-row">
-              <button type="button" class="button button--secondary" data-add-row :disabled="rowsLocked" @click="onAddRow">Add row</button>
-              <span v-if="rowsLocked" class="field-hint">A row is locked, so rows cannot be added until it is unlocked.</span>
-            </div>
+            <RowsLine v-if="section.list.addRow && section.list.rows.length > 0" :empty="false" :locked="rowsLocked" button @add="onAddRow" />
           </div>
 
           <div
@@ -517,7 +814,7 @@ watch(model, () => void nextTick(measure))
                 :data-anchor-hash="block.anchorTextHash ?? undefined"
                 :data-repeats="block.repeats ? 'true' : undefined"
               >
-                <template v-if="block.noRows">No rows yet.</template>
+                <RowsLine v-if="block.noRows" empty :found="repeatsFound" :locked="rowsLocked" :button="addRowHome === block.key" @add="onAddRow" />
                 <template v-else>
                   <span v-if="block.listLevel !== null" class="document-page__bullet" aria-hidden="true">{{ BULLET }}</span>
                   <template v-for="inline in runsOf(block.inlines)" :key="inline.key">
@@ -553,11 +850,17 @@ watch(model, () => void nextTick(measure))
                 </template>
               </p>
 
-              <div v-else-if="block.kind === 'table'" class="document-page__table-wrap">
-                <table class="document-page__table">
+              <div
+                v-else-if="block.kind === 'table'"
+                class="document-page__table-wrap"
+                :class="{ 'document-page__table-wrap--found': repeatsFound && hasNoRowsLine(block) }"
+              >
+                <table class="document-page__table" :class="{ 'document-page__table--headed': hasHeaderRow(block) }">
                   <tbody>
                     <tr v-for="row in block.rows" :key="row.key">
-                      <td v-if="row.noRowsColumns > 0" :colspan="row.noRowsColumns" class="document-page__no-rows">No rows yet.</td>
+                      <td v-if="row.noRowsColumns > 0" :colspan="row.noRowsColumns" class="document-page__no-rows">
+                        <RowsLine empty :found="repeatsFound" :locked="rowsLocked" :button="addRowHome === row.key" @add="onAddRow" />
+                      </td>
                       <template v-else>
                         <td v-for="cell in row.cells" :key="cell.key">
                           <p
@@ -572,7 +875,7 @@ watch(model, () => void nextTick(measure))
                             :data-anchor-hash="paragraph.anchorTextHash ?? undefined"
                             :data-repeats="paragraph.repeats ? 'true' : undefined"
                           >
-                            <template v-if="paragraph.noRows">No rows yet.</template>
+                            <RowsLine v-if="paragraph.noRows" empty :found="repeatsFound" :locked="rowsLocked" :button="addRowHome === paragraph.key" @add="onAddRow" />
                             <template v-else>
                               <span v-if="paragraph.listLevel !== null" class="document-page__bullet" aria-hidden="true">{{
                                 BULLET
@@ -616,10 +919,7 @@ watch(model, () => void nextTick(measure))
                 </table>
               </div>
 
-              <div v-else class="document-page__add-row">
-                <button type="button" class="button button--secondary" data-add-row :disabled="rowsLocked" @click="onAddRow">Add row</button>
-                <span v-if="rowsLocked" class="field-hint">A row is locked, so rows cannot be added until it is unlocked.</span>
-              </div>
+              <RowsLine v-else-if="addRowHome === null" :empty="false" :locked="rowsLocked" button @add="onAddRow" />
             </template>
           </div>
         </template>
@@ -627,13 +927,15 @@ watch(model, () => void nextTick(measure))
 
       <!-- A glance at where the spots are and which still need a value; the spots themselves carry all of it for assistive technology. -->
       <div class="document-page__rail" aria-hidden="true">
+        <span class="document-page__page-number">1</span>
+        <span class="document-page__track"></span>
         <span
-          v-for="marker in markers"
-          :key="marker.id"
-          class="document-page__marker"
-          :class="`document-page__marker--${marker.tone}`"
-          :style="{ top: marker.top }"
-          @click="focusSpot(marker.id)"
+          v-for="tick in ticks"
+          :key="tick.place.key"
+          class="document-page__tick"
+          :class="`document-page__tick--${tick.tone}`"
+          :style="{ top: `${tick.top}px` }"
+          @click="goToPlace(tick.place)"
         ></span>
       </div>
 
@@ -663,123 +965,130 @@ watch(model, () => void nextTick(measure))
 </template>
 
 <style scoped>
+/*
+ * The column the page is drawn in: the status line, whatever the screen puts above the sheet, and the sheet,
+ * 600px wide at most and as wide as the screen allows below that.
+ */
 .document-page {
   container: document-page / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  inline-size: 100%;
+  max-inline-size: 37.5rem;
   min-inline-size: 0;
+  margin-inline: auto;
+}
+
+/* A calm note over the page that its fill spots are listed because the page could not be drawn. */
+.document-page__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-md);
+  background: var(--color-paper-soft);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.document-page__notice > svg {
+  margin-block-start: 0.0625rem;
 }
 
 /*
- * The lines above the sheet start where the sheet does: past the rail, once there is room for it,
- * and no wider than the sheet can grow.
+ * How far along the page is, what its red mark means, and the ways to the next gap or a new spot: one quiet line over
+ * the sheet. The words give way before the buttons do: when they do not both fit beside them, the legend drops under
+ * the count, two small lines being no taller than a button, so the sheet below never moves. Only where there is no
+ * room for even the count do the buttons move to a line of their own.
  */
-.document-page__notice,
-.document-page__progress {
-  inline-size: 100%;
-  max-inline-size: 50rem;
-  margin: 0 auto;
-}
-
-@container document-page (min-width: 30rem) {
-  .document-page__notice,
-  .document-page__progress {
-    max-inline-size: calc(50rem + 0.625rem + var(--space-5));
-    padding-inline-start: calc(0.625rem + var(--space-5));
-  }
-}
-
-/* How far along the page is, what its marks mean, and a way to the next gap: one quiet line over the sheet. */
-.document-page__progress {
+.document-page__status {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1) var(--space-4);
-  min-block-size: 1.75rem;
+  gap: var(--space-1) 0.625rem;
+  min-block-size: var(--control-height-small);
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
+  line-height: 1.35;
 }
 
-.document-page__progress-text {
-  margin: 0;
-}
-
-.document-page__tool-message:not(.visually-hidden) {
-  inline-size: 100%;
-  max-inline-size: 50rem;
-  margin: 0 auto;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-}
-
-.document-page__legend {
+.document-page__status-text {
   display: flex;
+  flex: 1 1 14rem;
   flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
+  column-gap: 0.625rem;
+  min-inline-size: 0;
+}
+
+.document-page__summary,
+.document-page__legend {
   margin: 0;
 }
 
-/* The same marks the spots carry: the red asterisk, and the tinted, double-underlined value. */
+.document-page__summary {
+  font-weight: var(--font-weight-medium);
+}
+
+/* Raised a pixel, as a star is when it is set against the line of words beside it. */
 .document-page__legend-required {
-  font-weight: 700;
+  position: relative;
+  inset-block-start: -0.0625rem;
+  margin-inline-end: 0.125rem;
   color: var(--color-error);
+  font-weight: var(--font-weight-medium);
 }
 
-.document-page__legend-assist {
-  padding: 0 0.2em;
-  border-block-end: 3px double var(--color-cocoa);
-  background: var(--color-cocoa-wash);
-  color: var(--color-text);
+.document-page__status .button {
+  --button-gap: 0.4375rem;
 }
 
-.document-page__progress-actions {
+.document-page__status-actions {
   display: flex;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-inline-start: auto;
 }
 
-.document-page__progress .button {
-  min-block-size: 1.75rem;
-  padding: 0 var(--space-3);
-  border-color: var(--color-hairline);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-xs);
-  font-weight: 500;
+.document-page__tool-message:not(.visually-hidden) {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .document-page__body {
   position: relative;
-  display: flex;
-  justify-content: center;
-  gap: var(--space-5);
-  min-inline-size: 0;
 }
 
 /*
- * The paper: white on the warm page, with rounded corners and only the faintest shadow, as the design
- * draws it. The transparent edge is drawn by forced colours, where the sheet would otherwise lose its
- * outline.
+ * The paper: white on the page colour with soft corners and no shadow, as tall as a letter page is for its width
+ * and taller where the document needs it. The transparent outline is drawn by forced colours, where the sheet
+ * would otherwise lose its edge.
  */
 .document-page__sheet {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  max-inline-size: 50rem;
-  padding: 1.25rem;
+  --sheet-inset: clamp(1.25rem, 8cqi, 3rem);
+  inline-size: 100%;
+  aspect-ratio: 8.5 / 11;
+  padding: 2.5rem var(--sheet-inset) 3rem;
   background: var(--color-surface);
-  border: 1px solid transparent;
-  border-radius: 0.75rem;
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-text) 6%, transparent);
+  border-radius: var(--radius-md);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
   color: var(--color-text);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-@container document-page (min-width: 40rem) {
-  .document-page__sheet {
-    padding: 3rem 3.25rem;
-  }
+.document-page__quiet {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .document-page__header-part,
@@ -801,7 +1110,8 @@ watch(model, () => void nextTick(measure))
 }
 
 .document-page__paragraph {
-  margin: 0 0 0.5em;
+  /* About the 8 points Word leaves after a paragraph unless a template says otherwise. */
+  margin: 0 0 0.72em;
   /* An empty paragraph is one of the template's blank lines, so it keeps a line's height. */
   min-block-size: 1.5em;
 }
@@ -846,11 +1156,21 @@ watch(model, () => void nextTick(measure))
   font-size: 0.75em;
 }
 
-/* A wide table scrolls inside the page instead of pushing the whole page sideways on a phone. */
+/*
+ * A table is a hairline frame with soft corners; a wide one scrolls inside the page instead of pushing the whole
+ * page sideways on a phone. A table that has not got rows yet, from a place Brownie found, is dashed like the
+ * spots it will hold.
+ */
 .document-page__table-wrap {
   max-inline-size: 100%;
-  margin: 0 0 0.75em;
+  margin: 0 0 0.5em;
+  border: 1px solid var(--color-hairline);
+  border-radius: 0.25rem;
   overflow-x: auto;
+}
+
+.document-page__table-wrap--found {
+  border: 1px dashed var(--color-honey-ink);
 }
 
 .document-page__table {
@@ -858,12 +1178,24 @@ watch(model, () => void nextTick(measure))
   border-collapse: collapse;
 }
 
+/* A row of one-line values comes to 34px: a 21px line, a spot's own height and the air above and below. */
 .document-page__table th,
 .document-page__table td {
-  padding: 0.25em 0.5em;
-  border: 1px solid var(--color-text-secondary);
+  padding: 0.4em 0.5714em;
   text-align: start;
   vertical-align: top;
+}
+
+.document-page__table tr + tr > td,
+.document-page__table tr + tr > th {
+  border-block-start: 1px solid var(--color-hairline);
+}
+
+/* Where the first row names the columns, it is a quiet band above the rows. */
+.document-page__table--headed tr:first-child > th,
+.document-page__table--headed tr:first-child > td {
+  background: var(--color-paper-soft);
+  font-weight: var(--font-weight-medium);
 }
 
 .document-page__table .document-page__paragraph:last-child {
@@ -879,81 +1211,103 @@ watch(model, () => void nextTick(measure))
 .document-page__list-heading {
   margin: 0 0 var(--space-1);
   font-size: var(--font-size-base);
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
 }
 
 .document-page__field-label {
   margin-inline-end: 0.35em;
-  font-weight: 600;
-}
-
-.document-page__add-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  margin: 0 0 1em;
-}
-
-.document-page__add-row .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 /*
- * The rail: a slim capsule at the sheet's side with a tick where each fill spot sits, as the design
- * draws it. It is hidden from assistive technology and holds nothing to tab to, so drawing it first
- * changes nothing about reading order. Only where there is room.
+ * The rail: a slim track beside the sheet with a tick level with every fill spot, so the whole page can be seen
+ * at a glance. It is hidden from assistive technology and holds nothing to tab to; a tick is a mouse way to the
+ * same spot Tab reaches. It hangs in the margin to the sheet's left, which the screen leaves only where it shows the
+ * page beside Brownie's panel.
  */
 .document-page__rail {
   display: none;
-  position: relative;
-  order: -1;
-  flex: none;
-  inline-size: 0.625rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  background: var(--color-surface);
-}
-
-.document-page__rail::before {
-  content: '';
   position: absolute;
-  inset: 1px;
-  border-radius: var(--radius-pill);
-  background: var(--color-track);
+  inset-block: 0;
+  inset-inline-end: 100%;
+  inline-size: 3.125rem;
+  /* Only the ticks answer a pointer, and a selection that runs over the page never picks up the page number. */
+  pointer-events: none;
+  user-select: none;
 }
 
-@container document-page (min-width: 30rem) {
+@container main (min-width: 50rem) {
   .document-page__rail {
     display: block;
   }
 }
 
-.document-page__marker {
+.document-page__track {
   position: absolute;
-  inset-inline-start: 50%;
-  inline-size: 0.875rem;
-  block-size: 0.25rem;
+  inset-block: 0;
+  inset-inline-start: 1.0625rem;
+  inline-size: 0.25rem;
   border-radius: var(--radius-pill);
-  transform: translate(-50%, -50%);
+  background: var(--color-track);
+}
+
+.document-page__page-number {
+  position: absolute;
+  inset-block-start: 0.1875rem;
+  inset-inline-start: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}
+
+/* Each tick is a small mark on the track inside a taller box, so there is something to aim a pointer at. */
+.document-page__tick {
+  --tick-ink: var(--color-honey);
+  --tick-width: 0.875rem;
+  --tick-height: 0.25rem;
+  position: absolute;
+  inset-inline-start: 0;
+  inline-size: 1.625rem;
+  block-size: 1.5rem;
+  transform: translateY(-50%);
   cursor: pointer;
+  pointer-events: auto;
 }
 
-/* The three marks differ in shape as well as colour: a wide tick, a short one, a tall one. */
-.document-page__marker--empty {
-  background: var(--color-honey);
+.document-page__tick::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 0;
+  inline-size: var(--tick-width);
+  block-size: var(--tick-height);
+  border-radius: var(--radius-pill);
+  background: var(--tick-ink);
+  transform: translateY(-50%);
+  transition: background-color var(--motion-fast) var(--motion-ease);
 }
 
-.document-page__marker--filled {
-  inline-size: 0.375rem;
-  background: var(--color-cocoa-tile);
+.document-page__tick:hover::before {
+  filter: brightness(0.9);
 }
 
-.document-page__marker--attention {
-  block-size: 0.75rem;
-  background: var(--color-error);
+/* A tick says what is left in its shape as well as its colour: the ones that need a look are thicker and longer. */
+.document-page__tick--filled {
+  --tick-ink: var(--color-cocoa-tile);
+}
+
+.document-page__tick--question,
+.document-page__tick--invalid,
+.document-page__tick--selected {
+  --tick-width: 1rem;
+  --tick-height: 0.375rem;
+}
+
+.document-page__tick--invalid {
+  --tick-ink: var(--color-error);
+}
+
+.document-page__tick--selected {
+  --tick-ink: var(--color-focus);
 }
 </style>

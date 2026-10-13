@@ -26,6 +26,7 @@ import {
   getWorkspaceUsage,
   listConnections,
   type DataPracticesResponse,
+  type UsageResponse,
 } from '@/api/client'
 import { resetCapabilitiesCache } from '@/capabilities'
 
@@ -77,13 +78,32 @@ function button(wrapper: Awaited<ReturnType<typeof mountPage>>, name: string) {
   return found
 }
 
+/** The field the phrase is typed into, found the way a person finds it: by the words above it. */
+function phraseField(wrapper: Awaited<ReturnType<typeof mountPage>>) {
+  const label = wrapper.findAll('label').find((candidate) => candidate.text() === 'Type delete my workspace to confirm')
+  if (!label) throw new Error('The question about the phrase is not showing')
+  return wrapper.get<HTMLInputElement>(`#${label.attributes('for')}`)
+}
+
 /** Opens the question, types the phrase and submits it. */
 async function confirmDeletion(wrapper: Awaited<ReturnType<typeof mountPage>>): Promise<void> {
   await button(wrapper, 'Delete my workspace…').trigger('click')
   await flushPromises()
-  await wrapper.find('#privacy-confirm-phrase').setValue('delete my workspace')
+  await phraseField(wrapper).setValue('delete my workspace')
   await wrapper.find('form').trigger('submit')
   await flushPromises()
+}
+
+/** The headings of the page's cards, in the order they are read. */
+function cardHeadings(wrapper: Awaited<ReturnType<typeof mountPage>>): string[] {
+  return wrapper.findAll('h2').map((heading) => heading.text())
+}
+
+/** The card a heading names: the section that opens with it, with every word in it. */
+function card(wrapper: Awaited<ReturnType<typeof mountPage>>, heading: string) {
+  const found = wrapper.findAll('section').find((candidate) => candidate.element.querySelector(':scope > h2')?.textContent?.trim() === heading)
+  if (!found) throw new Error(`No card named "${heading}" among: ${cardHeadings(wrapper).join(' | ')}`)
+  return found
 }
 
 describe('YourDataView', () => {
@@ -375,6 +395,163 @@ describe('YourDataView', () => {
     expect(wrapper.text()).toContain('restored for 14 days')
     expect(wrapper.text()).not.toContain('This month')
     expect(wrapper.text()).toContain('Delete everything')
+    expect(cardHeadings(wrapper)).toEqual(['What is kept', 'How long', 'Who else sees it', 'Questions', 'Delete everything'])
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
+  it('answers each question in a card of its own, under a title and a line saying what the page is for', async () => {
+    const wrapper = await mountPage()
+
+    expect(wrapper.get('h1').text()).toBe('Your data')
+    expect(wrapper.text()).toContain('What Brownie keeps, for how long, who else sees it, and how to delete it all.')
+    expect(cardHeadings(wrapper)).toEqual([
+      'What is kept',
+      'How long',
+      'Who else sees it',
+      'Files Brownie accepts',
+      'This month',
+      'Questions',
+      'Delete everything',
+    ])
+    expect(card(wrapper, 'How long').text()).toContain('restored for 14 days')
+    expect(card(wrapper, 'Who else sees it').text()).toContain('OpenAI (gpt-6-luna)')
+    expect(card(wrapper, 'Files Brownie accepts').text()).toContain('PDF, TXT, up to 10 MB each.')
+    expect(card(wrapper, 'Questions').text()).toBe('QuestionsAsk data@example.org.')
+  })
+
+  it('names the file kinds the server accepts, with the size limit only when it sends one, and has no such card when it names none', async () => {
+    const capabilities = (extensions: string[], maxUploadBytes: number) => ({
+      maxUploadBytes,
+      uploadMediaTypes: extensions.map((extension) => ({ mediaType: 'application/octet-stream', extension })),
+      assistSourceMediaTypes: [],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+    })
+
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['.docx', '.pdf'], 0))
+    let wrapper = await mountPage()
+    expect(card(wrapper, 'Files Brownie accepts').text()).toContain('DOCX, PDF. A file is judged by what it is, not by its name.')
+    wrapper.unmount()
+
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities([], 1024))
+    wrapper = await mountPage()
+    expect(cardHeadings(wrapper)).not.toContain('Files Brownie accepts')
+  })
+
+  it('waits for the server only for the sentences that carry its numbers, and says so while it does', async () => {
+    let answer: (value: DataPracticesResponse) => void = () => {}
+    vi.mocked(getDataPractices).mockReturnValue(new Promise<DataPracticesResponse>((resolve) => (answer = resolve)))
+    const wrapper = await mountPage()
+
+    expect(wrapper.text()).toContain('Loading…')
+    expect(card(wrapper, 'How long').text()).toContain('An upload that was never finished is removed automatically.')
+    expect(wrapper.find('button').exists()).toBe(true)
+
+    answer(PRACTICES)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Loading…')
+    expect(card(wrapper, 'How long').text()).toContain('An upload that was never finished is removed after a day.')
+  })
+
+  describe('This month', () => {
+    const NOW = new Date('2026-10-07T22:58:00Z')
+
+    beforeEach(() => {
+      // Only the clock: the page's own requests and the test's waiting must keep running on real timers.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(NOW)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    const monthDay = (year: number, monthIndex: number) =>
+      new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, monthIndex, 1)))
+
+    function usageOf(monthUsedUsd: number, monthLimitUsd: number, monthRequests: number, sharedAllowanceExhausted = false) {
+      return {
+        monthUsedUsd,
+        monthLimitUsd,
+        monthRemainingUsd: Math.max(0, monthLimitUsd - monthUsedUsd),
+        monthRequests,
+        sharedAllowanceExhausted,
+      }
+    }
+
+    const fillOf = (wrapper: Awaited<ReturnType<typeof mountPage>>) => card(wrapper, 'This month').get('.your-data__meter-fill').attributes('style')
+
+    it('shows what has been spent of the allowance as figures and as a bar, and when the allowance starts again', async () => {
+      vi.mocked(getWorkspaceUsage).mockResolvedValue(usageOf(0.74, 2, 31))
+      const wrapper = await mountPage()
+      const month = card(wrapper, 'This month')
+
+      expect(month.text()).toContain('$0.74 of $2.00 used · 31 requests to the model')
+      // The server counts its months in UTC, so the date says so rather than leave a person west of Greenwich a day out.
+      expect(month.text()).toContain(`Resets ${monthDay(2026, 10)} (UTC)`)
+      expect(fillOf(wrapper)).toContain('--your-data-used: 37%')
+      // The figures say all that the bar shows, so a screen reader is not read it twice.
+      expect(month.get('.your-data__meter').attributes('aria-hidden')).toBe('true')
+      expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+    })
+
+    it('counts the first of next month in UTC, also at the turn of the year', async () => {
+      vi.setSystemTime(new Date('2026-12-31T23:30:00Z'))
+      const wrapper = await mountPage()
+
+      expect(card(wrapper, 'This month').text()).toContain(`Resets ${monthDay(2027, 0)} (UTC)`)
+    })
+
+    it.each([
+      ['nothing spent yet', usageOf(0, 2, 0), '0%'],
+      ['a part of it', usageOf(0.0124, 2, 8), '0.6%'],
+      ['more than all of it, as a request still under way is counted at the most it could cost', usageOf(2.2, 2, 3), '100%'],
+      ['an allowance of nothing, which leaves no room', usageOf(0, 0, 0), '100%'],
+    ])('fills the bar for %s', async (_case, figures, fill) => {
+      vi.mocked(getWorkspaceUsage).mockResolvedValue(figures)
+      const wrapper = await mountPage()
+
+      expect(fillOf(wrapper)).toContain(`--your-data-used: ${fill}`)
+    })
+
+    it('says "1 request", not "1 requests"', async () => {
+      vi.mocked(getWorkspaceUsage).mockResolvedValue(usageOf(0.01, 2, 1))
+      const wrapper = await mountPage()
+
+      expect(card(wrapper, 'This month').text()).toContain('1 request to the model')
+      expect(card(wrapper, 'This month').text()).not.toContain('1 requests')
+    })
+
+    it('says what happens when the allowance runs out: reading and rewriting stop, and typing, reviewing and exporting do not', async () => {
+      const wrapper = await mountPage()
+      const text = card(wrapper, 'This month').text().replace(/\s+/g, ' ')
+
+      expect(text).toContain(
+        'When the allowance runs out, Brownie cannot fill in a document or rewrite a value until next month. Typing, reviewing and exporting keep working.',
+      )
+      expect(text, 'the shared allowance is said to be used up only when the server says so').not.toContain('everyone shares')
+    })
+
+    it('says that the allowance everyone shares is used up only when the server says it is', async () => {
+      vi.mocked(getWorkspaceUsage).mockResolvedValue(usageOf(0.5, 2, 4, true))
+      const wrapper = await mountPage()
+      const text = card(wrapper, 'This month').text().replace(/\s+/g, ' ')
+
+      expect(text).toContain('The allowance everyone shares is used up for this month, so new runs are paused until next month.')
+      expect(text).toContain('When the allowance runs out')
+    })
+
+    it('leaves the card out when the server did not send every figure it needs', async () => {
+      const partial: Partial<UsageResponse> = usageOf(0.5, 2, 4)
+      delete partial.monthLimitUsd
+      vi.mocked(getWorkspaceUsage).mockResolvedValue(partial as UsageResponse)
+      const wrapper = await mountPage()
+
+      expect(cardHeadings(wrapper)).not.toContain('This month')
+      expect(wrapper.text()).not.toMatch(/NaN|undefined/)
+    })
   })
 
   it('deletes the workspace only after the phrase is typed, then leaves for a signed-out page', async () => {
@@ -383,7 +560,7 @@ describe('YourDataView', () => {
 
     await wrapper.findAll('button').find((b) => b.text() === 'Delete my workspace…')!.trigger('click')
     await flushPromises()
-    const input = wrapper.find<HTMLInputElement>('#privacy-confirm-phrase')
+    const input = phraseField(wrapper)
     expect(document.activeElement).toBe(input.element)
     const confirm = () => wrapper.findAll('button').find((b) => b.text() === 'Delete everything for good')!
     expect(confirm().attributes('disabled')).toBeDefined()
@@ -401,6 +578,72 @@ describe('YourDataView', () => {
 
     expect(deleteWorkspace).toHaveBeenCalledWith(7)
     expect(assign).toHaveBeenCalledWith('/signin?deleted=1')
+  })
+
+  it('asks for the phrase under a label of its own, offers the way back before the way through, and keeps the way through shut until the phrase is right', async () => {
+    const wrapper = await mountPage()
+    expect(wrapper.find('form').exists()).toBe(false)
+
+    await button(wrapper, 'Delete my workspace…').trigger('click')
+    await flushPromises()
+
+    const form = wrapper.get('form')
+    expect(wrapper.findAll('button').some((candidate) => candidate.text() === 'Delete my workspace…'), 'the question takes the place of the button that asked it').toBe(false)
+    expect(form.findAll('button').map((candidate) => candidate.text())).toEqual(['Keep my workspace', 'Delete everything for good'])
+    expect(phraseField(wrapper).attributes('autocomplete')).toBe('off')
+
+    const forGood = button(wrapper, 'Delete everything for good')
+    expect(forGood.attributes('disabled')).toBeDefined()
+    await phraseField(wrapper).setValue('delete my')
+    expect(forGood.attributes('disabled')).toBeDefined()
+    await phraseField(wrapper).setValue('delete my workspace')
+    expect(forGood.attributes('disabled')).toBeUndefined()
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
+  })
+
+  it('stops the field and both buttons while the workspace is being deleted, and asks the server only once', async () => {
+    vi.mocked(deleteWorkspace).mockReturnValue(new Promise<{ deletionId: number }>(() => {}))
+    const wrapper = await mountPage()
+    await confirmDeletion(wrapper)
+
+    expect(button(wrapper, 'Deleting…').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, 'Keep my workspace').attributes('disabled')).toBeDefined()
+    expect(phraseField(wrapper).attributes('disabled')).toBeDefined()
+
+    await wrapper.find('form').trigger('submit')
+    expect(deleteWorkspace).toHaveBeenCalledTimes(1)
+    expect(assign).not.toHaveBeenCalled()
+
+    // Escape cannot call the request back, so it must not hide the question and what comes of it.
+    await wrapper.find('form').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('form').exists()).toBe(true)
+  })
+
+  it('says what deleting does, with one space between the sentences however many of them this Brownie needs', async () => {
+    const fixed =
+      'This deletes your workspace for good: every document, template, source and file, and your sign-in record. ' +
+      'It cannot be undone, and nothing goes to the trash bin first. Signing in again afterwards starts a new, empty workspace.'
+
+    // Nothing from Google offered or used: only what is always true.
+    let wrapper = await mountPage()
+    expect(card(wrapper, 'Delete everything').get('p').text()).toBe(fixed)
+    wrapper.unmount()
+
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue({
+      maxUploadBytes: 10 * 1024 * 1024,
+      uploadMediaTypes: [],
+      assistSourceMediaTypes: ['text/plain'],
+      templateMediaTypes: [],
+      trashRetentionDays: 14,
+      googleConnectorAccess: ['CALENDAR_EVENTS', 'DRIVE_SAVING', 'CALENDAR_EVENT_CREATION'],
+    })
+    wrapper = await mountPage()
+    expect(card(wrapper, 'Delete everything').get('p').text()).toBe(
+      `${fixed} Brownie also asks Google to take back the access it still holds to any Google account you connected. ` +
+        'Files you saved to Google Drive stay in your Google Drive. Events you added to Google Calendar stay in your calendar.',
+    )
   })
 
   it('backs out on Escape or "Keep my workspace" and puts focus back where it was', async () => {
@@ -436,13 +679,15 @@ describe('YourDataView', () => {
     const wrapper = await mountPage()
     await wrapper.findAll('button').find((b) => b.text() === 'Delete my workspace…')!.trigger('click')
     await flushPromises()
-    await wrapper.find('#privacy-confirm-phrase').setValue('delete my workspace')
+    await phraseField(wrapper).setValue('delete my workspace')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').text()).toContain('A run is still stopping. Nothing was deleted')
     expect(assign).not.toHaveBeenCalled()
     expect(wrapper.findAll('button').find((b) => b.text() === 'Delete everything for good')!.attributes('disabled')).toBeUndefined()
+    expect(document.activeElement, 'focus goes back to the field, so the phrase can be fixed or the try repeated').toBe(phraseField(wrapper).element)
+    expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
   })
 
   /**
@@ -555,7 +800,7 @@ describe('YourDataView', () => {
     expect(wrapper.get('[role="alert"]').text()).toBe(
       'Brownie is still confirming who is signed in, so nothing was deleted. Wait a moment, then try again.',
     )
-    expect(document.activeElement).toBe(wrapper.find('#privacy-confirm-phrase').element)
+    expect(document.activeElement).toBe(phraseField(wrapper).element)
     expect(assign).not.toHaveBeenCalled()
   })
 
@@ -620,7 +865,7 @@ describe('YourDataView', () => {
     const wrapper = await mountPage()
     await wrapper.findAll('button').find((b) => b.text() === 'Delete my workspace…')!.trigger('click')
     await flushPromises()
-    await wrapper.find('#privacy-confirm-phrase').setValue('delete my workspace')
+    await phraseField(wrapper).setValue('delete my workspace')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 

@@ -204,11 +204,11 @@ onBeforeUnmount(() => {
   min-inline-size: 12rem;
   max-inline-size: calc(100vw - 2 * var(--space-2));
   padding: var(--space-1);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: 0 0.5rem 1.5rem rgb(42 41 36 / 0.16);
+  box-shadow: var(--shadow-popover);
   overflow: visible;
 }
 
@@ -220,9 +220,11 @@ onBeforeUnmount(() => {
   min-block-size: var(--control-height);
   padding: 0 var(--space-3);
   border: 0;
-  border-radius: calc(var(--radius) - 0.125rem);
+  border-radius: var(--radius);
   background: transparent;
   color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   text-align: start;
   white-space: nowrap;
   cursor: pointer;

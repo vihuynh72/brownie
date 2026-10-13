@@ -37,7 +37,7 @@ test('deleting the workspace needs the typed phrase, really deletes it, and ends
 
   await page.goto('/your-data')
   await page.getByRole('button', { name: 'Delete my workspace…' }).click()
-  const phrase = page.getByLabel(/To delete everything, type/)
+  const phrase = page.getByLabel('Type delete my workspace to confirm')
   await expect(phrase).toBeFocused()
   const confirm = page.getByRole('button', { name: 'Delete everything for good' })
   await expect(confirm).toBeDisabled()

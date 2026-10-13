@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import type { IconName } from '@/components/icons'
 import { useSessionStore } from '@/stores/session'
 import { loadCapabilities } from '@/capabilities'
 import { navigateTo, releaseIfStillHere } from '@/navigation'
@@ -65,11 +66,11 @@ const calendarOffered = computed(() => offered.value?.includes('CALENDAR_EVENTS'
 const driveOffered = computed(() => offered.value?.includes('DRIVE_FILES') ?? false)
 const showDrive = computed(() => drive.value !== null || driveOffered.value)
 const savingOffered = computed(() => offered.value?.includes('DRIVE_SAVING') ?? false)
-/** Saving is its own connection, shown where it exists or is offered; the page then says Brownie may change something, on approval. */
+/** Saving is its own connection, shown where it exists or is offered; its card then says Brownie may change something, on approval. */
 const showSaving = computed(() => saving.value !== null || savingOffered.value)
 const addingOffered = computed(() => offered.value?.includes('CALENDAR_EVENT_CREATION') ?? false)
 const showAdding = computed(() => adding.value !== null || addingOffered.value)
-/** Whether any connection here can change something, on approval; the page's introduction then says so. */
+/** Whether any connection here can change something, on approval; what disconnecting leaves behind then says so. */
 const showWrites = computed(() => showSaving.value || showAdding.value)
 /** The files Brownie may read, from the open Drive connection only: disconnecting forgets them all. */
 const pickedFiles = computed<ResourceGrantResponse[]>(() =>
@@ -81,6 +82,25 @@ const dayFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
 
 function day(value: string): string {
   return dayFormatter.format(new Date(value))
+}
+
+/**
+ * What a card's chip says about one connection: a word and an icon as well as a colour, so the state is never
+ * shown by colour alone. A connection Google stopped accepting is "Paused", waiting for the person to connect again.
+ */
+function standing(connection: ConnectionResponse | null): { label: string; tone: string; icon: IconName | null } {
+  switch (connection?.state) {
+    case 'ACTIVE':
+      return { label: 'Connected', tone: 'tag--success', icon: 'check-circle' }
+    case 'RECONNECT_REQUIRED':
+      return { label: 'Paused', tone: 'tag--honey', icon: 'warning' }
+    default:
+      return { label: 'Not connected', tone: '', icon: null }
+  }
+}
+
+function paused(connection: ConnectionResponse | null): boolean {
+  return connection?.state === 'RECONNECT_REQUIRED'
 }
 
 function canConnect(access: ConnectorAccess, connection: ConnectionResponse | null): boolean {
@@ -293,372 +313,660 @@ async function disconnect(): Promise<void> {
 
 <template>
   <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
-  <section v-if="session.status === 'anonymous'" class="card">
-    <p>Sign in to see the accounts you have connected to Brownie.</p>
-    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/connections' } }">Sign in</RouterLink>
+  <section v-if="session.status === 'anonymous'" class="page-column page-column--narrow">
+    <div class="panel connections__signin">
+      <p>Sign in to see the accounts you have connected to Brownie.</p>
+      <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: '/connections' } }">Sign in</RouterLink>
+    </div>
   </section>
 
-  <section v-else class="connections" aria-labelledby="connections-heading">
-    <span class="connections__mark" aria-hidden="true"><AppIcon name="link" :size="28" /></span>
-    <h1 id="connections-heading" class="connections__title">Connections</h1>
-    <p v-if="showWrites">
-      Accounts outside Brownie that you let it read from, or add to. Brownie reads only what you ask for, keeps a copy of
-      only what you choose to bring into a document, and makes a change in them only when you approve that exact change.
-    </p>
-    <p v-else>
-      Accounts outside Brownie that you let it read from. Brownie reads only what you ask for, keeps a copy of only what
-      you choose to bring into a document, and never changes anything in them.
-    </p>
+  <section v-else class="page-column page-column--wide connections" aria-labelledby="connections-heading">
+    <header class="page-head">
+      <h1 id="connections-heading" class="page-title">Connections</h1>
+      <p class="page-lede">
+        Brownie uses your Google account only where you allow it here, and only when you ask for it inside a document.
+      </p>
+    </header>
 
-    <p
-      v-if="outcome"
-      ref="outcomeElement"
-      :class="outcome.tone === 'success' ? 'connections__notice' : 'field-error'"
-      :role="outcome.tone === 'success' ? 'status' : 'alert'"
-      tabindex="-1"
-    >
-      {{ outcome.text }}
-    </p>
-    <p v-if="actionError" class="field-error" role="alert">{{ actionError }}</p>
-
-    <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Loading your connected accounts…</p>
-    <p v-else-if="loadState === 'error'" class="field-error" role="alert">{{ loadError }}</p>
-
-    <template v-if="loadState === 'loaded'">
-      <p v-if="nothingOffered" class="field-hint">Connecting other accounts is not set up on this Brownie.</p>
-      <p v-else-if="offered === null" class="field-hint">
-        The Brownie server that answered does not say which accounts can be connected, so none is offered here.
+    <div class="connections__stack">
+      <p
+        v-if="outcome"
+        ref="outcomeElement"
+        class="connections__banner"
+        :class="outcome.tone === 'success' ? 'connections__banner--success' : 'connections__banner--error'"
+        :role="outcome.tone === 'success' ? 'status' : 'alert'"
+        tabindex="-1"
+      >
+        <AppIcon :name="outcome.tone === 'success' ? 'check-circle' : 'alert-circle'" :size="18" />
+        <span>{{ outcome.text }}</span>
+      </p>
+      <p v-if="actionError" class="connections__banner connections__banner--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span>{{ actionError }}</span>
       </p>
 
-      <section v-if="!nothingOffered" class="connections__account" aria-labelledby="connections-calendar">
-        <h2 id="connections-calendar" class="connections__heading">{{ ACCESS_NAMES.CALENDAR_EVENTS }}</h2>
-        <p>{{ calendar ? stateSentence(calendar) : 'Not connected.' }}</p>
-        <dl class="connections__facts">
-          <dt>What Google asks you to allow</dt>
-          <dd>
-            "{{ PERMISSION_WORDS.CALENDAR_EVENTS.google }}"
-            <span class="connections__also">{{ PERMISSION_WORDS.CALENDAR_EVENTS.alsoAsked }}</span>
-          </dd>
-          <dt>What Brownie does with it</dt>
-          <dd>{{ PERMISSION_WORDS.CALENDAR_EVENTS.brownie }}</dd>
-          <dt>What Brownie may read</dt>
-          <dd v-if="calendar && (calendar.grants ?? []).length > 0">
-            <ul class="connections__grants">
-              <li v-for="grant in calendar.grants ?? []" :key="grant.id">
-                {{ grant.displayName ?? 'Your calendar' }}, since {{ day(grant.grantedAt) }}
-              </li>
-            </ul>
-          </dd>
-          <dd v-else>Nothing yet. Your calendar is added here the first time you list its events from a document.</dd>
-        </dl>
-        <p v-if="calendar?.state === 'ACTIVE' && calendarOffered" class="field-hint">
-          To copy an event, open a document, press Add a source (+) beside the message box and use "Copy an event from Google Calendar".
-        </p>
-        <p v-else-if="calendar?.state === 'ACTIVE'" class="field-hint">
-          Copying events from Google Calendar is not offered on this Brownie at the moment. The connection stays until you
-          disconnect it.
-        </p>
-        <button
-          v-if="canConnect('CALENDAR_EVENTS', calendar)"
-          id="connections-connect-calendar"
-          type="button"
-          class="button button--primary"
-          :disabled="busy !== null"
-          @click="connect('CALENDAR_EVENTS')"
-        >
-          {{ calendar?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Calendar again' : 'Connect Google Calendar' }}
-        </button>
-      </section>
+      <p v-if="loadState === 'loading'" class="connections__loading" aria-live="polite">
+        <span class="activity-indicator" aria-hidden="true"></span>
+        <span>Loading your connected accounts…</span>
+      </p>
+      <p v-else-if="loadState === 'error'" class="connections__banner connections__banner--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span>{{ loadError }}</span>
+      </p>
 
-      <section v-if="showDrive" class="connections__account" aria-labelledby="connections-drive">
-        <h2 id="connections-drive" class="connections__heading">{{ ACCESS_NAMES.DRIVE_FILES }}</h2>
-        <p>{{ drive ? stateSentence(drive) : 'Not connected.' }}</p>
-        <dl class="connections__facts">
-          <dt>What Google asks you to allow</dt>
-          <dd>"{{ PERMISSION_WORDS.DRIVE_FILES.google }}"</dd>
-          <dt>What Brownie does with it</dt>
-          <dd>{{ driveBrownieWords(driveOffered) }}</dd>
-          <template v-if="driveOffered || pickedFiles.length > 0">
-            <dt>What Brownie may read</dt>
-            <dd v-if="pickedFiles.length > 0">
-              <ul class="connections__grants">
-                <li v-for="file in pickedFiles" :key="file.id" class="connections__file">
-                  <span>{{ file.displayName ?? 'A file from Google Drive' }}, since {{ day(file.grantedAt) }}</span>
-                  <button
-                    :id="`connections-forget-${file.id}`"
-                    type="button"
-                    class="button button--secondary"
-                    :disabled="busy !== null"
-                    @click="forgetFile(file)"
-                  >
-                    <span>Stop reading this file <span class="visually-hidden">{{ file.displayName ?? 'from Google Drive' }}</span></span>
-                  </button>
-                </li>
-              </ul>
-              <span class="connections__also">Copies already made from a file stay in your documents when you stop reading it.</span>
-            </dd>
-            <dd v-else>Nothing yet. Files you choose in Google's file picker are listed here.</dd>
-          </template>
-        </dl>
-        <p v-if="drive?.state === 'ACTIVE' && driveOffered && pickedFiles.length > 0" class="field-hint">
-          To copy a file, open a document, press Add a source (+) beside the message box and use "Copy a file from Google Drive".
+      <template v-if="loadState === 'loaded'">
+        <p v-if="nothingOffered" class="panel connections__note">
+          <AppIcon name="info" :size="16" />
+          <span>Connecting other accounts is not set up on this Brownie.</span>
         </p>
-        <button
-          v-if="driveOffered"
-          id="connections-pick-drive"
-          type="button"
-          class="button button--primary"
-          :disabled="busy !== null"
-          @click="pickFiles"
-        >
-          {{
-            drive?.state === 'RECONNECT_REQUIRED'
-              ? 'Connect Google Drive again and choose files'
-              : pickedFiles.length > 0
-                ? 'Choose more files in Google Drive'
-                : 'Choose files in Google Drive'
-          }}
-        </button>
-      </section>
+        <p v-else-if="offered === null" class="panel connections__note">
+          <AppIcon name="info" :size="16" />
+          <span>The Brownie server that answered does not say which accounts can be connected, so none is offered here.</span>
+        </p>
 
-      <section v-if="showSaving" class="connections__account" aria-labelledby="connections-saving">
-        <h2 id="connections-saving" class="connections__heading">{{ ACCESS_NAMES.DRIVE_SAVING }}</h2>
-        <p>{{ saving ? stateSentence(saving) : 'Not connected.' }}</p>
-        <dl class="connections__facts">
-          <dt>What Google asks you to allow</dt>
-          <dd>"{{ PERMISSION_WORDS.DRIVE_SAVING.google }}"</dd>
-          <dt>What Brownie does with it</dt>
-          <dd>{{ PERMISSION_WORDS.DRIVE_SAVING.brownie }}</dd>
-          <dt>What Brownie may read</dt>
-          <dd>
-            Which account this is, through Google Drive; a file it saved for you, to check it afterwards; and a Google Doc it
-            saved, in full, when you prepare adding text to it and again afterwards.
-          </dd>
-        </dl>
-        <p v-if="saving?.state === 'ACTIVE' && savingOffered" class="field-hint">
-          To save a document, open Export on it; "Save to Google Drive" is there once it is exported.
-        </p>
-        <p v-else-if="saving?.state === 'ACTIVE'" class="field-hint">
-          Saving to Google Drive is not offered on this Brownie at the moment. The connection stays until you disconnect it.
-        </p>
-        <button
-          v-if="canConnect('DRIVE_SAVING', saving)"
-          id="connections-connect-saving"
-          type="button"
-          class="button button--primary"
-          :disabled="busy !== null"
-          @click="connect('DRIVE_SAVING')"
-        >
-          {{ saving?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive for saving again' : 'Connect Google Drive for saving' }}
-        </button>
-      </section>
-
-      <section v-if="showAdding" class="connections__account" aria-labelledby="connections-adding">
-        <h2 id="connections-adding" class="connections__heading">{{ ACCESS_NAMES.CALENDAR_EVENT_CREATION }}</h2>
-        <p>{{ adding ? stateSentence(adding) : 'Not connected.' }}</p>
-        <dl class="connections__facts">
-          <dt>What Google asks you to allow</dt>
-          <dd>
-            "{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.google }}"
-            <span class="connections__also">{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.alsoAsked }}</span>
-          </dd>
-          <dt>What Brownie does with it</dt>
-          <dd>{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.brownie }}</dd>
-          <dt>What Brownie may read</dt>
-          <dd>Which account this is, and an event it added for you, to check it after adding it.</dd>
-        </dl>
-        <p v-if="adding?.state === 'ACTIVE' && addingOffered" class="field-hint">
-          To add an event, open a document and use "Add an event to Google Calendar" in its Export window.
-        </p>
-        <p v-else-if="adding?.state === 'ACTIVE'" class="field-hint">
-          Adding events to Google Calendar is not offered on this Brownie at the moment. The connection stays until you
-          disconnect it.
-        </p>
-        <button
-          v-if="canConnect('CALENDAR_EVENT_CREATION', adding)"
-          id="connections-connect-adding"
-          type="button"
-          class="button button--primary"
-          :disabled="busy !== null"
-          @click="connect('CALENDAR_EVENT_CREATION')"
-        >
-          {{
-            adding?.state === 'RECONNECT_REQUIRED'
-              ? 'Connect Google Calendar for adding events again'
-              : 'Connect Google Calendar for adding events'
-          }}
-        </button>
-      </section>
-
-      <section v-if="pickerTestVisible" class="connections__account" aria-labelledby="connections-picker-test">
-        <h2 id="connections-picker-test" class="connections__heading">Google's file picker (test)</h2>
-        <p class="field-hint">
-          Only in development builds, and only with the earlier test build of the Brownie server, which counts the files
-          Google's own file picker sends back and opens none of them. Google treats it as connecting Google Drive again. A
-          Brownie server that records the files you pick refuses this test until Google Drive is offered here.
-        </p>
-        <button
-          id="connections-try-picker"
-          type="button"
-          class="button button--secondary"
-          :disabled="busy !== null"
-          @click="tryPicker"
-        >
-          Try Google's file picker (test)
-        </button>
-      </section>
-
-      <section v-if="anyOpen" class="connections__account" aria-labelledby="connections-disconnect-heading">
-        <h2 id="connections-disconnect-heading" class="connections__heading">Disconnect Google</h2>
-        <p>
-          Brownie asks Google to take back the access it still holds, and deletes that access whatever Google answers.
-          A connection waiting to be connected again holds none Brownie can use, so for that one Brownie cannot ask
-          Google; remove Brownie in your Google account instead. Every file you chose in Google Drive is taken off your
-          list too. Copies already brought into your documents stay with those documents, and each still says where it
-          came from; they are never updated again. To remove a copy, delete every document it was copied into.
-          <template v-if="showWrites">
-            A change waiting for your approval can no longer be made, and one whose outcome is unknown can be asked about only
-            once the same Google account is connected again. Files Brownie saved, text it added and events it added stay in
-            your Google account.</template
+        <div v-if="!nothingOffered" class="connections__grid">
+          <section
+            class="panel account"
+            :class="{ 'account--attention': paused(calendar) }"
+            aria-labelledby="connections-calendar"
           >
-        </p>
-        <button
-          v-if="!confirmingDisconnect"
-          id="connections-disconnect"
-          type="button"
-          class="button button--secondary connections__danger"
-          :disabled="busy !== null"
-          @click="askToDisconnect"
-        >
-          Disconnect Google…
-        </button>
-        <div v-else class="connections__confirm" role="group" aria-label="Disconnect Google" @keydown.esc="keepConnected">
-          <p class="connections__question">Disconnect every Google connection here? Brownie will need your agreement again to read anything.</p>
-          <div class="connections__actions">
+            <div class="account__head">
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="calendar" :size="22" /></span>
+              <h2 id="connections-calendar" class="account__title">{{ ACCESS_NAMES.CALENDAR_EVENTS }}</h2>
+              <span class="tag" :class="standing(calendar).tone">
+                <AppIcon v-if="standing(calendar).icon" :name="standing(calendar).icon!" :size="14" />
+                {{ standing(calendar).label }}
+              </span>
+            </div>
+            <p class="account__summary">{{ calendar ? stateSentence(calendar) : 'Not connected.' }}</p>
+            <dl class="panel--quiet account__facts">
+              <div class="account__fact">
+                <dt>Google asks you to allow</dt>
+                <dd>
+                  "{{ PERMISSION_WORDS.CALENDAR_EVENTS.google }}"
+                  <span class="account__also">{{ PERMISSION_WORDS.CALENDAR_EVENTS.alsoAsked }}</span>
+                </dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie does</dt>
+                <dd>{{ PERMISSION_WORDS.CALENDAR_EVENTS.brownie }}</dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie may read</dt>
+                <dd v-if="calendar && (calendar.grants ?? []).length > 0">
+                  <ul class="account__list">
+                    <li v-for="grant in calendar.grants ?? []" :key="grant.id">
+                      {{ grant.displayName ?? 'Your calendar' }}, since {{ day(grant.grantedAt) }}
+                    </li>
+                  </ul>
+                </dd>
+                <dd v-else>Nothing yet. Your calendar is added here the first time you list its events from a document.</dd>
+              </div>
+            </dl>
+            <p v-if="calendar?.state === 'ACTIVE' && calendarOffered" class="field-hint">
+              To copy an event, open a document, press Add a source (+) beside the message box and use "Copy an event from Google Calendar".
+            </p>
+            <p v-else-if="calendar?.state === 'ACTIVE'" class="field-hint">
+              Copying events from Google Calendar is not offered on this Brownie at the moment. The connection stays until you
+              disconnect it.
+            </p>
+            <div v-if="canConnect('CALENDAR_EVENTS', calendar)" class="account__actions">
+              <button
+                id="connections-connect-calendar"
+                type="button"
+                class="button button--primary button--small"
+                :disabled="busy !== null"
+                @click="connect('CALENDAR_EVENTS')"
+              >
+                <AppIcon name="calendar" :size="16" />
+                {{ calendar?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Calendar again' : 'Connect Google Calendar' }}
+              </button>
+            </div>
+          </section>
+
+          <section
+            v-if="showDrive"
+            class="panel account"
+            :class="{ 'account--attention': paused(drive) }"
+            aria-labelledby="connections-drive"
+          >
+            <div class="account__head">
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="folder" :size="22" /></span>
+              <h2 id="connections-drive" class="account__title">{{ ACCESS_NAMES.DRIVE_FILES }}</h2>
+              <span class="tag" :class="standing(drive).tone">
+                <AppIcon v-if="standing(drive).icon" :name="standing(drive).icon!" :size="14" />
+                {{ standing(drive).label }}
+              </span>
+            </div>
+            <p class="account__summary">{{ drive ? stateSentence(drive) : 'Not connected.' }}</p>
+            <dl class="panel--quiet account__facts">
+              <div class="account__fact">
+                <dt>Google asks you to allow</dt>
+                <dd>"{{ PERMISSION_WORDS.DRIVE_FILES.google }}"</dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie does</dt>
+                <dd>{{ driveBrownieWords(driveOffered) }}</dd>
+              </div>
+              <div v-if="driveOffered || pickedFiles.length > 0" class="account__fact">
+                <dt>What Brownie may read</dt>
+                <dd v-if="pickedFiles.length > 0">
+                  <ul class="account__list">
+                    <li v-for="file in pickedFiles" :key="file.id" class="account__file">
+                      <span class="account__file-name">{{ file.displayName ?? 'A file from Google Drive' }}, since {{ day(file.grantedAt) }}</span>
+                      <button
+                        :id="`connections-forget-${file.id}`"
+                        type="button"
+                        class="button button--secondary button--small"
+                        :disabled="busy !== null"
+                        @click="forgetFile(file)"
+                      >
+                        <span>Stop reading this file <span class="visually-hidden">{{ file.displayName ?? 'from Google Drive' }}</span></span>
+                      </button>
+                    </li>
+                  </ul>
+                  <span class="account__also">Copies already made from a file stay in your documents when you stop reading it.</span>
+                </dd>
+                <dd v-else>Nothing yet. Files you choose in Google's file picker are listed here.</dd>
+              </div>
+            </dl>
+            <p v-if="drive?.state === 'ACTIVE' && driveOffered && pickedFiles.length > 0" class="field-hint">
+              To copy a file, open a document, press Add a source (+) beside the message box and use "Copy a file from Google Drive".
+            </p>
+            <div v-if="driveOffered" class="account__actions">
+              <button
+                id="connections-pick-drive"
+                type="button"
+                class="button button--small"
+                :class="drive?.state === 'ACTIVE' ? 'button--secondary' : 'button--primary'"
+                :disabled="busy !== null"
+                @click="pickFiles"
+              >
+                <AppIcon name="folder" :size="16" />
+                {{
+                  drive?.state === 'RECONNECT_REQUIRED'
+                    ? 'Connect Google Drive again and choose files'
+                    : pickedFiles.length > 0
+                      ? 'Choose more files in Google Drive'
+                      : 'Choose files in Google Drive'
+                }}
+              </button>
+            </div>
+          </section>
+
+          <section
+            v-if="showSaving"
+            class="panel account"
+            :class="{ 'account--attention': paused(saving) }"
+            aria-labelledby="connections-saving"
+          >
+            <div class="account__head">
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="cloud" :size="22" /></span>
+              <h2 id="connections-saving" class="account__title">{{ ACCESS_NAMES.DRIVE_SAVING }}</h2>
+              <span class="tag" :class="standing(saving).tone">
+                <AppIcon v-if="standing(saving).icon" :name="standing(saving).icon!" :size="14" />
+                {{ standing(saving).label }}
+              </span>
+            </div>
+            <p class="account__summary">{{ saving ? stateSentence(saving) : 'Not connected.' }}</p>
+            <dl class="panel--quiet account__facts">
+              <div class="account__fact">
+                <dt>Google asks you to allow</dt>
+                <dd>"{{ PERMISSION_WORDS.DRIVE_SAVING.google }}"</dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie does</dt>
+                <dd>{{ PERMISSION_WORDS.DRIVE_SAVING.brownie }}</dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie may read</dt>
+                <dd>
+                  Which account this is, through Google Drive; a file it saved for you, to check it afterwards; and a Google Doc it
+                  saved, in full, when you prepare adding text to it and again afterwards.
+                </dd>
+              </div>
+            </dl>
+            <p v-if="saving?.state === 'ACTIVE' && savingOffered" class="field-hint">
+              To save a document, open Export on it; "Save to Google Drive" is there once it is exported.
+            </p>
+            <p v-else-if="saving?.state === 'ACTIVE'" class="field-hint">
+              Saving to Google Drive is not offered on this Brownie at the moment. The connection stays until you disconnect it.
+            </p>
+            <div v-if="canConnect('DRIVE_SAVING', saving)" class="account__actions">
+              <button
+                id="connections-connect-saving"
+                type="button"
+                class="button button--primary button--small"
+                :disabled="busy !== null"
+                @click="connect('DRIVE_SAVING')"
+              >
+                <AppIcon name="cloud" :size="16" />
+                {{ saving?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive for saving again' : 'Connect Google Drive for saving' }}
+              </button>
+            </div>
+          </section>
+
+          <section
+            v-if="showAdding"
+            class="panel account"
+            :class="{ 'account--attention': paused(adding) }"
+            aria-labelledby="connections-adding"
+          >
+            <div class="account__head">
+              <span class="doc-tile" aria-hidden="true"><AppIcon name="calendar-add" :size="22" /></span>
+              <h2 id="connections-adding" class="account__title">{{ ACCESS_NAMES.CALENDAR_EVENT_CREATION }}</h2>
+              <span class="tag" :class="standing(adding).tone">
+                <AppIcon v-if="standing(adding).icon" :name="standing(adding).icon!" :size="14" />
+                {{ standing(adding).label }}
+              </span>
+            </div>
+            <p class="account__summary">{{ adding ? stateSentence(adding) : 'Not connected.' }}</p>
+            <dl class="panel--quiet account__facts">
+              <div class="account__fact">
+                <dt>Google asks you to allow</dt>
+                <dd>
+                  "{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.google }}"
+                  <span class="account__also">{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.alsoAsked }}</span>
+                </dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie does</dt>
+                <dd>{{ PERMISSION_WORDS.CALENDAR_EVENT_CREATION.brownie }}</dd>
+              </div>
+              <div class="account__fact">
+                <dt>What Brownie may read</dt>
+                <dd>Which account this is, and an event it added for you, to check it after adding it.</dd>
+              </div>
+            </dl>
+            <p v-if="adding?.state === 'ACTIVE' && addingOffered" class="field-hint">
+              To add an event, open a document and use "Add an event to Google Calendar" in its Export window.
+            </p>
+            <p v-else-if="adding?.state === 'ACTIVE'" class="field-hint">
+              Adding events to Google Calendar is not offered on this Brownie at the moment. The connection stays until you
+              disconnect it.
+            </p>
+            <div v-if="canConnect('CALENDAR_EVENT_CREATION', adding)" class="account__actions">
+              <button
+                id="connections-connect-adding"
+                type="button"
+                class="button button--primary button--small"
+                :disabled="busy !== null"
+                @click="connect('CALENDAR_EVENT_CREATION')"
+              >
+                <AppIcon name="calendar-add" :size="16" />
+                {{
+                  adding?.state === 'RECONNECT_REQUIRED'
+                    ? 'Connect Google Calendar for adding events again'
+                    : 'Connect Google Calendar for adding events'
+                }}
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <section v-if="pickerTestVisible" class="panel account" aria-labelledby="connections-picker-test">
+          <h2 id="connections-picker-test" class="account__title">Google's file picker (test)</h2>
+          <p class="field-hint">
+            Only in development builds, and only with the earlier test build of the Brownie server, which counts the files
+            Google's own file picker sends back and opens none of them. Google treats it as connecting Google Drive again. A
+            Brownie server that records the files you pick refuses this test until Google Drive is offered here.
+          </p>
+          <div class="account__actions">
             <button
-              id="connections-disconnect-confirm"
+              id="connections-try-picker"
               type="button"
-              class="button button--secondary connections__danger"
+              class="button button--secondary button--small"
               :disabled="busy !== null"
-              @click="disconnect"
+              @click="tryPicker"
             >
-              {{ busy === 'disconnect' ? 'Disconnecting…' : 'Yes, disconnect' }}
-            </button>
-            <button type="button" class="button button--secondary" :disabled="busy !== null" @click="keepConnected">
-              Keep connected
+              Try Google's file picker (test)
             </button>
           </div>
+        </section>
+
+        <div v-if="anyOpen" class="connections__disconnect">
+          <template v-if="!confirmingDisconnect">
+            <button
+              id="connections-disconnect"
+              type="button"
+              class="button button--secondary button--small"
+              :disabled="busy !== null"
+              @click="askToDisconnect"
+            >
+              <AppIcon name="close-circle" :size="16" />
+              Disconnect Google…
+            </button>
+            <p class="field-hint connections__disconnect-note">
+              Disconnects every Google connection here. Brownie will need your agreement again to read anything. Copies already in
+              your documents stay.
+            </p>
+          </template>
+          <div
+            v-else
+            class="panel connections__confirm"
+            role="group"
+            aria-label="Disconnect Google"
+            @keydown.esc="keepConnected"
+          >
+            <p id="connections-disconnect-question" class="connections__question">
+              Disconnect every Google connection here? Brownie will need your agreement again to read anything.
+            </p>
+            <p class="connections__consequences">
+              Brownie asks Google to take back the access it still holds, and deletes that access whatever Google answers.
+              A connection waiting to be connected again holds none Brownie can use, so for that one Brownie cannot ask
+              Google; remove Brownie in your Google account instead. Every file you chose in Google Drive is taken off your
+              list too. Copies already brought into your documents stay with those documents, and each still says where it
+              came from; they are never updated again. To remove a copy, delete every document it was copied into.
+              <template v-if="showWrites">
+                A change waiting for your approval can no longer be made, and one whose outcome is unknown can be asked about only
+                once the same Google account is connected again. Files Brownie saved, text it added and events it added stay in
+                your Google account.</template
+              >
+            </p>
+            <div class="connections__actions">
+              <button
+                id="connections-disconnect-confirm"
+                type="button"
+                class="button button--danger button--small"
+                aria-describedby="connections-disconnect-question"
+                :disabled="busy !== null"
+                @click="disconnect"
+              >
+                <AppIcon name="close-circle" :size="16" />
+                {{ busy === 'disconnect' ? 'Disconnecting…' : 'Yes, disconnect' }}
+              </button>
+              <button type="button" class="button button--secondary button--small" :disabled="busy !== null" @click="keepConnected">
+                Keep connected
+              </button>
+            </div>
+          </div>
         </div>
-      </section>
 
-      <p class="field-hint">
-        You can also see or remove Brownie's access in your Google account, under
-        <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">third-party connections</a>.
-      </p>
-    </template>
+        <p class="field-hint">
+          You can also see or remove Brownie's access in your Google account, under
+          <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">third-party connections</a>.
+        </p>
+      </template>
 
-    <RouterLink class="button button--secondary" to="/">Back to your documents</RouterLink>
+      <div class="connections__back">
+        <RouterLink class="button button--quiet button--small" to="/">
+          <AppIcon name="arrow-left" :size="16" />
+          Back to your documents
+        </RouterLink>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
+/* The title's line starts 58px below the top of the page region, which the shell already pads by its own gutter: the shared column's 3.5rem on top of that sits it too low. */
 .connections {
-  inline-size: 100%;
-  max-inline-size: 42rem;
-  margin-inline: auto;
-  margin-block-start: var(--space-6);
+  padding-block-start: 2.125rem;
+}
+
+.connections__signin {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-4);
+}
+
+.connections__signin > p {
+  margin: 0;
+}
+
+/* Everything below the title and its line sits in one column, so the page keeps the same 20px between its parts. */
+.connections__stack {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
+  align-items: stretch;
+  gap: 1.25rem;
+  margin-block-start: 1.25rem;
 }
 
-.connections__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  inline-size: 3rem;
-  block-size: 3rem;
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
-  color: var(--color-cocoa-strong);
-}
-
-.connections__title {
+.connections__stack > .field-hint {
   margin: 0;
-  font-size: var(--font-size-xl);
 }
 
-.connections__heading {
-  margin: 0;
-  font-size: var(--font-size-lg);
-}
-
-.connections__notice {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
-}
-
-.connections__account {
-  inline-size: 100%;
+/* What Google answered, or what failed: a tinted band whose icon and words say the same thing the colour does. */
+.connections__banner {
   display: flex;
-  flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
+  margin: 0;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
 }
 
-.connections__account p {
+.connections__banner > svg {
+  margin-block-start: 0.0625rem;
+}
+
+.connections__banner--success {
+  background: var(--color-success-wash);
+  color: var(--color-success);
+}
+
+.connections__banner--error {
+  background: var(--color-error-wash);
+  color: var(--color-error);
+}
+
+.connections__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.connections__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.connections__note > svg {
+  flex: none;
+  margin-block-start: 0.125rem;
+}
+
+/*
+ * Two columns where each card keeps room for its table, one where it would not. The tracks are as wide as the
+ * smallest card that still reads well, so the page decides by its own width, not by the window's.
+ */
+.connections__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: 1rem 1.125rem;
+}
+
+/*
+ * One account: a chip beside its name, where it stands, the facts in a quiet table, and the one thing to do next
+ * at the bottom, so the buttons in a row of cards line up even when their tables differ in length.
+ */
+.account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  /* The table inside lays itself out by the card's width, which depends on the page and not on the window. */
+  container-type: inline-size;
+}
+
+/* A connection waiting for the person: the same card with a honey edge, a pixel and a half thick so it stands out from the plain hairline of the others. */
+.account--attention {
+  border-color: var(--color-honey);
+  box-shadow: inset 0 0 0 0.5px var(--color-honey);
+}
+
+/* The tile, the name and the chip on one line; a name that is long wraps inside its own column and never under the chip. */
+.account__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.account__title {
+  min-inline-size: 0;
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+/* The state chip carries its icon a little smaller, with a little more air, than a chip that only labels. */
+.account__head > .tag {
+  justify-self: end;
+  gap: 0.3125rem;
+}
+
+.account__head > .tag > svg {
+  inline-size: 0.875rem;
+  block-size: 0.875rem;
+}
+
+/* So little room that the name would be squeezed to a few letters: the chip goes on a line of its own, under the name. */
+@container (max-width: 15rem) {
+  .account__head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .account__head > .tag {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+.account__summary {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.account > .field-hint {
   margin: 0;
 }
 
-.connections__facts {
+/*
+ * The facts are label and value rows in an inset panel, separated by hairlines. Narrow, the label sits above its value;
+ * wide enough, the labels share a column so the values line up.
+ */
+.account__facts {
   margin: 0;
+  padding: 0;
+}
+
+.account__fact {
   display: grid;
   gap: var(--space-1);
+  padding: 0.5625rem 0.75rem;
 }
 
-.connections__facts dt {
-  font-weight: 500;
+.account__fact + .account__fact {
+  border-block-start: 1px solid var(--color-hairline);
 }
 
-.connections__facts dd {
-  margin: 0 0 var(--space-2);
-  color: var(--color-text-secondary);
+.account__fact > dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  /* Tighter than the value beside it, so the label's first line sits a little above the value's, as a caption does. */
+  line-height: 1.2;
 }
 
-.connections__also {
+.account__fact > dd {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+@container (min-width: 25rem) {
+  .account__fact {
+    grid-template-columns: 9.375rem minmax(0, 1fr);
+    column-gap: var(--space-3);
+  }
+}
+
+.account__also {
   display: block;
   margin-block-start: var(--space-1);
-  color: var(--color-text-secondary);
+  color: var(--color-text-muted);
 }
 
-.connections__grants {
+/* More room between one item and the next than inside an item, so a file and its button read as a pair. */
+.account__list {
+  display: grid;
+  gap: var(--space-3);
   margin: 0;
-  padding-inline-start: var(--space-5);
+  padding: 0;
+  list-style: none;
 }
 
-.connections__file {
+.account__list + .account__also {
+  margin-block-start: var(--space-3);
+}
+
+.account__file {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  margin-block-end: var(--space-1);
+}
+
+.account__file-name {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.account__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-block-start: auto;
+}
+
+/* The way out, with what it does in a line beside it; asking to disconnect swaps both for the question and what follows. */
+.connections__disconnect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.connections__disconnect-note {
+  margin: 0;
 }
 
 .connections__confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  display: grid;
+  gap: var(--space-3);
+  inline-size: 100%;
+  border-color: var(--color-error);
 }
 
 .connections__question {
-  font-weight: 500;
+  margin: 0;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+.connections__consequences {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
 }
 
 .connections__actions {
@@ -667,9 +975,7 @@ async function disconnect(): Promise<void> {
   gap: var(--space-2);
 }
 
-/* The error red on the white surface measures about 5.9:1, so the label stays readable as text, not only as a colour. */
-.connections__danger {
-  border-color: var(--color-error);
-  color: var(--color-error);
+.connections__back {
+  display: flex;
 }
 </style>

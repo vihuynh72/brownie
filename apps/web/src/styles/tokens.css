@@ -1,34 +1,99 @@
 /*
- * Shared design tokens. Colors are the warm-paper palette with measured
- * contrast ratios (main text on paper 12.94:1, main text on honey 6.66:1,
- * secondary text on paper 4.74:1 -- all above WCAG AA for normal text).
- * White text on honey fails that threshold, so honey is always paired
- * with --color-text, never a light foreground.
+ * STYLE GUIDE: the shared look of every screen. Screens reuse these classes and tokens instead of drawing their own
+ * buttons, chips, dialogs and fields. This file holds fonts, tokens and base element rules; primitives.css, loaded
+ * right after it, holds the classes listed here.
  *
- * --color-honey-soft is used as a text background too (badges, and the
- * revision-history "changed" row highlight): main text on honey-soft is
- * 12.97:1, secondary text on honey-soft is 4.75:1 -- both still clear
- * WCAG AA's 4.5:1 for normal text, so no separate token was needed for
- * either. Finding severity (BLOCKING/WARNING/INFORMATIONAL) is conveyed
- * as visible text on the shared badge style rather than by color alone,
- * so it isn't a color-contrast pairing of its own.
+ * TYPE   Rubik at 400 (reading text) and 500 (labels, buttons, headings) only; the interface never uses 600 or more.
+ *        12px --font-size-xs: tags, hints, small print.   14px --font-size-sm: buttons, labels, fields, list rows.
+ *        16px --font-size-base: reading text, chat.   24px --font-size-xl: dialog titles.   32px --font-size-2xl:
+ *        compact page title.   48px --font-size-display: page titles.   Reading text sits on a 1.45 line height.
+ *        Text colour: --color-text (main), --color-text-muted (quiet, safe on every surface), --color-text-secondary
+ *        (on white, paper-soft and paper only), --color-text-faint (placeholders and waiting steps, on white or
+ *        paper-soft only). Cocoa-coloured text anywhere but white (paper, paper-soft, the sidebar) is
+ *        --color-cocoa-strong, as links already are; plain --color-cocoa is for fills, and for text on white.
+ * SHAPE  Cards, the composer and chat cards 16px (--radius-lg). Quiet panels and the person's bubble 12px
+ *        (--radius-md). Text fields and source chips 10px (--radius-control). Tags 6px (--radius-sm). Dialogs 20px
+ *        (--radius-xl). Buttons are pills (--radius-pill). Cards are flat: a 1px --color-hairline edge and no shadow.
+ *        Only floating things cast one: --shadow-popover (menus, toasts), --shadow-chip (a small pill sitting on
+ *        the page, like the print-preview pager or the PDF zoom control), --shadow-dialog with --scrim behind it,
+ *        and --shadow-sidebar (inset, for the sidebar panel).
  *
- * The cocoa family is the action color of the workspace design: the
- * upload button, the sidebar's sign-in button, and the document tiles.
- * --color-cocoa is a darkened form of the design's #ac7f5e, because
- * white body text on #ac7f5e measures 3.53:1 and misses the 4.5:1 that
- * normal text needs; #96684a measures 4.80:1 against white and keeps the
- * same hue. The lighter --color-cocoa-tile is used only behind the
- * decorative document glyph, where 3.53:1 clears the 3:1 that
- * non-text graphics need.
+ * .button            Pill, 40px high, 14px/500. An AppIcon that is a direct child sits before the label and sizes
+ *                    itself (20px; 16px when small). Works on <button> and <a>. A bare .button is the white outline look.
+ *   --primary        Cocoa fill, white label: the one main action of a view.
+ *   --secondary      White fill, 1px --color-outline edge (the default, spelled out).
+ *   --quiet          Text only; a cocoa wash on hover.
+ *   --danger         Red fill, white label: deleting for good.
+ *   --small          32px high, 16px icon: toolbars, rows, quick replies.
+ *   Unavailable: the disabled attribute or aria-disabled="true" fades it to 40%; aria-disabled keeps focus.
+ *   To change one button, set --button-bg, --button-ink or --button-border (and the -hover / -active forms) on it;
+ *   overriding background directly would be lost on hover.
+ * .icon-button       32px square (44px on a touch screen), icon only; put a .visually-hidden label inside it.
+ * .tag               22px chip, 12px/500 label, an optional leading 16px AppIcon. Neutral by default.
+ *   --cocoa --honey --success --error --info
+ * .doc-tile          Rounded cocoa square with a white glyph, 37px; --medium 30px, --small 24px. Left empty it draws a
+ *                    page; an AppIcon inside draws that instead, at 22, 18 or 14px. Decorative: aria-hidden.
+ * .text-field        Input, textarea or select: 40px high, 10px radius, 1px --color-field-border. Focus makes the edge
+ *                    2px blue; [aria-invalid="true"] or --invalid makes it 2px red (the two together keep red and add
+ *                    the focus ring). Set the placeholder; it is drawn in --color-text-faint.
+ * .field-label       14px/500 label above a field.   .field-hint 12px quiet help below it.   .field-error 12px red message.
+ * .step-list > .step Progress rows: span.step__marker (aria-hidden) then the label. --done (green check), --active
+ *                    (turning ring, 500 weight), --pending (grey ring, faint label). Put a .visually-hidden "Done: " or
+ *                    "In progress: " before the label text, because the marker alone is not announced.
+ * .dialog            Native <dialog> opened with showModal(): white, 20px radius, scrim behind. Parts: .dialog__head
+ *                    (.dialog__title, .dialog__subtitle in either order, .dialog__close on an .icon-button;
+ *                    --ruled adds a hairline under it), .dialog__body (scrolls; --flush removes its padding),
+ *                    .dialog__foot (buttons, right aligned). Width 35rem (560px); --medium 40rem; --wide 62.5rem; or set
+ *                    --dialog-width on the element.
+ * .msg--brownie      Brownie's turn: .msg__who (a sparkle and the word) then .msg__body in 16px reading text. No bubble.
+ * .msg--user         The person's turn: right aligned white bubble with a hairline edge, up to 80% wide.
+ * .msg-card          White 16px card in the chat (progress, plan, tables, choices). Stack .msg-card__section rows in it
+ *                    (hairlines between them; --soft shades one).
+ * .source-chip       Small white card for an added source: a .doc-tile--medium, .source-chip__name, .source-chip__meta
+ *                    (the last two inside .source-chip__text).
+ * .composer          The message box: .composer__input (borderless textarea; start it at rows="1"), .composer__tools
+ *                    (.icon-button children, their glyphs drawn at 24px) and .composer__send (36px circle:
+ *                    [aria-disabled="true"] = empty, plain = ready, --busy = stop glyph). Focus inside it makes the edge
+ *                    2px cocoa.
+ * .page-column       Centred column for a whole page, 47.5rem (760px); --narrow 45.5rem (728px); --wide 62.5rem
+ *                    (1000px); or set --page-column-width. Holds a .page-head wrapper (plain; --center centres its text)
+ *                    around .page-title (--small for the compact one) and .page-lede (--small).
+ * .panel             White 16px card with a hairline edge and 18px padding. --flush removes the padding for a list that
+ *                    brings its own rows; --quiet is the inset paper-soft panel (notes, disclaimers). .card is the same.
+ * Also here: .visually-hidden, .skip-link, and .activity-indicator (a small turning ring beside words that say
+ * something is under way). Spacing is --space-*, motion is --motion-*, focus is --focus-ring. Under a reduced-motion
+ * preference every turning ring stands still.
+ *
+ * Contrast, measured for the pairs the interface uses (text needs 4.5:1, graphics that carry meaning 3:1):
+ *   main text   on paper 12.38  sidebar 11.25  white 14.57  paper-soft 13.06  cocoa wash 10.17  paper-deep 12.08
+ *   muted text  on paper  5.68  sidebar  5.16  white  6.68  paper-soft  5.99  cocoa wash  4.66  paper-deep  5.54
+ *   secondary   on paper  4.53  white  5.33  paper-soft 4.78 (sidebar 4.12, cocoa wash 3.72, paper-deep 4.42 fall short)
+ *   faint       on white  5.06  paper-soft 4.54 (paper 4.30 and sidebar 3.91 fall short)
+ *   white on cocoa 4.80, on cocoa-strong 6.41, on error red 5.90, on error-strong 7.70
+ *   honey ink on honey spot 6.37 and honey soft 6.87; main text on honey 6.66; muted text on honey spot 5.51
+ *   success ink on its wash 5.20, error ink on its wash 4.83, info blue on its wash 4.63
+ *   cocoa on white 4.80, but on paper 4.08, paper-soft 4.30, sidebar 3.71, cocoa-soft 3.98; cocoa-strong on white
+ *   6.41, paper 5.44, paper-soft 5.74, sidebar 4.95, cocoa-soft 5.32
+ *   field border on white 3.53, paper-soft 3.17, paper 3.00
+ *   links (cocoa-strong, underlined) on white 6.41, paper 5.44, paper-soft 5.74, sidebar 4.95, the error, success and
+ *   info washes 5.24 to 5.43; only the cocoa wash (4.47) falls short, where a link is main text instead
+ *   focus blue (the focus ring and info chips) on white 5.46, paper 4.64
+ * Where a first choice missed its threshold, the nearest passing colour was taken instead:
+ *   the quiet grey #8a857a for placeholders measured 3.67:1 on white, so --color-text-faint is darkened to #736e65;
+ *   the pale #d9d5cb edge of a text field measured 1.47:1 on white, so a field uses --color-field-border (#8b8882),
+ *   while --color-outline stays for edges that are only decoration (outline buttons, the composer, dividers);
+ *   cocoa text on a cocoa-soft tag measured 3.98:1, so .tag--cocoa uses --color-cocoa-strong.
+ * Disabled controls fade to 40% and are exempt from contrast rules. White text on honey always fails, so honey is
+ * paired with --color-honey-ink or main text, never a light foreground; honey ink itself is for the honey-soft and
+ * honey-spot fills only (3.52:1 on plain honey).
  */
 
 /*
  * Rubik, the interface typeface, self-hosted so no page load depends on a
  * third-party font host and no visitor's request for this app reaches one.
  * One variable file per subset covers every weight the interface uses
- * (400 body, 500 navigation, 600-700 headings), which is smaller than the
- * three static files it replaces. Licensed under the SIL Open Font
+ * (400 body, 500 labels, buttons and headings), which is smaller than the
+ * static files it replaces. Licensed under the SIL Open Font
  * License 1.1; the licence text sits beside the files it covers.
  */
 @font-face {
@@ -53,62 +118,78 @@
 }
 
 :root {
-  /* The design's own page color, a shade warmer than white paper so the white sheet and cards lift off it. */
-  --color-paper: #f5f1ea;
-  /* A step deeper than paper: the track of a two-way switch, and the number tile of a numbered choice. */
+  /* The page colour, a shade warmer than white so the white sheet and cards lift off it. */
+  --color-paper: #f1ece2;
+  /* The lightest inset: a quiet panel inside a card, a table's header row, a hovered choice row. */
+  --color-paper-soft: #f6f2eb;
+  /* A step deeper than paper: the track of a two-way switch, a number tile, a neutral tag, an empty send button. */
   --color-paper-deep: #efe9e0;
   --color-surface: #ffffff;
+
   --color-text: #2a2924;
+  /* Secondary text clears 4.5:1 on paper (4.53) and has almost no margin left; on the sidebar (4.12) and on the
+     cocoa wash a row takes on hover (3.72) it falls short, so quiet text there is --color-text-muted. */
   --color-text-secondary: #6e6b61;
-  /*
-   * Secondary text is measured against paper (4.74:1) and has almost no
-   * margin left: on the sidebar it falls to 4.34:1 and on the cocoa wash a
-   * row takes on hover, to 4.00:1 -- both under WCAG AA's 4.5:1, and both
-   * found by scanning the running page rather than by reading the palette.
-   * This darker grey is the same hue and clears it everywhere it is used:
-   * 5.94:1 on paper, 5.44:1 on the sidebar, 5.01:1 on the hover wash.
-   */
+  /* The same hue, darker: 5.68:1 on paper, 5.16 on the sidebar, 4.66 on the hover wash. Safe on every surface. */
   --color-text-muted: #5f5c53;
+  /* Placeholders and steps not reached yet. The lightest grey that still reads on white (5.06) and paper-soft (4.54). */
+  --color-text-faint: #736e65;
+
   --color-honey: #d9a82e;
   --color-honey-soft: #fff2be;
+  /* An empty or found fill spot. Muted text on it is 5.51:1 and main text 12.02:1. */
+  --color-honey-spot: #ffe8a3;
+  /* Text on honey-soft and honey-spot (6.87:1 and 6.37:1). Never on plain honey, where it is 3.52:1. */
+  --color-honey-ink: #6b4e0e;
   /*
-   * An empty fill spot: a faint honey tint with a light dashed edge, quiet enough that a page full of
-   * gaps still reads as a page. The spot is told apart by its bracketed placeholder text, which keeps
-   * 6.30:1 in muted grey on this tint; the edge only adds to it.
+   * A quiet honey wash behind the "Found by Brownie, not kept yet" reminder in the review popover: lighter than
+   * the fill spot's own tint on the page, so the reminder reads as a note about the spot rather than a second spot.
    */
   --color-honey-faint: #fff8e3;
-  --color-honey-line: #d3c9ad;
+
+  /* An ink and the wash behind a chip or banner of the same meaning: 5.20, 4.83 and 4.63:1. */
   --color-success: #3e6b50;
+  --color-success-wash: #e4efe7;
   --color-error: #b33a2b;
+  --color-error-wash: #f8e4e0;
+  /* Hover and pressed depth of the red button, 7.70:1 against a white label. */
+  --color-error-strong: #962f22;
+  /* Focus blue, and the blue of an information chip. */
   --color-focus: #2a6f9b;
+  --color-info-wash: #e2eef6;
+
   --color-border: #e4e1d6;
-  /*
-   * The design's quiet outline, lighter than --color-border: around a card that sits on paper (the
-   * Rules card, a source card, a list of choices) and a read-only chip, never as the only edge of a
-   * control someone has to find.
-   */
+  /* The quiet outline around a card that sits on paper (a source card, a list of choices, a chat card). */
   --color-hairline: #e6e1d8;
+  /* The outline of an outline button and of the composer. Decoration only: a label or a placeholder names the
+     control, so this pale edge (1.47:1 on white) is never the only sign that something is there. */
+  --color-outline: #d9d5cb;
+  /* The edge of a text field, which is the one sign of where to type, and the ring of a step not reached yet: a
+     graphic that carries meaning, so 3.53:1 on white, 3.17 on paper-soft, 3.00 on paper. */
+  --color-field-border: #8b8882;
   /* The track of the rail beside the page, and the thumb of a thin scroll bar. */
   --color-track: #e4ddd1;
   --color-scrollbar: #8f8a80;
-  /* What the person said in the chat: a light grey bubble, the design's own, with main text at 13.37:1. */
-  --color-bubble: #f5f5f5;
-  --color-bubble-border: #d9d9d9;
+  /* What the person said in the chat: a white bubble with a hairline edge, main text at 14.57:1. */
+  --color-bubble: #ffffff;
+  --color-bubble-border: #e6e1d8;
 
-  /* 4.80:1 against white: the action color, safe for a white button label. */
+  /* 4.80:1 against white: the action colour, safe for a white button label. */
   --color-cocoa: #96684a;
-  /* Hover and active depth for the same button, 6.28:1 against white. */
+  /* Hover and pressed depth for the same button, 6.41:1 against white; also cocoa-coloured text on paper (5.44) and paper-soft (5.74). */
   --color-cocoa-strong: #7e5639;
-  /* The design's own lighter cocoa, used only behind decorative glyphs. */
+  /* A lighter cocoa used only behind decorative glyphs (a white glyph on it is 3.53:1, above the 3:1 graphics need). */
   --color-cocoa-tile: #ac7f5e;
-  /* A cocoa wash for the selected navigation row and a hovered control; main text on it is 10.92:1. It
+  /* The faintest cocoa tint: a cocoa tag, a locked-value note. Cocoa-strong text on it is 5.32:1. */
+  --color-cocoa-soft: #f3e8df;
+  /* A cocoa wash for the selected navigation row and a hovered control; main text on it is 10.17:1. It
      is deep enough to show on the sidebar, which is itself only a shade off paper. */
-  --color-cocoa-wash: #e9ddd2;
+  --color-cocoa-wash: #e4d5c8;
 
   /* The sidebar sits a shade deeper and rosier than paper so the two regions read apart
      without a hard divider. Its quieter text uses --color-text-muted, not
      --color-text-secondary, for the reason recorded on that token. */
-  --color-sidebar: #f1e6dd;
+  --color-sidebar: #ede0d4;
   --color-sidebar-border: #e2dcd0;
 
   --space-1: 0.25rem;
@@ -125,17 +206,41 @@
   --font-size-base: 1rem;
   --font-size-lg: 1.25rem;
   --font-size-xl: 1.5rem;
-  /* The home greeting, which is the one piece of type that scales with the window. */
+  --font-size-2xl: 2rem;
+  /* The page title and the home greeting, the one piece of type that scales with the window. */
   --font-size-display: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
+  /* Labels, buttons and headings are medium weight; reading text is regular. */
+  --font-weight-medium: 500;
 
   --control-height: 2.5rem;
+  --control-height-small: 2rem;
   /* The side of a square icon control (see .icon-button); a finger gets more room, set below. */
   --icon-button-size: 2rem;
   --radius: 0.5rem;
+  --radius-sm: 0.375rem;
+  --radius-control: 0.625rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
   --radius-pill: 999px;
 
-  /* How wide the docked sidebar is, and how far the main region sits from it. */
-  --sidebar-width: 16.25rem;
+  /* What floats casts a shadow; cards on paper do not. Offsets and blurs were fitted to the way these surfaces
+     fade into the page: a menu or toast sits close above it, a dialog higher. */
+  --shadow-popover: 0 6px 20px rgb(0 0 0 / 0.12);
+  /* A small pill that sits directly on the page (the print-preview pager, the PDF zoom control): barely
+     lifted, so it reads as part of the page's own furniture rather than a menu floating above it. */
+  --shadow-chip: 0 2px 8px rgb(0 0 0 / 0.08);
+  --shadow-dialog: 0 18px 40px rgb(0 0 0 / 0.16);
+  /* The sidebar darkens softly toward its own edges, and a little more along the right one where it meets the page, so
+     it reads as a panel set into the page. Inset, so it is drawn inside the sidebar and needs no room around it. */
+  --shadow-sidebar:
+    inset 0 0 8px rgb(0 0 0 / 0.3),
+    inset -2px 0 10px rgb(0 0 0 / 0.25);
+  /* What covers the page behind a dialog. */
+  --scrim: rgb(0 0 0 / 0.27);
+
+  /* How wide the docked sidebar is (263px), and how far the main region sits from it. */
+  --sidebar-width: 16.4375rem;
 
   /* Motion: short enough to feel like a response rather than an effect.
      Both are set to an imperceptible duration under prefers-reduced-motion
@@ -144,7 +249,7 @@
   --motion-base: 220ms;
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 
-  /* A solid ring the eye can find: the focus color itself at full strength (about 5.6:1 on white,
+  /* A solid ring the eye can find: the focus color itself at full strength (about 5.5:1 on white,
      well past the 3:1 a focus indicator needs), offset so it never merges with a control's border. */
   --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-focus);
 }
@@ -181,8 +286,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Links are the dark cocoa, underlined: 5.44:1 on paper and 4.95:1 even on the sidebar, where the focus blue would measure 4.22:1. */
 a {
-  color: var(--color-focus);
+  color: var(--color-cocoa-strong);
 }
 
 button,
@@ -211,109 +317,6 @@ textarea {
   }
 }
 
-.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: var(--control-height);
-  padding: 0 var(--space-4);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    border-color var(--motion-fast) var(--motion-ease);
-}
-
-.button--primary {
-  background: var(--color-cocoa);
-  color: var(--color-surface);
-}
-
-.button--primary:hover:not(:disabled) {
-  background: var(--color-cocoa-strong);
-}
-
-.button--secondary {
-  background: var(--color-surface);
-  color: var(--color-text);
-  border-color: var(--color-border);
-}
-
-.button--secondary:hover:not(:disabled) {
-  border-color: var(--color-cocoa);
-}
-
-/*
- * A button that is busy or not ready yet but keeps the focus it holds says so with aria-disabled
- * rather than the disabled attribute (which would drop that focus); it looks the same either way.
- */
-.button:disabled,
-.button[aria-disabled='true'] {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/*
- * A square control carrying only an icon. The minimum size is the 24x24
- * CSS pixels WCAG 2.5.8 asks of a target, set as a minimum rather than a
- * fixed size so a larger glyph or a translated label can still grow it.
- */
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-inline-size: var(--icon-button-size);
-  min-block-size: var(--icon-button-size);
-  padding: var(--space-1);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    color var(--motion-fast) var(--motion-ease);
-}
-
-.icon-button:hover {
-  background: var(--color-cocoa-wash);
-  color: var(--color-text);
-}
-
-/* A finger needs more room than a mouse pointer does. */
-@media (pointer: coarse) {
-  :root {
-    --icon-button-size: 2.75rem;
-  }
-}
-
-.field-label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: var(--space-1);
-}
-
-.field-hint {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-}
-
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-}
-
-.card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: var(--space-5);
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -324,33 +327,6 @@ textarea {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-/*
- * A small turning ring beside words that say something is under way. The words carry the meaning; the ring
- * only shows that it is still going, so under a reduced-motion preference it stands still.
- */
-.activity-indicator {
-  display: inline-block;
-  flex: none;
-  inline-size: 0.875em;
-  block-size: 0.875em;
-  border: 2px solid color-mix(in srgb, var(--color-cocoa) 25%, transparent);
-  border-block-start-color: var(--color-cocoa);
-  border-radius: 50%;
-  animation: activity-turn 0.9s linear infinite;
-}
-
-@keyframes activity-turn {
-  to {
-    rotate: 1turn;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-indicator {
-    animation: none;
-  }
 }
 
 /* The skip link is hidden until a keyboard reaches it, then sits on top of the page so it can be seen and used. */

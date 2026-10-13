@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
-import { forgetFormNotes, readDocumentHandoff } from '@/router/handoff'
+import { forgetDocumentRequest, forgetFormNotes, readDocumentHandoff, type DocumentRequest } from '@/router/handoff'
 // PDF.js is the largest thing this page can load; it is fetched only once the print preview is shown.
 const PdfPreview = defineAsyncComponent(() => import('@/components/PdfPreview.vue'))
 // A PDF form's page view draws its pages with PDF.js too, so it is loaded only for a PDF form.
@@ -22,6 +22,7 @@ import {
   executeAssist,
   extractArtifact,
   getDocument,
+  getDocumentRevision,
   getEvidenceExcerpt,
   getExtractionResult,
   getGenerationQuestions,
@@ -69,7 +70,7 @@ import {
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import { describePayload } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
-import { CONSENT_QUERY_KEYS, consentOutcome, originLink, originLinkLabel, originSentence } from '@/connections/words'
+import { CONSENT_QUERY_KEYS, consentOutcome, offeredAccess, originLink, originLinkLabel, originSentence } from '@/connections/words'
 import {
   describeStyle,
   dominantFillSpotStyle,
@@ -78,6 +79,7 @@ import {
   fillSpotStyle,
   formatDateLikeExport,
   labelFor,
+  stateFromAssist,
   type EditableField,
 } from '@/workspace/layout'
 import { useFoundSpots } from '@/workspace/foundSpots'
@@ -86,12 +88,27 @@ import { anchorableLines, lineWords, placeOnLine, toDocxAnchor, type PagePoint }
 import { useFillSpotChanges, type SpotUndo } from '@/workspace/fillSpotChanges'
 import { addedWords, removedWords, renamedWords, spotRefusal, undoneWords } from '@/workspace/fillSpotWords'
 import { spotChangeFailure, type PdfSpotRequest, type PdfSpotResult } from '@/workspace/pdfPage'
+import { nextToReview, stateChipLook, type ReviewTarget, type StateChipLook } from '@/workspace/decisionPopover'
+import { foundPlacesWords } from '@/workspace/foundPlaces'
+import { countPreviewSpots, previewDraftsFrom } from '@/workspace/proposalPreview'
+import {
+  answeredWords,
+  answersByField,
+  choiceWords,
+  leftOutWords,
+  proposalChange,
+  proposalRows,
+  reviewEntries,
+  type ReviewEntry,
+  type StateTag,
+} from '@/workspace/proposalWords'
 import AppIcon from '@/components/AppIcon.vue'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 import ChoiceList from '@/components/workspace/ChoiceList.vue'
 import DocumentPage from '@/components/workspace/DocumentPage.vue'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
+import PageBanners from '@/components/workspace/PageBanners.vue'
 import PlaceSpotDialog, { type PlaceSpotRefusal, type PlaceSpotRequest } from '@/components/workspace/PlaceSpotDialog.vue'
 import RemoveSpotDialog from '@/components/workspace/RemoveSpotDialog.vue'
 import RenameSpotDialog from '@/components/workspace/RenameSpotDialog.vue'
@@ -118,14 +135,22 @@ function announce(text: string): void {
 const uploadLimit = ref<string | null>(null)
 /** The same limit in bytes, to tell a file refused for its size from one refused for what it unpacks to. */
 const uploadLimitBytes = ref<number | null>(null)
+/**
+ * Whether copying from a Google account is offered at all: the footer under Add a source only makes a promise
+ * about Brownie's reach into Calendar and Drive once one of those rows can actually be opened.
+ */
+const sourcesOffered = ref(false)
 onMounted(async () => {
   try {
-    const { maxUploadBytes } = await loadCapabilities()
+    const capabilities = await loadCapabilities()
+    const { maxUploadBytes } = capabilities
     // An older server may not send the limit at all; then neither the hint nor a size refusal names one.
     if (typeof maxUploadBytes === 'number' && maxUploadBytes > 0) {
       uploadLimitBytes.value = maxUploadBytes
       uploadLimit.value = formatBytes(maxUploadBytes)
     }
+    const access = offeredAccess(capabilities) ?? []
+    sourcesOffered.value = access.includes('CALENDAR_EVENTS') || access.includes('DRIVE_FILES')
   } catch {
     uploadLimit.value = null
     uploadLimitBytes.value = null
@@ -151,6 +176,13 @@ async function showAssistant(focusHeading = true): Promise<void> {
 
 /** The document's page as it is edited, or the rendered file as it will export. */
 const docView = ref<'page' | 'print'>('page')
+
+/**
+ * A name this long no longer fits one line of the title at its full size. It is set smaller then, so it takes
+ * about two lines and the panes under it are not pushed down a third of the screen.
+ */
+const LONG_TITLE_LENGTH = 64
+const titleIsLong = computed(() => (document.value?.title.length ?? 0) > LONG_TITLE_LENGTH)
 
 // ---- Rules -----------------------------------------------------------------------------------
 //
@@ -270,12 +302,21 @@ const attachedSources = ref<DocumentSourceResponse[]>(
 )
 const handoffWarning = ref<string | null>(handoff?.sourceWarning ?? null)
 
+// The request made in the chat before this document existed, if that is how it was started: read once, here,
+// and forgotten at once (see router/handoff.ts), so coming back to this page later, or reloading it, never
+// shows the request again or starts a second, paid reading for it. Shown and, if it names a source, read --
+// once the document's real sources and any run already under way are both known -- by startHandoffRequest,
+// called from loadDocument.
+const handoffRequest: DocumentRequest | null = handoff?.request ?? null
+if (handoffRequest) forgetDocumentRequest()
+
 // What Brownie found in an uploaded form and changed in its copy of it: news for the person on arrival, not a
 // warning. It shares one short line over the page with the places Brownie found, folded behind "Details" so
 // the page itself, and its first marked place, stay in view; the Rules card says it again later.
 const formNotes = ref<string[]>(handoff?.formNotes ?? [])
 const formNotesOpen = ref(false)
-const stripButtonsRef = ref<HTMLElement | null>(null)
+/** The notes over the page, for the focus they hand on when a button of theirs goes. */
+const pageBannersRef = ref<InstanceType<typeof PageBanners> | null>(null)
 
 // A region that appears already holding its notes is not read out, and one that is live would read out its own
 // buttons as they change; so the page says once, through its live line, that the notes are there. The live line
@@ -327,6 +368,17 @@ function sourceKindWords(source: DocumentSourceResponse): string {
   if (source.origin?.conversion === 'CALENDAR_EVENT_AS_TEXT') return 'Calendar event'
   if (source.origin?.conversion === 'GOOGLE_DOC_AS_TEXT') return 'Google Doc'
   return 'Text file'
+}
+
+/**
+ * The just-attached chip's second line: kind, then size, then when. The server's own record of a source carries
+ * no byte count, but the browser told this page the size the moment the file was chosen, so it is kept only for
+ * as long as the chip shows (see `justAttachedSourceBytes`); a source this page did not watch get chosen, or an
+ * older server, leaves the size out rather than showing a wrong or made-up one.
+ */
+function justAttachedMetaWords(source: DocumentSourceResponse): string {
+  const size = formatBytes(justAttachedSourceBytes.value[source.id])
+  return size ? `${sourceKindWords(source)} · ${size} · added just now` : `${sourceKindWords(source)} · added just now`
 }
 
 async function loadDocumentSources(): Promise<void> {
@@ -483,6 +535,55 @@ const noWorkerYet = ref(false)
 const openQuestions = ref<QuestionResponse[]>([])
 const answeringQuestionId = ref<number | null>(null)
 
+/** How many fill spots the page has, a table's columns counting once, as the page counts them. */
+const readingSpotCount = computed(() => scalarFields.value.length + (repeatedFields.value.length > 0 ? 1 : 0))
+type RunStepState = 'done' | 'active' | 'pending'
+/** Said before each step's words, so a screen reader hears how far it has got; the ring beside it is only seen. */
+const RUN_STEP_WORDS: Record<RunStepState, string> = { done: 'Done: ', active: 'In progress: ', pending: 'Not started: ' }
+/**
+ * The steps a reading goes through and how far it has got, as the run itself says: waiting for a worker, with one,
+ * then handed back to be approved. Once the person has asked to stop there is no progress to show.
+ */
+const runSteps = computed<{ text: string; state: RunStepState }[]>(() => {
+  if (cancellationRequested.value || extractionJobState.value === 'CANCEL_REQUESTED') return []
+  const spots = readingSpotCount.value
+  const states: RunStepState[] =
+    extractionStage.value === 'succeeded'
+      ? ['done', 'done', 'active']
+      : extractionStage.value === 'resuming' || extractionJobState.value === 'LEASED'
+        ? ['done', 'active', 'pending']
+        : ['active', 'pending', 'pending']
+  return [
+    'Picked up by a worker',
+    `Reading the source and matching it to ${spots} fill ${spots === 1 ? 'spot' : 'spots'}`,
+    'Showing you what I found to approve',
+  ].map((text, index) => ({ text, state: states[index]! }))
+})
+/** The sentence at the head of the progress card. */
+const runSentence = computed(() => {
+  switch (extractionStage.value) {
+    case 'starting':
+      return `Starting to read ${runSourceName.value ?? 'your source'}…`
+    case 'resuming':
+      return 'Carrying on with your answers…'
+    case 'succeeded':
+      return 'Getting the values ready…'
+    default:
+      return runProgress.value ?? `Reading ${runSourceName.value ?? 'your source'}…`
+  }
+})
+/** The progress card shows while the reading is under way, and while its result is being turned into values to approve. */
+const runCardShown = computed(
+  () => ['starting', 'running', 'resuming'].includes(extractionStage.value) || (extractionStage.value === 'succeeded' && applyStage.value === 'applying'),
+)
+/**
+ * Whether the reading's own place in the conversation has anything to say. Once its proposal is up, only the answers
+ * the person gave to its questions are left to say; a reading that asked none is then silent.
+ */
+const runSlotShown = computed(
+  () => extractionStage.value !== 'idle' && !(extractionStage.value === 'succeeded' && patchProposal.value !== null && answeredSentence.value === null),
+)
+
 /**
  * A reload, a second tab, or a network drop must never lose a paid run: the latest run for this
  * document is read back from the server and the chat resumes from whatever state its job is really
@@ -623,6 +724,7 @@ async function loadDocument(): Promise<boolean> {
       sidePanelsHydrated = true
       await loadDocumentSources()
       await rehydrateLatestRun()
+      if (handoffRequest) await startHandoffRequest(handoffRequest)
       if (exportOpensOnArrival) {
         await nextTick()
         exportDialogRef.value?.open()
@@ -742,9 +844,8 @@ const foundSpots = useFoundSpots({
   templateId: () => document.value?.templateId ?? null,
   labelOf,
   announce,
-  kind: () => (isPdfForm.value ? 'PDF' : 'DOCX'),
 })
-const { uncheckedFieldIds: uncheckedFoundIds, uncheckedSet: uncheckedFoundSet, keepPending, keepError, bannerText: foundBannerText } = foundSpots
+const { uncheckedFieldIds: uncheckedFoundIds, uncheckedSet: uncheckedFoundSet, keepPending, keepError } = foundSpots
 
 /** "Keep": the place stays as it is and loses its mark; focus stays in the bar, whose button has gone. */
 async function keepSelectedPlace(): Promise<void> {
@@ -761,14 +862,17 @@ async function keepSelectedPlace(): Promise<void> {
 async function keepAllFoundPlaces(): Promise<void> {
   if (!(await foundSpots.keepAll())) return
   await nextTick()
-  const next = stripButtonsRef.value?.querySelector<HTMLElement>('button')
-  if (next) next.focus()
-  else window.document.getElementById('document-pane')?.focus({ preventScroll: true })
+  if (!pageBannersRef.value?.focusStripButton()) window.document.getElementById('document-pane')?.focus({ preventScroll: true })
 }
 
-/** The line over the page: the places Brownie found while any is unchecked; else the note, or how many notes, about the form. */
+/**
+ * The line over the page: the places Brownie found while any is unchecked, counted as the page draws them (a table
+ * of rows is one place); else the note, or how many notes, about the form.
+ */
 const stripText = computed(() => {
-  if (uncheckedFoundIds.value.length > 0) return foundBannerText.value
+  if (uncheckedFoundIds.value.length > 0) {
+    return foundPlacesWords({ fields: editableFields.value, unchecked: uncheckedFoundSet.value, kind: isPdfForm.value ? 'PDF' : 'DOCX' })
+  }
   const count = formNotes.value.length
   if (count === 1) return formNotes.value[0]!
   return count > 1 ? `About this document: ${count} notes.` : ''
@@ -820,7 +924,6 @@ const anchorLines = computed(() => (layout.value && layout.value.kind !== 'PDF' 
 const placeDialogRef = ref<InstanceType<typeof PlaceSpotDialog> | null>(null)
 const renameDialogRef = ref<InstanceType<typeof RenameSpotDialog> | null>(null)
 const removeDialogRef = ref<InstanceType<typeof RemoveSpotDialog> | null>(null)
-const moveButtonRef = ref<HTMLElement | null>(null)
 /** The spot the rename or remove dialog is about. */
 let spotChangeTarget: string | null = null
 /** The spot just added, which takes focus once the dialog has closed. */
@@ -862,7 +965,7 @@ function spotChangesWait(): boolean {
   fieldActionError.value = 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.'
   // The offer may have been set aside with "Not now"; the move is needed now, so it comes back.
   spotChanges.offerNewerVersionAgain()
-  void nextTick(() => moveButtonRef.value?.focus())
+  void nextTick(() => pageBannersRef.value?.focusMove())
   return true
 }
 
@@ -928,13 +1031,6 @@ const spotActionsShown = computed(() => {
   if (isPdfForm.value) return selectedPdfSpot.value !== null && current.rowIndex === null
   return fieldDefinitions.value.length > 0 && selectedField.value !== null && document.value?.templateLatestVersionId !== undefined
 })
-
-/** The row about the fill spot itself: a place to keep, or changes that can be made to it. */
-const spotRowShown = computed(() => selected.value !== null && (uncheckedFoundSet.value.has(selected.value.fieldId) || spotActionsShown.value))
-/** The row about the value in it: its review and lock once it has a state, and where it came from. */
-const valueRowShown = computed(
-  () => selected.value !== null && (!!selectedState.value || selectedRowHasState.value || evidenceSpanIdsOf(selected.value.fieldId).length > 0),
-)
 
 function openRename(event: MouseEvent): void {
   const current = selected.value
@@ -1078,7 +1174,11 @@ async function focusField(fieldId: string): Promise<void> {
     // A repeated field with no rows yet is filled by adding one.
     window.document.querySelector<HTMLElement>('#document-pane [data-add-row]')
   if (!(target instanceof HTMLElement)) return
-  target.scrollIntoView?.({ block: 'center' })
+  // Only as far as the pane, so the page's own status line and "Next empty spot" stay in view when the
+  // target was close enough that no scroll was needed for it; centring always scrolled, which could carry
+  // that line off the top even for a spot a short scroll away. The bar that opens once the spot is selected
+  // (keepFocusClearOfBar, triggered by the focus below) clears itself from on top of it the same way a click does.
+  target.scrollIntoView?.({ block: 'nearest' })
   target.focus()
   if (target.hasAttribute('data-add-row')) announce(`${labelOf(fieldId)} has no rows yet. Add a row to fill it in.`)
 }
@@ -1186,6 +1286,35 @@ const rowsLocked = computed(() =>
     (document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates ?? []).some((state) => state?.lock === 'EXPLICITLY_LOCKED'),
   ),
 )
+
+/**
+ * How many fill spots the page holds, and how many of them are filled, accepted and locked, counted the way the
+ * page itself counts them: a table's rows are one fill spot however many columns it has, filled only once every
+ * one of its cells holds something, and accepted once every one of its filled cells has been. Export shows these
+ * same numbers, so a person checking there sees what they already saw on the page.
+ */
+const fillCounts = computed(() => {
+  let filled = 0
+  let accepted = 0
+  for (const field of scalarFields.value) {
+    if (scalarDraft(field.fieldId).trim() === '') continue
+    filled++
+    if (fieldStateOf(field.fieldId)?.review === 'ACCEPTED') accepted++
+  }
+  if (repeatedFields.value.length > 0) {
+    const cells = rowIndexes.value.flatMap((index) =>
+      repeatedFields.value.map((field) => ({
+        filled: (rowDraft(field.fieldId)[index] ?? '').trim() !== '',
+        state: document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates?.[index] ?? null,
+      })),
+    )
+    if (cells.length > 0 && cells.every((cell) => cell.filled)) filled++
+    const reviewed = cells.filter((cell) => cell.filled)
+    if (reviewed.length > 0 && reviewed.every((cell) => cell.state?.review === 'ACCEPTED')) accepted++
+  }
+  const locked = scalarFields.value.filter((field) => isFieldLocked(field.fieldId)).length + (repeatedFields.value.length > 0 && rowsLocked.value ? 1 : 0)
+  return { total: readingSpotCount.value, filled, accepted, locked }
+})
 
 /** Rows the server would refuse: a date column cannot be blank, because a blank is not a date. */
 const rowProblems = computed<string[]>(() => {
@@ -1693,13 +1822,15 @@ function closeBarForSelectedWords(): void {
 /**
  * The bar follows the spot that has focus and is drawn after the whole page, so Tab alone would only
  * reach it for the last spot. Alt+Enter (Option+Return) in a spot comes here instead, and Escape in
- * the bar goes back to the spot, leaving the bar open.
+ * the bar goes back to the spot, leaving the bar open. Asking for the bar this way is asking to decide
+ * about the value, so where it cites a source, the passages are opened with it.
  */
 async function openActions(target: { fieldId: string; rowIndex: number | null }): Promise<void> {
   select(target)
   await nextTick()
   // The bar is always in view at the foot of the screen, so the page stays where it is.
   selectionBarRef.value?.focus({ preventScroll: true })
+  if (evidenceOpenFor.value !== target.fieldId && evidenceSpanIdsOf(target.fieldId).length > 0) void toggleEvidence(target.fieldId)
 }
 
 function returnToSelectedSpot(): void {
@@ -1725,10 +1856,23 @@ function keepFocusClearOfBar(): void {
   // A button pressed with a pointer is not chased: moving it between the press and the release would
   // lose the click. A fill spot always counts as focus to show, however it was reached.
   if (!focused.classList.contains('fill-spot__control') && !focusIsShown(focused)) return
+  scrollClearOfBar(bar, focused)
+}
+
+/**
+ * Whether the pane's scroll stood at the very top when the current spot was selected: several automatic moves
+ * can follow one selection (the bar growing as it measures its own content, more than once), so this is set
+ * once by the first of them and shared by the rest, rather than each asking the live scroll position again
+ * and finding it already moved by an earlier one of the same batch. Null between selections.
+ */
+let selectionStartedAtPaneTop: boolean | null = null
+
+/** Scrolls the page by just enough that `spot` sits above the bar, when the bar covers it. */
+function scrollClearOfBar(bar: HTMLElement, spot: HTMLElement): void {
   const barBox = bar.getBoundingClientRect()
   // A bar that takes no room (the document pane hidden behind Brownie's panel) covers nothing.
   if (barBox.height === 0) return
-  const box = focused.getBoundingClientRect()
+  const box = spot.getBoundingClientRect()
   // A spot the person has scrolled away from, below the screen, is not chased.
   if (box.top >= barBox.bottom) return
   const covered = box.bottom - barBox.top + 12
@@ -1741,7 +1885,18 @@ function keepFocusClearOfBar(): void {
     window.getComputedStyle(pane).overflowY !== 'visible' &&
     pane.scrollHeight > pane.clientHeight
   const top = paneScrolls ? pane.getBoundingClientRect().top : 0
-  const scroll = Math.min(covered, Math.max(0, box.top - top - 12))
+  let scroll = Math.min(covered, Math.max(0, box.top - top - 12))
+  // A fill spot found by Brownie opens a bar with its own banner and source disclosure, far taller than a plain
+  // one's, so clearing it can ask for far more room than the page's own toolbar has to give: the toolbar sits
+  // right above this same scrolling pane's content with no room of its own to lose. Rather than guess how much
+  // of it is safe to cover, a selection that starts with the pane already at the top leaves the toolbar alone
+  // and lets the bar cover the spot instead -- its value and controls are still read from the bar itself. Once
+  // the person has scrolled the pane for any reason, the toolbar is already out of view by their own doing, so
+  // later moves clear the bar fully again, as before.
+  if (paneScrolls) {
+    if (selectionStartedAtPaneTop === null) selectionStartedAtPaneTop = pane.scrollTop === 0
+    if (selectionStartedAtPaneTop) scroll = 0
+  }
   if (scroll <= 0) return
   if (paneScrolls) pane.scrollBy({ top: scroll })
   else if (typeof window.scrollBy === 'function') window.scrollBy({ top: scroll })
@@ -1766,7 +1921,15 @@ watch(selectionBarRef, (bar) => {
     barObserver.observe(bar)
   }
 })
-watch(selected, () => void nextTick(keepFocusClearOfBar), { flush: 'post' })
+watch(
+  selected,
+  () => {
+    // A new spot asks afresh whether the pane was at the top when it was chosen.
+    selectionStartedAtPaneTop = null
+    void nextTick(keepFocusClearOfBar)
+  },
+  { flush: 'post' },
+)
 
 function onDocumentFocusIn(event: FocusEvent): void {
   if (event.target instanceof HTMLElement && event.target.classList.contains('fill-spot__control')) lastSpotElement = event.target
@@ -1856,6 +2019,47 @@ const dateExample = computed(() => {
 })
 /** The fill spots the template itself requires, in page order; a rule that requires more lists them in its own words. */
 const requiredLabels = computed(() => editableFields.value.filter((field) => field.requiredness === 'REQUIRED').map((field) => fieldLabel(field)))
+
+/**
+ * The Rules card is one slim bar until it is opened, except while a fill spot is selected (then it opens by itself,
+ * since what it says about that spot is why the person is looking at it) or while its own rules failed to load (an
+ * error, and the one button that retries it, must never sit behind a closed bar with nothing to say so). Pressing
+ * "About this form" opens or closes it by hand, and that holds until a spot is chosen or let go of, when the card
+ * follows the selection again.
+ */
+const rulesChoice = ref<boolean | null>(null)
+const rulesOpen = computed(() => rulesChoice.value ?? (selected.value !== null || rulesLoadState.value === 'error'))
+function toggleRules(): void {
+  rulesChoice.value = !rulesOpen.value
+}
+watch(
+  () => selected.value !== null,
+  () => {
+    rulesChoice.value = null
+  },
+)
+// The notes about the form are said in the card, so the line over the page folds its own "Details" away while they show.
+watch(
+  [rulesOpen, aboutThisForm],
+  ([open, notes]) => {
+    aboutThisFormOpen.value = open && notes.length > 0
+  },
+  { immediate: true },
+)
+/**
+ * What the closed bar says in one line: how values are styled, how dates read, and which fill spots must be
+ * filled, named rather than only counted, so the one piece of information a person must act on before export
+ * is not held back behind "About this form" -- the only thing worth opening the card for is everything else.
+ */
+const rulesSummary = computed(() => {
+  const parts: string[] = []
+  const style = styleChips.value.filter((chip) => chip !== 'Regular').join(' ')
+  if (style) parts.push(style)
+  if (dateExample.value) parts.push(`Dates like ${dateExample.value}`)
+  if (!selected.value && requiredLabels.value.length > 0) parts.push(`Required: ${requiredLabels.value.join(', ')}`)
+  else if (selected.value && selectedRequired.value) parts.push('Required')
+  return parts
+})
 
 function todayIso(): string {
   const now = new Date()
@@ -2068,6 +2272,8 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     if (completed.status !== 'READY') {
       sourceUploadError.value = `That file was not attached: ${whyFileWasRefused(completed)}.`
       sourceUploadState.value = 'error'
+      // A failure must stay visible even if the row was folded away while it was in flight.
+      sourceUploadOpen.value = true
       return
     }
     await extractArtifact(workspaceId, allocated.id)
@@ -2076,21 +2282,39 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
     // The new source is the one read next, but a reading under way keeps the source it started with.
     if (!runUnderWay.value) selectedSourceId.value = attached.id
+    justAttachedSources.value = [attached, ...justAttachedSources.value.filter((source) => source.id !== attached.id)]
+    // The browser's own File object knows the size; the server's source record never will, so it is kept here, by id, only
+    // for as long as the chip above is showing.
+    justAttachedSourceBytes.value = { ...justAttachedSourceBytes.value, [attached.id]: file.size }
     sourceUploadState.value = 'idle'
     announce(`${sourceName(attached)} attached.`)
   } catch (error) {
     sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
+    // A failure must stay visible even if the row was folded away while it was in flight.
+    sourceUploadOpen.value = true
   }
 }
 
 // Google's answer opened a picker by itself on this first visit only; after the panel closes, it
 // opens with every picker closed like any other time.
 watch(sourcesOpen, (open) => {
-  if (open) return
+  if (open) {
+    sourceUploadOpen.value = true
+    return
+  }
+  justAttachedSources.value = []
+  justAttachedSourceBytes.value = {}
   calendarPickerStartsOpen.value = false
   drivePickerStartsOpen.value = false
 })
+
+/** The row for uploading a file starts open, so its file picker is the first thing in the panel. */
+const sourceUploadOpen = ref(true)
+/** The files attached from this panel while it has been open, confirmed in it as small cards. */
+const justAttachedSources = ref<DocumentSourceResponse[]>([])
+/** Each one's size in bytes, by its source id: known only because this page watched it get chosen. */
+const justAttachedSourceBytes = ref<Record<number, number>>({})
 
 async function toggleSources(): Promise<void> {
   sourcesOpen.value = !sourcesOpen.value
@@ -2157,6 +2381,22 @@ async function tryGroundedExtraction(): Promise<void> {
     return
   }
   await pollJobUntilTerminal(workspaceId, extractionJobId.value!)
+}
+
+/**
+ * Shows the request the chat page sent Brownie to fill, as the person's own first line here, and -- when it
+ * came with a source -- reads that source the same way asking Brownie to read it in this chat would. Called
+ * once arrival has loaded the document's real sources and settled whether a run is already under way, so
+ * the source the chat page attached is found by its own id even if the server's list reordered it, and a
+ * run already being followed from an earlier visit on this document is never started a second time.
+ */
+async function startHandoffRequest(request: DocumentRequest): Promise<void> {
+  say({ from: 'person', text: request.text })
+  if (request.sourceId === null) return
+  const source = attachedSources.value.find((candidate) => candidate.id === request.sourceId)
+  if (!source || runUnderWay.value) return
+  selectedSourceId.value = source.id
+  await tryGroundedExtraction()
 }
 
 /**
@@ -2393,6 +2633,19 @@ async function resumeAfterAnswers(): Promise<void> {
   }
 }
 
+/**
+ * The run's questions as the server holds them, so a value that is the person's own answer is known to be, even on a
+ * page opened after they answered. Best effort: without them such a value is simply not labelled as theirs.
+ */
+async function readRunAnswers(workspaceId: number, jobId: number): Promise<void> {
+  try {
+    const asked = await getGenerationQuestions(workspaceId, props.documentId, jobId)
+    if (Array.isArray(asked) && asked.length > 0) openQuestions.value = asked
+  } catch {
+    // The answers this page already holds, if any, stand.
+  }
+}
+
 async function applyResultToDocument(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const jobId = extractionJobId.value
@@ -2402,6 +2655,8 @@ async function applyResultToDocument(): Promise<void> {
   applyError.value = null
   try {
     const proposal = await applyGenerationResult(workspaceId, props.documentId, jobId)
+    // Before the values are shown, so the first thing drawn already says which of them are the person's own answers.
+    await readRunAnswers(workspaceId, jobId)
     placeInChat('proposal')
     proposalFromJobId.value = jobId
     patchProposal.value = proposal
@@ -2434,8 +2689,10 @@ type ChatLine = {
   tone?: 'error'
   help?: string[]
   quote?: boolean
-  /** A place in the conversation where the reading under way, or the proposal waiting for a decision, is drawn. */
-  slot?: 'run' | 'proposal'
+  /** What "here" meant in this line of the person's, kept under it once the box's own hint is gone. */
+  here?: string
+  /** A place in the conversation where the reading under way, the proposal waiting for a decision, or what is left to review is drawn. */
+  slot?: 'run' | 'proposal' | 'review'
   /** A change to the form's fill spots this line reports, with Undo beside it. */
   undo?: SpotUndo
   undone?: boolean
@@ -2447,6 +2704,10 @@ type ChatLine = {
 const chat = ref<ChatLine[]>([])
 let chatSequence = 0
 const chatLogRef = ref<HTMLElement | null>(null)
+/** Ways to begin, under Brownie's first words: offered until something has been said or a source is attached. */
+const startersShown = computed(() => chat.value.length === 0 && attachedSources.value.length === 0)
+/** The same test the page makes before it offers "Add a fill spot" over a Word form: a drawn page with places to put one. */
+const starterAddsSpot = computed(() => docView.value === 'page' && !pageLoading.value && layoutState.value === 'ready' && anchorLines.value.length > 0)
 /**
  * Where the reading and the proposal sit in the conversation: after whatever was said before they
  * began, and before whatever is said while they wait. Only the latest place of each is drawn, so an
@@ -2454,6 +2715,8 @@ const chatLogRef = ref<HTMLElement | null>(null)
  */
 const runSlotId = ref<number | null>(null)
 const proposalSlotId = ref<number | null>(null)
+/** Where the list of what a proposal filled in, still to review, sits: after the line that says it was filled in. */
+const reviewSlotId = ref<number | null>(null)
 
 /**
  * Adds a line to the conversation. What Brownie says is also announced, through the page's one live
@@ -2469,10 +2732,11 @@ function say(line: Omit<ChatLine, 'id'>): void {
   void scrollChatToEnd()
 }
 
-function placeInChat(slot: 'run' | 'proposal'): void {
+function placeInChat(slot: 'run' | 'proposal' | 'review'): void {
   say({ from: 'brownie', text: '', slot })
   if (slot === 'run') runSlotId.value = chatSequence
-  else proposalSlotId.value = chatSequence
+  else if (slot === 'proposal') proposalSlotId.value = chatSequence
+  else reviewSlotId.value = chatSequence
 }
 
 async function scrollChatToEnd(): Promise<void> {
@@ -2489,6 +2753,32 @@ async function scrollChatToEnd(): Promise<void> {
 }
 
 watch([extractionStage, applyStage, () => openQuestions.value.length], () => void scrollChatToEnd())
+// The conversation opens at its foot, where the newest line and the ways to begin are, and stays there until the person
+// scrolls away: the Rules card above it opening or closing, or a panel below it, changes how much room it has, and
+// the newest line must not slip out of view when it does.
+let chatAtEnd = true
+let chatSizeObserver: ResizeObserver | null = null
+function noteChatScroll(): void {
+  const log = chatLogRef.value
+  if (log) chatAtEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 8
+}
+watch(
+  chatLogRef,
+  (log) => {
+    chatSizeObserver?.disconnect()
+    chatSizeObserver = null
+    if (!log) return
+    chatAtEnd = true
+    void scrollChatToEnd()
+    if (typeof ResizeObserver === 'undefined') return
+    chatSizeObserver = new ResizeObserver(() => {
+      if (chatAtEnd && typeof log.scrollTo === 'function') log.scrollTo({ top: log.scrollHeight })
+    })
+    chatSizeObserver.observe(log)
+  },
+  { flush: 'post' },
+)
+onBeforeUnmount(() => chatSizeObserver?.disconnect())
 
 watch(extractionError, (text) => {
   // A reading that failed says so in an alert of its own.
@@ -2580,6 +2870,15 @@ type AssistStage = 'idle' | 'interpreting' | 'executing' | 'done' | 'failed'
 const assistStage = ref<AssistStage>('idle')
 const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
 const composerText = ref('')
+/**
+ * The message box looks busy while Brownie is working on a request or reading a source. A reading that is under
+ * way can be stopped from the box as well as from its own card; a request being read can only be waited for.
+ */
+const composerBusy = computed(() => assistBusy.value || ['starting', 'running', 'resuming'].includes(extractionStage.value))
+const composerStops = computed(() => ['running', 'resuming'].includes(extractionStage.value))
+function stopReadingFromComposer(): void {
+  if (composerStops.value) void cancelExtraction()
+}
 
 function onComposerKeydown(event: KeyboardEvent): void {
   // Enter sends and Shift+Enter starts a new line, as in most chat boxes; a key that finishes an
@@ -2599,10 +2898,12 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
   const workspaceId = session.personalWorkspaceId
   const text = (given ?? composerText.value).trim()
   if (workspaceId === undefined || text === '' || assistBusy.value || !document.value) return
+  // What "here" means in a line typed in the box is said under it in the conversation, since the box's hint goes with the text.
+  const hereWords = given === undefined ? hereHint.value : null
   if (given === undefined) composerText.value = ''
-  if (options.echo !== false) say({ from: 'person', text })
   // The place chosen on the page goes along, so "here" means it; a line picked from Brownie's choices goes instead.
   const anchor = options.anchor !== undefined ? options.anchor : takePageAnchor(text)
+  if (options.echo !== false) say({ from: 'person', text, ...(anchor && hereWords ? { here: hereWords } : {}) })
 
   assistStage.value = 'interpreting'
   let interpretation
@@ -2692,7 +2993,9 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
       patchProposal.value = outcome.proposal
       acceptResult.value = null
       applyError.value = null
-      proposalIntro.value = interpretation.kind === 'CHANGE_FIELD' ? 'Here is the change you asked for:' : 'Here is my suggestion:'
+      // A request names the one value it changes, so the line over the card does too.
+      const changed = Object.keys(outcome.proposal.proposedValues)
+      proposalIntro.value = `Here is the change you asked for${changed.length === 1 ? ` in ${labelOf(changed[0]!)}` : ''}:`
       applyStage.value = 'proposed'
       announce('Brownie proposed a change. Check it, then approve it to update the document.')
     }
@@ -2761,32 +3064,52 @@ async function useSuggestion(item: string): Promise<void> {
   }
 }
 
-/** A proposal's values as lines a person reads: one per field, and one per row for repeated fields. */
-const proposalLines = computed<{ key: string; label: string; value: string }[]>(() => {
-  const proposal = patchProposal.value
-  if (!proposal) return []
-  const lines: { key: string; label: string; value: string }[] = []
-  const repeated: [string, string[]][] = []
-  for (const [fieldId, field] of Object.entries(proposal.proposedValues)) {
-    if (field.cardinality === 'REPEATED') {
-      repeated.push([fieldId, (field.values ?? []).map((value) => (field.type === 'DATE' ? formatDateLikeExport(value) : value))])
-      continue
-    }
-    const value = field.value ?? ''
-    lines.push({ key: fieldId, label: labelOf(fieldId), value: field.type === 'DATE' ? formatDateLikeExport(value) : value })
-  }
-  const rows = Math.max(0, ...repeated.map(([, values]) => values.length))
-  for (let index = 0; index < rows; index++) {
-    lines.push({
-      key: `row-${index}`,
-      label: `Row ${index + 1}`,
-      value: repeated
-        .map(([fieldId, values]) => `${labelOf(fieldId)}: ${values[index] ?? ''}`)
-        .join('; '),
-    })
-  }
-  return lines
+// What the conversation shows of a proposal: a reading's values as a table of what it found, a request's change as the
+// one value set beside what the document holds, and, once a proposal is accepted, a list of what it filled in that
+// stays to be reviewed. The words for each are in workspace/proposalWords.ts.
+
+/** What the person answered to this reading's questions: the values that are theirs, not the source's. */
+const answeredByField = computed(() => answersByField(openQuestions.value))
+/** The line over a proposal that says which questions the person answered; null when they answered none. */
+const answeredSentence = computed(() => answeredWords(openQuestions.value, labelOf))
+/** The fill spots in the order the page draws them, which the table of what was found, and the list to review, follow. */
+const chatFieldOrder = computed(() => editableFields.value.map((field) => field.fieldId))
+const proposalTableRows = computed(() =>
+  patchProposal.value ? proposalRows(patchProposal.value, labelOf, answeredByField.value, chatFieldOrder.value) : [],
+)
+/** The change a request would make, beside what the document holds now; null for a reading's values, which are the table. */
+const proposalChangeCard = computed(() =>
+  patchProposal.value && proposalFromJobId.value === null && document.value
+    ? proposalChange(patchProposal.value, document.value.currentRevision.fields, labelOf)
+    : null,
+)
+const proposalLeftOut = computed(() => (patchProposal.value ? leftOutWords(patchProposal.value.skippedRepeatedItems, labelOf) : null))
+/** Every question has its answer, so nothing is left to wait for but carrying on. */
+const allQuestionsAnswered = computed(() => openQuestions.value.length > 0 && openQuestions.value.every((question) => question.status === 'ANSWERED'))
+/** How a label is drawn: in the tone it carries, or as the plain tag. */
+function stateTagClass(tag: StateTag): string | undefined {
+  return tag.tone === 'neutral' ? undefined : `tag--${tag.tone}`
+}
+
+/** The fill spots the latest accepted proposal filled in, in the order it listed them. */
+const reviewFilledIds = ref<string[]>([])
+const reviewList = computed<ReviewEntry[]>(() =>
+  document.value
+    ? reviewEntries(reviewFilledIds.value, document.value.currentRevision.fields, labelOf, answeredByField.value, chatFieldOrder.value)
+    : [],
+)
+/** "0 of 6 accepted": it follows the document, so every decision recorded moves it. */
+const reviewHeading = computed(() => `${reviewList.value.filter((entry) => entry.review === 'ACCEPTED').length} of ${reviewList.value.length} accepted`)
+/** The entry whose fill spot is the one selected on the page, drawn as open. */
+const reviewOpenKey = computed(() => {
+  const open = selected.value?.fieldId
+  return open === undefined ? null : (reviewList.value.find((entry) => entry.fieldIds.includes(open))?.key ?? null)
 })
+
+/** Go to: the fill spot on the page, brought into view, which is also where its value is reviewed. */
+function goToReviewEntry(entry: ReviewEntry): Promise<void> {
+  return focusField(entry.fieldId)
+}
 
 async function acceptProposal(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
@@ -2806,7 +3129,9 @@ async function acceptProposal(): Promise<void> {
     applyStage.value = 'accepted'
     await loadDocument()
     const statuses = Object.entries(acceptResult.value.fieldStatuses)
-    const applied = statuses.filter(([, status]) => status === 'CLEAN').length
+    const filled = statuses.filter(([, status]) => status === 'CLEAN').map(([fieldId]) => fieldId)
+    // A table's columns are one fill spot, as the page counts them.
+    const applied = new Set(filled.map((fieldId) => (proposal.proposedValues[fieldId]?.cardinality === 'REPEATED' ? 'table-rows' : fieldId))).size
     const held = statuses.filter(([, status]) => status !== 'CLEAN').map(([fieldId]) => labelOf(fieldId))
     const heldWords = held.length > 0 ? ` I left ${held.join(', ')} as ${held.length === 1 ? 'it was' : 'they were'}: locked, or changed since I read the document.` : ''
     if (applied === 0) {
@@ -2814,8 +3139,11 @@ async function acceptProposal(): Promise<void> {
     } else {
       say({
         from: 'brownie',
-        text: `Filled in ${applied} ${applied === 1 ? 'value' : 'values'}.${heldWords} Check each one before you export.`,
+        text: `Filled in ${applied} fill ${applied === 1 ? 'spot' : 'spots'}.${heldWords} Check each one before you export.`,
       })
+      // What is left to check stays under it, with a way to each spot.
+      reviewFilledIds.value = filled
+      placeInChat('review')
     }
     if (proposalFromJobId.value !== null) decidedRunJobId.value = proposalFromJobId.value
     patchProposal.value = null
@@ -2890,6 +3218,202 @@ function questionPrompt(question: QuestionResponse): string {
     ? `${label}: the source says something different from what the document holds. Which should it be?`
     : `${label}: I could not find this in the source. What should it be?`
 }
+
+/** The answers a question offers, each saying where it comes from when the choice is between the document and the source. */
+function questionChoices(question: QuestionResponse): string[] {
+  return choiceWords(question, document.value?.currentRevision.fields[question.fieldId]?.value)
+}
+
+/** What the source says where an answer on offer cites it, by passage: each is read once, when its question first shows. */
+const questionPassages = ref<Record<number, EvidenceExcerptResponse | null>>({})
+
+async function loadQuestionPassages(questions: readonly QuestionResponse[]): Promise<void> {
+  const workspaceId = session.personalWorkspaceId
+  if (workspaceId === undefined) return
+  let added = false
+  for (const question of questions) {
+    for (const candidate of question.candidates) {
+      const spanId = candidate.evidenceSpanIds?.[0]
+      if (spanId === undefined || spanId in questionPassages.value) continue
+      questionPassages.value[spanId] = null
+      try {
+        questionPassages.value[spanId] = (await getEvidenceExcerpt(workspaceId, props.documentId, spanId)) ?? null
+        added = added || questionPassages.value[spanId] !== null
+      } catch {
+        // The passage only helps to choose; the question can be answered without it.
+      }
+    }
+  }
+  // The line under a question makes it taller after it was shown; the end of the conversation stays in view.
+  if (added && extractionStage.value === 'waiting-for-input') void scrollChatToEnd()
+}
+watch(openQuestions, (questions) => void loadQuestionPassages(questions))
+
+/**
+ * The passages a question's answers cite, for the line under the question: where each is from, and, when more than
+ * one is shown, which choice it backs.
+ */
+function questionQuotes(question: QuestionResponse): { choice: number; lead: string; text: string }[] {
+  const quotes: { choice: number; source: string; text: string }[] = []
+  question.candidates.forEach((candidate, index) => {
+    const spanId = candidate.evidenceSpanIds?.[0]
+    const passage = spanId === undefined ? null : (questionPassages.value[spanId] ?? null)
+    if (passage) quotes.push({ choice: index + 1, source: passage.displayFilename ?? 'the source', text: passage.excerptText })
+  })
+  return quotes.map((quote) => ({
+    choice: quote.choice,
+    lead: quotes.length > 1 ? `From ${quote.source}, for choice ${quote.choice}` : `From ${quote.source}`,
+    text: quote.text,
+  }))
+}
+
+// ---- The notes over the page ---------------------------------------------------------------------
+//
+// The page draws, between its status line and its sheet, the line about the form, the preview of the values
+// waiting for approval, and a newer version of the form; what Brownie is doing now is a chip over the sheet.
+// Each says what the state of this view already says, so the only thing kept here is whether the preview is hidden.
+
+/** Hidden for the proposal on screen: the values stay in the chat, only their drawing on the page goes. A new proposal brings it back. */
+const previewHidden = ref(false)
+watch(
+  () => patchProposal.value?.id,
+  () => {
+    previewHidden.value = false
+  },
+)
+
+/** The person has typed into this field since the page last matched the document, and what they typed is theirs. */
+function fieldEditedSinceLoad(fieldId: string): boolean {
+  return comparableDrafts({ [fieldId]: drafts.value[fieldId] ?? '' }) !== comparableDrafts({ [fieldId]: cleanDrafts.value[fieldId] ?? '' })
+}
+
+type StoredField = DocumentRevisionResponse['fields'][string] | undefined
+
+function sameStoredValue(left: StoredField, right: StoredField): boolean {
+  if (!left || !right) return !left && !right
+  return (
+    left.type === right.type &&
+    left.cardinality === right.cardinality &&
+    (left.value ?? null) === (right.value ?? null) &&
+    JSON.stringify(left.values ?? null) === JSON.stringify(right.values ?? null)
+  )
+}
+
+/**
+ * What the document held when the proposal on screen was made, read once the document has moved on from that
+ * version (typing saved while Brownie was reading, say). Approving leaves alone a field that changed since, so
+ * the preview needs to know which. Null until it is read, and when it could not be.
+ */
+const proposalBase = ref<{ revisionId: number; fields: DocumentRevisionResponse['fields'] } | null>(null)
+watch([patchProposal, () => document.value?.currentRevision.id], async ([proposal, currentId]) => {
+  const workspaceId = session.personalWorkspaceId
+  if (!proposal || workspaceId === undefined || proposal.baseRevisionId === currentId || proposalBase.value?.revisionId === proposal.baseRevisionId) return
+  try {
+    const base = await getDocumentRevision(workspaceId, props.documentId, proposal.baseRevisionId)
+    if (patchProposal.value?.id === proposal.id) proposalBase.value = { revisionId: proposal.baseRevisionId, fields: base.fields }
+  } catch {
+    // The preview is drawn without it; once approved, the chat says what was left as it was.
+  }
+})
+
+/** The field changed in the document after the proposal was made, so approving would leave it as it is. */
+function changedSinceProposal(fieldId: string): boolean {
+  const proposal = patchProposal.value
+  const base = proposalBase.value
+  if (!proposal || !base || base.revisionId !== proposal.baseRevisionId) return false
+  return !sameStoredValue(base.fields[fieldId], document.value?.currentRevision.fields[fieldId])
+}
+
+/** Approving leaves a field alone whose value, or any item of it, is locked in any way. */
+function lockedAgainstProposal(fieldId: string, repeated: boolean): boolean {
+  const field = document.value?.currentRevision.fields[fieldId]
+  const states = repeated ? (field?.itemFieldStates ?? []) : [field?.fieldState]
+  return states.some((state) => state != null && state.lock !== 'EDITABLE')
+}
+
+/**
+ * What approving the proposal on screen would put in the document, laid out like the drafts: the same values the
+ * chat lists, left out where approving would leave a field alone (locked, changed since the proposal was made, or
+ * typed into and not yet saved) or change nothing. Null once nothing is left to preview, or when no proposal waits.
+ */
+const proposalPreview = computed(() => {
+  const proposal = patchProposal.value
+  if (!proposal || applyStage.value === 'idle') return null
+  const preview = previewDraftsFrom(proposal, {
+    fieldIds: editableFieldIds.value,
+    held: (fieldId, repeated) => lockedAgainstProposal(fieldId, repeated) || changedSinceProposal(fieldId) || fieldEditedSinceLoad(fieldId),
+    shown: (fieldId) => drafts.value[fieldId],
+  })
+  return Object.keys(preview).length > 0 ? preview : null
+})
+/** What the page is given to draw as a preview. */
+const previewDrafts = computed(() => (previewHidden.value ? null : proposalPreview.value))
+
+function togglePreview(): void {
+  previewHidden.value = !previewHidden.value
+  announce(previewHidden.value ? 'Preview hidden. The values are still in the chat, and nothing is filled until you approve.' : 'Previewing the values on the page.')
+}
+
+/** What Brownie is doing now, for the chip over the sheet: reading, or waiting for answers. */
+const pageChip = computed<{ icon: 'sparkle' | 'help-circle'; text: string } | null>(() => {
+  switch (extractionStage.value) {
+    case 'starting':
+    case 'running':
+    case 'resuming':
+      return { icon: 'sparkle', text: cancellationRequested.value ? 'Brownie is stopping.' : 'Brownie is reading. You can keep typing.' }
+    case 'waiting-for-input': {
+      const waiting = openQuestions.value.filter((question) => question.status !== 'ANSWERED').length
+      if (waiting === 0) return { icon: 'help-circle', text: 'Your answers are saved. Carry on reading in the chat.' }
+      return { icon: 'help-circle', text: `Brownie has ${waiting} ${waiting === 1 ? 'question. Answer it' : 'questions. Answer them'} in the chat.` }
+    }
+    default:
+      return null
+  }
+})
+
+/** How many questions Brownie waits on for each field, so the page can mark the spots they are about. */
+const questionCounts = computed(() => {
+  const counts: Record<string, number> = {}
+  if (extractionStage.value !== 'waiting-for-input') return counts
+  for (const question of openQuestions.value) {
+    if (question.status !== 'ANSWERED') counts[question.fieldId] = (counts[question.fieldId] ?? 0) + 1
+  }
+  return counts
+})
+
+/** What each button of the notes does, named as the notes' events are, so the same handlers go to whichever page draws them. */
+const bannerHandlers = {
+  onKeepAll: () => void keepAllFoundPlaces(),
+  onToggleNotes: () => {
+    formNotesOpen.value = !formNotesOpen.value
+  },
+  onDismissNotes: dismissFormNotes,
+  onTogglePreview: togglePreview,
+  onMove: () => void moveToNewestVersion(),
+  onSetAside: setNewerVersionAside,
+}
+
+/** Everything the notes over the page need, in the shape of their props and events. Only the page face shows them. */
+const bannerBindings = computed(() => {
+  const onPage = docView.value === 'page'
+  const spots = countPreviewSpots(proposalPreview.value)
+  return {
+    stripText: onPage ? stripText.value : '',
+    foundCount: uncheckedFoundIds.value.length,
+    keepBusy: keepPending.value !== null,
+    notes: formNotes.value,
+    notesOffered: stripDetailsShown.value,
+    notesOpen: formNotesOpen.value,
+    canDismiss: formNotes.value.length > 0 && uncheckedFoundIds.value.length === 0,
+    preview: onPage && spots > 0 ? { count: spots, shown: !previewHidden.value } : null,
+    newer: onPage && newerVersionWords.value ? { text: newerVersionWords.value, error: moveError.value, moving: movingToLatest.value } : null,
+    moved: onPage ? shownMovedNotice.value : null,
+    chip: onPage ? pageChip.value : null,
+    // A PDF's pages are drawn another way, with the notes above them in the flow.
+    chipOverSheet: !isPdfForm.value,
+    ...bannerHandlers,
+  }
+})
 
 // ---- Review and lock ---------------------------------------------------------------------------
 
@@ -3004,6 +3528,81 @@ const selectedPendingKey = computed(() => {
   if (!current) return null
   return current.rowIndex === null ? current.fieldId : `row-${current.rowIndex}`
 })
+
+// ---- The card about the selected fill spot ----------------------------------------------------------
+
+/** The chips under the spot's name: whether it is required, then each word of the value's state, drawn as its look says. */
+const stateChips = computed(() => {
+  const chips: ({ word: string } & StateChipLook)[] = []
+  if (selectedRequired.value) chips.push({ word: 'Required', tone: 'neutral', icon: null })
+  for (const word of selectedState.value ? fieldStateWords(selectedState.value) : []) chips.push({ word, ...stateChipLook(word) })
+  return chips
+})
+
+/** Said over a spot that is drawn as a preview, whose value is on the page but not in the document. */
+const selectedPreviewHint = computed<string | null>(() => {
+  const current = selected.value
+  const proposed = current ? previewDrafts.value?.[current.fieldId] : undefined
+  const previewing = current && (current.rowIndex === null ? typeof proposed === 'string' : Array.isArray(proposed) && proposed[current.rowIndex] !== undefined)
+  return previewing ? 'Brownie proposes this value. It is not in the document until you approve it.' : null
+})
+
+/** Review and lock are offered for a value that has a state, or for a row where any column has one. */
+const decisionsShown = computed(() => selected.value !== null && (!!selectedState.value || selectedRowHasState.value))
+
+/** Every spot a decision can be recorded for, in the order the page lists them: each field with one value, and the rows of the table where its first column is. */
+const reviewTargets = computed<ReviewTarget[]>(() => {
+  const targets: ReviewTarget[] = []
+  let rowsListed = false
+  for (const field of editableFields.value) {
+    if (field.cardinality === 'SCALAR') {
+      targets.push({ fieldId: field.fieldId, rowIndex: null })
+    } else if (!rowsListed) {
+      rowsListed = true
+      for (const index of rowIndexes.value) targets.push({ fieldId: field.fieldId, rowIndex: index })
+    }
+  }
+  return targets
+})
+
+/**
+ * A value waits for a decision when Brownie wrote it (alone or with the person), nobody has decided on it yet, and it
+ * can still be changed: an empty spot, a locked one and one the person typed need no review. These are the values
+ * the page's status line counts as "to review", so walking through them visits exactly that many.
+ */
+function wantsReview(target: ReviewTarget): boolean {
+  const unreviewed = (state: FieldStateResponse | null | undefined) => stateFromAssist(state) && state?.review === 'UNREVIEWED'
+  if (target.rowIndex === null) {
+    return scalarDraft(target.fieldId).trim() !== '' && !isFieldLocked(target.fieldId) && unreviewed(fieldStateOf(target.fieldId))
+  }
+  const index = target.rowIndex
+  const filled = repeatedFields.value.some((field) => (rowDraft(field.fieldId)[index] ?? '').trim() !== '')
+  const states = repeatedFields.value.map((field) => document.value?.currentRevision.fields[field.fieldId]?.itemFieldStates?.[index])
+  return filled && !rowLocked(index) && states.some(unreviewed)
+}
+const nextReviewTarget = computed(() => nextToReview(reviewTargets.value, selected.value, wantsReview))
+
+/**
+ * "Next to review": the card moves on to the next value waiting for a decision. The spot is brought into view above
+ * the card and the card takes focus, as it does from Alt+Enter, so the person can decide at once; the live line
+ * says which spot it is. A list of passages the person had open is opened for the new spot too.
+ */
+async function goToNextToReview(): Promise<void> {
+  const target = nextReviewTarget.value
+  if (!target) return
+  const evidenceWasOpen = evidenceOpenFor.value !== null
+  select(target)
+  announce(`Next to review: ${target.rowIndex === null ? labelOf(target.fieldId) : `row ${target.rowIndex + 1}`}.`)
+  await nextTick()
+  const bar = selectionBarRef.value
+  const spotElement = spotElementFor(target)
+  if (bar && spotElement) {
+    spotElement.scrollIntoView?.({ block: 'nearest' })
+    scrollClearOfBar(bar, spotElement)
+  }
+  bar?.focus({ preventScroll: true })
+  if (evidenceWasOpen && evidenceSpanIdsOf(target.fieldId).length > 0) void toggleEvidence(target.fieldId)
+}
 
 // ---- Dialogs -----------------------------------------------------------------------------------
 
@@ -3131,35 +3730,45 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 <template>
   <!-- The router sends a signed-out visitor to the sign-in page before this view mounts; this is what shows if a session ends while it is open. -->
-  <section v-if="session.status === 'anonymous'" class="card">
-    <p>Sign in to view this document.</p>
-    <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: `/documents/${props.documentId}` } }">
-      Sign in
-    </RouterLink>
+  <section v-if="session.status === 'anonymous'" class="page-column page-column--narrow">
+    <div class="panel workspace-state">
+      <p class="workspace-state__body">Sign in to view this document.</p>
+      <RouterLink class="button button--primary" :to="{ path: '/signin', query: { next: `/documents/${props.documentId}` } }">
+        Sign in
+      </RouterLink>
+    </div>
   </section>
 
-  <section v-else-if="loadState === 'loading'" aria-live="polite">
+  <section v-else-if="loadState === 'loading'" class="page-column page-column--narrow" aria-live="polite">
     <h1 class="visually-hidden">Loading document</h1>
-    <p>Loading document…</p>
+    <p class="workspace-loading"><span class="activity-indicator" aria-hidden="true"></span>Loading document…</p>
   </section>
 
-  <section v-else-if="loadState === 'error'" class="field-error" role="alert">
-    <p>{{ loadError ?? 'Could not load this document.' }}</p>
-    <p v-if="calendarConsent">{{ calendarConsent.text }}</p>
-    <p v-if="documentGone"><RouterLink to="/trash">Open the trash bin</RouterLink></p>
-    <RouterLink to="/">Back to your documents</RouterLink>
+  <section v-else-if="loadState === 'error'" class="page-column page-column--narrow">
+    <h1 class="visually-hidden">Could not load document</h1>
+    <div class="panel workspace-state workspace-state--error" role="alert">
+      <span class="workspace-state__mark" aria-hidden="true"><AppIcon name="alert-circle" :size="22" /></span>
+      <div class="workspace-state__body">
+        <p>{{ loadError ?? 'Could not load this document.' }}</p>
+        <p v-if="calendarConsent">{{ calendarConsent.text }}</p>
+        <div class="workspace-state__actions">
+          <RouterLink v-if="documentGone" class="button button--primary" to="/trash">Open the trash bin</RouterLink>
+          <RouterLink class="button button--secondary" to="/">Back to your documents</RouterLink>
+        </div>
+      </div>
+    </div>
   </section>
 
   <div v-else-if="document" class="workspace" :class="`workspace--showing-${narrowView}`">
     <header class="workspace-bar">
       <div class="workspace-bar__start">
         <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
-        <button type="button" class="icon-button" :aria-disabled="undoing" @click="undoLastChange">
-          <AppIcon name="undo" />
+        <button type="button" class="icon-button workspace-bar__undo" :aria-disabled="undoing" @click="undoLastChange">
+          <AppIcon name="undo-arrow" :size="24" />
           <span class="visually-hidden">Undo the last change</span>
         </button>
-        <button type="button" class="icon-button" @click="openHistory">
-          <AppIcon name="history" />
+        <button type="button" class="icon-button workspace-bar__history" @click="openHistory">
+          <AppIcon name="history" :size="22" />
           <span class="visually-hidden">Version history</span>
         </button>
       </div>
@@ -3180,65 +3789,88 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         <button
           v-if="isDirty && saveStage !== 'conflict'"
           type="button"
-          class="button button--secondary workspace-bar__save"
+          class="button button--secondary button--small"
           :aria-disabled="saveStage === 'saving' || rowProblems.length > 0"
           @click="saveNow"
         >
           Save now
         </button>
-        <button type="button" class="button button--primary workspace-bar__export" @click="openExport">Export</button>
+        <button type="button" class="button button--primary button--small" @click="openExport">Export</button>
       </div>
     </header>
 
-    <h1 class="workspace-title">{{ document.title }}</h1>
+    <h1 class="page-title workspace-title" :class="{ 'workspace-title--long': titleIsLong }">{{ document.title }}</h1>
 
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
 
     <div class="workspace-notices">
-      <p v-if="handoffWarning" class="field-error" role="alert">{{ handoffWarning }}</p>
-      <p v-if="keepError" class="field-error" role="alert">{{ keepError }}</p>
+      <p v-if="handoffWarning" class="workspace-notice workspace-notice--warning" role="alert">
+        <AppIcon name="warning" :size="18" />
+        <span class="workspace-notice__text">{{ handoffWarning }}</span>
+      </p>
+      <p v-if="keepError" class="workspace-notice workspace-notice--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span class="workspace-notice__text">{{ keepError }}</span>
+      </p>
       <p
         v-if="calendarConsent"
         ref="calendarConsentElement"
-        :class="calendarConsent.tone === 'success' ? 'workspace-notice' : 'field-error'"
+        class="workspace-notice"
+        :class="calendarConsent.tone === 'success' ? 'workspace-notice--success' : 'workspace-notice--error'"
         :role="calendarConsent.tone === 'success' ? 'status' : 'alert'"
         tabindex="-1"
       >
-        {{ calendarConsent.text }}
-        <template v-if="calendarConsent.hint">{{ calendarConsent.hint }}</template>
+        <AppIcon :name="calendarConsent.tone === 'success' ? 'check-circle' : 'alert-circle'" :size="18" />
+        <span class="workspace-notice__text">
+          {{ calendarConsent.text }}
+          <template v-if="calendarConsent.hint">{{ calendarConsent.hint }}</template>
+        </span>
       </p>
-      <p v-if="reloadError" class="field-error" role="alert">
-        {{ reloadError }}
-        <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
+      <p v-if="reloadError" class="workspace-notice workspace-notice--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span class="workspace-notice__text">
+          {{ reloadError }}
+          <RouterLink v-if="documentGone" to="/trash">Open the trash bin</RouterLink>
+        </span>
       </p>
-      <p v-if="saveError" class="field-error" role="alert">
-        {{ saveError }}
-        <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+      <p v-if="saveError" class="workspace-notice workspace-notice--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span class="workspace-notice__text">
+          {{ saveError }}
+          <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+        </span>
       </p>
-      <div v-if="saveStage === 'conflict'" class="field-error conflict-notice" role="alert">
-        <!-- The revision on screen is only the current one when the reload after the conflict worked. -->
-        <p v-if="reloadError">
-          This document changed since you started editing, and its latest version could not be loaded, so nothing was
-          saved. Your edits are still on the page.
-        </p>
-        <p v-else>
-          This document changed since you started editing (version {{ document.currentRevision.revisionNumber }} is now
-          current). Your edits are still on the page. Save them onto the latest version, or discard them to see what
-          changed.
-        </p>
-        <div class="button-row">
-          <button type="button" class="button button--primary" @click="saveEdits('manual')">Save my edits onto the latest</button>
-          <button type="button" class="button button--secondary" @click="resetDrafts">Discard my edits</button>
+      <div v-if="saveStage === 'conflict'" class="workspace-notice workspace-notice--error conflict-notice" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <div class="workspace-notice__text">
+          <!-- The revision on screen is only the current one when the reload after the conflict worked. -->
+          <p v-if="reloadError">
+            This document changed since you started editing, and its latest version could not be loaded, so nothing was
+            saved. Your edits are still on the page.
+          </p>
+          <p v-else>
+            This document changed since you started editing (version {{ document.currentRevision.revisionNumber }} is now
+            current). Your edits are still on the page. Save them onto the latest version, or discard them to see what
+            changed.
+          </p>
+          <div class="button-row">
+            <button type="button" class="button button--primary button--small" @click="saveEdits('manual')">Save my edits onto the latest</button>
+            <button type="button" class="button button--secondary button--small" @click="resetDrafts">Discard my edits</button>
+          </div>
         </div>
       </div>
-      <div v-if="rowProblems.length > 0" class="field-error" role="alert">
-        <ul class="plain-list">
+      <div v-if="rowProblems.length > 0" class="workspace-notice workspace-notice--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <ul class="workspace-notice__text workspace-notice__list">
           <li v-for="problem in rowProblems" :key="problem">{{ problem }}</li>
         </ul>
       </div>
-      <p v-if="fieldActionError" class="field-error" role="alert">
-        {{ fieldActionError }}
-        <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+      <p v-if="fieldActionError" class="workspace-notice workspace-notice--error" role="alert">
+        <AppIcon name="alert-circle" :size="18" />
+        <span class="workspace-notice__text">
+          {{ fieldActionError }}
+          <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
+        </span>
       </p>
     </div>
 
@@ -3276,49 +3908,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         @input="onDocumentInput"
       >
         <!--
-          One short line over the page about the form: the places Brownie found while any is unchecked, with
-          "Keep all", and the notes about the upload behind "Details". Not a live region: it holds its buttons,
-          and the page's live line says once that the notes are there.
-        -->
-        <section v-if="docView === 'page' && stripText" class="form-strip" :class="{ 'form-strip--found': uncheckedFoundIds.length > 0 }" aria-label="About this document">
-          <div class="form-strip__line">
-            <p class="form-strip__text">{{ stripText }}</p>
-            <div ref="stripButtonsRef" class="form-strip__buttons">
-              <button
-                v-if="uncheckedFoundIds.length > 0"
-                type="button"
-                class="button button--secondary form-strip__button"
-                :aria-disabled="keepPending !== null"
-                @click="keepAllFoundPlaces"
-              >
-                Keep all<span class="visually-hidden"> the places Brownie found</span>
-              </button>
-              <button
-                v-if="stripDetailsShown"
-                type="button"
-                class="button button--secondary form-strip__button"
-                :aria-expanded="formNotesOpen ? 'true' : 'false'"
-                aria-controls="form-notes-list"
-                @click="formNotesOpen = !formNotesOpen"
-              >
-                Details<span class="visually-hidden"> about this document</span>
-              </button>
-              <button
-                v-if="formNotes.length > 0 && uncheckedFoundIds.length === 0"
-                type="button"
-                class="button button--secondary form-strip__button"
-                @click="dismissFormNotes"
-              >
-                Dismiss<span class="visually-hidden"> the notes about this document</span>
-              </button>
-            </div>
-          </div>
-          <ul v-if="stripDetailsShown" v-show="formNotesOpen" id="form-notes-list" class="form-strip__notes">
-            <li v-for="note in formNotes" :key="note">{{ note }}</li>
-          </ul>
-        </section>
-
-        <!--
           Before anything is filled in, how the page gets filled: one quiet line once the page has fill spots, so
           the first of them stays in view, and a note of its own over a page that has none yet.
         -->
@@ -3333,29 +3922,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             Type straight into the highlighted spots, or give Brownie your notes or a transcript and ask it to fill them
             in. You check every value before it is exported.
           </p>
-          <button type="button" class="button button--secondary" @click="goToSources">Add notes or a transcript</button>
+          <button type="button" class="button button--secondary button--small" @click="goToSources">Add notes or a transcript</button>
         </div>
-
-        <!-- A newer version of this document's form (a fill spot added from another document): what it changes, and the move. -->
-        <div v-if="docView === 'page' && newerVersionWords" class="version-banner">
-          <p class="version-banner__text" role="status">{{ newerVersionWords }}</p>
-          <p v-if="moveError" class="field-error version-banner__error" role="alert">{{ moveError }}</p>
-          <div class="version-banner__buttons">
-            <button
-              ref="moveButtonRef"
-              type="button"
-              class="button button--primary"
-              :aria-disabled="movingToLatest ? 'true' : undefined"
-              @click="!movingToLatest && moveToNewestVersion()"
-            >
-              {{ movingToLatest ? 'Moving…' : 'Move this document to it' }}
-            </button>
-            <button type="button" class="button button--secondary" :aria-disabled="movingToLatest ? 'true' : undefined" @click="!movingToLatest && setNewerVersionAside()">
-              Not now
-            </button>
-          </div>
-        </div>
-        <p v-if="docView === 'page' && shownMovedNotice" class="workspace-notice version-banner__moved">{{ shownMovedNotice }}</p>
 
         <!-- A PDF form is its own pages with the spots laid over them; a Word form is drawn from its text. -->
         <PdfFormPage
@@ -3373,6 +3941,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           :rows-locked="rowsLocked"
           :selected="selected"
           :found-field-ids="uncheckedFoundSet"
+          :preview-drafts="previewDrafts"
+          :question-counts="questionCounts"
           :workspace-id="session.personalWorkspaceId"
           :send-spot-changes="changePdfSpots"
           :picking-point="composerSaysHere"
@@ -3382,7 +3952,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           @open-actions="openActions"
           @add-row="addRow"
           @pick-point="pdfPageAnchor = $event"
-        />
+        >
+          <template #banner><PageBanners ref="pageBannersRef" v-bind="bannerBindings" /></template>
+        </PdfFormPage>
         <DocumentPage
           v-else
           v-show="docView === 'page'"
@@ -3397,6 +3969,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           :rows-locked="rowsLocked"
           :selected="selected"
           :found-field-ids="uncheckedFoundSet"
+          :preview-drafts="previewDrafts"
+          :question-counts="questionCounts"
           :can-add-spots="docView === 'page' && !pageLoading && layoutState === 'ready' && anchorLines.length > 0"
           :fill-here-hidden="placeDialogRef?.isOpen === true"
           @update-scalar="updateScalar"
@@ -3408,37 +3982,60 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           @fill-here="onFillHere"
           @place="onPagePlace"
           @words-selected="closeBarForSelectedWords"
-        />
+        >
+          <template #banner><PageBanners ref="pageBannersRef" v-bind="bannerBindings" /></template>
+        </DocumentPage>
 
         <section v-if="docView === 'print'" class="print-preview" aria-labelledby="print-preview-heading">
           <h2 id="print-preview-heading" class="visually-hidden">Print preview</h2>
-          <p v-if="previewStage === 'ready' && previewRevisionNumber != null" class="field-hint">
-            The file as it exports, from version {{ previewRevisionNumber }}.
-            <span v-if="previewIsStale">The document has changed since it was made.</span>
-            <span v-else-if="isDirty">You have unsaved changes; they appear once saved and generated again.</span>
-          </p>
-          <p v-if="previewStage === 'idle'" class="field-hint">Generate a preview to see this document exactly as it exports.</p>
-          <p v-if="previewStage === 'loading'" aria-live="polite">Checking for a preview…</p>
-          <p v-if="previewStage === 'generating'" aria-live="polite">Generating the preview…</p>
-          <p v-if="previewError" class="field-error" role="alert">{{ previewError }}</p>
-          <div class="button-row">
+          <!-- One line: what the file is, or what is happening to it, and the button that makes it again. -->
+          <div class="print-preview__bar">
+            <p v-if="previewError" class="print-preview__note print-preview__note--error" role="alert">
+              <AppIcon name="alert-circle" :size="16" />
+              <span>{{ previewError }}</span>
+            </p>
+            <p v-else-if="previewStage === 'loading'" class="print-preview__note" aria-live="polite">
+              <span class="activity-indicator" aria-hidden="true"></span>
+              <span>Checking for a preview…</span>
+            </p>
+            <p v-else-if="previewStage === 'generating'" class="print-preview__note" aria-live="polite">
+              <span class="activity-indicator" aria-hidden="true"></span>
+              <span>Generating the preview…</span>
+            </p>
+            <p v-else-if="previewStage === 'ready' && previewRevisionNumber != null" class="print-preview__note">
+              <AppIcon name="print" :size="16" />
+              <span>
+                The file as it exports, from version {{ previewRevisionNumber }}. It cannot be edited here.
+                <template v-if="previewIsStale">The document has changed since it was made.</template>
+                <template v-else-if="isDirty">You have unsaved changes; they appear once saved and generated again.</template>
+              </span>
+            </p>
+            <p v-else-if="previewStage === 'idle'" class="print-preview__note">
+              <AppIcon name="print" :size="16" />
+              <span>Generate a preview to see this document exactly as it exports.</span>
+            </p>
             <button
-              class="button button--secondary"
+              class="button button--secondary button--small print-preview__generate"
               type="button"
               :aria-disabled="previewStage === 'generating' || previewStage === 'loading'"
               @click="previewStage !== 'generating' && previewStage !== 'loading' && regeneratePreview()"
             >
-              {{ previewStage === 'generating' ? 'Generating…' : previewArtifactId == null ? 'Generate preview' : 'Generate again' }}
+              <AppIcon name="refresh" />{{ previewStage === 'generating' ? 'Generating…' : previewArtifactId == null ? 'Generate preview' : 'Generate again' }}
             </button>
           </div>
           <PdfPreview :src="previewUrl" :label="`Preview of version ${previewRevisionNumber ?? ''}`" />
         </section>
 
-        <!-- The selected fill spot's state and the decisions about it. At the foot of the page, where a finger or a pointer reaches it without covering the text above. -->
+        <!--
+          The selected fill spot's state and the decisions about it: a card over the foot of the page, where a finger
+          or a pointer reaches it. Its buttons are in rows, each named for what its buttons change, so "Keep" (this
+          place is right) is never read as "Accept" (this value is right).
+        -->
         <section
           v-if="selected && docView === 'page'"
           ref="selectionBarRef"
           class="selection-bar"
+          :class="{ 'selection-bar--above-zoom': isPdfForm }"
           data-covers-page
           :aria-label="`About ${selectedLabel}`"
           tabindex="-1"
@@ -3446,138 +4043,157 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         >
           <div class="selection-bar__head">
             <p class="selection-bar__name">{{ selectedLabel }}</p>
-            <button type="button" class="icon-button" @click="clearSelection">
+            <button type="button" class="icon-button selection-bar__close" @click="clearSelection">
               <AppIcon name="close" :size="18" />
               <span class="visually-hidden">Close the bar about {{ selectedLabel }}</span>
             </button>
           </div>
-          <p v-if="selectedState || selectedRequired" class="selection-bar__chips">
-            <span v-if="selectedRequired" class="badge">Required</span>
-            <span v-for="chip in selectedState ? fieldStateWords(selectedState) : []" :key="chip" class="badge">{{ chip }}</span>
-          </p>
-          <p v-if="!selectedState && selectedHint" class="field-hint">{{ selectedHint }}</p>
-          <!-- The place itself, as Brownie found it: "Keep" in the row about the fill spot says it is right. -->
-          <p v-if="uncheckedFoundSet.has(selected.fieldId)" class="selection-bar__found">
-            <span class="badge">Found by Brownie</span> Check that this is the right place.
-          </p>
-          <div
-            v-if="evidenceOpenFor === selected.fieldId"
-            :id="`evidence-${selected.fieldId}`"
-            class="evidence-panel"
-            role="region"
-            :aria-label="`Where ${selectedLabel} came from`"
-            tabindex="0"
-          >
-            <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
-            <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
-            <template v-else>
-              <blockquote v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
-                <p>{{ excerpt.excerptText }}</p>
-                <footer class="field-hint">From {{ excerpt.displayFilename ?? 'an attached source' }}</footer>
-              </blockquote>
-              <p v-if="selected.rowIndex !== null" class="field-hint">
-                These are the passages cited for {{ labelOf(selected.fieldId) }} in every row, not only row {{ selected.rowIndex + 1 }}.
+          <div class="selection-bar__body">
+            <ul v-if="stateChips.length > 0" class="selection-bar__chips" aria-label="State of this value">
+              <li v-for="chip in stateChips" :key="chip.word" class="tag" :class="chip.tone === 'neutral' ? undefined : `tag--${chip.tone}`">
+                <AppIcon v-if="chip.icon" :name="chip.icon" />{{ chip.word }}
+              </li>
+            </ul>
+            <p v-if="selectedPreviewHint" class="field-hint">{{ selectedPreviewHint }}</p>
+            <p v-else-if="!selectedState && selectedHint" class="field-hint">{{ selectedHint }}</p>
+            <!-- The place itself, as Brownie found it: "Keep" says it is right. -->
+            <div v-if="uncheckedFoundSet.has(selected.fieldId)" class="selection-bar__found-row">
+              <p class="selection-bar__found">
+                <span class="tag tag--honey"><AppIcon name="sparkle" />Found by Brownie</span> Check that this is the right place.
               </p>
-              <p v-if="evidenceSpanIdsOf(selected.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
-                Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(selected.fieldId).length }} cited passages.
-              </p>
-              <p class="field-hint">Brownie shows where a value came from; it cannot point to where it lands in the exported file.</p>
-            </template>
-          </div>
-          <!--
-            The buttons in rows, each named for what its buttons change, so "Keep" (this place is right) is never
-            read as "Accept" (this value is right). The fill spot: keeping a place Brownie found, its name, on a box
-            Brownie drew how its text fits, or the spot taken away, each asked about in a dialog; kept while the page
-            loads a new version, so focus can come back to them after a change. The value: its review and its lock,
-            and where it came from. A row of a table: moving or removing it.
-          -->
-          <div v-if="spotRowShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-spot-label">
-            <span id="selection-bar-spot-label" class="selection-bar__group-label">This fill spot:</span>
-            <span class="selection-bar__group-buttons">
-              <button
-                v-if="uncheckedFoundSet.has(selected.fieldId)"
-                type="button"
-                class="button button--secondary"
-                :aria-disabled="keepPending !== null"
-                @click="keepSelectedPlace"
-              >
-                Keep<span class="visually-hidden"> this fill spot</span>
+              <button type="button" class="button button--small button--secondary" :aria-disabled="keepPending !== null" @click="keepSelectedPlace">
+                <AppIcon name="check" />Keep<span class="visually-hidden"> this fill spot</span>
               </button>
-              <template v-if="spotActionsShown">
-                <button type="button" class="button button--secondary" @click="openRename">
-                  Rename…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+            </div>
+            <div v-if="decisionsShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-value-label">
+              <span id="selection-bar-value-label" class="selection-bar__group-label">This value:</span>
+              <span class="selection-bar__group-buttons">
+                <button
+                  class="button button--small button--primary"
+                  type="button"
+                  :aria-disabled="fieldActionPending === selectedPendingKey"
+                  @click="fieldActionPending !== selectedPendingKey && reviewSelected('ACCEPTED')"
+                >
+                  <AppIcon name="check" />Accept<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
                 </button>
-                <button v-if="selectedPdfSpot?.bindingKind === 'PAGE_BOX'" type="button" class="button button--secondary" @click="openRestyle">
-                  Text size…<span class="visually-hidden">{{ ` for ${labelOf(selected.fieldId)}` }}</span>
-                </button>
-                <button v-if="isPdfForm || selectedField?.cardinality === 'SCALAR'" type="button" class="button button--secondary" @click="openRemove">
-                  Remove…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
-                </button>
-              </template>
-            </span>
-          </div>
-          <p v-if="isPdfForm && selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'" class="field-hint">
-            This box belongs to the PDF’s own form, so the form sets where it is and how its text looks.
-          </p>
-          <div v-if="valueRowShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-value-label">
-            <span id="selection-bar-value-label" class="selection-bar__group-label">This value:</span>
-            <span class="selection-bar__group-buttons">
-              <template v-if="selectedState || selectedRowHasState">
-                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('ACCEPTED')">
-                  Accept<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
-                </button>
-                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')">
-                  Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+                <button
+                  class="button button--small button--secondary"
+                  type="button"
+                  :aria-disabled="fieldActionPending === selectedPendingKey"
+                  @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')"
+                >
+                  <AppIcon name="close" />Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
                 </button>
                 <button
                   v-if="selected.rowIndex === null"
-                  class="button button--secondary"
+                  class="button button--small button--secondary"
                   type="button"
                   :aria-disabled="fieldActionPending === selectedPendingKey"
                   @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
                 >
-                  Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
+                  <AppIcon name="help-circle" />Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
                 </button>
-                <button class="button button--secondary" type="button" :aria-disabled="fieldActionPending === selectedPendingKey" @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()">
-                  {{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+                <button
+                  class="button button--small button--secondary"
+                  type="button"
+                  :aria-disabled="fieldActionPending === selectedPendingKey"
+                  @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()"
+                >
+                  <AppIcon :name="selectedLocked ? 'unlock' : 'lock'" />{{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
                 </button>
-              </template>
+              </span>
+            </div>
+            <!-- Where the value came from: the passages of the source it cites, opened from the heading of this part. -->
+            <div v-if="evidenceSpanIdsOf(selected.fieldId).length > 0" class="evidence-section">
               <button
-                v-if="evidenceSpanIdsOf(selected.fieldId).length > 0"
-                class="button button--secondary"
                 type="button"
+                class="evidence-toggle"
                 :aria-expanded="evidenceOpenFor === selected.fieldId"
                 :aria-controls="`evidence-${selected.fieldId}`"
                 @click="toggleEvidence(selected.fieldId)"
               >
-                Where it came from ({{ evidenceSpanIdsOf(selected.fieldId).length }})
+                <AppIcon name="quote" :size="16" />
+                <span class="evidence-toggle__label">Where it came from ({{ evidenceSpanIdsOf(selected.fieldId).length }})</span>
+                <AppIcon :name="evidenceOpenFor === selected.fieldId ? 'chevron-up' : 'chevron-down'" :size="16" />
               </button>
-            </span>
-          </div>
-          <div v-if="selected.rowIndex !== null" class="selection-bar__group" role="group" aria-labelledby="selection-bar-row-label">
-            <span id="selection-bar-row-label" class="selection-bar__group-label">This row:</span>
-            <span class="selection-bar__group-buttons">
-              <button class="button button--secondary" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
-                Move up<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
-              </button>
-              <button
-                class="button button--secondary"
-                type="button"
-                :aria-disabled="rowsLocked || selected.rowIndex === rowCount - 1"
-                @click="!rowsLocked && selected.rowIndex < rowCount - 1 && moveRow(selected.rowIndex, 1)"
+              <div
+                v-if="evidenceOpenFor === selected.fieldId"
+                :id="`evidence-${selected.fieldId}`"
+                class="evidence-panel"
+                role="region"
+                :aria-label="`Where ${selectedLabel} came from`"
+                tabindex="0"
               >
-                Move down<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
+                <p v-if="evidenceStage === 'loading'" aria-live="polite">Loading the cited excerpt…</p>
+                <p v-else-if="evidenceStage === 'failed'" class="field-error" role="alert">{{ evidenceError }}</p>
+                <template v-else>
+                  <figure v-for="excerpt in evidenceExcerpts" :key="excerpt.spanId" class="evidence-excerpt">
+                    <figcaption>From {{ excerpt.displayFilename ?? 'an attached source' }}</figcaption>
+                    <blockquote>{{ excerpt.excerptText }}</blockquote>
+                  </figure>
+                  <p v-if="selected.rowIndex !== null" class="field-hint">
+                    These are the passages cited for {{ labelOf(selected.fieldId) }} in every row, not only row {{ selected.rowIndex + 1 }}.
+                  </p>
+                  <p v-if="evidenceSpanIdsOf(selected.fieldId).length > MAX_EVIDENCE_EXCERPTS" class="field-hint">
+                    Showing the first {{ MAX_EVIDENCE_EXCERPTS }} of {{ evidenceSpanIdsOf(selected.fieldId).length }} cited passages.
+                  </p>
+                  <p class="field-hint">Brownie shows where a value came from; it cannot point to where it lands in the exported file.</p>
+                </template>
+              </div>
+            </div>
+            <!-- The fill spot itself: its name, on a box Brownie drew how its text fits, or the spot taken away, each asked about in a dialog. -->
+            <div v-if="spotActionsShown" class="selection-bar__group selection-bar__group--quiet" role="group" aria-labelledby="selection-bar-spot-label">
+              <span id="selection-bar-spot-label" class="selection-bar__group-label">This fill spot:</span>
+              <span class="selection-bar__group-buttons">
+                <button type="button" class="button button--small button--quiet" @click="openRename">
+                  Rename…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+                <button v-if="selectedPdfSpot?.bindingKind === 'PAGE_BOX'" type="button" class="button button--small button--quiet" @click="openRestyle">
+                  Text size…<span class="visually-hidden">{{ ` for ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+                <button v-if="isPdfForm || selectedField?.cardinality === 'SCALAR'" type="button" class="button button--small button--quiet" @click="openRemove">
+                  Remove…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+                </button>
+              </span>
+            </div>
+            <p v-if="isPdfForm && selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'" class="field-hint">
+              This box belongs to the PDF’s own form, so the form sets where it is and how its text looks.
+            </p>
+            <div v-if="selected.rowIndex !== null" class="selection-bar__group selection-bar__group--quiet" role="group" aria-labelledby="selection-bar-row-label">
+              <span id="selection-bar-row-label" class="selection-bar__group-label">This row:</span>
+              <span class="selection-bar__group-buttons">
+                <button class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
+                  Move up<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
+                </button>
+                <button
+                  class="button button--small button--quiet"
+                  type="button"
+                  :aria-disabled="rowsLocked || selected.rowIndex === rowCount - 1"
+                  @click="!rowsLocked && selected.rowIndex < rowCount - 1 && moveRow(selected.rowIndex, 1)"
+                >
+                  Move down<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
+                </button>
+                <button class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
+                  Remove row {{ selected.rowIndex + 1 }}
+                </button>
+              </span>
+            </div>
+            <div class="selection-bar__rules">
+              <button type="button" class="button button--small button--quiet" @click="showAssistant()">Text style and rules</button>
+            </div>
+            <p v-if="selected.rowIndex !== null && rowsLocked" class="field-hint">A row is locked, so the rows cannot be changed until it is unlocked.</p>
+            <div class="selection-bar__foot">
+              <p class="field-hint selection-bar__keys">{{ actionsKey }} in a fill spot comes here. Escape goes back to the spot.</p>
+              <button
+                type="button"
+                class="button button--small button--quiet selection-bar__next"
+                :aria-disabled="nextReviewTarget === null"
+                @click="nextReviewTarget !== null && goToNextToReview()"
+              >
+                <AppIcon name="arrow-right" />Next to review
               </button>
-              <button class="button button--secondary" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
-                Remove row {{ selected.rowIndex + 1 }}
-              </button>
-            </span>
+            </div>
           </div>
-          <div class="button-row selection-bar__rules">
-            <button type="button" class="button button--secondary" @click="showAssistant()">Text style and rules</button>
-          </div>
-          <p v-if="selected.rowIndex !== null && rowsLocked" class="field-hint">A row is locked, so the rows cannot be changed until it is unlocked.</p>
-          <p class="field-hint selection-bar__keys">{{ actionsKey }} in a fill spot comes to this bar; Escape goes back to the spot.</p>
         </section>
       </div>
 
@@ -3586,82 +4202,100 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
         <!-- Everything above the message box; on a wide page it scrolls on its own when it cannot all fit. -->
         <div class="assistant-pane__scroll">
-          <!-- Focusable, so the scroll keys move the card where a short window makes it scroll on its own. -->
-          <section ref="rulesCardRef" class="rules-card" aria-labelledby="rules-heading" tabindex="0" @scroll.passive="measureRulesCard">
+          <!--
+            One slim bar until it is opened, or while a fill spot is selected: the name, a line about what is in it, and
+            the button that opens the rest. Once open it takes focus like any scrolling region, so the scroll keys move it
+            where a short window makes it scroll on its own.
+          -->
+          <section
+            ref="rulesCardRef"
+            class="rules-card"
+            aria-labelledby="rules-heading"
+            :tabindex="rulesOpen ? 0 : undefined"
+            @scroll.passive="measureRulesCard"
+          >
             <div ref="rulesCardBodyRef" class="rules-card__body">
               <div class="rules-card__head">
                 <h3 id="rules-heading" class="rules-card__heading">Rules</h3>
+                <p v-if="!rulesOpen && rulesSummary.length > 0" class="rules-card__summary">
+                  <template v-for="(part, index) in rulesSummary" :key="part">
+                    <span v-if="index > 0" aria-hidden="true"> · </span><span v-if="index > 0" class="visually-hidden">, </span>{{ part }}
+                  </template>
+                </p>
                 <button
-                  v-if="aboutThisForm.length > 0"
                   type="button"
-                  class="button button--secondary rules-card__about"
-                  :aria-expanded="aboutThisFormOpen ? 'true' : 'false'"
-                  aria-controls="about-this-form"
-                  @click="aboutThisFormOpen = !aboutThisFormOpen"
+                  class="rules-card__toggle"
+                  :aria-expanded="rulesOpen ? 'true' : 'false'"
+                  aria-controls="rules-card-details"
+                  @click="toggleRules"
                 >
                   About this form
+                  <AppIcon :name="rulesOpen ? 'chevron-up' : 'chevron-down'" :size="20" />
                 </button>
               </div>
-              <ul v-if="aboutThisForm.length > 0" v-show="aboutThisFormOpen" id="about-this-form" class="rules-card__about-notes">
-                <li v-for="note in aboutThisForm" :key="note">{{ note }}</li>
-              </ul>
-              <div class="rules-card__style">
-                <span class="rules-card__glyph" aria-hidden="true">Aa</span>
-                <div>
-                  <p class="rules-card__caption">
-                    Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
-                  </p>
-                  <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
-                    <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
+              <div v-show="rulesOpen" id="rules-card-details" class="rules-card__details">
+                <ul v-if="aboutThisForm.length > 0" id="about-this-form" class="rules-card__about-notes">
+                  <li v-for="note in aboutThisForm" :key="note">{{ note }}</li>
+                </ul>
+                <div class="panel panel--quiet rules-card__style">
+                  <span class="rules-card__glyph" aria-hidden="true">Aa</span>
+                  <div>
+                    <p class="rules-card__caption">
+                      Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
+                    </p>
+                    <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
+                      <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
+                    </ul>
+                    <p v-else class="field-hint">
+                      {{
+                        selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'
+                          ? 'The PDF’s own form sets how this box’s text looks.'
+                          : layoutState === 'loading' && !layoutProblem
+                            ? 'Reading the template’s style…'
+                            : 'The template’s text style could not be read.'
+                      }}
+                    </p>
+                  </div>
+                </div>
+                <p v-if="styleChips.length > 0" class="field-hint rules-card__source">How values look when exported, taken from the template.</p>
+                <p v-if="dateExample" class="rules-card__date">
+                  <AppIcon name="calendar" :size="16" />
+                  Dates read like {{ dateExample }}
+                </p>
+                <p v-if="!selected && requiredLabels.length > 0" class="rules-card__required">
+                  <span class="rules-card__required-mark" aria-hidden="true">*</span> Required before export: {{ requiredLabels.join(', ') }}.
+                </p>
+                <p v-if="rulesLoadState === 'loading'" class="field-hint" aria-live="polite">Loading rules…</p>
+                <p v-else-if="rulesLoadState === 'error'" class="field-hint">
+                  The template's rules could not be loaded.
+                  <button type="button" class="link-button" @click="loadRules">Try again</button>
+                </p>
+                <template v-else-if="rulesLoadState === 'loaded'">
+                  <ul v-if="shownRules.length > 0" class="rules-card__rules">
+                    <li v-for="rule in shownRules" :key="rule.id">
+                      {{ ruleWords(rule) }}
+                      <span v-if="rule.humanExplanation" class="field-hint"> {{ rule.humanExplanation }}</span>
+                    </li>
                   </ul>
                   <p v-else class="field-hint">
                     {{
-                      selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'
-                        ? 'The PDF’s own form sets how this box’s text looks.'
-                        : layoutState === 'loading' && !layoutProblem
-                          ? 'Reading the template’s style…'
-                          : 'The template’s text style could not be read.'
+                      selected
+                        ? `No rule of this template is about ${selectedLabel}.`
+                        : requiredLabels.length > 0
+                          ? 'The template has no other rules.'
+                          : 'The template has no rules.'
                     }}
                   </p>
-                  <p v-if="dateExample" class="rules-card__date">
-                    Dates read like <span class="chip">{{ dateExample }}</span>
+                  <!-- Nothing in the app decides a suggested rule any more: say it does not apply, and promise no step to take. -->
+                  <p v-if="rulesUndecided > 0" class="field-hint">
+                    {{
+                      rulesUndecided === 1
+                        ? '1 suggested rule was never turned on, so it does not apply.'
+                        : `${rulesUndecided} suggested rules were never turned on, so they do not apply.`
+                    }}
                   </p>
-                </div>
+                </template>
               </div>
-              <p v-if="styleChips.length > 0" class="field-hint rules-card__source">How values look when exported, taken from the template.</p>
-              <p v-if="!selected && requiredLabels.length > 0" class="rules-card__required">
-                <span class="rules-card__required-mark" aria-hidden="true">*</span> Required before export: {{ requiredLabels.join(', ') }}.
-              </p>
-              <p v-if="rulesLoadState === 'loading'" class="field-hint" aria-live="polite">Loading rules…</p>
-              <p v-else-if="rulesLoadState === 'error'" class="field-hint">
-                The template's rules could not be loaded.
-                <button type="button" class="link-button" @click="loadRules">Try again</button>
-              </p>
-              <template v-else-if="rulesLoadState === 'loaded'">
-                <ul v-if="shownRules.length > 0" class="rules-card__rules">
-                  <li v-for="rule in shownRules" :key="rule.id">
-                    {{ ruleWords(rule) }}
-                    <span v-if="rule.humanExplanation" class="field-hint"> {{ rule.humanExplanation }}</span>
-                  </li>
-                </ul>
-                <p v-else class="field-hint">
-                  {{
-                    selected
-                      ? `No rule of this template is about ${selectedLabel}.`
-                      : requiredLabels.length > 0
-                        ? 'The template has no other rules.'
-                        : 'The template has no rules.'
-                  }}
-                </p>
-                <!-- Nothing in the app decides a suggested rule any more: say it does not apply, and promise no step to take. -->
-                <p v-if="rulesUndecided > 0" class="field-hint">
-                  {{
-                    rulesUndecided === 1
-                      ? '1 suggested rule was never turned on, so it does not apply.'
-                      : `${rulesUndecided} suggested rules were never turned on, so they do not apply.`
-                  }}
-                </p>
-              </template>
             </div>
             <!-- Seen, not heard: a screen reader reads the whole card whether or not it is scrolled. -->
             <div v-if="rulesCardMore" class="rules-card__more" aria-hidden="true">
@@ -3670,17 +4304,50 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           </section>
 
           <!-- Focusable so a keyboard can scroll the conversation even when it holds no button to land on. -->
-          <div ref="chatLogRef" class="chat" role="region" aria-label="Conversation with Brownie" tabindex="0">
+          <div
+            ref="chatLogRef"
+            class="chat"
+            role="region"
+            aria-label="Conversation with Brownie"
+            tabindex="0"
+            @scroll.passive="noteChatScroll"
+          >
+            <div class="chat-line msg--brownie">
+              <p class="msg__who">Brownie</p>
+              <div class="msg__body">
+                <p>
+                  I can fill this document from your notes, a transcript or a conversation. Add one with Add a source (+),
+                  then ask me to fill it in.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template>
+                </p>
+              </div>
+              <!-- Where to begin: offered until something has been said or a source attached. -->
+              <ul v-if="startersShown" class="chat-line__starters" aria-label="Ways to begin">
+                <li>
+                  <button type="button" class="button button--secondary button--small" @click="goToSources">
+                    <AppIcon name="attach" :size="16" />
+                    Add notes or a transcript
+                  </button>
+                </li>
+                <li v-if="starterAddsSpot">
+                  <button type="button" class="button button--secondary button--small" @click="openPlaceDialog">
+                    <AppIcon name="plus" :size="16" />
+                    Add a fill spot<span class="visually-hidden"> to this form</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <!-- What is attached to this document, on the person's side: the one Brownie reads next is named. -->
             <ul v-if="attachedSources.length > 0" class="source-cards" aria-label="Sources">
-              <li v-for="source in attachedSources" :key="source.id" class="source-card">
-                <span class="source-card__tile" aria-hidden="true"><AppIcon name="document" :size="18" /></span>
-                <span class="source-card__body">
-                  <span class="source-card__name">{{ sourceName(source) }}</span>
-                  <span class="source-card__meta">
+              <li v-for="source in attachedSources" :key="source.id" class="source-chip source-card">
+                <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="document-text" :size="18" /></span>
+                <span class="source-chip__text">
+                  <span class="source-chip__name">{{ sourceName(source) }}</span>
+                  <span class="source-chip__meta">
                     {{ sourceKindWords(source) }}
-                    <span v-if="attachedSources.length > 1 && source.id === selectedSource?.id"> · Brownie reads this one</span>
+                    <span v-if="source.id === selectedSource?.id"> · Brownie reads this one</span>
                   </span>
-                  <span v-if="originSentence(source)" class="source-card__meta">
+                  <span v-if="originSentence(source)" class="source-chip__meta source-card__origin">
                     {{ originSentence(source) }}
                     <a v-if="originLink(source)" :href="originLink(source) ?? undefined" target="_blank" rel="noopener noreferrer"
                       >{{ originLinkLabel(source) }}<span class="visually-hidden"> (opens in a new tab)</span></a
@@ -3690,154 +4357,255 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               </li>
             </ul>
 
-            <div class="chat-line chat-line--brownie">
-              <p>
-                I can fill this document from your notes, a transcript or a conversation. Add one with Add a source (+),
-                then ask me to fill it in. You can also type straight into the highlighted spots, and change anything I fill in.
-              </p>
-            </div>
-
             <template v-for="line in chat" :key="line.id">
-              <div v-if="!line.slot" class="chat-line" :class="`chat-line--${line.from}`">
-                <blockquote v-if="line.quote" class="chat-line__quote"><p>{{ line.text }}</p></blockquote>
-                <p v-else :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
-                <ul v-if="line.help && line.help.length > 0" class="chat-suggestions" aria-label="What you can ask">
-                  <li v-for="item in line.help" :key="item">
-                    <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>
-                  </li>
-                </ul>
-                <ChoiceList
-                  v-if="line.choices && line.choices.length > 0 && !line.chosen"
-                  :options="line.choices.map((choice) => choice.lineText)"
-                  name="The paragraph the fill spot goes in"
-                  :id-prefix="`place-choice-${line.id}`"
-                  :allow-other="false"
-                  :busy="assistBusy"
-                  @choose="(index) => chooseLineFor(line, index)"
-                />
-                <div v-if="line.undo" class="chat-line__actions">
-                  <button
-                    type="button"
-                    class="button button--secondary"
-                    :aria-disabled="line.undone || undoingSpotChange ? 'true' : undefined"
-                    @click="undoSpotChange(line)"
+              <template v-if="!line.slot">
+                <div
+                  class="chat-line"
+                  :class="line.undo ? 'chat-line--done msg-card' : line.from === 'person' ? 'msg--user' : 'msg--brownie'"
+                >
+                  <!-- A change made to the form's fill spots: said as one card, with the way back beside it. -->
+                  <template v-if="line.undo">
+                    <AppIcon name="check-circle" :size="18" />
+                    <p>{{ line.text }}</p>
+                    <button
+                      type="button"
+                      class="button button--secondary button--small"
+                      :aria-disabled="line.undone || undoingSpotChange ? 'true' : undefined"
+                      @click="undoSpotChange(line)"
+                    >
+                      <AppIcon name="undo" :size="16" />
+                      {{ line.undone ? 'Undone' : 'Undo' }}<span class="visually-hidden">{{ ` ${UNDO_WHAT[line.undo.action]} ${line.undo.label}` }}</span>
+                    </button>
+                  </template>
+                  <template v-else-if="line.from === 'person'"
+                    ><span class="visually-hidden">You said: </span>{{ line.text }}</template
                   >
-                    {{ line.undone ? 'Undone' : 'Undo' }}<span class="visually-hidden">{{ ` ${UNDO_WHAT[line.undo.action]} ${line.undo.label}` }}</span>
-                  </button>
+                  <template v-else>
+                    <p class="msg__who">Brownie</p>
+                    <div class="msg__body">
+                      <blockquote v-if="line.quote" class="chat-line__quote"><p>{{ line.text }}</p></blockquote>
+                      <p v-else :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                      <ul v-if="line.help && line.help.length > 0" class="chat-suggestions" aria-label="What you can ask">
+                        <li v-for="item in line.help" :key="item">
+                          <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>
+                        </li>
+                      </ul>
+                      <ChoiceList
+                        v-if="line.choices && line.choices.length > 0 && !line.chosen"
+                        :options="line.choices.map((choice) => choice.lineText)"
+                        name="The paragraph the fill spot goes in"
+                        :id-prefix="`place-choice-${line.id}`"
+                        :allow-other="false"
+                        :busy="assistBusy"
+                        @choose="(index) => chooseLineFor(line, index)"
+                      />
+                    </div>
+                  </template>
                 </div>
-              </div>
+                <!-- What "here" meant in the line above, kept with it: the box's own hint is gone once the line is sent. -->
+                <p v-if="line.here" class="chat-line__here">
+                  <AppIcon name="pointer" :size="14" />
+                  <span>{{ line.here }}</span>
+                </p>
+              </template>
               <!-- A reading of a source, from start to proposal. -->
               <div
-                v-else-if="line.slot === 'run' && line.id === runSlotId && extractionStage !== 'idle'"
-                class="chat-line chat-line--brownie run-status"
+                v-else-if="line.slot === 'run' && line.id === runSlotId && runSlotShown"
+                class="run-status"
+                :class="extractionStage === 'succeeded' && patchProposal ? 'run-status--answers' : 'msg--brownie'"
                 tabindex="-1"
               >
-                <template v-if="extractionStage === 'starting'">
-                  <p>Starting to read {{ runSourceName }}…</p>
+                <!-- Once its values are up for approval, only the answers the person gave are left to say. -->
+                <template v-if="extractionStage === 'succeeded' && patchProposal">
+                  <AppIcon name="check-circle" :size="18" />
+                  <p>{{ answeredSentence }}</p>
                 </template>
-                <template v-else-if="extractionStage === 'running'">
-                  <p aria-live="polite">{{ runProgress ?? `Reading ${runSourceName ?? 'your source'}…` }}</p>
-                  <p v-if="noWorkerYet" class="field-error">
-                    No worker has picked this up yet. If the Brownie worker is not running, the reading waits until it is; you
-                    can stop it and start it again once the worker is running.
-                  </p>
-                  <button class="button button--secondary" type="button" :aria-disabled="cancellationRequested" @click="cancelExtraction">
-                    {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
-                  </button>
-                </template>
-                <template v-else-if="extractionStage === 'waiting-for-input' || extractionStage === 'resuming'">
-                  <p>A few things need your answer before I can finish.</p>
-                  <div v-for="question in openQuestions" :key="question.id" class="question">
-                    <p class="question__prompt">{{ questionPrompt(question) }}</p>
-                    <p v-if="question.status === 'ANSWERED'" class="field-hint">You answered: {{ question.answerValue }}</p>
-                    <ChoiceList
-                      v-else
-                      :options="question.candidates.map((candidate) => candidate.value)"
-                      :name="`Your answer for ${labelOf(question.fieldId)}`"
-                      :id-prefix="`question-${question.id}`"
-                      :other-label="question.candidates.length > 0 ? 'Other' : 'Your answer'"
-                      other-placeholder="Type the answer…"
-                      :clear-on-send="false"
-                      :busy="answeringQuestionId !== null || extractionStage === 'resuming'"
-                      @choose="(index) => answerWith(question.id, question.candidates[index]!.value)"
-                      @other="(text) => answerWith(question.id, text)"
-                    />
+                <template v-else>
+                  <p class="msg__who">Brownie</p>
+                  <!-- Under way: what it is doing, how far it has got, and the way to stop it. -->
+                  <div v-if="runCardShown" class="msg-card run-status__card">
+                    <div class="run-status__head">
+                      <span class="activity-indicator run-status__spinner" aria-hidden="true"></span>
+                      <p id="run-status-sentence" class="run-status__sentence" aria-live="polite">{{ runSentence }}</p>
+                    </div>
+                    <!-- Only shows that it is still going; the sentence and the steps say where. -->
+                    <progress class="run-status__bar" aria-labelledby="run-status-sentence"></progress>
+                    <ol v-if="runSteps.length > 0" class="step-list run-status__steps">
+                      <li v-for="step in runSteps" :key="step.text" class="step" :class="`step--${step.state}`">
+                        <span class="step__marker" aria-hidden="true"></span>
+                        <span class="step__label"><span class="visually-hidden">{{ RUN_STEP_WORDS[step.state] }}</span>{{ step.text }}</span>
+                      </li>
+                    </ol>
+                    <p v-if="noWorkerYet" class="field-error">
+                      No worker has picked this up yet. If the Brownie worker is not running, the reading waits until it is; you
+                      can stop it and start it again once the worker is running.
+                    </p>
+                    <div class="run-status__foot">
+                      <button
+                        v-if="extractionStage === 'running' || extractionStage === 'resuming'"
+                        class="button button--secondary button--small"
+                        type="button"
+                        :aria-disabled="cancellationRequested"
+                        @click="cancelExtraction"
+                      >
+                        <AppIcon name="stop-circle" :size="16" />
+                        {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
+                      </button>
+                      <p class="run-status__note">Nothing on the document changes until you approve it.</p>
+                    </div>
                   </div>
-                  <p v-if="extractionStage === 'resuming'" aria-live="polite">Carrying on with your answers…</p>
-                  <button
-                    v-else-if="openQuestions.length > 0 && openQuestions.every((question) => question.status === 'ANSWERED')"
-                    class="button button--primary"
-                    type="button"
-                    @click="resumeAfterAnswers"
-                  >
-                    Carry on reading
-                  </button>
-                  <button class="button button--secondary" type="button" :aria-disabled="cancellationRequested" @click="cancelExtraction">
-                    {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
-                  </button>
+                  <template v-else-if="extractionStage === 'waiting-for-input'">
+                    <div class="msg__body"><p>A few things need your answer before I can finish.</p></div>
+                    <div v-for="(question, position) in openQuestions" :key="question.id" class="question msg-card">
+                      <div class="question__head">
+                        <span class="question__number" aria-hidden="true">{{ position + 1 }}</span>
+                        <p class="question__prompt">{{ questionPrompt(question) }}</p>
+                      </div>
+                      <p v-if="question.status === 'ANSWERED'" class="question__answered">
+                        <AppIcon name="check-circle" :size="16" />
+                        <span>You answered: {{ question.answerValue }}</span>
+                      </p>
+                      <ChoiceList
+                        v-else
+                        flush
+                        :options="questionChoices(question)"
+                        :name="`Your answer for ${labelOf(question.fieldId)}`"
+                        :id-prefix="`question-${question.id}`"
+                        :other-label="question.candidates.length > 0 ? 'Other' : 'Your answer'"
+                        :other-placeholder="question.candidates.length > 0 ? 'Type what you would prefer…' : 'Type the answer…'"
+                        :clear-on-send="false"
+                        :busy="answeringQuestionId !== null"
+                        @choose="(index) => answerWith(question.id, question.candidates[index]!.value)"
+                        @other="(text) => answerWith(question.id, text)"
+                      />
+                      <p v-for="quote in questionQuotes(question)" :key="quote.choice" class="question__quote">
+                        <AppIcon name="quote" :size="14" />
+                        <span>{{ quote.lead }}: “{{ quote.text }}”</span>
+                      </p>
+                    </div>
+                    <div class="run-status__actions">
+                      <button
+                        class="button button--primary button--small"
+                        type="button"
+                        :aria-disabled="!allQuestionsAnswered"
+                        @click="allQuestionsAnswered && resumeAfterAnswers()"
+                      >
+                        <AppIcon name="arrow-right" :size="16" />
+                        Carry on reading
+                      </button>
+                      <p class="run-status__note">
+                        {{ allQuestionsAnswered ? 'Your answers are saved. Nothing is filled yet.' : 'Brownie waits for your answers. Nothing is filled yet.' }}
+                      </p>
+                      <button class="button button--quiet button--small run-status__stop" type="button" :aria-disabled="cancellationRequested" @click="cancelExtraction">
+                        {{ cancellationRequested ? 'Stopping…' : 'Stop reading' }}
+                      </button>
+                    </div>
+                  </template>
+                  <template v-else-if="extractionStage === 'succeeded'">
+                    <div class="msg__body"><p>I finished reading {{ runSourceName ?? 'your source' }}.</p></div>
+                    <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
+                    <div class="run-status__actions">
+                      <button class="button button--secondary button--small" type="button" @click="applyResultToDocument()">
+                        {{ decidedRunJobId === extractionJobId ? 'Show what I found again' : 'Show what I found' }}
+                      </button>
+                    </div>
+                  </template>
+                  <div v-else-if="extractionStage === 'cancelled'" class="msg__body">
+                    <p>I stopped reading. Nothing on the document changed.</p>
+                  </div>
+                  <template v-else-if="extractionStage === 'failed'">
+                    <div class="msg__body">
+                      <p class="field-error" role="alert">{{ extractionError ?? 'The reading stopped before it could finish.' }}</p>
+                    </div>
+                    <div v-if="canRetryRun" class="run-status__actions">
+                      <button class="button button--secondary button--small" type="button" :aria-disabled="retryingRun" @click="!retryingRun && retryRun()">
+                        {{ retryingRun ? 'Starting again…' : 'Try this reading again' }}
+                      </button>
+                    </div>
+                  </template>
+                  <p v-if="extractionError && extractionStage !== 'failed'" class="field-error">{{ extractionError }}</p>
+                  <div v-if="extractionStalled" class="run-status__stalled">
+                    <div class="msg__body"><p>{{ stalledMessage }}</p></div>
+                    <div class="run-status__actions">
+                      <button class="button button--secondary button--small" type="button" @click="checkRunAgain">Check again</button>
+                    </div>
+                  </div>
                 </template>
-                <template v-else-if="extractionStage === 'succeeded' && !patchProposal">
-                  <p>I finished reading {{ runSourceName ?? 'your source' }}.</p>
-                  <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
-                  <button
-                    class="button button--secondary"
-                    type="button"
-                    :aria-disabled="applyStage === 'applying'"
-                    @click="applyStage !== 'applying' && applyResultToDocument()"
-                  >
-                    {{
-                      applyStage === 'applying'
-                        ? 'Getting the values ready…'
-                        : decidedRunJobId === extractionJobId
-                          ? 'Show what I found again'
-                          : 'Show what I found'
-                    }}
-                  </button>
-                </template>
-                <template v-else-if="extractionStage === 'cancelled'">
-                  <p>I stopped reading. Nothing on the document changed.</p>
-                </template>
-                <template v-else-if="extractionStage === 'failed'">
-                  <p class="field-error" role="alert">{{ extractionError ?? 'The reading stopped before it could finish.' }}</p>
-                  <button v-if="canRetryRun" class="button button--secondary" type="button" :aria-disabled="retryingRun" @click="!retryingRun && retryRun()">
-                    {{ retryingRun ? 'Starting again…' : 'Try this reading again' }}
-                  </button>
-                </template>
-                <p v-if="extractionError && extractionStage !== 'failed'" class="field-error">{{ extractionError }}</p>
-                <div v-if="extractionStalled">
-                  <p>{{ stalledMessage }}</p>
-                  <button class="button button--secondary" type="button" @click="checkRunAgain">Check again</button>
-                </div>
               </div>
 
               <!-- A proposal, from a reading or from a request: nothing changes until it is approved. -->
               <div
                 v-else-if="line.slot === 'proposal' && line.id === proposalSlotId && patchProposal && applyStage !== 'idle'"
-                class="chat-line chat-line--brownie proposal"
+                class="msg--brownie proposal"
                 tabindex="-1"
               >
-                <p>{{ proposalIntro }}</p>
-                <ul class="proposal__values">
-                  <li v-for="value in proposalLines" :key="value.key">
-                    <span class="proposal__label">{{ value.label }}:</span> {{ value.value }}
-                  </li>
-                </ul>
-                <div v-if="patchProposal.skippedRepeatedItems.length > 0" class="proposal__skipped" role="status">
-                  <p>
-                    I also found {{ patchProposal.skippedRepeatedItems.length }}
-                    {{ patchProposal.skippedRepeatedItems.length === 1 ? 'row' : 'rows' }} I could not complete, because a detail was
-                    missing. Fill {{ patchProposal.skippedRepeatedItems.length === 1 ? 'it' : 'them' }} in yourself before exporting:
+                <p class="msg__who">Brownie</p>
+                <div class="msg__body"><p>{{ proposalIntro }}</p></div>
+                <!-- A change asked for: the value now, and the value it would become. -->
+                <div v-if="proposalChangeCard" class="msg-card proposal__card">
+                  <table class="proposal__table proposal__table--change">
+                    <caption class="visually-hidden">
+                      The change to {{ proposalChangeCard.label }}
+                    </caption>
+                    <tbody>
+                      <tr>
+                        <th scope="row" class="proposal__label">Now</th>
+                        <td class="proposal__value">
+                          <span v-if="proposalChangeCard.before !== ''" class="proposal__was">{{ proposalChangeCard.before }}</span>
+                          <span v-else class="proposal__empty">Nothing filled in yet</span>
+                        </td>
+                      </tr>
+                      <tr class="proposal__row--new">
+                        <th scope="row" class="proposal__label">Change to</th>
+                        <td class="proposal__value">{{ proposalChangeCard.after }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p class="proposal__note">
+                    <AppIcon name="info" :size="16" />
+                    <span>{{ proposalChangeCard.note }}</span>
                   </p>
-                  <ul>
-                    <li v-for="skipped in patchProposal.skippedRepeatedItems" :key="skipped.itemIndex">
-                      {{ skipped.description ?? `Row ${skipped.itemIndex + 1}` }}
-                      <span class="field-hint">(missing: {{ skipped.unresolvedFieldIds.map(labelOf).join(', ') }})</span>
-                    </li>
-                  </ul>
                 </div>
-                <p>Can you confirm? I will fill in the document once you approve it.</p>
+                <!-- A reading's values: each fill spot it has a value for, and where the value came from. -->
+                <div v-else class="msg-card proposal__card">
+                  <table class="proposal__table">
+                    <caption class="visually-hidden">
+                      What Brownie found
+                    </caption>
+                    <tbody>
+                      <tr v-for="row in proposalTableRows" :key="row.key">
+                        <th scope="row" class="proposal__label">{{ row.label }}</th>
+                        <td class="proposal__value">
+                          <template v-if="row.lines">
+                            <span class="visually-hidden">{{ row.value }}: </span>
+                            <span class="proposal__columns">{{ row.columns }}</span>
+                            <ul class="proposal__lines">
+                              <li v-for="(rowLine, position) in row.lines" :key="position">{{ rowLine }}</li>
+                            </ul>
+                          </template>
+                          <template v-else>{{ row.value }}</template>
+                        </td>
+                        <td class="proposal__source">
+                          <span v-if="row.source" class="tag" :class="stateTagClass(row.source)">
+                            <AppIcon v-if="row.source.icon" :name="row.source.icon" :size="16" />{{ row.source.text }}
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div v-if="proposalLeftOut" class="proposal__skipped" role="status">
+                  <AppIcon name="warning" :size="16" />
+                  <div>
+                    <p>{{ proposalLeftOut.lead }}</p>
+                    <ul v-if="proposalLeftOut.items.length > 0">
+                      <li v-for="item in proposalLeftOut.items" :key="item">{{ item }}</li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="msg__body"><p>Can you confirm?</p></div>
                 <ChoiceList
-                  :options="['I approve, fill it in', 'Not now']"
+                  :options="[proposalChangeCard ? 'I approve, make the change' : 'I approve, fill it in', 'Not now']"
                   name="Your decision about these values"
                   id-prefix="proposal"
                   other-label="Other"
@@ -3846,49 +4614,142 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   @choose="onProposalChoice"
                   @other="(text) => sendMessage(text)"
                 />
-                <p v-if="applyStage === 'accepting'" aria-live="polite">Filling in…</p>
+                <p v-if="applyStage === 'accepting'" class="proposal__status" aria-live="polite">Filling in…</p>
                 <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
               </div>
+              <!-- What a proposal filled in, to check one by one: each with where its value came from, and a way to it. -->
+              <section
+                v-else-if="line.slot === 'review' && line.id === reviewSlotId && reviewList.length > 0"
+                class="msg-card proposal-review"
+                aria-labelledby="proposal-review-title"
+              >
+                <header class="proposal-review__head">
+                  <h3 id="proposal-review-title" class="proposal-review__title">To review</h3>
+                  <p class="proposal-review__count">{{ reviewHeading }}</p>
+                </header>
+                <ul class="proposal-review__list">
+                  <li
+                    v-for="entry in reviewList"
+                    :key="entry.key"
+                    class="proposal-review__row"
+                    :class="{ 'proposal-review__row--open': entry.key === reviewOpenKey }"
+                  >
+                    <span class="proposal-review__name">{{ entry.label }}</span>
+                    <span class="proposal-review__tail">
+                      <span v-if="entry.source" class="tag" :class="stateTagClass(entry.source)">
+                        <AppIcon v-if="entry.source.icon" :name="entry.source.icon" :size="16" />{{ entry.source.text }}
+                      </span>
+                      <span class="tag" :class="stateTagClass(entry.reviewTag)">
+                        <AppIcon v-if="entry.reviewTag.icon" :name="entry.reviewTag.icon" :size="16" />{{ entry.reviewTag.text }}
+                      </span>
+                      <button type="button" class="proposal-review__go" @click="goToReviewEntry(entry)">
+                        {{ entry.key === reviewOpenKey ? 'Open' : 'Go to' }}<span class="visually-hidden">{{ ` ${entry.label}` }}</span>
+                      </button>
+                    </span>
+                  </li>
+                </ul>
+              </section>
             </template>
-            <p v-if="assistStage === 'interpreting' || assistStage === 'executing'" class="chat-line chat-line--brownie chat-typing" aria-live="polite">
-              Working on it…
-            </p>
+            <div v-if="assistStage === 'interpreting' || assistStage === 'executing'" class="msg--brownie">
+              <p class="msg__who">Brownie</p>
+              <p class="chat-typing" aria-live="polite"><span class="activity-indicator" aria-hidden="true"></span>Working on it…</p>
+            </div>
           </div>
 
-          <div v-if="sourcesOpen" id="add-source-panel" class="add-source">
-            <div class="add-source__head">
-              <p class="add-source__title">Add a source</p>
-              <button type="button" class="icon-button" @click="closeSources">
-                <AppIcon name="close" :size="18" />
+        </div>
+
+        <!-- Floats over the conversation just above the message box. Its anchor takes no room, so the box stays where it is. -->
+        <div v-if="sourcesOpen" class="add-source-anchor">
+          <section id="add-source-panel" class="add-source" role="dialog" aria-labelledby="add-source-title" @keydown.esc.stop="closeSources">
+            <header class="add-source__head">
+              <div>
+                <h3 id="add-source-title" class="add-source__title">Add a source</h3>
+                <p class="add-source__lede">Brownie reads only what you add here, and only when you ask.</p>
+              </div>
+              <button type="button" class="icon-button add-source__close" @click="closeSources">
+                <AppIcon name="close" :size="20" />
                 <span class="visually-hidden">Close adding a source</span>
               </button>
+            </header>
+            <div class="add-source__rows">
+              <div class="add-source__row" :class="{ 'add-source__row--open': sourceUploadOpen }">
+                <div class="add-source__row-head">
+                  <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="document-upload" :size="18" /></span>
+                  <div class="add-source__row-text">
+                    <button
+                      type="button"
+                      class="add-source__toggle"
+                      :aria-expanded="sourceUploadOpen"
+                      aria-controls="add-source-upload"
+                      aria-describedby="add-source-upload-hint"
+                      :disabled="sourceUploadState === 'uploading'"
+                      @click="sourceUploadOpen = !sourceUploadOpen"
+                    >
+                      Upload notes or a transcript
+                    </button>
+                    <p id="add-source-upload-hint" class="field-hint">
+                      Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
+                    </p>
+                  </div>
+                  <AppIcon class="add-source__chevron" :name="sourceUploadOpen ? 'chevron-down' : 'chevron-right'" :size="18" />
+                </div>
+                <div v-show="sourceUploadOpen" id="add-source-upload" class="add-source__row-body">
+                  <!-- Once a file is attached it shows as the chip below; the chooser comes back when the panel is closed and opened again. -->
+                  <template v-if="justAttachedSources.length === 0">
+                    <!-- The real file input, kept for the keyboard and for assistive technology; the button beside it is its label. -->
+                    <input
+                      id="attach-source"
+                      class="visually-hidden add-source__input"
+                      type="file"
+                      accept=".txt,text/plain"
+                      :disabled="sourceUploadState === 'uploading'"
+                      @change="onSourceFileChosen"
+                    />
+                    <label
+                      for="attach-source"
+                      class="button button--secondary button--small add-source__choose"
+                      :class="{ 'add-source__choose--busy': sourceUploadState === 'uploading' }"
+                    >
+                      <AppIcon name="upload" :size="16" />
+                      Choose a file<span class="visually-hidden"> to upload notes or a transcript</span>
+                    </label>
+                    <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
+                    <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
+                  </template>
+                  <ul v-if="justAttachedSources.length > 0" class="add-source__files" aria-label="Added from here">
+                    <li v-for="source in justAttachedSources" :key="source.id" class="source-chip">
+                      <span class="source-chip__text">
+                        <span class="source-chip__name">{{ sourceName(source) }}</span>
+                        <span class="source-chip__meta">{{ justAttachedMetaWords(source) }}</span>
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <CalendarSourcePicker
+                v-if="session.personalWorkspaceId !== undefined"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :start-open="calendarPickerStartsOpen"
+                :unsaved-work="hasUnsavedWork()"
+                :copy-event="copyCalendarEvent"
+                @used="calendarConsent = null"
+              />
+              <DriveSourcePicker
+                v-if="session.personalWorkspaceId !== undefined"
+                :workspace-id="session.personalWorkspaceId"
+                :document-id="documentId"
+                :start-open="drivePickerStartsOpen"
+                :unsaved-work="hasUnsavedWork()"
+                :copy-file="copyDriveFile"
+                @used="calendarConsent = null"
+              />
             </div>
-            <label class="field-label" for="attach-source">Upload notes or a transcript</label>
-            <input id="attach-source" type="file" accept=".txt,text/plain" :disabled="sourceUploadState === 'uploading'" @change="onSourceFileChosen" />
-            <p class="field-hint">
-              Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
+            <p v-if="sourcesOffered" class="add-source__foot">
+              <AppIcon name="shield-check" :size="16" />
+              <span>A copied event or file is a text snapshot. Brownie never browses the rest of your calendar or Drive.</span>
             </p>
-            <p v-if="sourceUploadState === 'uploading'" aria-live="polite">Uploading…</p>
-            <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
-            <CalendarSourcePicker
-              v-if="session.personalWorkspaceId !== undefined"
-              :workspace-id="session.personalWorkspaceId"
-              :document-id="documentId"
-              :start-open="calendarPickerStartsOpen"
-              :unsaved-work="hasUnsavedWork()"
-              :copy-event="copyCalendarEvent"
-              @used="calendarConsent = null"
-            />
-            <DriveSourcePicker
-              v-if="session.personalWorkspaceId !== undefined"
-              :workspace-id="session.personalWorkspaceId"
-              :document-id="documentId"
-              :start-open="drivePickerStartsOpen"
-              :unsaved-work="hasUnsavedWork()"
-              :copy-file="copyDriveFile"
-              @used="calendarConsent = null"
-            />
-          </div>
+          </section>
         </div>
 
         <form class="composer" @submit.prevent="sendMessage()">
@@ -3900,32 +4761,45 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             class="composer__input"
             rows="2"
             maxlength="1000"
-            placeholder="How may I help you?"
+            :placeholder="composerBusy ? 'Working on it…' : 'How may I help you?'"
             :aria-describedby="hereHint ? 'assist-composer-here' : undefined"
             @keydown="onComposerKeydown"
           ></textarea>
-          <p v-if="hereHint" id="assist-composer-here" class="composer__here">{{ hereHint }}</p>
+          <p v-if="hereHint" id="assist-composer-here" class="composer__here">
+            <AppIcon name="pointer" :size="14" />
+            <span>{{ hereHint }}</span>
+          </p>
           <div class="composer__tools">
             <button
               ref="addSourceButtonRef"
               type="button"
-              class="icon-button composer__add"
+              class="icon-button"
               :aria-expanded="sourcesOpen"
               aria-controls="add-source-panel"
               @click="toggleSources"
             >
-              <AppIcon name="plus" />
+              <AppIcon name="plus" :size="24" />
               <span class="visually-hidden">Add a source</span>
             </button>
             <label v-if="attachedSources.length > 1" class="composer__source">
               <span class="composer__source-label">Read</span>
-              <select id="extract-source" v-model.number="selectedSourceId" :disabled="runUnderWay">
-                <option v-for="source in attachedSources" :key="source.id" :value="source.id">{{ sourceName(source) }}</option>
-              </select>
+              <span class="composer__source-select">
+                <select id="extract-source" v-model.number="selectedSourceId" :disabled="runUnderWay">
+                  <option v-for="source in attachedSources" :key="source.id" :value="source.id">{{ sourceName(source) }}</option>
+                </select>
+                <AppIcon name="chevron-down" :size="16" />
+              </span>
             </label>
-            <button type="submit" class="composer__send" :aria-disabled="composerText.trim() === '' || assistBusy">
-              <AppIcon name="send" :size="18" />
-              <span class="visually-hidden">Send</span>
+            <!-- Empty, it waits; ready, it sends; while Brownie reads a source it is the way to stop that reading. -->
+            <button
+              :type="composerStops ? 'button' : 'submit'"
+              class="composer__send"
+              :class="{ 'composer__send--busy': composerBusy }"
+              :aria-disabled="composerStops ? cancellationRequested : composerText.trim() === '' || assistBusy"
+              @click="composerStops && stopReadingFromComposer()"
+            >
+              <AppIcon name="arrow-up" :size="20" />
+              <span class="visually-hidden">{{ composerStops ? (cancellationRequested ? 'Stopping…' : 'Stop this reading') : 'Send' }}</span>
             </button>
           </div>
         </form>
@@ -3940,6 +4814,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       :document-id="documentId"
       :document-title="document.title"
       :current-revision-id="document.currentRevision.id"
+      :current-revision-number="document.currentRevision.revisionNumber"
+      :fill-counts="fillCounts"
       :unsaved-work="hasUnsavedWork()"
       :save-before-export="saveBeforeExport"
       :reload-document="loadDocument"
@@ -3974,13 +4850,15 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  * at a time. 50rem is a narrow but readable page (about 30rem) plus the panel's minimum (18rem)
  * and the gap between them, which keeps a laptop with the sidebar open at two panes.
  *
- * The shell pads its pages for reading; this one reaches nearer the window's edges, as the design
- * draws it, and shares its first row with the shell's floating sidebar button when there is one.
+ * The shell pads its pages for reading; this one reaches nearer the window's edges, and shares its first
+ * row with the shell's floating sidebar button when there is one: that row is 32px tall, so starting 10px
+ * down it is centred 26px from the top, the line the button's glyph is centred on.
  */
 .workspace {
+  --workspace-top: 0.625rem;
   display: flex;
   flex-direction: column;
-  margin-block-start: calc(var(--space-3) - var(--shell-gutter-block-start, var(--space-5)) - var(--shell-bar-block, 0px));
+  margin-block-start: calc(var(--workspace-top) - var(--shell-gutter-block-start, var(--space-5)) - var(--shell-bar-block, 0px));
   margin-inline: calc(var(--space-4) - var(--shell-gutter-inline, var(--space-5)));
 }
 
@@ -3991,38 +4869,39 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
   min-block-size: var(--icon-button-size);
-  /* Leaves the corner the shell's floating sidebar button covers, so the two read as one row. */
-  padding-inline-start: max(0px, calc(var(--shell-bar-inline, 0px) - var(--space-4)));
-}
-
-.workspace-bar__start,
-.workspace-bar__end {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  /* Leaves the corner the shell's floating sidebar button covers, so the two read as one row, Undo a few pixels past it. */
+  padding-inline-start: max(0px, calc(var(--shell-bar-inline, 0px) - var(--space-4) - var(--space-1)));
 }
 
 .workspace-bar__start {
-  gap: var(--space-1);
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
   margin-inline-end: auto;
 }
 
-.workspace-bar__end {
-  gap: var(--space-3);
+/* The two glyphs are drawn larger than the usual icon, so their targets carry no padding of their own. */
+.workspace-bar__undo,
+.workspace-bar__history {
+  padding: 0;
+  color: var(--color-text);
 }
 
-.workspace-bar__export,
-.workspace-bar__save {
-  min-block-size: 2rem;
-  padding-inline: var(--space-4);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
+/* Undo is a plain arrow with less weight than the version clock beside it. */
+.workspace-bar__undo {
+  color: color-mix(in srgb, var(--color-text) 80%, var(--color-paper));
+}
+
+.workspace-bar__end {
+  display: flex;
+  align-items: center;
+  gap: 1.125rem;
 }
 
 .save-status {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 0.375rem;
   margin: 0;
   font-size: 0.8125rem;
   color: var(--color-text-muted);
@@ -4035,8 +4914,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   background: var(--color-success);
 }
 
+/* Honey ink rather than honey itself: the dot is a graphic, and plain honey is too pale on the page (1.9:1). */
 .save-status--pending .save-status__dot {
-  background: var(--color-honey);
+  background: var(--color-honey-ink);
 }
 
 .save-status--problem {
@@ -4047,22 +4927,87 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   background: var(--color-error);
 }
 
-/* The document's name, large and light, as the design sets it; it scales with the room the page has. */
+/*
+ * The document's name under the bar: centred, light, and as large as a page title gets (the shared display size).
+ * The tight line height keeps a one-line title close under the bar and the panes starting a fixed distance below it.
+ */
 .workspace-title {
-  margin: var(--space-1) 0 var(--space-4);
+  margin: 0.125rem 0 var(--space-5);
   text-align: center;
-  font-weight: 400;
-  font-size: clamp(1.75rem, 1rem + 2.2cqi, 3rem);
-  line-height: 1.2;
-  color: var(--color-text);
+  line-height: 1.05;
+  text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
+/* Never larger than the title already is (it is smaller than this on a phone), so a long name only ever shrinks. */
+.workspace-title--long {
+  font-size: min(var(--font-size-display), var(--font-size-2xl));
+  line-height: 1.2;
+}
+
+/*
+ * What a document shows before there is a page to draw: still loading, signed out, or not opened. Each is one
+ * calm card, or one line, in the centred column the other single-purpose screens use.
+ */
+.workspace-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+/* A refusal keeps the red edge of the card it is in, as the other screens' refusals do. */
+.workspace-state--error {
+  align-items: flex-start;
+  border-color: var(--color-error);
+}
+
+.workspace-state__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-error-wash);
+  color: var(--color-error);
+}
+
+.workspace-state__body {
+  display: grid;
+  flex: 1 1 14rem;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  margin: 0;
+}
+
+.workspace-state__body p {
+  margin: 0;
+}
+
+.workspace-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.workspace-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+/* What went wrong, or what to do next, in short strips between the title and the panes. */
 .workspace-notices {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin-block-end: var(--space-3);
+  inline-size: 100%;
+  max-inline-size: 47.5rem;
+  margin: 0 auto var(--space-4);
 }
 
 .workspace-notices:empty {
@@ -4073,128 +5018,91 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin: 0;
 }
 
-/* News about an uploaded form: quiet, and out of the way of the page it sits over. */
-/*
- * One short line over the page about the form. While it holds places Brownie found that are still to check it
- * takes their marks' honey colours; once only notes are left it is a plain card. Its words carry it either way.
- */
-.form-strip {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  font-size: 0.8125rem;
-}
-
-.form-strip--found {
-  border-color: var(--color-honey-line);
-  background: var(--color-honey-faint);
-}
-
-.form-strip__line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-}
-
-.form-strip__text {
-  flex: 1 1 14rem;
-  margin: 0;
-}
-
-.form-strip__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.form-strip__button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  font-size: 0.8125rem;
-}
-
-.form-strip__notes {
-  margin: var(--space-2) 0 0;
-  padding-inline-start: 1.25rem;
-}
-
-.form-strip__notes li + li {
-  margin-block-start: var(--space-1);
-}
-
-/* A newer version of the form: what it changes, and the move to it. */
-.version-banner {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-block-end: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
-  font-size: var(--font-size-sm);
-}
-
-.version-banner__text {
-  flex: 1 1 14rem;
-  margin: 0;
-}
-
-.version-banner__error {
-  flex: 1 1 100%;
-  margin: 0;
-}
-
-.version-banner__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.version-banner__buttons .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  font-size: 0.8125rem;
-}
-
-.version-banner__moved {
-  margin: 0 0 var(--space-3);
-  font-size: var(--font-size-sm);
-}
-
-.chat-line__actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-block-start: var(--space-2);
-}
-
-.chat-line__actions .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  font-size: 0.8125rem;
-}
-
+/* Under the box while it says "here": which place that is, with the pointer that picks it. */
 .composer__here {
-  margin: 0;
-  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: -0.5rem 0 0;
+  padding-inline: var(--space-1);
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
 }
 
-.selection-bar__found {
-  margin: 0;
-  font-size: var(--font-size-sm);
+.composer__here > svg {
+  flex: none;
 }
 
+/*
+ * A notice: one calm strip with an icon, its words, and where something can be done about it, a link or
+ * buttons. The tone is told by the icon's shape and the words as well as the colour: a ring with "!" for
+ * what went wrong, a triangle for a caution, a ring with a tick for what worked.
+ */
 .workspace-notice {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
-  background: var(--color-cocoa-wash);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
 }
 
-.conflict-notice {
+.workspace-notice > svg {
+  flex: none;
+  margin-block-start: 0.0625rem;
+  color: var(--color-text-muted);
+}
+
+.workspace-notice__text {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Text on a tinted strip stays the main colour; a link in it is told apart by its underline. */
+.workspace-notice__text a {
+  color: inherit;
+  font-weight: var(--font-weight-medium);
+}
+
+.workspace-notice__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-notice--error {
+  border-color: transparent;
+  background: var(--color-error-wash);
+}
+
+.workspace-notice--error > svg {
+  color: var(--color-error);
+}
+
+.workspace-notice--warning {
+  border-color: transparent;
+  background: var(--color-honey-soft);
+}
+
+.workspace-notice--warning > svg {
+  color: var(--color-honey-ink);
+}
+
+.workspace-notice--success {
+  border-color: transparent;
+  background: var(--color-success-wash);
+}
+
+.workspace-notice--success > svg {
+  color: var(--color-success);
+}
+
+/* The two ways out of a conflict sit under the sentence about it. */
+.conflict-notice .workspace-notice__text {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -4204,11 +5112,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.plain-list {
-  margin: 0;
-  padding-inline-start: var(--space-5);
 }
 
 .link-button {
@@ -4227,8 +5130,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  */
 .workspace-switch,
 .view-toggle {
+  --segment-lift: 0 1px 2px color-mix(in srgb, var(--color-text) 14%, transparent);
   display: inline-flex;
-  padding: 2px;
+  padding: 3px;
   border-radius: var(--radius-pill);
   background: var(--color-paper-deep);
 }
@@ -4242,13 +5146,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-switch__button,
 .view-toggle__button {
-  min-block-size: 1.75rem;
-  padding: 0 var(--space-3);
-  border: 1px solid transparent;
+  min-block-size: 1.5rem;
+  padding: 0 0.78125rem;
+  border: 0;
   border-radius: var(--radius-pill);
   background: transparent;
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
   color: var(--color-text-muted);
   cursor: pointer;
   transition:
@@ -4261,13 +5166,31 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   color: var(--color-text);
 }
 
-/* The chosen one is outlined as well as lifted, so it stands out from the track at 3:1 or more. */
+/*
+ * The chosen one is a white segment lifted a hair off the track, with the main text colour. The lift is a
+ * shape cue that does not rely on colour, and the pressed state is also what assistive technology reads.
+ */
 .workspace-switch__button[aria-pressed='true'],
 .view-toggle__button[aria-pressed='true'] {
-  border-color: var(--color-cocoa);
   background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: 0 1px 2px rgb(42 41 36 / 0.08);
+  box-shadow: var(--segment-lift);
+}
+
+.workspace-switch__button[aria-pressed='true']:focus-visible,
+.view-toggle__button[aria-pressed='true']:focus-visible {
+  box-shadow:
+    var(--focus-ring),
+    var(--segment-lift);
+}
+
+/* A finger needs a taller target than the 24px a pointer gets. */
+@media (pointer: coarse) {
+  .workspace-switch__button,
+  .view-toggle__button {
+    min-block-size: 2.25rem;
+    padding-inline: var(--space-4);
+  }
 }
 
 /* Forced colours draw every edge alike, so the chosen one takes the system's own selected colours instead. */
@@ -4291,16 +5214,37 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   min-inline-size: 0;
 }
 
-@container main (min-width: 50rem) {
-  .workspace-title {
-    margin-block-end: var(--space-6);
+/*
+ * The two-pane threshold sits a little under 50rem (800px) on purpose: this container is measured on its
+ * content box, inside the region's own side padding (32px each side at this width), so a window exactly
+ * 50rem of *content* wide needs 64px more of actual room than that. With the sidebar docked open at its
+ * own width, a window the width the keyboard tests call "a laptop" was landing a single pixel short of
+ * 50rem of content and falling back to the narrow, one-pane-at-a-time layout it should not have needed.
+ * The threshold now keeps the margin that width was always meant to have.
+ */
+@container main (min-width: 49.5rem) {
+  /*
+   * The page's column is the sheet, 600px wide at its fullest and never more than 55% of the room, so it keeps
+   * its full width for as long as Brownie's panel can give way for it. The panel takes what is left (671px
+   * where the window is wide enough for both, the most it grows to) and, below that, never less than 18rem.
+   * The two stop growing together and are centred in the window. The margin to the left of the page holds the
+   * rail and page numbers that hang beside the sheet, so it never drops below their 50px; margins and the gap
+   * between the columns follow the width of the region until they reach their fullest, 75px, 69px and 65px.
+   */
+  .workspace-panes {
+    --panes-room: clamp(3.125rem, 5.2cqi, 4.6875rem);
+    grid-template-columns: minmax(0, min(37.5rem, 55%)) minmax(18rem, 1fr);
+    column-gap: clamp(var(--space-4), 4.6cqi, 4.0625rem);
+    inline-size: 100%;
+    max-inline-size: 92.5rem;
+    margin-inline: auto;
+    padding-inline: var(--panes-room) clamp(var(--space-4), 7cqi - 1.9375rem, 4.3125rem);
   }
 
-  /* The page and Brownie's panel share the width about evenly, as the design has them, set in a little from the window's edges. */
-  .workspace-panes {
-    grid-template-columns: minmax(0, 1fr) minmax(18rem, 1fr);
-    column-gap: var(--space-6);
-    padding-inline: clamp(0rem, 4cqi - 1.5rem, 2.5rem);
+  /* The page's own box reaches back over its margin, so whatever hangs there is inside it and is not cut off where the page scrolls. */
+  .document-pane {
+    margin-inline-start: calc(-1 * var(--panes-room));
+    padding-inline-start: var(--panes-room);
   }
 
   /*
@@ -4322,23 +5266,15 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     scrollbar-color: var(--color-scrollbar) transparent;
   }
 
-  .add-source {
-    max-block-size: 40dvh;
-  }
-
-  .selection-bar__rules {
-    display: none;
-  }
-
   /*
-   * Where the window is tall enough, the page fills it exactly, as the design draws it: the bar and the
+   * Where the window is tall enough, the page fills it exactly and does not scroll itself: the bar and the
    * title stay put, the document scrolls in its own pane, and Brownie's panel keeps the message box at
    * the foot of the screen from the moment the page opens. The shell's own bar, where it is a row above
    * this page, is left its height. Shorter windows scroll as one page.
    */
   @media (min-height: 36rem) {
     .workspace {
-      block-size: calc(100dvh - var(--shell-bar-row, 0px) - 2 * var(--space-3));
+      block-size: calc(100dvh - var(--shell-bar-row, 0px) - var(--workspace-top) - var(--space-3));
       margin-block-end: calc(var(--space-3) - var(--shell-gutter-block-end, var(--space-8)));
     }
 
@@ -4355,6 +5291,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       min-block-size: 0;
     }
 
+    /* Brownie's panel starts a little lower than the page, whose first row is its status line. */
+    .workspace-panes > .assistant-pane {
+      margin-block-start: 1.6875rem;
+    }
+
     /*
      * The Rules card gives way before the conversation does, scrolling on its own in a short window; the
      * conversation's own length never decides how much of the room it gets.
@@ -4369,20 +5310,23 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       flex: 1 1 0;
     }
 
-    /* The padding keeps focus rings, and the outline of a selected fill spot, inside the scrolling edge. */
+    /*
+     * The page scrolls in its own column down to the foot of the window, as Brownie's panel does in its own. The
+     * padding keeps focus rings, and the outline of a selected fill spot, inside the scrolling edge.
+     */
     .document-pane {
       min-block-size: 0;
       overflow-y: auto;
       overscroll-behavior: contain;
-      padding: 6px 6px var(--space-4);
-      margin: -6px -6px 0;
+      padding: 6px 6px var(--space-4) calc(var(--panes-room) + 6px);
+      margin: -6px -6px calc(-1 * var(--space-3)) calc(-6px - var(--panes-room));
       scrollbar-width: thin;
       scrollbar-color: var(--color-scrollbar) transparent;
     }
   }
 }
 
-@container main (max-width: 49.999rem) {
+@container main (max-width: 49.4999rem) {
   .workspace-switch {
     display: inline-flex;
   }
@@ -4414,16 +5358,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
   .view-toggle {
     order: 2;
-    margin-block-start: var(--space-2);
+    margin: var(--space-2) auto 0;
+  }
+
+  /* Under controls that wrap onto lines of their own, the title gets more air than it does under the single wide row. */
+  .workspace-title {
+    margin-block-start: var(--space-3);
   }
 
   /* The face of the document means nothing while Brownie's panel is the one showing. */
   .workspace--showing-assistant .view-toggle {
     display: none;
-  }
-
-  .assistant-pane {
-    min-block-size: min(40rem, calc(100dvh - 12rem));
   }
 }
 
@@ -4439,16 +5384,28 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   gap: var(--space-3);
 }
 
-/* Before anything is filled in on a page with fill spots: one quiet line saying how it gets filled. */
+/*
+ * Before anything is filled in on a page with fill spots: one quiet line saying how it gets filled. Beside the
+ * page, Brownie's panel says the same, so the line is for the narrow window, where that panel is out of view.
+ */
 .empty-hint {
-  margin: 0;
+  inline-size: 100%;
+  max-inline-size: 37.5rem;
+  margin: 0 auto;
   color: var(--color-text-muted);
-  font-size: 0.8125rem;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
 }
 
 .empty-hint strong {
   color: var(--color-text);
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
+}
+
+@container main (min-width: 49.5rem) {
+  .empty-hint {
+    display: none;
+  }
 }
 
 /* Before anything is filled in on a page with no fill spots yet: a quiet note over it, saying how it gets filled. */
@@ -4457,9 +5414,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  inline-size: 100%;
+  max-inline-size: 37.5rem;
+  margin-inline: auto;
+  padding: 0.75rem 0.9375rem;
   border: 1px solid var(--color-hairline);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
   font-size: var(--font-size-sm);
 }
@@ -4469,51 +5429,86 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 }
 
 .empty-state__title {
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
 }
 
 .empty-state .field-hint {
   color: var(--color-text-muted);
-  font-size: 0.8125rem;
 }
 
-.empty-state .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-pill);
-  font-size: 0.8125rem;
-}
-
+/* The page as it exports, as wide as the sheet is and in the same place. */
 .print-preview {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  inline-size: 100%;
+  max-inline-size: 37.5rem;
+  margin-inline: auto;
 }
 
-.print-preview p {
+/* One line: what the file is, or what is happening to it, and the button that makes it again. */
+.print-preview__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-block-size: var(--control-height-small);
+}
+
+.print-preview__note {
+  display: flex;
+  flex: 1 1 14rem;
+  align-items: center;
+  gap: 0.625rem;
+  min-inline-size: 0;
   margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
 }
 
-.print-preview .button {
-  min-block-size: 2rem;
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
+.print-preview__note > svg {
+  flex: none;
 }
 
-/* The bar about the selected fill spot stays in reach at the foot of the screen while the page scrolls under it. */
+.print-preview__note .activity-indicator {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.print-preview__note--error {
+  color: var(--color-error);
+}
+
+.print-preview__generate {
+  flex: none;
+}
+
+/* The card about the selected fill spot floats over the foot of the page, as wide as the sheet, and stays in reach while the page scrolls under it. */
 .selection-bar {
-  container: selection-bar / inline-size;
   position: sticky;
-  inset-block-end: var(--space-3);
+  inset-block-end: var(--space-1);
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  gap: 0.75rem;
+  inline-size: 100%;
+  max-inline-size: 37.5rem;
+  /* A short window gets a card whose body scrolls, so its name and its close button are never out of reach. */
+  max-block-size: max(16rem, calc(100dvh - 13rem));
+  margin-inline: auto;
+  padding: 0.875rem 1rem 1rem;
   border: 1px solid var(--color-hairline);
-  border-radius: 1rem;
+  border-radius: var(--radius-xl);
   background: var(--color-surface);
-  box-shadow: 0 8px 28px rgb(42 41 36 / 0.1);
+  box-shadow: var(--shadow-popover);
+}
+
+/* A PDF form's pages keep their zoom pill at the same foot of the view; the card rests just above it. */
+.selection-bar--above-zoom {
+  inset-block-end: 3.9375rem;
 }
 
 /* An outline, not a shadow, so forced colours keep it. */
@@ -4522,22 +5517,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   outline-offset: 2px;
 }
 
-.selection-bar .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-}
-
 .selection-bar .field-hint {
   margin: 0;
-  font-size: 0.8125rem;
-  color: var(--color-text-muted);
-}
-
-.selection-bar .selection-bar__keys {
-  font-size: var(--font-size-xs);
 }
 
 /* On a touch screen there is no key to press. */
@@ -4547,179 +5528,50 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   }
 }
 
-/*
- * A row of the bar's buttons with the name of what they change before them. The names share a width, so
- * the rows' buttons start in line, and buttons that wrap stay under the first; in a narrow bar the name
- * sits over its buttons instead. The buttons are a little narrower here, so a row fits on one line.
- */
-.selection-bar__group {
-  display: grid;
-  grid-template-columns: 6rem minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-}
-
-.selection-bar__group-label {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-}
-
-.selection-bar__group-buttons {
+/* Beside the page, Brownie's panel shows the style and the rules; the way to it is for the window where only one shows. */
+.selection-bar__rules {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
 }
 
-.selection-bar__group .button {
-  padding-inline: 0.625rem;
-}
-
-@container selection-bar (max-width: 24rem) {
-  .selection-bar__group {
-    grid-template-columns: minmax(0, 1fr);
+@container main (min-width: 49.5rem) {
+  .selection-bar__rules {
+    display: none;
   }
 }
 
+/* The name has the card's corner to itself; the button that closes it sits in that corner, as a dialog's does. */
 .selection-bar__head {
+  padding-inline-end: 2rem;
+}
+
+.selection-bar__close {
+  position: absolute;
+  inset-block-start: 0.5625rem;
+  inset-inline-end: 0.5625rem;
+}
+
+/* Everything under the name. The padding, taken back by the margin, leaves room for the focus ring of a button at its edge. */
+.selection-bar__body {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: 0.75rem;
+  min-block-size: 0;
+  margin: -0.25rem;
+  padding: 0.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .selection-bar__name {
   margin: 0;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
+/* What is true of the value, each in words and, where it helps, a small picture. */
 .selection-bar__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin: 0;
-}
-
-.badge {
-  display: inline-block;
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--color-honey-soft);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-}
-
-.evidence-panel {
-  padding: var(--space-3);
-  border-inline-start: 3px solid var(--color-honey);
-  background: var(--color-honey-soft);
-  border-radius: var(--radius);
-  max-block-size: 14rem;
-  overflow-y: auto;
-  font-size: var(--font-size-sm);
-}
-
-.evidence-panel p {
-  margin: 0 0 var(--space-1);
-}
-
-.evidence-excerpt {
-  margin: 0 0 var(--space-2);
-}
-
-/* Brownie's panel: the Rules card, the conversation, and the message box. */
-.assistant-pane {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-block-size: 0;
-}
-
-.assistant-pane__scroll {
-  position: relative;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-block-size: 0;
-}
-
-.rules-card {
-  flex: none;
-  padding: var(--space-4);
-  border: 1px solid var(--color-hairline);
-  border-radius: 1rem;
-  background: var(--color-surface);
-  font-size: 0.8125rem;
-}
-
-.rules-card__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-block-end: var(--space-3);
-}
-
-.rules-card__heading {
-  margin: 0;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-}
-
-.rules-card__about {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-xs);
-}
-
-/* The notes about the upload the form came from, between the heading and the text style. */
-.rules-card__about-notes {
-  margin: 0 0 var(--space-3);
-  padding-inline-start: var(--space-5);
-}
-
-.rules-card__about-notes li + li {
-  margin-block-start: var(--space-1);
-}
-
-/* The text style, on a tinted panel inside the card: the "Aa" tile, a caption, and the style as chips. */
-.rules-card__style {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: 0.75rem;
-  background: var(--color-paper);
-}
-
-.rules-card__glyph {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  inline-size: 1.75rem;
-  block-size: 1.75rem;
-  border-radius: 0.375rem;
-  background: var(--color-surface);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--color-cocoa);
-}
-
-.rules-card__style p {
-  margin: 0;
-}
-
-.rules-card__style .rules-card__caption {
-  margin-block-end: var(--space-1);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-.chip-list {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -4728,44 +5580,349 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   list-style: none;
 }
 
-/* Read-only: white with a thin edge, as the design draws them, and no hover, since pressing one does nothing. */
-.chip {
-  display: inline-block;
-  padding: 3px var(--space-2);
-  border: 1px solid var(--color-hairline);
-  border-radius: 0.375rem;
-  background: var(--color-surface);
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  line-height: 1.5;
+/* A place Brownie found and the person has not yet said is right: the note, and the button that says so. */
+.selection-bar__found-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) 0.75rem;
+  padding: var(--space-2) 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-honey-faint);
 }
 
-.rules-card__style .rules-card__date {
+.selection-bar__found {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+/*
+ * A row of buttons with the name of what they change before it. The first row, about the value, is the one that
+ * matters; the rows about the fill spot and the table's row are quiet text buttons below it.
+ */
+.selection-bar__group {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1) var(--space-2);
-  margin-block-start: var(--space-2);
+}
+
+.selection-bar__group-label {
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.selection-bar__group-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.selection-bar__group--quiet .selection-bar__group-buttons {
+  gap: var(--space-1);
+}
+
+/* Where it came from: a quiet panel that opens from its heading. */
+.evidence-section {
+  border-radius: var(--radius-md);
+  background: var(--color-paper-soft);
+}
+
+.evidence-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  inline-size: 100%;
+  padding: 0.75rem 0.875rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+  text-align: start;
+  cursor: pointer;
+}
+
+.evidence-toggle:hover {
+  background: var(--color-paper-deep);
+}
+
+.evidence-toggle__label {
+  flex: 1 1 auto;
+}
+
+.evidence-toggle > svg {
+  flex: none;
+}
+
+.evidence-toggle > svg:last-child {
   color: var(--color-text-muted);
 }
 
+.evidence-panel {
+  display: grid;
+  gap: 0.75rem;
+  max-block-size: 14rem;
+  padding: 0 0.875rem 0.75rem;
+  overflow-y: auto;
+  font-size: var(--font-size-sm);
+}
+
+.evidence-panel > p {
+  margin: 0;
+}
+
+/* Each passage has a honey bar at its edge, as a quotation does. */
+.evidence-excerpt {
+  margin: 0;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 2px solid var(--color-honey);
+}
+
+.evidence-excerpt figcaption {
+  margin-block-end: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.evidence-excerpt blockquote {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.selection-bar__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.selection-bar__keys {
+  flex: 1 1 12rem;
+}
+
+.selection-bar__next {
+  margin-inline-start: auto;
+}
+
+/* Brownie's panel: the Rules bar, the conversation, and the message box. */
+.assistant-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-block-size: 0;
+}
+
+.assistant-pane__scroll {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-block-size: 0;
+}
+
+/*
+ * The Rules card is a slim bar until it is opened: its name, a line about what it holds, and "About this form"
+ * with a chevron. Opened, the details sit under the same bar.
+ */
+.rules-card {
+  container: rules-card / inline-size;
+  flex: none;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.rules-card__head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.875rem;
+  padding-inline: var(--space-4);
+}
+
+.rules-card__heading {
+  flex: none;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Beside the button; where the card is narrow it wraps rather than hides what it says. */
+.rules-card__summary {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--color-text-muted);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+/* Too narrow for the name, the line and the button in one row: the line goes under them, across the card. */
+@container rules-card (max-width: 35rem) {
+  .rules-card__head {
+    flex-wrap: wrap;
+    padding-block: 0.625rem;
+  }
+
+  .rules-card__summary {
+    order: 1;
+    flex: 1 0 100%;
+    text-align: start;
+  }
+}
+
+.rules-card__toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-inline-start: auto;
+  padding: 0.25rem 0;
+  border: 0;
+  background: none;
+  color: var(--color-cocoa);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.rules-card__toggle:hover {
+  color: var(--color-cocoa-strong);
+}
+
+.rules-card__toggle > svg {
+  color: var(--color-text-muted);
+}
+
+/* The whole bar opens the card, not only the words: the button stretches its press area over the bar. */
+.rules-card__toggle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.rules-card__details {
+  display: grid;
+  gap: 0.625rem;
+  padding: 0 var(--space-4) 0.875rem;
+}
+
+.rules-card__details > * {
+  margin: 0;
+}
+
+/* The notes about the upload the form came from, above the text style. */
+.rules-card__about-notes {
+  padding-inline-start: var(--space-5);
+  color: var(--color-text-muted);
+}
+
+.rules-card__about-notes li + li {
+  margin-block-start: var(--space-1);
+}
+
+/* The text style, on the quiet inset panel: the "Aa" tile, a caption, and the style as chips. */
+.rules-card__style {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0.6875rem 0.75rem 0.5625rem;
+}
+
+.rules-card__style > div {
+  min-inline-size: 0;
+}
+
+.rules-card__glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.625rem;
+  block-size: 1.625rem;
+  border-radius: 0.5rem;
+  background: var(--color-surface);
+  color: var(--color-cocoa);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.rules-card__caption {
+  margin: 0 0 0.3125rem;
+  color: var(--color-text-muted);
+}
+
+.rules-card__style .field-hint {
+  margin: 0;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Read-only: white with a thin edge, and no hover, since pressing one does nothing. */
+.chip {
+  display: inline-block;
+  padding: 0.25rem 0.6875rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+}
+
+.rules-card__date,
 .rules-card__required {
-  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  min-block-size: 1.25rem;
+  padding-inline-start: 0.25rem;
+  color: var(--color-text-muted);
+}
+
+.rules-card__date {
+  gap: 0.625rem;
+}
+
+.rules-card__date > svg {
+  flex: none;
+}
+
+.rules-card__required {
+  gap: 0.375rem;
 }
 
 .rules-card__required-mark {
-  font-weight: 700;
+  flex: none;
+  inline-size: 0.75rem;
   color: var(--color-error);
+  font-weight: var(--font-weight-medium);
+  text-align: center;
 }
 
 .rules-card__rules {
-  margin: var(--space-2) 0 0;
   padding-inline-start: var(--space-5);
-}
-
-.rules-card__body > p {
-  margin: var(--space-2) 0 0;
 }
 
 /*
@@ -4775,14 +5932,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  */
 .rules-card__more {
   position: sticky;
-  inset-block-end: calc(-1 * var(--space-4));
+  inset-block-end: 0;
   display: flex;
   align-items: flex-end;
   justify-content: center;
   block-size: 2.75rem;
-  margin: -2.75rem calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  margin-block-start: -2.75rem;
   padding-block-end: var(--space-1);
-  border-radius: 0 0 1rem 1rem;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   background: linear-gradient(to bottom, transparent, var(--color-surface) 70%);
   pointer-events: none;
 }
@@ -4797,18 +5954,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   background: var(--color-surface);
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
   line-height: 1.6;
   cursor: pointer;
   pointer-events: auto;
 }
 
-.rules-card .field-hint {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-/* The conversation: what the person said on the right in light bubbles, Brownie's replies as plain text on the left. */
+/*
+ * The conversation: what the person said on the right in bubbles, Brownie's replies as plain text. The sides and the
+ * foot give a focus ring room inside the scrolling region and are taken back from the margin, so the lines still
+ * start at the edge of the column and end where the message box begins.
+ */
 .chat {
   position: relative;
   flex: 1 1 auto;
@@ -4817,15 +5973,33 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: 0 var(--space-3) var(--space-2) var(--space-1);
+  margin: 0 -0.375rem -0.375rem;
+  padding: 0 0.375rem 0.375rem;
   scrollbar-width: thin;
   scrollbar-color: var(--color-scrollbar) transparent;
 }
 
+/* Its edges reach past the column's own, where a ring drawn outside would be clipped; the ring is drawn just inside them. */
+.chat:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+}
+
+/* Short, the conversation sits at the foot of its space, just above the message box; long, it scrolls from its start. */
+.chat > :first-child {
+  margin-block-start: auto;
+}
+
+/* A line keeps its own height: a card that clips what overflows it would otherwise be squeezed shorter than its words. */
+.chat > * {
+  flex: none;
+}
+
 /*
- * Earlier lines fade out at the top of the conversation instead of being cut through. The fade stays
- * at the top while the lines scroll under it, takes no room of its own (the negative margin cancels the
- * gap after it), and lets every press through.
+ * Earlier lines fade out at the top of the conversation instead of being cut through. A short line (a reply,
+ * a sent message, an undo card) is one or two lines of text, so the fade has to stay solid for most of its
+ * own height or the line just under the Rules card reads as a sliced-off sliver instead of fading away: it
+ * stays at the top while the lines scroll under it, takes no room of its own (the negative margin cancels
+ * the gap after it), and lets every press through.
  */
 .chat::before {
   content: '';
@@ -4833,127 +6007,536 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   inset-block-start: 0;
   z-index: 1;
   flex: none;
-  block-size: var(--space-3);
+  block-size: var(--space-6);
   margin-block-end: calc(-1 * var(--space-4));
-  background: linear-gradient(to bottom, var(--color-paper), transparent);
+  background: linear-gradient(to bottom, var(--color-paper) 0%, var(--color-paper) 60%, transparent);
   pointer-events: none;
 }
 
-.chat-line p {
-  margin: 0;
+/* A line typed with Shift+Enter keeps its breaks. */
+.chat-line.msg--user {
+  white-space: pre-line;
 }
 
-.chat-line--person {
-  align-self: flex-end;
-  max-inline-size: 85%;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--color-bubble-border);
-  border-radius: 0.375rem;
-  background: var(--color-bubble);
-  overflow-wrap: anywhere;
-}
-
-.chat-line--brownie {
+/* What "here" meant in the line above it, said small and tucked under the bubble. */
+.chat-line__here {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  align-self: flex-end;
+  gap: 0.375rem;
+  margin: calc(-1 * var(--space-2)) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: end;
+}
+
+.chat-line__here > svg {
+  flex: none;
+}
+
+/* Where to begin: a few small pills under Brownie's first words. */
+.chat-line__starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A change made to the form's fill spots, said as one card with its Undo beside it. */
+.chat-line--done {
+  display: flex;
+  align-items: center;
   gap: var(--space-3);
-  align-items: flex-start;
+  padding: 0.625rem 0.625rem 0.625rem 0.9375rem;
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.chat-line--done > svg {
+  flex: none;
+  color: var(--color-success);
+}
+
+.chat-line--done > p {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.chat-line--brownie .button {
-  min-block-size: 2rem;
-  padding-inline: var(--space-3);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-sm);
+.chat-line--done > .button {
+  flex: none;
+}
+
+/* An error said in the conversation reads at the size of the line around it, not as small print. */
+.msg__body .field-error {
+  font-size: inherit;
+  line-height: inherit;
 }
 
 .chat-line__quote {
   margin: 0;
   padding-inline-start: var(--space-3);
-  border-inline-start: 3px solid var(--color-hairline);
+  border-inline-start: 3px solid var(--color-outline);
 }
 
-/* What Brownie can do, as one card of rows, like the numbered choices. */
+/* What Brownie can do, as one card of rows like the numbered choices, without the numbers: each row is a request to try. */
 .chat-suggestions {
-  list-style: none;
-  margin: 0;
-  padding: var(--space-1);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  gap: 0.125rem;
   inline-size: 100%;
-  max-inline-size: 35rem;
+  padding: 0.4375rem 0.5rem;
   border: 1px solid var(--color-hairline);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
+  list-style: none;
 }
 
 .chat-suggestion {
   inline-size: 100%;
-  min-block-size: 2.5rem;
-  padding: var(--space-2) var(--space-3);
+  min-block-size: 2.625rem;
+  padding: 0.25rem 0.75rem;
   border: 0;
   border-radius: 0.5rem;
   background: transparent;
-  text-align: start;
   font-size: var(--font-size-sm);
+  line-height: 1.4;
+  text-align: start;
   cursor: pointer;
   transition: background-color var(--motion-fast) var(--motion-ease);
 }
 
 .chat-suggestion:hover,
 .chat-suggestion:focus-visible {
-  background: var(--color-paper);
+  background: var(--color-paper-soft);
 }
 
+/* "Working on it…" as a line of Brownie's, with a ring that turns beside the words (and stands still under reduced motion). */
 .chat-typing {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
   color: var(--color-text-muted);
+}
+
+/*
+ * A reading, its questions, what it found and what is left to review. The first three are turns of Brownie's that hold
+ * cards, so the cards sit 14px apart; the cards themselves are the shared chat card.
+ */
+.run-status,
+.proposal,
+.proposal-review {
+  inline-size: 100%;
 }
 
 .run-status,
 .proposal {
-  inline-size: 100%;
+  gap: 0.875rem;
 }
 
-.question {
-  inline-size: 100%;
+.run-status p,
+.proposal p {
+  margin: 0;
+}
+
+/* Once the values are up for approval, the questions the person answered are one quiet line above them. */
+.run-status--answers {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.run-status--answers > svg {
+  flex: none;
+  color: var(--color-success);
+}
+
+.run-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.875rem;
+}
+
+/* The small print beside a reading's buttons: what the reading does to the document, or what it waits for. */
+.run-status__note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+/* Stopping is there if it is wanted, at the end of the row, and does not compete with carrying on. */
+.run-status__stop {
+  margin-inline-start: auto;
+}
+
+/* The progress card: the sentence, a bar that shows it is still going, the steps, and the way to stop. */
+.run-status__card {
+  display: grid;
+  gap: 0.8125rem;
+  padding: 1rem;
+}
+
+.run-status__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.run-status__spinner {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+}
+
+.run-status__sentence {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+}
+
+/*
+ * It cannot say how far the reading is, only that it is going: a honey stretch sweeps along the track. It starts partway
+ * along, so a bar that is not moving still shows some honey. The native bar's own look is switched off for each engine
+ * (one rule apiece: an engine that does not know a name would drop a rule that listed it).
+ */
+.run-status__bar {
+  display: block;
+  inline-size: 100%;
+  block-size: 0.25rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  appearance: none;
+  background: linear-gradient(var(--color-honey), var(--color-honey)) 44% 0 / 22% 100% no-repeat var(--color-track);
+  animation: run-sweep 1.8s linear infinite -0.83s;
+}
+
+.run-status__bar::-webkit-progress-bar {
+  background: transparent;
+}
+
+.run-status__bar::-webkit-progress-value {
+  background: transparent;
+}
+
+.run-status__bar::-moz-progress-bar {
+  background: transparent;
+}
+
+@keyframes run-sweep {
+  from {
+    background-position: -28.2% 0;
+  }
+  to {
+    background-position: 128.2% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-status__bar {
+    animation: none;
+  }
+}
+
+/* A display that forces its own colours drops backgrounds, which would erase the bar; hand it the system's. */
+@media (forced-colors: active) {
+  .run-status__bar {
+    forced-color-adjust: none;
+    background: linear-gradient(Highlight, Highlight) 44% 0 / 22% 100% no-repeat GrayText;
+  }
+}
+
+.run-status__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.875rem;
+}
+
+/* A question: its number and what it asks, the answers on offer, and what the source says. */
+.question {
+  /* The answers sit further apart here than in a list of approvals. */
+  --choices-gap: 0.5rem;
+}
+
+.question__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6875rem;
+  padding: 0.75rem 0.875rem 0.625rem;
+}
+
+.question__number {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  border-radius: 50%;
+  background: var(--color-honey);
+  color: var(--color-text);
+  font-size: 0.6875rem;
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
 }
 
 .question__prompt {
-  font-weight: 500;
+  margin-block-start: 0.0625rem;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
 }
 
-.proposal__values {
-  margin: 0;
-  padding-inline-start: var(--space-5);
+.question__answered,
+.question__quote {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
-.proposal__label {
-  font-weight: 500;
+.question__answered {
+  padding: 0 0.875rem 0.75rem 2.6875rem;
 }
 
-.proposal__skipped {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
+.question__answered > svg {
+  flex: none;
+  color: var(--color-success);
+}
+
+.question__quote {
+  padding: 0 1.25rem 0.6875rem;
+}
+
+.question__quote > svg {
+  flex: none;
+  margin-block-start: 0.0625rem;
+}
+
+/*
+ * What Brownie found, or the change asked for: a card of rows, the name of a fill spot, its value, and where the value
+ * came from. A value that is long, or holds several lines, wraps inside its own column.
+ */
+.proposal__table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.proposal__table tr + tr {
+  border-block-start: 1px solid var(--color-hairline);
+}
+
+.proposal__table th,
+.proposal__table td {
+  padding-block: 0.625rem;
+  font-weight: 400;
+  text-align: start;
+  vertical-align: top;
+}
+
+.proposal__table .proposal__label {
+  inline-size: 7.625rem;
+  padding-inline: 0.875rem 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+/* "Now" and "Change to" are short names, so the values sit nearer them than a fill spot's name would let them. */
+.proposal__table--change .proposal__label {
+  inline-size: 6.0625rem;
+}
+
+/* A table's columns, above its lines, in the order the cells of each line follow. */
+.proposal__columns {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.proposal__value {
+  padding-inline-end: 0.75rem;
+  line-height: 1.4286;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.proposal__lines {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proposal__source {
+  inline-size: 1%;
+  padding-inline-end: 0.875rem;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.proposal__source .tag {
+  vertical-align: top;
+}
+
+/* What the document holds now is struck through; what it would become sits on honey. */
+.proposal__was {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+
+.proposal__empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.proposal__row--new {
   background: var(--color-honey-soft);
 }
 
+.proposal__row--new .proposal__label {
+  color: var(--color-honey-ink);
+}
+
+.proposal__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6875rem 0.875rem;
+  border-block-start: 1px solid var(--color-hairline);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.proposal__note > svg {
+  flex: none;
+}
+
+.proposal__skipped {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.proposal__skipped > svg {
+  flex: none;
+  color: var(--color-honey-ink);
+}
+
 .proposal__skipped ul {
-  margin: var(--space-1) 0 0;
-  padding-inline-start: var(--space-5);
+  margin: 0.25rem 0 0;
+  padding-inline-start: 1.25rem;
 }
 
-.proposal :deep(.choices),
-.question :deep(.choices) {
-  inline-size: 100%;
-  max-inline-size: 35rem;
+.proposal__status {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
-/* The sources attached to the document, on the person's side, each as a file card. */
+/* What a proposal filled in, left to check: a heading and a count, then a row for each fill spot with a way to it. */
+.proposal-review__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem;
+}
+
+.proposal-review__title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+}
+
+.proposal-review__count {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.proposal-review__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proposal-review__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.625rem;
+  padding: 0.4375rem 0.875rem;
+  border-block-start: 1px solid var(--color-hairline);
+  font-size: var(--font-size-sm);
+}
+
+/* Where the row is too narrow for all of it on one line, the tags and the way to the spot go together under the name. */
+.proposal-review__tail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem 0.625rem;
+  margin-inline-start: auto;
+}
+
+/* The fill spot open on the page now. */
+.proposal-review__row--open {
+  background: var(--color-cocoa-soft);
+}
+
+.proposal-review__name {
+  flex: 1 1 8rem;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-review__row--open .proposal-review__name {
+  font-weight: var(--font-weight-medium);
+}
+
+.proposal-review__go {
+  min-block-size: 1.5rem;
+  margin-inline-end: -0.375rem;
+  padding: 0 0.375rem;
+  line-height: 1.4;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-cocoa);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.proposal-review__go:hover {
+  text-decoration: underline;
+}
+
+/* Cocoa on the open row's tint needs the deeper cocoa to stay readable. */
+.proposal-review__row--open .proposal-review__go {
+  color: var(--color-cocoa-strong);
+}
+
+/* The sources attached to the document, on the person's side, each as a small file card. */
 .source-cards {
   list-style: none;
   margin: 0;
@@ -4964,57 +6547,39 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   gap: var(--space-2);
 }
 
-.source-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  max-inline-size: 90%;
-  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
-  border: 1px solid var(--color-hairline);
-  border-radius: 0.625rem;
-  background: var(--color-surface);
+/* Where a copy came from can be a long sentence ending in a link, so it wraps instead of being cut off. */
+.source-card__origin {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
-.source-card__tile {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  inline-size: 1.875rem;
-  block-size: 1.875rem;
-  border-radius: 0.375rem;
-  background: var(--color-cocoa-tile);
-  color: var(--color-surface);
+/*
+ * The panel for adding a source floats over the conversation, just above the message box. Its anchor is a flex item of
+ * Brownie's panel that takes no room: the negative margin takes back the gap the panel puts before it (the gap
+ * between its parts), so the message box does not move when the panel opens. The panel is drawn up from the anchor,
+ * a little lower than the gap would put it, so it sits close above the box.
+ */
+.add-source-anchor {
+  position: relative;
+  z-index: 3;
+  block-size: 0;
+  margin-block-start: calc(-1 * var(--space-4));
 }
 
-.source-card__body {
-  display: flex;
-  flex-direction: column;
-  min-inline-size: 0;
-  line-height: 1.35;
-}
-
-.source-card__name {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-
-.source-card__meta {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-/* Opened to be used, so it keeps its height (up to a cap on a wide page) and the conversation gives way to it. */
 .add-source {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-hairline);
-  border-radius: 1rem;
-  background: var(--color-surface);
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: -0.1875rem;
+  display: grid;
+  gap: 0.625rem;
+  max-block-size: min(44rem, calc(100dvh - 15rem));
+  padding: 1rem;
   overflow-y: auto;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
   font-size: var(--font-size-sm);
 }
 
@@ -5026,113 +6591,204 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .add-source__title {
-  font-weight: 600;
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
 }
 
-/* The message box: a rounded card with the question as its placeholder, + at its start and Send at its end. */
-.composer {
+.add-source__lede {
+  margin-block-start: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+/* The cross is drawn 20px, so the button's own room is taken back and the cross lines up with the panel's text. */
+.add-source__close {
   flex: none;
+  margin-inline-end: -0.375rem;
+}
+
+/* The rows: uploading a file, then the two connections the pickers draw, each with a tile, what it does, and a chevron. */
+.add-source__row {
+  border-radius: var(--radius-md);
+}
+
+.add-source__row--open {
+  background: var(--color-paper-soft);
+}
+
+.add-source__row-head {
+  position: relative;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-3) var(--space-3) var(--space-4);
-  border: 1px solid var(--color-hairline);
-  border-radius: 1.125rem;
-  background: var(--color-surface);
-  transition: border-color var(--motion-fast) var(--motion-ease);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.625rem 0.5625rem;
+  border-radius: var(--radius-md);
 }
 
-.composer:focus-within {
-  border-color: var(--color-cocoa);
+.add-source__row:not(.add-source__row--open) .add-source__row-head:hover {
+  background: var(--color-paper-soft);
 }
 
-/* Forced colours make every border the same system colour, so focus is outlined in the system's own focus colour. */
-@media (forced-colors: active) {
-  .composer:focus-within {
-    outline: 2px solid Highlight;
-    outline-offset: 2px;
-  }
+.add-source__row-text {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 0.125rem;
+  min-inline-size: 0;
 }
 
-.composer__input {
-  inline-size: 100%;
-  min-block-size: 3rem;
-  max-block-size: 10rem;
-  border: 0;
+/* The title is the button, and its press area stretches over the whole row. */
+.add-source__toggle {
+  justify-self: start;
   padding: 0;
+  border: 0;
   background: transparent;
-  resize: none;
-  field-sizing: content;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+  text-align: start;
+  cursor: pointer;
 }
 
-.composer__input::placeholder {
+.add-source__toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.add-source__toggle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+}
+
+.add-source__toggle:focus-visible {
+  box-shadow: none;
+}
+
+.add-source__toggle:focus-visible::after {
+  box-shadow: var(--focus-ring);
+}
+
+.add-source__chevron {
+  flex: none;
   color: var(--color-text-muted);
 }
 
-.composer__input:focus-visible {
-  box-shadow: none;
-  outline: none;
+/* Lines up under the row's words, past the tile. */
+.add-source__row-body {
+  display: grid;
+  justify-items: start;
+  gap: 0.625rem;
+  padding: 0 0.75rem 0.75rem 3.1875rem;
 }
 
-.composer__tools {
+.add-source__input:focus-visible + .add-source__choose {
+  box-shadow: var(--focus-ring);
+}
+
+.add-source__choose--busy {
+  opacity: 0.4;
+  cursor: progress;
+}
+
+.add-source__status {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.add-source__files {
+  display: grid;
+  gap: 0.5rem;
+  inline-size: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.add-source__files .source-chip {
+  inline-size: 100%;
+}
+
+.add-source__foot {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-inline-start: calc(-1 * var(--space-2));
+  gap: 0.5rem;
+  margin-block-start: 0.125rem;
+  padding-inline: 0.5625rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
 }
 
-/* The design's + is drawn heavier than the other icons, so the one way to add a source stands out. */
-.composer__add {
-  color: var(--color-text);
+.add-source__foot > svg {
+  flex: none;
 }
 
-.composer__add :deep(.app-icon) {
-  stroke-width: 2.4;
+/*
+ * The message box is the shared composer: the question as its placeholder, + at its start, the send button at its
+ * end. Only what is particular to this page is set here, and it never shrinks under the conversation.
+ */
+.composer {
+  flex: none;
 }
 
+/* Which source Brownie reads, when there are several: a small pill beside the +. */
 .composer__source {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-inline-size: 0;
-  font-size: var(--font-size-sm);
+  margin-inline-start: var(--space-1);
   color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.composer__source-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-inline-size: 0;
 }
 
 .composer__source select {
+  appearance: none;
   min-inline-size: 0;
-  max-inline-size: 12rem;
-}
-
-.composer__send {
-  margin-inline-start: auto;
-  display: inline-grid;
-  place-items: center;
-  inline-size: 2.25rem;
-  block-size: 2.25rem;
-  border: 1px solid var(--color-cocoa);
-  border-radius: 50%;
-  background: var(--color-cocoa);
-  color: var(--color-surface);
+  max-inline-size: 11rem;
+  block-size: 2rem;
+  padding: 0 1.75rem 0 0.75rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
   cursor: pointer;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    border-color var(--motion-fast) var(--motion-ease);
 }
 
-.composer__send:hover:not([aria-disabled='true']) {
-  border-color: var(--color-cocoa-strong);
-  background: var(--color-cocoa-strong);
+.composer__source select:hover:not(:disabled) {
+  border-color: var(--color-text-faint);
+  background: var(--color-paper-soft);
 }
 
-.composer__send[aria-disabled='true'] {
-  border-color: var(--color-bubble-border);
-  background: var(--color-bubble-border);
+.composer__source select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer__source-select > svg {
+  position: absolute;
+  inset-inline-end: 0.5rem;
   color: var(--color-text-muted);
-  cursor: default;
+  pointer-events: none;
 }
 
 .assistant-disclaimer {

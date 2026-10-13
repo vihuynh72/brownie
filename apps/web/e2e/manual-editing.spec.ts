@@ -44,8 +44,10 @@ test('a person fills a document by hand on its page and the typed values survive
   await page.reload()
   await expect(page.getByLabel(/^Meeting attendees/)).toHaveValue('Priya Rao, Alex Chen, Jose Nunez', { timeout: 15_000 })
 
-  // The Rules card reads the text style a value takes from the template itself.
+  // The Rules card reads the text style a value takes from the template itself. It only opens itself
+  // while a fill spot is selected, and the reload above left none selected, so open it by hand first.
   const rules = page.getByRole('region', { name: 'Rules' })
+  await rules.getByRole('button', { name: 'About this form' }).click()
   await expect(rules.getByText('Liberation Sans', { exact: true })).toBeVisible({ timeout: 15_000 })
   await expect(rules.getByText('11 pt', { exact: true })).toBeVisible()
   await expect(rules.getByText('could not be loaded')).toHaveCount(0)
@@ -75,10 +77,10 @@ test('a person fills a document by hand on its page and the typed values survive
   // document -- no model call for a change.
   await page.getByLabel('How may I help you?').fill('change meeting title to Garden Club Spring Planning')
   await page.getByLabel('How may I help you?').press('Enter')
-  await expect(page.getByText('Here is the change you asked for:')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/^Here is the change you asked for in /)).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.proposal').getByText('Garden Club Spring Planning')).toBeVisible()
-  await page.getByRole('button', { name: /I approve, fill it in/ }).click()
-  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in 1 value\./)).toBeVisible({ timeout: 15_000 })
+  await page.getByRole('button', { name: /I approve, make the change/ }).click()
+  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in 1 fill spot\./)).toBeVisible({ timeout: 15_000 })
   await expect(page.getByLabel(/^Meeting title/)).toHaveValue('Garden Club Spring Planning')
 
   // Undo takes the document back to how it read before that change; undoing again is not needed here.
@@ -87,8 +89,8 @@ test('a person fills a document by hand on its page and the typed values survive
   // Redo by asking again, so the export below carries the accepted change.
   await page.getByLabel('How may I help you?').fill('change meeting title to Garden Club Spring Planning')
   await page.getByLabel('How may I help you?').press('Enter')
-  await expect(page.getByRole('button', { name: /I approve, fill it in/ })).toBeVisible({ timeout: 15_000 })
-  await page.getByRole('button', { name: /I approve, fill it in/ }).click()
+  await expect(page.getByRole('button', { name: /I approve, make the change/ })).toBeVisible({ timeout: 15_000 })
+  await page.getByRole('button', { name: /I approve, make the change/ }).click()
   await expect(page.getByLabel(/^Meeting title/)).toHaveValue('Garden Club Spring Planning', { timeout: 15_000 })
 
   // The print preview draws the compiled PDF on demand -- a real render through the isolated

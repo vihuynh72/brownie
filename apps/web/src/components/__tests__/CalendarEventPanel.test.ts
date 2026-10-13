@@ -48,6 +48,8 @@ const STARTS = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeSty
   new Date('2026-10-05T09:00:00+02:00'),
 )
 const EVENT = `Budget review, ${STARTS}, prepared at ${AT}`
+/** The day the document holds, as the closed row says it. */
+const DAY = new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeZone: 'UTC' }).format(new Date('2026-10-05T00:00:00Z'))
 
 async function mountPanel(options: { unsavedWork?: boolean; suggestedDate?: string | null } = {}) {
   const router = createRouter({
@@ -180,6 +182,26 @@ function buttonNamed(wrapper: Wrapper, name: string) {
   return found
 }
 
+/** The row that opens into the form: a button that is the title, and is open or closed. */
+function toggleOf(wrapper: Wrapper) {
+  return wrapper.find('button[aria-expanded]')
+}
+
+/** Opens the closed row into the form, as a person does before typing anything. */
+async function openForm(wrapper: Wrapper): Promise<void> {
+  await toggleOf(wrapper).trigger('click')
+}
+
+/** The card of one event: the list item that holds its sentence, its chip, its table and its buttons. */
+function cardOf(wrapper: Wrapper, id: number): HTMLElement {
+  return wrapper.find(`#calendar-event-${id}`).element.closest('li') as HTMLElement
+}
+
+/** What the chip at the top of an event's card says. */
+function chipOf(wrapper: Wrapper, id: number): string {
+  return (cardOf(wrapper, id).querySelector('.tag')?.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
 beforeEach(() => {
   resetCapabilitiesCache()
   vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_CREATE_EVENT']))
@@ -196,6 +218,7 @@ describe('where adding events is offered', () => {
   it('prepares the event as typed, shows exactly what approving adds, and adds it only with the hash of what was shown', async () => {
     vi.mocked(proposeCalendarEvent).mockResolvedValue(action())
     const wrapper = await mountPanel()
+    await openForm(wrapper)
     expect((wrapper.find('#calendar-event-title').element as HTMLInputElement).value).toBe('Budget review')
     expect((wrapper.find('#calendar-event-start').element as HTMLInputElement).value).toBe('2026-10-05T09:00')
     await wrapper.find('#calendar-event-zone').setValue('Europe/Paris')
@@ -235,6 +258,7 @@ describe('where adding events is offered', () => {
   it('prepares an all-day event by its first and last day, with no time zone', async () => {
     vi.mocked(proposeCalendarEvent).mockResolvedValue(action())
     const wrapper = await mountPanel()
+    await openForm(wrapper)
     await wrapper.find('input[type="checkbox"]').setValue(true)
     await wrapper.find('#calendar-event-last-day').setValue('2026-10-06')
     await wrapper.find('form').trigger('submit')
@@ -249,6 +273,7 @@ describe('where adding events is offered', () => {
     vi.mocked(proposeCalendarEvent).mockRejectedValue(new ApiRequestError(409, problem(409, 'ACTION_NOT_PROPOSABLE', 'TIME_SKIPPED',
       'The start time does not happen on that day in Europe/Paris: the clocks go forward over it.')))
     const wrapper = await mountPanel()
+    await openForm(wrapper)
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -256,6 +281,9 @@ describe('where adding events is offered', () => {
       'Nothing was prepared. The start time does not happen on that day in Europe/Paris: the clocks go forward over it.',
     )
     expect(wrapper.findAll('li')).toHaveLength(0)
+    // The form stays open, with the focus back on the button that was pressed, so the time can be corrected.
+    expect(wrapper.find('form').exists()).toBe(true)
+    expect(window.document.activeElement?.id).toBe('calendar-event-prepare')
   })
 
   it('never sends an event again whose outcome is unknown: it asks Google, or records that the person looked', async () => {
@@ -339,6 +367,8 @@ describe('where adding events is offered', () => {
     try {
       vi.mocked(listActions).mockResolvedValue([action(), action({ id: 40, state: 'OUTCOME_UNKNOWN', sent: true })])
       const wrapper = await mountPanel()
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+      await openForm(wrapper)
       expect(wrapper.findAll('#calendar-event-zone option').length).toBeGreaterThanOrEqual(3)
       expect(await axe(wrapper.element)).toHaveNoViolations()
     } finally {
@@ -347,7 +377,144 @@ describe('where adding events is offered', () => {
   })
 })
 
+describe('the row that opens into the form', () => {
+  it('starts closed and says what it is prefilled with, then opens into the form and closes again keeping what was typed', async () => {
+    const wrapper = await mountPanel()
+    const toggle = toggleOf(wrapper)
+
+    expect(toggle.text()).toBe('Add an event to Google Calendar')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBeUndefined()
+    expect(toggle.attributes('aria-describedby')).toBe('calendar-event-prefill')
+    expect(wrapper.find('#calendar-event-prefill').text()).toBe(`Prefilled with this document’s title and ${DAY}. No guests are invited.`)
+    expect(wrapper.find('form').exists()).toBe(false)
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(toggle.attributes('aria-controls')).toBe('calendar-event-form')
+    expect(wrapper.find('#calendar-event-form').exists()).toBe(true)
+    await wrapper.find('#calendar-event-location').setValue('Town hall')
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('form').exists()).toBe(false)
+    await toggle.trigger('click')
+    expect((wrapper.find('#calendar-event-location').element as HTMLInputElement).value).toBe('Town hall')
+  })
+
+  it('says only what it can when the document holds no day, or one that is not a day, and still opens', async () => {
+    const none = await mountPanel({ suggestedDate: null })
+    expect(none.find('#calendar-event-prefill').text()).toBe('Prefilled with this document’s title. No guests are invited.')
+    await openForm(none)
+    expect((none.find('#calendar-event-start').element as HTMLInputElement).value).toBe('')
+
+    // A date that looks like one but is not (there is no month 13) must not stop the row from drawing.
+    const odd = await mountPanel({ suggestedDate: '2026-13-45' })
+    expect(odd.find('#calendar-event-prefill').text()).toBe('Prefilled with this document’s title. No guests are invited.')
+  })
+
+  it('closes the form once the event is prepared, and puts the focus on the card of the event', async () => {
+    vi.mocked(proposeCalendarEvent).mockResolvedValue(action())
+    const wrapper = await mountPanel()
+    await openForm(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(toggleOf(wrapper).attributes('aria-expanded')).toBe('false')
+    expect(window.document.activeElement?.id).toBe('calendar-event-41')
+    expect(chipOf(wrapper, 41)).toBe('Waiting for your approval')
+  })
+
+  it('names its form fields for the people who use them, and passes the accessibility scan open', async () => {
+    const zones = vi
+      .spyOn(Intl as unknown as { supportedValuesOf: (key: string) => string[] }, 'supportedValuesOf')
+      .mockReturnValue(['UTC', 'Europe/Paris'])
+    try {
+      const wrapper = await mountPanel()
+      await openForm(wrapper)
+      for (const label of ['Title', 'Starts', 'Ends', 'Time zone', 'Place (optional)', 'Description (optional)']) {
+        expect(wrapper.findAll('label').some((candidate) => candidate.text() === label)).toBe(true)
+      }
+      await wrapper.find('input[type="checkbox"]').setValue(true)
+      expect(wrapper.findAll('label').some((candidate) => candidate.text() === 'First day')).toBe(true)
+      expect(await axe(wrapper.element)).toHaveNoViolations()
+    } finally {
+      zones.mockRestore()
+    }
+  })
+})
+
+describe('each event as a card of its own', () => {
+  it('shows an event waiting for approval with a chip that says so and the table of what it adds, above the closed row for another', async () => {
+    vi.mocked(listActions).mockResolvedValue([action()])
+    const wrapper = await mountPanel()
+
+    expect(wrapper.find('h3').text()).toBe('Add an event to Google Calendar')
+    expect(chipOf(wrapper, 41)).toBe('Waiting for your approval')
+    expect(cardOf(wrapper, 41).classList.contains('save-card--approval')).toBe(true)
+    expect(Array.from(cardOf(wrapper, 41).querySelectorAll('dt')).map((term) => term.textContent)).toEqual([
+      'What',
+      'When',
+      'Where',
+      'Who is told',
+      'Settings',
+      'Afterwards',
+    ])
+    const [first, second] = wrapper.findAll('.save-card').map((card) => card.element)
+    expect(first).toBe(cardOf(wrapper, 41))
+    expect(second?.contains(toggleOf(wrapper).element)).toBe(true)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('says where each event stands in the chip at the top of its card, and draws one that needs a look with an edge of its own', async () => {
+    vi.mocked(listActions).mockResolvedValue([
+      action({ id: 45, state: 'SUCCEEDED', sent: true, verification: 'MATCHED', externalLink: 'https://www.google.com/calendar/event?eid=abc' }),
+      action({ id: 44, state: 'OUTCOME_UNKNOWN', sent: true }),
+      action({ id: 43, state: 'FAILED', failure: 'PERMISSION_REFUSED' }),
+      action({ id: 42, state: 'EXPIRED' }),
+    ])
+    const wrapper = await mountPanel()
+
+    expect([45, 44, 43, 42].map((id) => chipOf(wrapper, id))).toEqual(['Added', 'Not confirmed', 'Not added', 'Expired'])
+    expect(cardOf(wrapper, 44).classList.contains('save-card--attention')).toBe(true)
+    expect(cardOf(wrapper, 45).classList.contains('save-card--attention')).toBe(false)
+    const link = cardOf(wrapper, 45).querySelector('a[target="_blank"]')
+    expect(link?.classList.contains('button')).toBe(true)
+    expect(link?.getAttribute('rel')).toBe('noopener noreferrer')
+    expect(link?.textContent?.replace(/\s+/g, ' ')).toBe(`Open in Google Calendar (${EVENT}, opens in a new tab)`)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('puts the heading on the first card whatever it is, so the focus has somewhere to return to', async () => {
+    vi.mocked(listActions).mockResolvedValue([action({ state: 'CANCELLED' })])
+    const withEvent = await mountPanel()
+    expect(withEvent.findAll('#calendar-event-heading')).toHaveLength(1)
+    expect(withEvent.find('#calendar-event-heading').element.closest('li')).toBe(cardOf(withEvent, 41))
+    expect(withEvent.find('section').attributes('aria-labelledby')).toBe('calendar-event-heading')
+
+    vi.mocked(listActions).mockResolvedValue([])
+    const onlyRow = await mountPanel()
+    expect(onlyRow.findAll('#calendar-event-heading')).toHaveLength(1)
+    expect(onlyRow.find('#calendar-event-heading').element.contains(toggleOf(onlyRow).element)).toBe(true)
+  })
+})
+
 describe('connecting for adding events', () => {
+  it('says in a chip that nothing is connected, and that a connection Google ended is paused, with the honey edge', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const none = await mountPanel()
+    expect(none.find('.save-card .tag').text()).toBe('Not connected')
+    expect(none.find('.save-card').classes()).not.toContain('save-card--attention')
+    expect(none.find('#calendar-event-connect').exists()).toBe(true)
+
+    vi.mocked(listConnections).mockResolvedValue([adding({ state: 'RECONNECT_REQUIRED', reconnectReason: 'TOKEN_REJECTED' })])
+    const paused = await mountPanel()
+    expect(paused.find('.save-card .tag').text()).toBe('Paused')
+    expect(paused.find('.save-card').classes()).toContain('save-card--attention')
+    expect(paused.find('#calendar-event-connect').text()).toBe('Connect Google Calendar for adding events again')
+  })
+
   it('asks for its own connection, back to this document, and waits for unsaved changes', async () => {
     vi.mocked(listConnections).mockResolvedValue([])
     const waiting = await mountPanel({ unsavedWork: true })

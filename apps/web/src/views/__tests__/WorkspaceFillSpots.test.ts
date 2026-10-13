@@ -276,7 +276,11 @@ const byId = (page: Page, id: string) => page.find(`[id="${id}"]`)
 const dialogs = (page: Page) => page.findAll('dialog.spot-dialog').filter((dialog) => dialog.attributes('open') !== undefined)
 const openDialog = (page: Page) => dialogs(page)[0]!
 const liveRegion = (page: Page) => page.get('.workspace > [aria-live="polite"][aria-atomic="true"]')
-const chatLines = (page: Page) => page.findAll('.chat-line--brownie').map((line) => norm(line.find('p').text()))
+/** What Brownie said, line by line: its own lines, and the cards that report a change made to the fill spots. */
+const chatLines = (page: Page) =>
+  page
+    .findAll('.chat-line:not(.msg--user)')
+    .map((line) => norm(line.findAll('p').find((paragraph) => !paragraph.classes('msg__who'))?.text() ?? ''))
 
 async function selectSpot(page: Page, id: string): Promise<void> {
   ;(byId(page, id).element as HTMLElement).focus()
@@ -336,6 +340,11 @@ describe('WorkspaceView: adding a fill spot', () => {
     expect(chatLines(page).at(-1)).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
     expect(liveRegion(page).text()).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
     expect(buttonNamed(page, 'Undo adding Company')).toBeDefined()
+    // Said as one card with its Undo inside it, not as a line of Brownie's with a button under it.
+    const card = page.get('.chat-line--done')
+    expect(norm(card.get('p').text())).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
+    expect(norm(card.get('button').text())).toBe('Undo adding Company')
+    expect(card.find('.msg__who').exists()).toBe(false)
   })
 
   it('saves what was typed before it asks for the change', async () => {
@@ -368,7 +377,7 @@ describe('WorkspaceView: adding a fill spot', () => {
     const dialog = openDialog(page)
     // The bar stands down behind the dialog; it stays in the page for focus to go back to.
     expect((page.get('.fill-here-bar').element as HTMLElement).style.display).toBe('none')
-    expect(dialog.get('.place-spot__covered').text()).toBe('________')
+    expect(dialog.get('.place-spot__where-words').text()).toContain('Replace \u201c____\u201d after \u201cCompany:\u201d')
     expect((dialog.get('input[type="text"]').element as HTMLInputElement).value).toBe('Company')
     expect(await axe(page.element)).toHaveNoViolations()
     serveVersion5()
@@ -426,6 +435,28 @@ describe('WorkspaceView: adding a fill spot', () => {
     vi.mocked(getTemplateLayout).mockRejectedValue(refusal(422, 'TEMPLATE_LAYOUT_UNAVAILABLE'))
     const page = await mountPage()
     expect(buttonNamed(page, 'Add a fill spot')).toBeUndefined()
+    // Nor from Brownie's first words, which still offer what does not depend on the page.
+    expect(buttonNamed(page, 'Add a fill spot to this form', 'ul[aria-label="Ways to begin"]')).toBeUndefined()
+    expect(buttonNamed(page, 'Add notes or a transcript', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+  })
+
+  it('offers the same way in from Brownie’s first words, until something has been said', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue({ kind: 'NONE', summary: 'Select the place on the page first, then ask again.', executable: false, usesModel: false, help: [] })
+    const page = await mountPage()
+    const starters = 'ul[aria-label="Ways to begin"]'
+
+    // Named a little more fully than the button over the page, so the two are never mistaken for one another.
+    expect(buttonNamed(page, 'Add a fill spot', starters)).toBeUndefined()
+    await press(page, 'Add a fill spot to this form', starters)
+    expect(dialogs(page)).toHaveLength(1)
+    expect(openDialog(page).find('input[type="search"]').exists()).toBe(true)
+    await press(page, 'Cancel', 'dialog[open]')
+
+    const box = page.get('#assist-composer')
+    await box.setValue('add a fill spot for Company here')
+    await box.trigger('keydown', { key: 'Enter' })
+    await settle()
+    expect(page.find(starters).exists()).toBe(false)
   })
 })
 
@@ -481,7 +512,7 @@ describe('WorkspaceView: renaming and removing a fill spot', () => {
     await press(page, 'Remove… Title', 'section.selection-bar')
 
     const dialog = openDialog(page)
-    expect(dialog.findAll('.spot-change__line').map((line) => line.text())).toEqual([
+    expect(dialog.findAll('.spot-remove__line').map((line) => line.text())).toEqual([
       'Remove the fill spot Title? Its value stays in the version history.',
       'The form keeps its own box; Brownie just stops filling it.',
     ])
@@ -619,6 +650,9 @@ describe('WorkspaceView: fill spots from the chat', () => {
     expect(chatLines(page).at(-1)).toBe(
       'Added a fill spot for Company at the place you selected in the line "Company: ________". Forms you start from this template will have it too.',
     )
+    // The box's hint went with the text; what "here" meant stays under the line in the conversation.
+    expect(page.find('#assist-composer-here').exists()).toBe(false)
+    expect(norm(page.get('.chat-line__here').text())).toBe('"Here" is the place you chose on the page, in the paragraph "Company: ________".')
     expect(byId(page, 'edit-company').exists()).toBe(true)
     expect(buttonNamed(page, 'Undo adding Company')).toBeDefined()
   })
@@ -632,6 +666,8 @@ describe('WorkspaceView: fill spots from the chat', () => {
 
     expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company here')
     expect(chatLines(page).at(-1)).toBe('Select the place on the page first, then ask again.')
+    // No place was meant, so nothing is said under the line about one.
+    expect(page.find('.chat-line__here').exists()).toBe(false)
   })
 
   it('offers the lines the quoted words are on, and asks again with the one chosen', async () => {
@@ -660,7 +696,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
 
     expect(interpretAssist).toHaveBeenLastCalledWith(7, 1, 'add a fill spot for Ref after "Application"', second)
     expect(page.find('[aria-label="The paragraph the fill spot goes in"]').exists()).toBe(false)
-    expect(page.findAll('.chat-line--person').map((line) => norm(line.text())).at(-1)).toBe('Title: Application')
+    expect(page.findAll('.msg--user').map((line) => norm(line.text())).at(-1)).toBe('You said: Title: Application')
   })
 
   it('saves what was typed before the chat changes a fill spot, and asks against the version the save made', async () => {
@@ -694,7 +730,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
     await ask(page, 'rename Title to Report title')
 
     expect(executeAssist).not.toHaveBeenCalled()
-    expect(norm(page.findAll('.chat-line--brownie .field-error').at(-1)!.text())).toBe(
+    expect(norm(page.findAll('.msg--brownie .field-error').at(-1)!.text())).toBe(
       'What you typed on this page could not be saved, so nothing else was changed.',
     )
     expect((page.get('#assist-composer').element as HTMLTextAreaElement).value).toBe('rename Title to Report title')
@@ -767,7 +803,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
     const page = await mountPage()
     await ask(page, 'add a fill spot for Company after "Company:"')
 
-    expect(norm(page.findAll('.chat-line--brownie .field-error').at(-1)!.text())).toBe('Brownie cannot put a fill spot inside a link. Choose a place next to it.')
+    expect(norm(page.findAll('.msg--brownie .field-error').at(-1)!.text())).toBe('Brownie cannot put a fill spot inside a link. Choose a place next to it.')
   })
 })
 
@@ -843,7 +879,7 @@ describe('WorkspaceView: a newer version of the form', () => {
     await box.trigger('keydown', { key: 'Enter' })
     await settle()
 
-    expect(norm(page.findAll('.chat-line--brownie .field-error').at(-1)!.text())).toBe(
+    expect(norm(page.findAll('.msg--brownie .field-error').at(-1)!.text())).toBe(
       'This document is on an older version of its form. Move it to the newest version first, then try again.',
     )
     expect(buttonNamed(page, 'Move this document to it')).toBeDefined()

@@ -15,8 +15,8 @@ export type PdfTextStyle = NonNullable<PdfLayoutSpot['style']>
 export type PdfOverflow = PdfLayoutSpot['overflow']
 
 /** Brownie refuses a box smaller than this, in points: it could not hold a line of text. */
-export const MIN_BOX_WIDTH = 8
-export const MIN_BOX_HEIGHT = 6
+const MIN_BOX_WIDTH = 8
+const MIN_BOX_HEIGHT = 6
 /** The text sizes the server accepts for a box, in points. */
 export const MIN_TEXT_SIZE = 4
 export const MAX_TEXT_SIZE = 72
@@ -71,11 +71,11 @@ function validRotation(value: unknown): 0 | 90 | 180 | 270 {
 }
 
 /**
- * The order a reader meets the places on a page: lines from top to bottom, and along each line from
- * left to right. Two boxes are on one line when the lower one starts above the middle of the first box
+ * The places on a page that sit along one line of it: the lines from top to bottom, and the places of each line
+ * from left to right. Two boxes are on one line when the lower one starts above the middle of the first box
  * of that line, so boxes that sit a point or two apart still read across rather than down.
  */
-export function readingOrder<T extends { shown: PdfBox }>(spots: readonly T[]): T[] {
+export function spotLines<T extends { shown: PdfBox }>(spots: readonly T[]): T[][] {
   const byTop = [...spots].sort((left, right) => left.shown.y - right.shown.y || left.shown.x - right.shown.x)
   const lines: T[][] = []
   for (const spot of byTop) {
@@ -84,7 +84,25 @@ export function readingOrder<T extends { shown: PdfBox }>(spots: readonly T[]): 
     if (line && first && spot.shown.y < first.shown.y + first.shown.height / 2) line.push(spot)
     else lines.push([spot])
   }
-  return lines.flatMap((line) => line.sort((left, right) => left.shown.x - right.shown.x || left.shown.y - right.shown.y))
+  return lines.map((line) => line.sort((left, right) => left.shown.x - right.shown.x || left.shown.y - right.shown.y))
+}
+
+/** The order a reader meets the places on a page: line by line, from the top, and along each line from the left. */
+export function readingOrder<T extends { shown: PdfBox }>(spots: readonly T[]): T[] {
+  return spotLines(spots).flat()
+}
+
+/** The most the page rail's tick sits below the top of a box, in points: the middle of an ordinary line of text. */
+const TICK_REACH = 16
+
+/**
+ * Where the page rail marks a line of places, as a percentage down the page as shown: the middle of the highest
+ * box, or the middle of its first line when it is tall, so a box of several lines is marked where its text starts.
+ */
+export function tickTop(line: readonly { shown: PdfBox }[], page: { shownHeight: number }): string {
+  const highest = line.reduce((best, spot) => (spot.shown.y < best.shown.y ? spot : best), line[0]!)
+  const y = highest.shown.y + Math.min(highest.shown.height / 2, TICK_REACH)
+  return `${Math.round((y / page.shownHeight) * 1_000_000) / 10_000}%`
 }
 
 /**
@@ -200,6 +218,28 @@ export function pagePoint(
   }
 }
 
+/** About how wide a character of ordinary text is, as a fraction of its size: enough to tell a value that fits one line from one that wraps. */
+const AVERAGE_CHARACTER = 0.52
+
+/** What the export keeps clear inside a box Brownie drew, on every side, in points. */
+const BOX_PADDING = 1
+
+/**
+ * Whether a value sits on one line in the middle of its box. The export centres a single line of text in its box
+ * and starts wrapped text at the top; a box Brownie drew wraps what is too long for one line, and one of the form's
+ * own fields takes a single line unless the form made it for several. The page does the same, so what is typed
+ * sits where the export will put it. Whether a value fits one line is judged by an average width of text.
+ */
+export function centresLine(
+  box: { width: number },
+  sizePt: number,
+  kind: { multiline: boolean; formField: boolean },
+  value: string,
+): boolean {
+  if (kind.formField) return !kind.multiline
+  return [...value].length * sizePt * AVERAGE_CHARACTER <= box.width - 2 * BOX_PADDING
+}
+
 const FONT_FAMILIES: Record<PdfTextStyle['font'], string> = {
   SANS: '"Liberation Sans", Arial, Helvetica, sans-serif',
   SERIF: '"Liberation Serif", "Times New Roman", Times, serif',
@@ -247,6 +287,28 @@ export function nudgeBox(
     ? { ...shown, width: shown.width + dx, height: shown.height + dy }
     : { ...shown, x: shown.x + dx, y: shown.y + dy }
   return clampBox(boxFromDisplayed(moved, size, page.rotation), page)
+}
+
+export type BoxCorner = 'nw' | 'ne' | 'sw' | 'se'
+
+/** On a turned page a box's width and height swap, so each side as shown keeps the larger of the two smallest sizes. */
+const SMALLEST_SIDE = Math.max(MIN_BOX_WIDTH, MIN_BOX_HEIGHT)
+
+/**
+ * A box as the page shows it after one of its corners is dragged `dx` and `dy` points: the opposite corner stays where
+ * it is, the box stays on the page, and a corner dragged past the other side stops where the box is at its smallest.
+ */
+export function dragCorner(shown: PdfBox, corner: BoxCorner, dx: number, dy: number, page: { shownWidth: number; shownHeight: number }): PdfBox {
+  const between = (value: number, least: number, most: number) => Math.min(Math.max(value, least), most)
+  let left = shown.x
+  let top = shown.y
+  let right = shown.x + shown.width
+  let bottom = shown.y + shown.height
+  if (corner === 'nw' || corner === 'sw') left = between(left + dx, 0, right - SMALLEST_SIDE)
+  else right = between(right + dx, left + SMALLEST_SIDE, page.shownWidth)
+  if (corner === 'nw' || corner === 'ne') top = between(top + dy, 0, bottom - SMALLEST_SIDE)
+  else bottom = between(bottom + dy, top + SMALLEST_SIDE, page.shownHeight)
+  return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
 /** A box kept whole on its page and at least the smallest size Brownie accepts; its size is kept before its place. */

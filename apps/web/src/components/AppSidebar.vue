@@ -21,6 +21,10 @@ import { FORM_FILE_ACCEPT, learnFormAsTemplate, learnStepWords, type LearnStep, 
  * way. As a drawer, it floats over the page, takes focus while it is
  * open, and closes on Escape, on a tap outside, and on following a link.
  *
+ * The row of the page being shown is marked with aria-current, which is
+ * also what tints it, so the mark a screen reader announces and the one
+ * a sighted person sees cannot disagree.
+ *
  * Each template is a button that starts a new document from it straight
  * away and opens it; when the person has moved on to another page before
  * the document is made, it is offered as a link instead of pulling them
@@ -93,6 +97,16 @@ const trapping = computed(() => props.open && !props.docked)
 
 /** On the Trash Bin page itself, a link to it would go nowhere. */
 const onTrashPage = computed(() => route.name === 'trash')
+
+/**
+ * The first letter of the name in the account row's disc, capitals so a name typed in lower case still reads as
+ * an initial. Taken by code point rather than by index, so a name that opens with an emoji or a letter written
+ * as two code units is not cut in half. Empty when the account has no name or address to take it from.
+ */
+const accountInitial = computed(() => {
+  const label = session.accountLabel?.trim()
+  return label ? (Array.from(label)[0] ?? '').toLocaleUpperCase() : ''
+})
 
 function loadTemplatesWhenPossible(): void {
   const workspaceId = session.personalWorkspaceId
@@ -208,6 +222,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
  * brings them back here.
  */
 async function signOut(): Promise<void> {
+  // Not disabled with the disabled attribute while the request is in flight: the browser would drop the focus
+  // the button holds, which a screen-reader or keyboard user pressed it with. A second press is ignored instead.
+  if (signingOut.value) return
   signingOut.value = true
   signOutError.value = null
   try {
@@ -595,17 +612,17 @@ async function moveToTrash(): Promise<void> {
         </button>
       </div>
 
-      <nav class="sidebar__nav" aria-label="Main">
+      <nav aria-label="Main">
         <ul class="sidebar__list">
           <li>
             <RouterLink class="sidebar__link" to="/" @click="closeIfDrawer">
-              <AppIcon name="home" :size="26" />
+              <AppIcon name="home" :size="24" />
               <span>Home</span>
             </RouterLink>
           </li>
           <li>
             <RouterLink class="sidebar__link" to="/chat" @click="closeIfDrawer">
-              <AppIcon name="chat" :size="26" />
+              <AppIcon name="chat" :size="24" />
               <span>Chat</span>
             </RouterLink>
           </li>
@@ -630,6 +647,16 @@ async function moveToTrash(): Promise<void> {
             <AppIcon name="plus" :size="24" />
             <span class="visually-hidden">{{ adding !== null ? 'Adding a template from a file…' : 'Add a template from a file' }}</span>
           </button>
+          <!-- Signed out, this adds nothing yet: a link to sign in that brings the visitor back here, like Home's own upload control. -->
+          <RouterLink
+            v-else-if="session.status === 'anonymous'"
+            class="icon-button"
+            :to="{ name: 'signin', query: { next: route.fullPath } }"
+            @click="closeIfDrawer"
+          >
+            <AppIcon name="plus" :size="24" />
+            <span class="visually-hidden">Sign in to add a template from a file</span>
+          </RouterLink>
           <input
             v-if="session.status === 'authenticated'"
             ref="fileInputRef"
@@ -722,7 +749,7 @@ async function moveToTrash(): Promise<void> {
               @click="onMoreClick(template, $event)"
               @keydown="onMoreKeydown(template, $event)"
             >
-              <AppIcon name="more" :size="24" />
+              <AppIcon name="more" :size="20" />
               <span class="visually-hidden">More for {{ template.displayName }}</span>
             </button>
           </li>
@@ -744,35 +771,46 @@ async function moveToTrash(): Promise<void> {
 
       <div class="sidebar__foot">
         <RouterLink class="sidebar__link" to="/trash" @click="closeIfDrawer">
-          <AppIcon name="trash" :size="26" />
+          <AppIcon name="trash" :size="24" />
           <span>Trash Bin</span>
         </RouterLink>
-        <RouterLink class="sidebar__link" to="/connections" @click="closeIfDrawer">
-          <AppIcon name="link" :size="26" />
+        <!-- Signed out, there is no account to show these for; both already send a direct visitor to sign in. -->
+        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/connections" @click="closeIfDrawer">
+          <AppIcon name="link" :size="24" />
           <span>Connections</span>
         </RouterLink>
-        <RouterLink class="sidebar__link" to="/your-data" @click="closeIfDrawer">
-          <AppIcon name="shield" :size="26" />
+        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/your-data" @click="closeIfDrawer">
+          <AppIcon name="shield-check" :size="24" />
           <span>Your data</span>
         </RouterLink>
 
-        <hr class="sidebar__rule sidebar__rule--foot" />
+        <!-- A line with nothing under it would only mark an empty place, as it is until it is known who is here. -->
+        <hr v-if="session.status === 'authenticated' || session.status === 'anonymous'" class="sidebar__rule sidebar__rule--foot" />
 
         <p v-if="signOutError" class="field-error sidebar__error" role="alert">{{ signOutError }}</p>
 
         <div v-if="session.status === 'authenticated'" class="sidebar__account">
-          <AppIcon name="account" :size="24" />
+          <!-- The name beside it says who this is; the disc is only a landmark for the eye. -->
+          <span class="sidebar__avatar" aria-hidden="true">
+            <template v-if="accountInitial">{{ accountInitial }}</template>
+            <AppIcon v-else name="account" :size="16" />
+          </span>
           <span class="sidebar__account-name" :title="session.accountLabel ?? undefined">{{
             session.accountLabel ?? 'Your account'
           }}</span>
-          <button type="button" class="icon-button" :disabled="signingOut" @click="signOut">
+          <button
+            type="button"
+            class="icon-button sidebar__sign-out"
+            :aria-disabled="signingOut ? 'true' : undefined"
+            @click="signOut"
+          >
             <AppIcon name="sign-out" :size="24" />
             <span class="visually-hidden">{{ signingOut ? 'Signing out' : 'Sign out' }}</span>
           </button>
         </div>
         <RouterLink v-else-if="session.status === 'anonymous'" class="button button--primary sidebar__signin" to="/signin" @click="closeIfDrawer">
           <span>Sign In</span>
-          <AppIcon name="sign-in" :size="24" />
+          <AppIcon name="sign-in" :size="20" />
         </RouterLink>
       </div>
     </div>
@@ -781,20 +819,20 @@ async function moveToTrash(): Promise<void> {
 
 <style scoped>
 /*
- * Measured against the design at its own 1512 by 982 frame: 20px type at
- * medium weight in the muted text colour, icons drawn a little larger than
- * the type, hairline rules in that same colour, and a soft inner shadow on
- * every edge in place of a border. The current page is marked for
- * assistive technology (aria-current) but not tinted, as the design has it.
+ * A column of quiet rows on the sidebar colour. The page the person is on, and any row under the pointer, takes a
+ * cocoa-wash pill; labels are the main text colour and the icons beside them the same colour at 60%, so the words
+ * carry the weight (3.7:1 on the sidebar and 3.5:1 on the wash, past the 3:1 a graphic needs). The edge is a soft
+ * inset shadow rather than a border, so the panel reads as set into the page.
  */
 .sidebar {
+  --sidebar-icon: color-mix(in srgb, var(--color-text) 60%, transparent);
   flex: none;
   inline-size: var(--sidebar-width);
   block-size: 100dvh;
   position: sticky;
   inset-block-start: 0;
   background: var(--color-sidebar);
-  box-shadow: inset -3px 0 14px color-mix(in srgb, var(--color-text-muted) 55%, transparent);
+  box-shadow: var(--shadow-sidebar);
   /* The inner column keeps its own width while this box narrows, so collapsing
      slides the navigation out of view instead of squashing every label first. */
   overflow: hidden;
@@ -833,7 +871,7 @@ async function moveToTrash(): Promise<void> {
   block-size: 100%;
   display: flex;
   flex-direction: column;
-  padding: var(--space-2) var(--space-2) var(--space-3);
+  padding: 0 0.5rem 0.625rem;
   overflow-y: auto;
   color: var(--color-text-muted);
 }
@@ -850,9 +888,9 @@ async function moveToTrash(): Promise<void> {
   inset-block: 0;
   inset-inline-start: 0;
   z-index: 40;
-  inline-size: min(17rem, 85vw);
+  inline-size: min(var(--sidebar-width), 85vw);
   box-shadow:
-    inset -3px 0 14px color-mix(in srgb, var(--color-text-muted) 55%, transparent),
+    var(--shadow-sidebar),
     0 0 2.5rem rgb(42 41 36 / 0.18);
   translate: -100% 0;
   visibility: hidden;
@@ -873,70 +911,105 @@ async function moveToTrash(): Promise<void> {
   inline-size: 100%;
 }
 
+/* The first row of the column: the collapse control at the far edge, with the name in front of it as a drawer. */
 .sidebar__head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-block-size: 2.25rem;
+  min-block-size: 3.1875rem;
+  margin-block-end: 0.125rem;
 }
 
 .sidebar__brand {
-  padding-inline: var(--space-2);
-  font-weight: 700;
+  padding-inline: 0.40625rem;
   font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
   color: var(--color-text);
   text-decoration: none;
 }
 
-/* The collapse control sits at the panel's own edge, as far from the content as it can. */
+/* The glyph sits a hair inside the other icon buttons below, as a toggle at a panel's corner does. */
 .sidebar__toggle {
-  margin-inline-start: auto;
+  margin-inline: auto 0.28125rem;
+  color: var(--sidebar-icon);
 }
 
-.sidebar__nav {
-  margin-block-start: var(--space-2);
+.sidebar__toggle:hover,
+.sidebar__sign-out:hover {
+  color: var(--color-text);
 }
 
 .sidebar__list {
+  display: grid;
+  gap: 0.1875rem;
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
+/* A row of the column: Home, Chat and the three at the foot. Its pill is on hover and on the page being shown. */
 .sidebar__link {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  min-block-size: 2.5rem;
-  padding-inline: var(--space-2);
+  gap: 0.65625rem;
+  min-block-size: 2.25rem;
+  padding-inline: 0.40625rem 0.5rem;
   border-radius: var(--radius);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-lg);
-  font-weight: 500;
-  text-decoration: none;
-  transition: color var(--motion-fast) var(--motion-ease);
-}
-
-.sidebar__link:hover {
   color: var(--color-text);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--motion-ease);
 }
 
+.sidebar__link > svg {
+  color: var(--sidebar-icon);
+}
+
+.sidebar__link:hover,
+.sidebar__link[aria-current='page'] {
+  background: var(--color-cocoa-wash);
+}
+
+/*
+ * A display that forces its own colours drops the pill, and with it the only mark of the page being shown, so
+ * that row takes a bar at its start instead. A border rather than an outline, which the focus ring owns there.
+ */
+@media (forced-colors: active) {
+  .sidebar__link[aria-current='page'] {
+    border-inline-start: 4px solid Highlight;
+    padding-inline-start: calc(0.40625rem - 4px);
+  }
+}
+
+/* A finger needs a taller row than a pointer does. */
+@media (any-pointer: coarse) {
+  .sidebar__link {
+    min-block-size: 2.75rem;
+  }
+}
+
+/*
+ * A hairline between the groups, drawn as a border so a forced-colours display keeps it. It stops short of the
+ * pills on both sides, a little further short on the right.
+ */
 .sidebar__rule {
   flex: none;
-  block-size: 1px;
-  margin-inline: var(--space-4);
+  block-size: 0;
+  margin-inline: 0.9375rem 1.1875rem;
   border: 0;
-  background: var(--color-text-muted);
+  border-block-start: 1px solid color-mix(in srgb, var(--color-text) 50%, transparent);
 }
 
-/* The design leaves the navigation well clear of the templates beneath it. */
 .sidebar__rule--nav {
-  margin-block: calc(var(--space-8) + var(--space-5)) var(--space-8);
+  margin-block: 1.75rem 1.25rem;
 }
 
 .sidebar__rule--foot {
-  margin-block: var(--space-2) 0;
+  margin-block: 0.5625rem 0;
 }
 
 /*
@@ -949,7 +1022,7 @@ async function moveToTrash(): Promise<void> {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.1875rem;
   min-block-size: 11rem;
 }
 
@@ -962,30 +1035,38 @@ async function moveToTrash(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding-inline: var(--space-2) var(--space-3);
+  min-block-size: 2.25rem;
+  padding-inline: 0.4375rem 0.40625rem;
 }
 
 .sidebar__section-title {
   margin: 0;
   font-size: var(--font-size-lg);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
   color: var(--color-text-muted);
 }
 
+/* Lines in place of the list, in the list's own left edge and type so the sentence reads as the list's first row. */
 .sidebar__note {
   margin: 0;
-  padding-inline: var(--space-2);
+  padding: 0.1875rem 0.9375rem 0;
   font-size: var(--font-size-sm);
+  line-height: 1.5;
 }
 
 .sidebar__notice,
 .sidebar__error {
-  margin: 0 var(--space-2);
+  margin: 0.25rem 0;
   font-size: var(--font-size-sm);
 }
 
+.sidebar__error {
+  padding-inline: 0.9375rem;
+}
+
 .sidebar__notice {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) 0.9375rem;
   border-radius: var(--radius);
   background: var(--color-cocoa-wash);
   color: var(--color-text);
@@ -997,7 +1078,7 @@ async function moveToTrash(): Promise<void> {
  * words "to My Templates" are left to assistive technology.
  */
 .sidebar__notice--added {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-1) 0.9375rem;
   line-height: 1.4;
 }
 
@@ -1025,7 +1106,7 @@ async function moveToTrash(): Promise<void> {
   border: 0;
   background: none;
   color: var(--color-text);
-  font-weight: 600;
+  font-weight: var(--font-weight-medium);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -1045,7 +1126,8 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  margin: 0 var(--space-2);
+  margin: 0.25rem 0;
+  padding-inline: 0.9375rem;
   color: var(--color-text);
   font-size: var(--font-size-sm);
 }
@@ -1062,6 +1144,11 @@ async function moveToTrash(): Promise<void> {
 .sidebar__section > .sidebar__templates {
   --fade-top: 0px;
   --fade-bottom: 0px;
+  display: grid;
+  /* One column that may be narrower than its widest name, so a long name is cut short instead of widening the list. */
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 0.125rem;
   flex: 0 1 auto;
   min-block-size: 0;
   list-style: none;
@@ -1085,7 +1172,6 @@ async function moveToTrash(): Promise<void> {
 
 /* A template just added is lit for a moment, then fades back to the list's quiet rows. */
 .template-row--added {
-  border-radius: var(--radius);
   animation: template-row-added 3s var(--motion-ease) forwards;
 }
 
@@ -1109,16 +1195,30 @@ async function moveToTrash(): Promise<void> {
 }
 
 /*
- * Light rows: body-size type at regular weight, no tint, the name alone,
- * so the list reads quieter than the navigation above it. "More" floats
- * over the end of its row rather than taking a column of its own, and the
- * name stops short of it only where it shows; hidden, the name has the
- * whole width.
+ * Light rows: body-size type at regular weight, the name alone, so the list reads quieter than the navigation
+ * above it. The pill is the row's own, on hover and on keyboard focus. "More" floats over the end of its row
+ * rather than taking a column of its own, and the name stops short of it only where it shows; hidden, the
+ * name has the whole width.
  */
 .template-row {
   position: relative;
   display: flex;
   align-items: center;
+  border-radius: var(--radius);
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.template-row:hover {
+  background: var(--color-cocoa-wash);
+}
+
+/* Each on its own: a browser without :has() drops only its own rule, not the hover pill with it. */
+.template-row:has(:focus-visible) {
+  background: var(--color-cocoa-wash);
+}
+
+.template-row:has(.template-row__more[aria-expanded='true']) {
+  background: var(--color-cocoa-wash);
 }
 
 .template-row__start {
@@ -1126,22 +1226,18 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   align-items: center;
   min-inline-size: 0;
-  min-block-size: 2.25rem;
+  min-block-size: 2rem;
   padding-block: 0;
-  padding-inline: var(--space-2) calc(var(--icon-button-size) + var(--space-3) + var(--space-1));
+  padding-inline: 0.9375rem calc(var(--icon-button-size) - 0.125rem);
   border: 0;
   border-radius: var(--radius);
   background: transparent;
   color: var(--color-text-muted);
   font-size: var(--font-size-base);
   font-weight: 400;
+  line-height: 1.5;
   text-align: start;
   cursor: pointer;
-  transition: color var(--motion-fast) var(--motion-ease);
-}
-
-.template-row:hover .template-row__start {
-  color: var(--color-text);
 }
 
 .template-row__start[aria-disabled='true'],
@@ -1170,9 +1266,14 @@ async function moveToTrash(): Promise<void> {
 
 .template-row__more {
   position: absolute;
-  inset-inline-end: var(--space-3);
+  inset-inline-end: 0.125rem;
   inset-block-start: 50%;
   translate: 0 -50%;
+}
+
+/* Inside a row that is already on the wash, the button needs a step deeper to show it is under the pointer. */
+.template-row__more:hover {
+  background: color-mix(in srgb, var(--color-cocoa-wash) 88%, black);
 }
 
 /*
@@ -1200,12 +1301,12 @@ async function moveToTrash(): Promise<void> {
 
   .template-row:hover .template-row__start,
   .template-row:focus-within .template-row__start {
-    padding-inline-end: calc(var(--icon-button-size) + var(--space-3) + var(--space-1));
+    padding-inline-end: calc(var(--icon-button-size) - 0.125rem);
   }
 
   /* On its own: a browser without :has() drops only this rule, not the two above with it. */
   .template-row:has(.template-row__more[aria-expanded='true']) .template-row__start {
-    padding-inline-end: calc(var(--icon-button-size) + var(--space-3) + var(--space-1));
+    padding-inline-end: calc(var(--icon-button-size) - 0.125rem);
   }
 }
 
@@ -1216,26 +1317,47 @@ async function moveToTrash(): Promise<void> {
 
   .template-row__start {
     min-block-size: 2.75rem;
-    padding-inline-end: calc(var(--icon-button-size) + var(--space-3) + var(--space-1));
+    padding-inline-end: calc(var(--icon-button-size) - 0.125rem);
   }
 }
 
-/* Pins the trash and account rows to the bottom of the panel, as the design has them. */
+/* Pins the trash and account rows to the bottom of the panel. */
 .sidebar__foot {
   flex: none;
   display: flex;
   flex-direction: column;
-  padding-block-start: var(--space-4);
+  gap: 0.1875rem;
 }
 
 .sidebar__account {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-block-start: var(--space-4);
-  padding-inline: var(--space-2) var(--space-3);
+  gap: 0.625rem;
+  min-block-size: 2.5rem;
+  margin-block-start: 0.25rem;
+  padding-inline: 0.4375rem 0.40625rem;
+  color: var(--color-text);
   font-size: var(--font-size-lg);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+}
+
+/*
+ * A disc of cocoa with the first letter of the name. It is the action cocoa rather than the lighter tile
+ * behind a document's glyph, because a letter is text and needs the 4.5:1 a white label has on this one.
+ */
+.sidebar__avatar {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  inline-size: 1.625rem;
+  block-size: 1.625rem;
+  border-radius: 50%;
+  background: var(--color-cocoa);
+  color: var(--color-surface);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
 }
 
 .sidebar__account-name {
@@ -1246,14 +1368,23 @@ async function moveToTrash(): Promise<void> {
   white-space: nowrap;
 }
 
+.sidebar__sign-out {
+  color: var(--sidebar-icon);
+}
+
+/* While the request to end the session is under way the button is not available, and says so by fading. */
+.sidebar__sign-out[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: progress;
+}
+
+/* The pill is a button of the shared look at a size for the panel: 16px type and a 20px glyph, a little further from it than usual. */
 .sidebar__signin {
+  --button-gap: 0.5rem;
   align-self: flex-start;
-  gap: var(--space-1);
-  min-block-size: 2.75rem;
-  margin: var(--space-2) 0 0 var(--space-2);
-  border-radius: var(--radius-pill);
-  font-size: var(--font-size-lg);
-  font-weight: 500;
+  margin: 0.6875rem 0 0.4375rem 0.3125rem;
+  padding-inline-end: calc(var(--button-pad) - var(--button-trim) - 0.125rem);
+  font-size: var(--font-size-base);
 }
 
 .sidebar__foot .sidebar__error {

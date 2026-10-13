@@ -26,7 +26,7 @@ test('an empty document blocks export when it is checked and never offers to app
   await page.getByRole('button', { name: 'Export', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Export' })
   await expect(dialog.getByText('This version cannot be exported yet.')).toBeVisible({ timeout: 60_000 })
-  await expect(dialog.getByRole('button', { name: 'Approve and export' })).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: 'Approve and export' })).toBeDisabled()
   await expect(dialog.getByRole('button', { name: /^Go to Meeting title/ })).toBeVisible()
 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])

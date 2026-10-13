@@ -4,6 +4,7 @@ import { defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { RouterView, createRouter, createWebHistory, type Router } from 'vue-router'
 import WorkspaceView from '@/views/WorkspaceView.vue'
+import DocumentPage from '@/components/workspace/DocumentPage.vue'
 import { useSessionStore } from '@/stores/session'
 
 vi.mock('@/api/client', async () => {
@@ -722,13 +723,18 @@ const selectionBar = (page: Page) => page.find('section.selection-bar')
 const rulesCard = (page: Page) => page.get('section[aria-labelledby="rules-heading"]')
 const runStatus = (page: Page) => page.get('.run-status')
 const proposal = (page: Page) => page.find('.proposal')
-const sourceCards = (page: Page) => page.findAll('ul[aria-label="Sources"] > li')
+/** The row of a proposal's table with this name: what it is called, its value, and where the value came from, in one line. */
+function proposalRowOf(page: Page, name: string): string {
+  const row = page.findAll('.proposal tr').find((candidate) => norm(candidate.get('th').text()) === name)
+  return row ? row.findAll('th, td').map((cell) => norm(cell.text())).join(' ').trim() : ''
+}
+const sourceCards =(page: Page) => page.findAll('ul[aria-label="Sources"] > li')
 const exportDialog = (page: Page) => page.get('dialog.export-dialog')
 const historyDialog = (page: Page) => page.get('dialog.version-history')
 
 /** The words of Brownie's last error in the conversation, outside a reading or a proposal. */
 function lastChatError(page: Page): string {
-  const errors = chatLog(page).findAll('.chat-line--brownie:not(.run-status):not(.proposal) .field-error')
+  const errors = chatLog(page).findAll('.msg--brownie:not(.run-status):not(.proposal) .field-error')
   return errors.length > 0 ? norm(errors[errors.length - 1]!.text()) : ''
 }
 
@@ -790,7 +796,7 @@ async function answerOther(page: Page, questionId: number, answer: string): Prom
 }
 
 function chipsOf(page: Page): string[] {
-  return selectionBar(page).findAll('.selection-bar__chips .badge').map((chip) => chip.text())
+  return selectionBar(page).findAll('.selection-bar__chips .tag').map((chip) => chip.text())
 }
 
 function styleChips(page: Page): string[] {
@@ -853,6 +859,36 @@ describe('WorkspaceView: the page', () => {
     expect(page.get('label[for="assist-composer"]').text()).toBe('How may I help you?')
     expect(page.get('.assistant-disclaimer').text()).toBe('Brownie can make mistakes. Check each filled value before you export.')
     expect(page.findAll('[role="alert"]')).toHaveLength(0)
+  })
+
+  it('reads the bar as Undo, Version history, the two faces of the document, the save status, then Export, with every icon hidden', async () => {
+    const page = await mountPage()
+    const bar = page.get('header.workspace-bar')
+
+    // Nothing to save, so no "Save now" between the status and Export.
+    expect(bar.findAll('button').map((button) => accessibleName(button.element))).toEqual([
+      'Undo the last change',
+      'Version history',
+      'Page',
+      'Print preview',
+      'Export',
+    ])
+    expect(bar.get('[role="group"]').attributes('aria-label')).toBe('Document view')
+    expect(bar.get('.save-status').text()).toBe('Saved')
+    expect(bar.findAll('svg').length).toBeGreaterThan(0)
+    for (const icon of bar.findAll('svg')) expect(icon.attributes('aria-hidden')).toBe('true')
+  })
+
+  it('sets only a long name smaller, and still shows all of it', async () => {
+    const page = await mountPage()
+    expect(page.get('h1').classes()).not.toContain('workspace-title--long')
+    page.unmount()
+
+    const name = 'Harborview Robotics Club fall build season kickoff meeting minutes, revised after the sponsor call'
+    vi.mocked(getDocument).mockResolvedValue({ ...DOCUMENT, title: name })
+    const longPage = await mountPage()
+    expect(longPage.get('h1').text()).toBe(name)
+    expect(longPage.get('h1').classes()).toContain('workspace-title--long')
   })
 
   it('lists the fill spots instead of the page when the template cannot be drawn, and editing still works', async () => {
@@ -1260,10 +1296,13 @@ describe('WorkspaceView: editing by hand', () => {
 
     const conflict = notices(page).get('.conflict-notice')
     expect(conflict.attributes('role')).toBe('alert')
+    expect(conflict.classes()).toContain('workspace-notice--error')
     expect(norm(conflict.text())).toContain(
       'This document changed since you started editing (version 9 is now current). Your edits are still on the page. ' +
         'Save them onto the latest version, or discard them to see what changed.',
     )
+    // The two ways out are inside the notice, so they are read with it.
+    expect(conflict.findAll('button').map((button) => button.text())).toEqual(['Save my edits onto the latest', 'Discard my edits'])
     expect(valueOf(page, 'edit-meeting.title')).toBe('My title')
     expect(saveStatus(page)).toBe('Not saved')
     expect(hasButton(page, 'Save now')).toBe(false)
@@ -1520,8 +1559,8 @@ describe('WorkspaceView: the bar about the selected fill spot', () => {
     ])
   })
 
-  it('groups the buttons of the bar about a spot by what they change: the fill spot, the value in it, and a row', async () => {
-    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_ROW)
+  it('groups the buttons of the bar about a spot by what they change: the value in it, the fill spot, and a row', async () => {
+    vi.mocked(getDocument).mockResolvedValue({ ...DOCUMENT_WITH_A_ROW, templateLatestVersionId: 1 })
     vi.mocked(getTemplateVersion).mockResolvedValue({
       ...MINUTES_TEMPLATE_VERSION,
       fields: MINUTES_TEMPLATE_VERSION.fields.map((field) => (field.fieldId === 'meeting.title' ? { ...field, origin: 'FOUND_BY_BROWNIE' } : field)),
@@ -1536,14 +1575,15 @@ describe('WorkspaceView: the bar about the selected fill spot', () => {
         }))
 
     await selectSpot(page, 'edit-meeting.title')
-    // "Keep" (the place is right) and "Accept" (the value is right) never sit side by side.
-    expect(groups()[0]!.name).toBe('This fill spot:')
-    expect(groups()[0]!.buttons[0]).toBe('Keep this fill spot')
-    expect(groups()[0]!.buttons).not.toContain('Accept Meeting title')
-    expect(groups()[1]).toEqual({
-      name: 'This value:',
-      buttons: ['Accept Meeting title', 'Reject Meeting title', 'Needs clarification for Meeting title', 'Lock Meeting title'],
-    })
+    // "Keep" (the place is right) is said with the note about the place, and "Accept" (the value is right) in its own row.
+    expect(hasButton(page, 'Keep this fill spot', '.selection-bar__found-row')).toBe(true)
+    expect(groups()).toEqual([
+      {
+        name: 'This value:',
+        buttons: ['Accept Meeting title', 'Reject Meeting title', 'Needs clarification for Meeting title', 'Lock Meeting title'],
+      },
+      { name: 'This fill spot:', buttons: ['Rename… Meeting title', 'Remove… Meeting title'] },
+    ])
     expect(await axe(page.element)).toHaveNoViolations()
 
     await selectSpot(page, 'edit-action.item.task-0')
@@ -2053,6 +2093,32 @@ describe('WorkspaceView: Export and Version history', () => {
     expect(exportDialog(page).text()).toContain('Ready to export.')
   })
 
+  it('tells Export the version number and the same fill-spot counts the page itself shows', async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(
+        revision({
+          fields: {
+            'meeting.title': scalarField('Garden Club Planning', { ...IMPORTED_STATE, review: 'ACCEPTED' }),
+            'meeting.date': scalarField('2026-04-01', { ...TYPED_STATE, lock: 'EXPLICITLY_LOCKED' }, 'DATE'),
+          },
+        }),
+      ),
+    )
+    vi.mocked(validateDocument).mockResolvedValue(manifest({ revisionId: 1 }))
+    const page = await mountPage()
+
+    await press(page, 'Export', 'header.workspace-bar')
+    await flushPromises()
+
+    // 2 of the template's 6 fill spots (5 fields plus the one empty action-item table) hold a value: the title
+    // (accepted) and the locked date. Export's own tags say exactly that, from the same numbers the page counts.
+    expect(exportDialog(page).text()).toContain('Weekly Sync • Version 1')
+    const counts = norm(exportDialog(page).get('.export-dialog__counts').text())
+    expect(counts).toContain('2 of 6 fill spots filled')
+    expect(counts).toContain('1 accepted')
+    expect(counts).toContain('1 locked')
+  })
+
   it('saves unsaved edits before Export checks, and checks the version the save made', async () => {
     vi.mocked(getDocument)
       .mockResolvedValueOnce(DOCUMENT)
@@ -2342,7 +2408,7 @@ describe('WorkspaceView: print preview', () => {
     await press(page, 'Print preview')
     await flushPromises()
     expect(norm(page.get('section.print-preview').text())).toContain(
-      'The file as it exports, from version 1. You have unsaved changes; they appear once saved and generated again.',
+      'The file as it exports, from version 1. It cannot be edited here. You have unsaved changes; they appear once saved and generated again.',
     )
 
     vi.mocked(patchDocumentContent).mockResolvedValue(revision({ id: 2, revisionNumber: 2 }))
@@ -2354,7 +2420,7 @@ describe('WorkspaceView: print preview', () => {
 
     expect(getLatestCompilation).toHaveBeenLastCalledWith(7, 1, 2)
     const preview = norm(page.get('section.print-preview').text())
-    expect(preview).toContain('The file as it exports, from version 1. The document has changed since it was made.')
+    expect(preview).toContain('The file as it exports, from version 1. It cannot be edited here. The document has changed since it was made.')
     expect(page.get('[data-testid="pdf-preview"]').text()).toBe('/api/v1/workspaces/7/uploads/21/preview')
   })
 
@@ -2414,6 +2480,623 @@ describe('WorkspaceView: print preview', () => {
 
 // =================================================================================================
 
+describe('WorkspaceView: what Brownie is doing, over the page', () => {
+  const chip = (page: Page) => page.find('.page-chip')
+
+  it('says nothing while Brownie is not working on the document', async () => {
+    const page = await mountPage()
+
+    expect(chip(page).exists()).toBe(false)
+  })
+
+  it('says Brownie is reading while a reading is under way, as a status that sits by the page', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    expect(chip(page).attributes('role')).toBe('status')
+    expect(norm(chip(page).text())).toBe('Brownie is reading. You can keep typing.')
+    expect(page.get('#document-pane').find('.page-chip').exists()).toBe(true)
+    expect((await axe(page.element)).violations).toEqual([])
+  })
+
+  it('says Brownie is stopping once a stop was asked for, and not that it is reading', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([
+      generationRun('CANCEL_REQUESTED', { job: jobResponse('CANCEL_REQUESTED', { cancellationRequestedAt: '2026-03-01T00:00:10Z' }) }),
+    ])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    expect(norm(chip(page).text())).toBe('Brownie is stopping.')
+  })
+
+  it('counts the questions still waiting for an answer, and sends the person to the chat for them', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION, MISSING_DATE_QUESTION])
+    vi.mocked(resumeGeneration).mockResolvedValue(accepted())
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    expect(chip(page).attributes('role')).toBe('status')
+    expect(norm(chip(page).text())).toBe('Brownie has 2 questions. Answer them in the chat.')
+
+    vi.mocked(answerQuestion).mockResolvedValueOnce({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Weekly Robotics Club Sync' })
+    await press(page, 'Weekly Robotics Club Sync', '.run-status')
+    expect(norm(chip(page).text())).toBe('Brownie has 1 question. Answer it in the chat.')
+  })
+
+  it('hands the page how many questions wait on each field, and fewer as they are answered', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION, MISSING_DATE_QUESTION])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+    const counts = () => page.findComponent(DocumentPage).props('questionCounts')
+
+    expect(counts()).toEqual({ 'meeting.title': 1, 'meeting.date': 1 })
+
+    vi.mocked(answerQuestion).mockResolvedValueOnce({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Weekly Robotics Club Sync' })
+    await press(page, 'Weekly Robotics Club Sync', '.run-status')
+    expect(counts()).toEqual({ 'meeting.date': 1 })
+  })
+
+  it('hands the page no questions when none is waiting', async () => {
+    const page = await mountPage()
+
+    expect(page.findComponent(DocumentPage).props('questionCounts')).toEqual({})
+  })
+
+  it('goes once the reading has ended', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('CANCELLED')])
+    const page = await mountPage()
+
+    expect(chip(page).exists()).toBe(false)
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: previewing what Brownie proposes', () => {
+  const band = (page: Page) => page.find('.preview-band')
+  /** What the page was handed to draw as a preview. */
+  const previewOf = (page: Page) => page.findComponent(DocumentPage).props('previewDrafts')
+
+  async function askForTitle(page: Page, answer: AssistExecutionResponse = TITLE_CHANGED): Promise<void> {
+    vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
+    vi.mocked(executeAssist).mockResolvedValue(answer)
+    await send(page, 'change meeting title to Spring Planning')
+  }
+
+  /** A page whose reading finished, with "Show what I found" still to press. */
+  async function mountWithFindingsReady(
+    values: PatchProposalResponse['proposedValues'] = { 'meeting.title': proposedScalar('Spring Planning') },
+  ): Promise<Page> {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    vi.mocked(applyGenerationResult).mockResolvedValue(proposalOf(values))
+    return mountPage()
+  }
+
+  /** What the reading found, as a proposal waiting for a decision. */
+  const showWhatBrownieFound = (page: Page) => press(page, 'Show what I found', '.run-status')
+
+  async function mountWithFindings(values?: PatchProposalResponse['proposedValues']): Promise<Page> {
+    const page = await mountWithFindingsReady(values)
+    await showWhatBrownieFound(page)
+    return page
+  }
+
+  it('hands what a reading found to the page as values not in the document yet, and says so over the page', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountWithFindings()
+
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Spring Planning' })
+    const words = norm(band(page).text())
+    expect(words).toContain('Previewing 1 fill spot from Brownie')
+    expect(words).toContain('Dashed values are not in the document yet. Nothing is filled until you approve.')
+    expect(page.get('#document-pane').find('.preview-band').exists()).toBe(true)
+    // Nothing was asked of the server but the proposal itself.
+    expect(acceptPatchProposal).not.toHaveBeenCalled()
+  })
+
+  it('shows no preview, and no band, until there is something to approve', async () => {
+    const page = await mountPage()
+
+    expect(band(page).exists()).toBe(false)
+    expect(previewOf(page)).toBeNull()
+  })
+
+  it('previews a change asked for in the chat the same way, with the same band to hide it', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountPage()
+
+    await askForTitle(page)
+
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Spring Planning' })
+    expect(norm(band(page).text())).toContain('Previewing 1 fill spot from Brownie')
+    await press(page, 'Hide preview', '.preview-band')
+    expect(previewOf(page)).toBeNull()
+  })
+
+  it('counts a table of rows as one fill spot, and hands over every column as one list a row', async () => {
+    const page = await mountWithFindings({
+      'meeting.title': proposedScalar('Spring Planning'),
+      'action.item.task': proposedRows(['Order seedlings', 'Book the hall']),
+      'action.item.owner': proposedRows(['Maria Lopez', 'Sam Ortiz']),
+      'action.item.due': proposedRows(['2026-04-20', '2026-04-25'], 'DATE'),
+    })
+
+    expect(previewOf(page)).toEqual({
+      'meeting.title': 'Spring Planning',
+      'action.item.task': ['Order seedlings', 'Book the hall'],
+      'action.item.owner': ['Maria Lopez', 'Sam Ortiz'],
+      'action.item.due': ['2026-04-20', '2026-04-25'],
+    })
+    expect(norm(band(page).text())).toContain('Previewing 2 fill spots from Brownie')
+  })
+
+  it('hides the drawing with Hide preview and brings it back with Show preview, leaving the proposal in the chat', async () => {
+    const page = await mountWithFindings()
+
+    await press(page, 'Hide preview', '.preview-band')
+    expect(previewOf(page)).toBeNull()
+    expect(proposal(page).exists()).toBe(true)
+    expect(norm(band(page).text())).toContain('Brownie has 1 fill spot for you to approve')
+    expect(norm(band(page).text())).toContain('The preview is hidden. Nothing is filled until you approve.')
+    expect(liveRegion(page).text()).toBe('Preview hidden. The values are still in the chat, and nothing is filled until you approve.')
+    // The button that was pressed keeps the focus, and now says what it will do.
+    expect(accessibleName(document.activeElement!)).toBe('Show preview')
+
+    await press(page, 'Show preview', '.preview-band')
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Spring Planning' })
+    expect(liveRegion(page).text()).toBe('Previewing the values on the page.')
+    expect(buttonNamed(page, 'Hide preview', '.preview-band')).toBeDefined()
+  })
+
+  it('brings a hidden preview back when the findings are shown again', async () => {
+    const page = await mountWithFindings()
+    await press(page, 'Hide preview', '.preview-band')
+    await press(page, 'Not now', '.proposal')
+    expect(band(page).exists()).toBe(false)
+
+    vi.mocked(applyGenerationResult).mockResolvedValue(proposalOf({ 'meeting.title': proposedScalar('Summer Planning') }, { id: 502 }))
+    await press(page, 'Show what I found again', '.run-status')
+
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Summer Planning' })
+    expect(buttonNamed(page, 'Hide preview', '.preview-band')).toBeDefined()
+  })
+
+  it('ends when the values are approved', async () => {
+    const page = await mountWithFindings()
+    vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ id: 2, revisionNumber: 2, contentHash: HASH_B, fields: { 'meeting.title': scalarField('Spring Planning') } })),
+    )
+
+    // The first of the proposal's choices is the approval, in whichever words the proposal puts it.
+    const approve = page.get('.proposal button.choices__option')
+    ;(approve.element as HTMLElement).focus()
+    await approve.trigger('click')
+    await flushPromises()
+
+    expect(acceptPatchProposal).toHaveBeenCalledTimes(1)
+    expect(band(page).exists()).toBe(false)
+    expect(previewOf(page)).toBeNull()
+    expect(valueOf(page, 'edit-meeting.title')).toBe('Spring Planning')
+  })
+
+  it('ends when the proposal is set aside with Not now', async () => {
+    const page = await mountWithFindings()
+    expect(band(page).exists()).toBe(true)
+
+    await press(page, 'Not now', '.proposal')
+
+    expect(band(page).exists()).toBe(false)
+    expect(previewOf(page)).toBeNull()
+  })
+
+  it('leaves a spot alone that the person typed into, which approving would not overwrite as the person sees it', async () => {
+    const page = await mountWithFindingsReady()
+    await type(page, 'edit-meeting.title', 'My own title')
+
+    await showWhatBrownieFound(page)
+
+    expect(proposal(page).exists()).toBe(true)
+    expect(previewOf(page)).toBeNull()
+    expect(band(page).exists()).toBe(false)
+    expect(valueOf(page, 'edit-meeting.title')).toBe('My own title')
+  })
+
+  it('leaves a locked spot alone, since approving would leave its value as it is', async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ fields: { 'meeting.title': scalarField('Weekly Sync', { ...IMPORTED_STATE, lock: 'EXPLICITLY_LOCKED' }) } })),
+    )
+    const page = await mountWithFindings()
+
+    expect(previewOf(page)).toBeNull()
+    expect(band(page).exists()).toBe(false)
+  })
+
+  it('leaves a spot alone that is locked in any way, as approving does', async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ fields: { 'meeting.title': scalarField('Weekly Sync', { ...IMPORTED_STATE, lock: 'PRESERVE_ON_REGENERATION' }) } })),
+    )
+    const page = await mountWithFindings()
+
+    expect(previewOf(page)).toBeNull()
+  })
+
+  it('leaves a spot alone that changed in the document after the proposal was made, which approving would not overwrite', async () => {
+    // The proposal was made from version 1; the document is on version 2, where typing that was saved meanwhile is in the title.
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ id: 2, revisionNumber: 2, fields: { 'meeting.title': scalarField('Typed meanwhile') } })))
+    vi.mocked(getDocumentRevision).mockResolvedValue(revision({ id: 1, fields: {} }))
+    const page = await mountWithFindings()
+    await flushPromises()
+
+    expect(getDocumentRevision).toHaveBeenCalledWith(7, 1, 1)
+    expect(previewOf(page)).toBeNull()
+    expect(band(page).exists()).toBe(false)
+  })
+
+  it('still draws a spot that did not change after the proposal was made, though the document moved on', async () => {
+    const title = { 'meeting.title': scalarField('Weekly Sync', IMPORTED_STATE) }
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ id: 2, revisionNumber: 2, fields: title })))
+    vi.mocked(getDocumentRevision).mockResolvedValue(revision({ id: 1, fields: title }))
+    const page = await mountWithFindings()
+    await flushPromises()
+
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Spring Planning' })
+  })
+
+  it('draws the preview without that comparison when the version the proposal was made from cannot be read', async () => {
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ id: 2, revisionNumber: 2 })))
+    vi.mocked(getDocumentRevision).mockRejectedValue(networkFailure())
+    const page = await mountWithFindings()
+    await flushPromises()
+
+    expect(previewOf(page)).toEqual({ 'meeting.title': 'Spring Planning' })
+  })
+
+  it('says, over a spot drawn as a preview, that its value is not in the document yet', async () => {
+    const page = await mountWithFindings()
+
+    await selectSpot(page, 'edit-meeting.title')
+
+    expect(selectionBar(page).text()).toContain('Brownie proposes this value. It is not in the document until you approve it.')
+    expect(selectionBar(page).text()).not.toContain('Nothing filled in here yet.')
+  })
+
+  it('draws nothing for a value the document already holds', async () => {
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ fields: { 'meeting.title': scalarField('Spring Planning') } })))
+    const page = await mountWithFindings()
+
+    expect(previewOf(page)).toBeNull()
+    expect(band(page).exists()).toBe(false)
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: Next to review', () => {
+  const FROM_BROWNIE: FieldStateResponse = { authorship: 'AI_COMPOSED', evidenceSupport: 'DIRECT', validation: 'NOT_RUN', review: 'UNREVIEWED', lock: 'EDITABLE' }
+  const DECIDED: FieldStateResponse = { ...FROM_BROWNIE, review: 'ACCEPTED' }
+  const LOCKED: FieldStateResponse = { ...FROM_BROWNIE, lock: 'EXPLICITLY_LOCKED' }
+
+  /** Two values waiting for a decision, and one each that is accepted, locked, or the person's own typing. */
+  const MIXED = documentAt(
+    revision({
+      fields: {
+        'meeting.title': scalarField('Fall kickoff', FROM_BROWNIE),
+        'meeting.date': scalarField('2026-10-06', DECIDED, 'DATE'),
+        'meeting.location': scalarField('Room 204', LOCKED),
+        'meeting.attendees': scalarField('Maya Lin', TYPED_STATE),
+        'meeting.decisions': scalarField('Order the kit', FROM_BROWNIE),
+      },
+    }),
+  )
+  const next = (page: Page) => buttonNamed(page, 'Next to review', 'section.selection-bar')!
+
+  it('goes to the next value waiting for a decision, skipping what is decided, locked or the person own, and wraps round', async () => {
+    vi.mocked(getDocument).mockResolvedValue(MIXED)
+    const page = await mountPage()
+    await selectSpot(page, 'edit-meeting.title')
+    expect(next(page).attributes('aria-disabled')).toBe('false')
+
+    await press(page, 'Next to review', 'section.selection-bar')
+    expect(selectionBar(page).attributes('aria-label')).toBe('About Meeting decisions')
+    // The card takes the focus, as it does from a spot, so the decision can be made at once.
+    expect(document.activeElement).toBe(selectionBar(page).element)
+    expect(liveRegion(page).text()).toBe('Next to review: Meeting decisions.')
+
+    await press(page, 'Next to review', 'section.selection-bar')
+    expect(selectionBar(page).attributes('aria-label')).toBe('About Meeting title')
+  })
+
+  it('is off when no other value is waiting, and does nothing then', async () => {
+    // Typed and imported values are not counted as waiting for review, as the page's status line does not count them.
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(
+        revision({
+          fields: {
+            'meeting.title': scalarField('Fall kickoff', FROM_BROWNIE),
+            'meeting.attendees': scalarField('Maya Lin', TYPED_STATE),
+            'meeting.location': scalarField('Room 204', IMPORTED_STATE),
+          },
+        }),
+      ),
+    )
+    const page = await mountPage()
+    await selectSpot(page, 'edit-meeting.title')
+
+    expect(next(page).attributes('aria-disabled')).toBe('true')
+    await press(page, 'Next to review', 'section.selection-bar')
+    expect(selectionBar(page).attributes('aria-label')).toBe('About Meeting title')
+    expect(liveRegion(page).text()).toBe('')
+  })
+
+  it('goes from one row of a table to the next as a row', async () => {
+    const rows = (values: string[], type: 'TEXT' | 'DATE' = 'TEXT') => rowField(values, type, values.map(() => ({ ...FROM_BROWNIE })))
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(
+        revision({
+          id: 3,
+          revisionNumber: 3,
+          fields: {
+            'action.item.task': rows(['Order seedlings', 'Book the hall']),
+            'action.item.owner': rows(['Maria Lopez', 'Sam Ortiz']),
+            'action.item.due': rows(['2026-04-20', '2026-04-25'], 'DATE'),
+          },
+        }),
+      ),
+    )
+    const page = await mountPage()
+    await selectSpot(page, 'edit-action.item.task-0')
+
+    await press(page, 'Next to review', 'section.selection-bar')
+
+    expect(selectionBar(page).attributes('aria-label')).toBe('About Action item task, row 2')
+    expect(liveRegion(page).text()).toBe('Next to review: row 2.')
+  })
+
+  it('keeps the cited passages open from one value to the next', async () => {
+    const cited = (value: string) => ({ ...scalarField(value, FROM_BROWNIE), evidenceSourceSpanIds: [12] })
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ fields: { 'meeting.title': cited('Fall kickoff'), 'meeting.decisions': cited('Order the kit') } })),
+    )
+    vi.mocked(getEvidenceExcerpt).mockResolvedValue({
+      spanId: 12,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: 'minutes.txt',
+      locatorType: 'PLAIN_TEXT',
+      excerptText: 'We agreed to it.',
+    })
+    const page = await mountPage()
+    await selectSpot(page, 'edit-meeting.title')
+    await press(page, 'Where it came from (1)', 'section.selection-bar')
+    expect(page.find('[id="evidence-meeting.title"]').exists()).toBe(true)
+
+    await press(page, 'Next to review', 'section.selection-bar')
+
+    expect(page.find('[id="evidence-meeting.title"]').exists()).toBe(false)
+    expect(page.get('[id="evidence-meeting.decisions"]').text()).toContain('We agreed to it.')
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: the card about a fill spot', () => {
+  it("draws each word of a value's state as a chip with its own look: Brownie's in honey, a pass in green, a block in red", async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(
+        revision({
+          fields: {
+            'meeting.title': scalarField('Fall kickoff', {
+              authorship: 'AI_COMPOSED',
+              evidenceSupport: 'TRANSFORMED',
+              validation: 'PASSED',
+              review: 'UNREVIEWED',
+              lock: 'EDITABLE',
+            }),
+            'meeting.location': scalarField('Room 204', {
+              authorship: 'AI_COMPOSED',
+              evidenceSupport: 'DIRECT',
+              validation: 'BLOCKING',
+              review: 'NEEDS_CLARIFICATION',
+              lock: 'EDITABLE',
+            }),
+          },
+        }),
+      ),
+    )
+    const page = await mountPage()
+
+    await selectSpot(page, 'edit-meeting.title')
+    const looks = () =>
+      Object.fromEntries(
+        selectionBar(page)
+          .findAll('.selection-bar__chips .tag')
+          .map((tag) => [tag.text(), { classes: tag.classes().filter((name) => name.startsWith('tag--')), picture: tag.find('svg').exists() }]),
+      )
+    expect(looks()).toEqual({
+      Required: { classes: [], picture: false },
+      'From Brownie': { classes: ['tag--honey'], picture: true },
+      'Source cited, reworded': { classes: [], picture: true },
+      'Checks passed': { classes: ['tag--success'], picture: true },
+      'Not reviewed': { classes: [], picture: false },
+    })
+    expect(page.get('.selection-bar__chips').attributes('aria-label')).toBe('State of this value')
+
+    await selectSpot(page, 'edit-meeting.location')
+    expect(looks()['Blocks export']).toEqual({ classes: ['tag--error'], picture: true })
+    expect(looks()['Needs clarification']).toEqual({ classes: ['tag--honey'], picture: true })
+  })
+
+  it('names the keys that come to it and go back, and keeps the way on to the next value in its foot', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountPage()
+
+    await selectSpot(page, 'edit-meeting.title')
+
+    // A Word page has no zoom at its foot for the card to rest above.
+    expect(selectionBar(page).classes()).not.toContain('selection-bar--above-zoom')
+    const foot = selectionBar(page).get('.selection-bar__foot')
+    expect(norm(foot.get('.selection-bar__keys').text())).toMatch(/^(Alt\+Enter|Option\+Return) in a fill spot comes here\. Escape goes back to the spot\.$/)
+    expect(foot.findAll('button').map((button) => accessibleName(button.element))).toEqual(['Next to review'])
+  })
+
+  it('opens the cited passages with the card when it is asked for from a spot with Alt+Enter, and not when a spot is only entered', async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ fields: { 'meeting.title': { ...scalarField('Weekly Sync', IMPORTED_STATE), evidenceSourceSpanIds: [12] } } })),
+    )
+    vi.mocked(getEvidenceExcerpt).mockResolvedValue({
+      spanId: 12,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: 'minutes.txt',
+      locatorType: 'PLAIN_TEXT',
+      excerptText: 'The meeting title is "Weekly Sync".',
+    })
+    const page = await mountPage()
+
+    await selectSpot(page, 'edit-meeting.title')
+    expect(page.find('[id="evidence-meeting.title"]').exists()).toBe(false)
+    expect(getEvidenceExcerpt).not.toHaveBeenCalled()
+
+    await byId(page, 'edit-meeting.title').trigger('keydown', { key: 'Enter', altKey: true })
+    await flushPromises()
+
+    expect(page.get('[id="evidence-meeting.title"]').text()).toContain('The meeting title is "Weekly Sync".')
+    expect(document.activeElement).toBe(selectionBar(page).element)
+  })
+
+  it('draws the passages it cites with their source above them, under a heading that opens and closes them', async () => {
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(revision({ fields: { 'meeting.title': { ...scalarField('Weekly Sync', IMPORTED_STATE), evidenceSourceSpanIds: [12] } } })),
+    )
+    vi.mocked(getEvidenceExcerpt).mockResolvedValue({
+      spanId: 12,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: 'minutes.txt',
+      locatorType: 'PLAIN_TEXT',
+      excerptText: 'The meeting title is "Weekly Sync".',
+    })
+    const page = await mountPage()
+    await selectSpot(page, 'edit-meeting.title')
+
+    expect(page.find('.evidence-section [id="evidence-meeting.title"]').exists()).toBe(false)
+    await press(page, 'Where it came from (1)', 'section.selection-bar')
+
+    const excerpt = page.get('.evidence-excerpt')
+    expect(excerpt.get('figcaption').text()).toBe('From minutes.txt')
+    expect(excerpt.get('blockquote').text()).toBe('The meeting title is "Weekly Sync".')
+    expect(buttonNamed(page, 'Where it came from (1)', 'section.selection-bar')!.attributes('aria-expanded')).toBe('true')
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: the one line over a print preview', () => {
+  const bar = (page: Page) => page.get('.print-preview__bar')
+
+  it('says what the file is beside the button that makes it again, in one row', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(getLatestCompilation).mockResolvedValue(COMPILATION)
+    const page = await mountPage()
+    await press(page, 'Print preview')
+    await flushPromises()
+
+    expect(norm(bar(page).get('.print-preview__note').text())).toBe('The file as it exports, from version 1. It cannot be edited here.')
+    expect(bar(page).find('.print-preview__note svg').exists()).toBe(true)
+    expect(bar(page).findAll('button').map((button) => accessibleName(button.element))).toEqual(['Generate again'])
+  })
+
+  it('says it is looking for a preview, and then that it is making one, with the same button as at every other time', async () => {
+    const compiling = deferred<CompilationManifestResponse>()
+    vi.mocked(compileRevision).mockReturnValue(compiling.promise)
+    const looking = deferred<CompilationManifestResponse>()
+    vi.mocked(getLatestCompilation).mockReturnValue(looking.promise)
+    const page = await mountPage()
+    await press(page, 'Print preview')
+
+    expect(bar(page).get('.print-preview__note').attributes('aria-live')).toBe('polite')
+    expect(norm(bar(page).text())).toContain('Checking for a preview…')
+    expect(buttonNamed(page, 'Generate preview')!.attributes('aria-disabled')).toBe('true')
+
+    looking.resolve(COMPILATION)
+    await flushPromises()
+    await press(page, 'Generate again')
+    expect(norm(bar(page).get('.print-preview__note').text())).toBe('Generating the preview…')
+    expect(buttonNamed(page, 'Generating…')!.attributes('aria-disabled')).toBe('true')
+    compiling.resolve(COMPILATION)
+  })
+
+  it('says why a preview could not be made in the same row, and leaves the button to try again', async () => {
+    vi.mocked(compileRevision).mockRejectedValue(RENDERER_BUSY)
+    const page = await mountPage()
+    await press(page, 'Print preview')
+    await flushPromises()
+    await press(page, 'Generate preview')
+
+    const note = bar(page).get('.print-preview__note--error')
+    expect(note.attributes('role')).toBe('alert')
+    expect(note.text()).toBe('Too many documents are being prepared right now. Nothing was changed; try again shortly.')
+    expect(hasButton(page, 'Generate preview', '.print-preview__bar')).toBe(true)
+    expect((await axe(page.element)).violations).toEqual([])
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: the line over the page about the form', () => {
+  const FOUND_TABLE: TemplateVersionResponse = {
+    ...MINUTES_TEMPLATE_VERSION,
+    fields: MINUTES_TEMPLATE_VERSION.fields.map((field) =>
+      ['meeting.title', 'action.item.task', 'action.item.owner', 'action.item.due'].includes(field.fieldId)
+        ? { ...field, origin: 'FOUND_BY_BROWNIE' as const }
+        : field,
+    ),
+    acceptedFieldIds: [],
+  }
+
+  it('puts what it is about first and what to do next under it', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_TABLE)
+    const page = await mountPage()
+
+    const line = page.get('section.form-strip')
+    expect(line.get('.form-strip__title').text()).toBe('Brownie found 2 more places to fill in.')
+    expect(line.get('.form-strip__rest').text()).toBe('Check the ones marked Found by Brownie, then keep them.')
+  })
+
+  it('counts a table of rows once, however many columns the form lists for it, and keeps all of them with Keep all', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue(FOUND_TABLE)
+    vi.mocked(keepFillSpots).mockResolvedValue(undefined)
+    const page = await mountPage()
+
+    // The title, and the table's three columns as one place.
+    expect(norm(page.get('.form-strip__text').text())).toBe('Brownie found 2 more places to fill in. Check the ones marked Found by Brownie, then keep them.')
+    await press(page, 'Keep all the places Brownie found', 'section.form-strip')
+
+    expect(keepFillSpots).toHaveBeenCalledWith(7, 1, ['meeting.title', 'action.item.task', 'action.item.owner', 'action.item.due'])
+  })
+
+  it('counts what is left the same way once some places are kept', async () => {
+    vi.mocked(getTemplateVersion).mockResolvedValue({ ...FOUND_TABLE, acceptedFieldIds: ['meeting.title'] })
+    const page = await mountPage()
+
+    expect(norm(page.get('.form-strip__text').text())).toBe(
+      '1 of the 2 places Brownie found is not checked yet. Check the one marked Found by Brownie, then keep it.',
+    )
+  })
+})
+
+// =================================================================================================
+
 describe('WorkspaceView: the Rules card', () => {
   /** The card as a short window draws it: `content` pixels of it in a box `shown` high, scrolled `top` down. */
   function rulesCardScrolled(page: Page, content: number, shown: number, top: number): HTMLElement {
@@ -2425,9 +3108,59 @@ describe('WorkspaceView: the Rules card', () => {
     return card
   }
 
+  it('is one slim bar until it is opened: what it holds in a line, and About this form opens the rest', async () => {
+    const page = await mountPage()
+    const toggle = buttonNamed(page, 'About this form', 'section.rules-card')!
+    const details = page.get('#rules-card-details')
+
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBe('rules-card-details')
+    expect((details.element as HTMLElement).style.display).toBe('none')
+    // How values are styled, how dates read, and which fill spots must be filled, named rather than only counted
+    // so a screen reader user has that before opening anything; the commas between parts are for a screen reader.
+    expect(norm(page.get('.rules-card__summary').text())).toBe(
+      `Liberation Sans 11 pt · , Dates like ${todayLikeExport()} · , Required: Meeting title, Meeting date`,
+    )
+    expect(page.get('.rules-card__summary').findAll('[aria-hidden="true"]')).toHaveLength(2)
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    await press(page, 'About this form', 'section.rules-card')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect((details.element as HTMLElement).style.display).toBe('')
+    // The details say it all, so the line steps aside.
+    expect(page.find('.rules-card__summary').exists()).toBe(false)
+    expect(styleChips(page)).toEqual(['Liberation Sans', '11 pt', 'Regular'])
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    await press(page, 'About this form', 'section.rules-card')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect((details.element as HTMLElement).style.display).toBe('none')
+  })
+
+  it('opens by itself while a fill spot is selected, and keeps to what the person chose once they have chosen', async () => {
+    const page = await mountPage()
+    const expanded = () => buttonNamed(page, 'About this form', 'section.rules-card')!.attributes('aria-expanded')
+    expect(expanded()).toBe('false')
+
+    await selectSpot(page, 'edit-meeting.title')
+    expect(expanded()).toBe('true')
+    expect(norm(rulesCard(page).text())).toContain('Text style · Meeting title')
+
+    // Closed on purpose, it stays closed as the person moves from spot to spot.
+    await press(page, 'About this form', 'section.rules-card')
+    expect(expanded()).toBe('false')
+    await selectSpot(page, 'edit-meeting.date')
+    expect(expanded()).toBe('false')
+    // The line still speaks for the spot in use: how its value will read, and that it is required.
+    expect(norm(page.get('.rules-card__summary').text())).toBe(`Liberation Sans 11 pt · , Dates like ${todayLikeExport()} · , Required`)
+  })
+
   it('says when more of the card is below its foot, with a fade and a hint, and stops once the end is in view', async () => {
     const page = await mountPage()
     expect(page.find('.rules-card__more').exists()).toBe(false)
+    // Only an open card is tall enough to scroll.
+    await press(page, 'About this form', 'section.rules-card')
 
     const card = rulesCardScrolled(page, 400, 150, 0)
     await flushPromises()
@@ -2489,6 +3222,7 @@ describe('WorkspaceView: the Rules card', () => {
   it("lists the accepted rules of the document's own template version, read-only, and says the proposed ones do not apply", async () => {
     vi.mocked(listTemplateVersionRules).mockResolvedValue(RULES)
     const page = await mountPage()
+    await press(page, 'About this form', 'section.rules-card')
 
     const card = norm(rulesCard(page).text())
     expect(card).toContain('Required before export: Meeting title, Meeting date.')
@@ -2498,16 +3232,20 @@ describe('WorkspaceView: the Rules card', () => {
     expect(card).not.toContain('at most 80 characters')
     expect(card).toContain('1 suggested rule was never turned on, so it does not apply.')
     expect(card).not.toContain('waiting for a decision')
-    expect(rulesCard(page).findAll('button')).toHaveLength(0)
+    // Read-only: nothing here adds, removes or changes a rule; the one button opens and closes the card.
+    expect(rulesCard(page).findAll('button').map((button) => button.text())).toEqual(['About this form'])
     expect((await axe(page.element)).violations).toEqual([])
   })
 
-  it('can be reached from the keyboard, so its scroll keys work where a short window makes it scroll on its own', async () => {
+  it('can be reached from the keyboard once open, so its scroll keys work where a short window makes it scroll on its own', async () => {
     const page = await mountPage()
 
     const card = rulesCard(page)
-    expect(card.attributes('tabindex')).toBe('0')
     expect(window.document.getElementById(card.attributes('aria-labelledby')!)?.textContent).toBe('Rules')
+    // The slim bar has nothing to scroll, so it is no stop of its own.
+    expect(card.attributes('tabindex')).toBeUndefined()
+    await press(page, 'About this form', 'section.rules-card')
+    expect(card.attributes('tabindex')).toBe('0')
   })
 
   it('shows only the rules about the selected fill spot', async () => {
@@ -2564,6 +3302,9 @@ describe('WorkspaceView: the Rules card', () => {
     vi.mocked(listTemplateVersionRules).mockRejectedValueOnce(networkFailure()).mockResolvedValue([])
     const page = await mountPage()
 
+    // A failure to load must never sit behind the closed bar with nothing on screen to say so: the card opens
+    // itself, the same way it does for a selected spot, so the message and its retry button are actually seen.
+    expect(page.get('#rules-card-details').attributes('style')).not.toContain('display: none')
     expect(norm(rulesCard(page).text())).toContain("The template's rules could not be loaded.")
     await press(page, 'Try again', 'section[aria-labelledby="rules-heading"]')
 
@@ -2574,7 +3315,117 @@ describe('WorkspaceView: the Rules card', () => {
 
 // =================================================================================================
 
+describe('WorkspaceView: the message box', () => {
+  const sendButton = (page: Page) => buttonNamed(page, 'Send', 'form.composer')
+
+  it('waits while empty, sends once there is something to send, and says it is working while Brownie reads a request', async () => {
+    const reading = deferred<AssistInterpretationResponse>()
+    vi.mocked(interpretAssist).mockReturnValue(reading.promise)
+    const page = await mountPage()
+    const box = page.get('#assist-composer')
+
+    expect(box.attributes('placeholder')).toBe('How may I help you?')
+    expect(sendButton(page)!.attributes('aria-disabled')).toBe('true')
+    expect(sendButton(page)!.classes()).not.toContain('composer__send--busy')
+    await box.setValue('write me a poem')
+    expect(sendButton(page)!.attributes('aria-disabled')).toBe('false')
+
+    await box.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(box.attributes('placeholder')).toBe('Working on it…')
+    // It looks busy, but a request being read is not something to stop: pressing it does nothing.
+    expect(sendButton(page)!.classes()).toContain('composer__send--busy')
+    expect(sendButton(page)!.attributes('aria-disabled')).toBe('true')
+    await sendButton(page)!.trigger('click')
+    expect(interpretAssist).toHaveBeenCalledTimes(1)
+    expect(cancelJob).not.toHaveBeenCalled()
+
+    reading.resolve(NOT_RECOGNISED)
+    await flushPromises()
+    expect(box.attributes('placeholder')).toBe('How may I help you?')
+    expect(sendButton(page)!.classes()).not.toContain('composer__send--busy')
+  })
+
+  it('is also the way to stop a reading under way, named for that, and says so once the stop is asked for', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    vi.mocked(cancelJob).mockResolvedValue({ ...accepted(), operation: 'job.request-cancellation' })
+    const page = await mountPage()
+
+    expect(page.get('#assist-composer').attributes('placeholder')).toBe('Working on it…')
+    expect(sendButton(page)).toBeUndefined()
+    const stop = buttonNamed(page, 'Stop this reading', 'form.composer')!
+    expect(stop.classes()).toContain('composer__send--busy')
+    // It must not send what is typed: it is not a submit button while it stops a reading.
+    expect(stop.attributes('type')).toBe('button')
+
+    await stop.trigger('click')
+    await flushPromises()
+    expect(cancelJob).toHaveBeenCalledWith(7, 42, expect.any(String))
+    const stopping = buttonNamed(page, 'Stopping…', 'form.composer')!
+    expect(stopping.attributes('aria-disabled')).toBe('true')
+    await stopping.trigger('click')
+    expect(cancelJob).toHaveBeenCalledTimes(1)
+    expect((await axe(page.element)).violations).toEqual([])
+  })
+
+  it('is not busy while Brownie waits for answers: nothing is being worked on, and the person may type', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    const page = await mountPage()
+
+    expect(page.get('#assist-composer').attributes('placeholder')).toBe('How may I help you?')
+    expect(sendButton(page)!.classes()).not.toContain('composer__send--busy')
+    expect(hasButton(page, 'Stop this reading', 'form.composer')).toBe(false)
+  })
+
+  it('keeps the plus, with its panel and whether it is open, as the one way to add a source', async () => {
+    const page = await mountPage()
+    const plus = () => buttonNamed(page, 'Add a source', 'form.composer')!
+
+    expect(plus().attributes('aria-expanded')).toBe('false')
+    expect(plus().attributes('aria-controls')).toBe('add-source-panel')
+    await press(page, 'Add a source', 'form.composer')
+    expect(plus().attributes('aria-expanded')).toBe('true')
+    expect(page.find('#add-source-panel').exists()).toBe(true)
+  })
+})
+
+// =================================================================================================
+
 describe('WorkspaceView: the chat', () => {
+  it('offers ways to begin under its first words, and takes them away once a source is attached', async () => {
+    const page = await mountPage()
+    const starters = () => chatLog(page).findAll('ul[aria-label="Ways to begin"] button').map((button) => norm(button.text()))
+
+    // A page with no line to put a new fill spot on offers only notes; the fill spot is tested with the pages that have lines.
+    expect(starters()).toEqual(['Add notes or a transcript'])
+    await press(page, 'Add notes or a transcript', 'ul[aria-label="Ways to begin"]')
+    expect(page.find('#add-source-panel').exists()).toBe(true)
+    expect(document.activeElement?.id).toBe('attach-source')
+    expect(await axe(page.element)).toHaveNoViolations()
+
+    expect(norm(chatLog(page).text())).toContain('You can also type straight into the highlighted spots')
+    await attachUpload(page)
+    expect(starters()).toEqual([])
+    // Under way, its first words keep to the point.
+    expect(norm(chatLog(page).text())).toContain('then ask me to fill it in.')
+    expect(norm(chatLog(page).text())).not.toContain('You can also type straight into the highlighted spots')
+  })
+
+  it('names each speaker: Brownie above its lines, and the person in a bubble of their own', async () => {
+    vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
+    const page = await mountPage()
+    await send(page, 'write me a poem')
+
+    const lines = chatLog(page).findAll('.chat-line')
+    expect(lines.map((line) => (line.classes().includes('msg--user') ? 'person' : 'brownie'))).toEqual(['brownie', 'person', 'brownie'])
+    expect(chatLog(page).findAll('.msg--brownie > .msg__who').map((who) => who.text())).toEqual(['Brownie', 'Brownie'])
+    expect(chatLog(page).find('.msg--user .msg__who').exists()).toBe(false)
+  })
+
   it('answers a line it cannot act on with what it can do, and puts a suggestion in the message box rather than sending it', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
     const page = await mountPage()
@@ -2583,7 +3434,8 @@ describe('WorkspaceView: the chat', () => {
 
     expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'write me a poem')
     expect(executeAssist).not.toHaveBeenCalled()
-    expect(chatLog(page).get('.chat-line--person').text()).toBe('write me a poem')
+    // Said as the person's own, in a bubble, and named so for a reader who cannot see which side it sits on.
+    expect(chatLog(page).get('.msg--user').text()).toBe('You said: write me a poem')
     expect(chatLog(page).text()).toContain('I did not understand that, or it names a fill spot this document does not have. Here is what I can do:')
     const suggestions = chatLog(page).findAll('ul[aria-label="What you can ask"] button')
     expect(suggestions.map((button) => button.text())).toEqual(HELP)
@@ -2628,7 +3480,7 @@ describe('WorkspaceView: the chat', () => {
     await proposal(page).get('form').trigger('submit')
     await flushPromises()
 
-    expect(norm(proposal(page).text())).toContain('Meeting title: Autumn Planning')
+    expect(proposalRowOf(page, 'Change to')).toBe('Change to Autumn Planning')
     expect(document.activeElement).toBe(proposal(page).element)
   })
 
@@ -2643,22 +3495,25 @@ describe('WorkspaceView: the chat', () => {
 
     expect(executeAssist).toHaveBeenCalledWith(7, 1, 'change meeting title to Spring Planning', 1)
     const offer = proposal(page)
-    expect(offer.text()).toContain('Here is the change you asked for:')
-    expect(norm(offer.text())).toContain('Meeting title: Spring Planning')
-    expect(offer.text()).toContain('Can you confirm? I will fill in the document once you approve it.')
+    expect(offer.text()).toContain('Here is the change you asked for in Meeting title:')
+    // What the document holds now, then what it would become, and what approving does to its review.
+    expect(proposalRowOf(page, 'Now')).toBe('Now Weekly Sync')
+    expect(proposalRowOf(page, 'Change to')).toBe('Change to Spring Planning')
+    expect(offer.get('.proposal__note').text()).toBe('Approving marks Meeting title as not reviewed, so you review it again.')
+    expect(offer.text()).toContain('Can you confirm?')
     expect(liveRegion(page).text()).toBe('Brownie proposed a change. Check it, then approve it to update the document.')
     expect(acceptPatchProposal).not.toHaveBeenCalled()
 
     vi.mocked(getDocument).mockResolvedValue(
       documentAt(revision({ id: 2, revisionNumber: 2, contentHash: HASH_B, fields: { 'meeting.title': scalarField('Spring Planning') } })),
     )
-    await press(page, 'I approve, fill it in', '.proposal')
+    await press(page, 'I approve, make the change', '.proposal')
 
     expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 33, 1, expect.any(String))
-    expect(norm(chatLog(page).text())).toContain('Filled in 1 value. Check each one before you export.')
+    expect(norm(chatLog(page).text())).toContain('Filled in 1 fill spot. Check each one before you export.')
     expect(proposal(page).exists()).toBe(false)
     expect(valueOf(page, 'edit-meeting.title')).toBe('Spring Planning')
-    expect(liveRegion(page).text()).toBe('Filled in 1 value. Check each one before you export.')
+    expect(liveRegion(page).text()).toBe('Filled in 1 fill spot. Check each one before you export.')
   })
 
   it('sends on Enter but not on Shift+Enter, and clears the message box once sent', async () => {
@@ -2700,8 +3555,9 @@ describe('WorkspaceView: the chat', () => {
     const page = await mountPage()
 
     await send(page, 'shorten meeting title')
-    expect(proposal(page).text()).toContain('Here is my suggestion:')
-    expect(norm(proposal(page).text())).toContain('Meeting title: Sync')
+    expect(proposal(page).text()).toContain('Here is the change you asked for in Meeting title:')
+    expect(proposalRowOf(page, 'Now')).toBe('Now Weekly Sync')
+    expect(proposalRowOf(page, 'Change to')).toBe('Change to Sync')
 
     await press(page, 'Not now', '.proposal')
     expect(proposal(page).exists()).toBe(false)
@@ -2812,7 +3668,7 @@ describe('WorkspaceView: the chat', () => {
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
-    await press(page, 'I approve, fill it in', '.proposal')
+    await press(page, 'I approve, make the change', '.proposal')
 
     expect(getDocument).toHaveBeenCalledTimes(2)
     expect(proposal(page).get('[role="alert"]').text()).toBe(
@@ -2830,12 +3686,12 @@ describe('WorkspaceView: the chat', () => {
     vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN', 'meeting.date': 'LOCKED' }))
     const page = await mountPage()
     await press(page, 'Show what I found', '.run-status')
-    expect(norm(proposal(page).text())).toContain('Meeting date: March 12, 2026')
+    expect(proposalRowOf(page, 'Meeting date')).toBe('Meeting date March 12, 2026')
 
     await press(page, 'I approve, fill it in', '.proposal')
 
     expect(norm(chatLog(page).text())).toContain(
-      'Filled in 1 value. I left Meeting date as it was: locked, or changed since I read the document. Check each one before you export.',
+      'Filled in 1 fill spot. I left Meeting date as it was: locked, or changed since I read the document. Check each one before you export.',
     )
     // What the reading found stays on offer, as a second look.
     expect(hasButton(page, 'Show what I found again', '.run-status')).toBe(true)
@@ -2848,12 +3704,12 @@ describe('WorkspaceView: the chat', () => {
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
-    await press(page, 'I approve, fill it in', '.proposal')
+    await press(page, 'I approve, make the change', '.proposal')
 
     expect(norm(chatLog(page).text())).toContain(
       'Nothing was filled in. I left Meeting title as it was: locked, or changed since I read the document.',
     )
-    expect(chatLog(page).text()).not.toContain('Filled in 0 values')
+    expect(chatLog(page).text()).not.toContain('Filled in 0')
     expect(liveRegion(page).text()).toBe('Nothing was filled in. I left Meeting title as it was: locked, or changed since I read the document.')
   })
 
@@ -2896,7 +3752,7 @@ describe('WorkspaceView: the chat', () => {
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
-    await press(page, 'I approve, fill it in', '.proposal')
+    await press(page, 'I approve, make the change', '.proposal')
 
     expect(proposal(page).get('[role="alert"]').text()).toBe('Too many requests in a short time. Wait 12 seconds and try again.')
     expect(page.text()).not.toContain('Could not fill these in. Try again.')
@@ -2931,7 +3787,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
     const page = await mountPage()
     await attachUpload(page)
-    expect(sourceCards(page).map((card) => norm(card.get('.source-card__name').text()))).toEqual(['minutes.txt'])
+    expect(sourceCards(page).map((card) => norm(card.get('.source-chip__name').text()))).toEqual(['minutes.txt'])
     expect(liveRegion(page).text()).toBe('minutes.txt attached.')
 
     await askToFill(page)
@@ -2949,7 +3805,10 @@ describe('WorkspaceView: Brownie reading a source', () => {
     ])
     expect(liveRegion(page).text()).toBe('Brownie has a question for you.')
 
-    vi.mocked(answerQuestion).mockResolvedValue({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Executive Committee Sync' })
+    const answered = { ...CONFLICT_QUESTION, status: 'ANSWERED' as const, answerValue: 'Executive Committee Sync' }
+    vi.mocked(answerQuestion).mockResolvedValue(answered)
+    // Read again as the values are turned into a proposal: the server says which values are the person's own answers.
+    vi.mocked(getGenerationQuestions).mockResolvedValue([answered])
     vi.mocked(resumeGeneration).mockResolvedValue(accepted())
     vi.mocked(getJob).mockResolvedValueOnce(jobResponse('SUCCEEDED'))
     vi.mocked(getExtractionResult).mockResolvedValue({ artifactId: 77 })
@@ -2963,7 +3822,9 @@ describe('WorkspaceView: Brownie reading a source', () => {
     expect(applyGenerationResult).toHaveBeenCalledWith(7, 1, 42)
     const offer = proposal(page)
     expect(offer.text()).toContain('Here is what I found in minutes.txt:')
-    expect(norm(offer.text())).toContain('Meeting title: Executive Committee Sync')
+    expect(proposalRowOf(page, 'Meeting title')).toBe('Meeting title Executive Committee Sync Your answer')
+    // The answer the person gave stays said, in one line over what was found.
+    expect(norm(runStatus(page).text())).toBe('You answered 1 question: Meeting title.')
     expect(liveRegion(page).text()).toBe('Brownie found values for this document. Check them, then approve them to fill them in.')
 
     vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
@@ -2973,7 +3834,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     await press(page, 'I approve, fill it in', '.proposal')
 
     expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 501, 1, expect.any(String))
-    expect(norm(chatLog(page).text())).toContain('Filled in 1 value. Check each one before you export.')
+    expect(norm(chatLog(page).text())).toContain('Filled in 1 fill spot. Check each one before you export.')
     expect(valueOf(page, 'edit-meeting.title')).toBe('Executive Committee Sync')
   })
 
@@ -3027,18 +3888,20 @@ describe('WorkspaceView: Brownie reading a source', () => {
 
     await askToFill(page)
 
-    const lines = proposal(page).findAll('.proposal__values li').map((line) => norm(line.text()))
-    expect(lines).toEqual([
-      'Meeting title: Weekly Robotics Club Sync',
-      'Row 1: Action item task: finish wiring the practice robot; Action item owner: Alex Chen; Action item due: March 12, 2026',
-      'Row 2: Action item task: confirm the van reservation; Action item owner: Jose Nunez; Action item due: March 10, 2026',
+    // One row for the fill spot, and one for the table, whose columns share it: a line for each of its rows.
+    expect(proposal(page).findAll('tr').map((row) => norm(row.get('th').text()))).toEqual(['Meeting title', 'Table rows'])
+    expect(proposalRowOf(page, 'Meeting title')).toBe('Meeting title Weekly Robotics Club Sync')
+    const rows = proposal(page).findAll('.proposal__lines li').map((line) => norm(line.text()))
+    expect(rows).toEqual([
+      'finish wiring the practice robot · Alex Chen · March 12, 2026',
+      'confirm the van reservation · Jose Nunez · March 10, 2026',
     ])
+    expect(norm(proposal(page).get('.proposal__columns').text())).toBe('Action item task · Action item owner · Action item due')
     const skipped = proposal(page).get('.proposal__skipped')
     expect(skipped.attributes('role')).toBe('status')
-    expect(norm(skipped.text())).toContain(
-      'I also found 1 row I could not complete, because a detail was missing. Fill it in yourself before exporting:',
+    expect(norm(skipped.text())).toBe(
+      'Left out 1 row with no action item due: order the new batteries. Fill it in yourself before exporting.',
     )
-    expect(norm(skipped.text())).toContain('order the new batteries (missing: Action item due)')
     expect((await axe(page.element)).violations).toEqual([])
   })
 
@@ -3110,7 +3973,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     expect(applyGenerationResult).toHaveBeenCalledTimes(1)
     expect(applyGenerationResult).toHaveBeenCalledWith(7, 1, 42)
     expect(proposal(page).text()).toContain('Here is what I found in your source:')
-    expect(norm(proposal(page).text())).toContain('Meeting title: Spring Planning')
+    expect(proposalRowOf(page, 'Meeting title')).toBe('Meeting title Spring Planning')
   })
 
   it('moves the focus to the proposal Show what I found brings up, and reports no failure', async () => {
@@ -3320,6 +4183,509 @@ describe('WorkspaceView: Brownie reading a source', () => {
 
 // =================================================================================================
 
+describe('WorkspaceView: the cards of a reading', () => {
+  const stepsOf = (page: Page) => runStatus(page).findAll('.step-list .step').map((step) => [step.classes().find((name) => name.startsWith('step--')), norm(step.text())])
+
+  it('shows a reading under way as a card: what it is doing, a bar that is only a sign of life, and the steps with how far each has got', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    const card = runStatus(page).get('.run-status__card')
+    expect(card.classes()).toContain('msg-card')
+    expect(card.get('.run-status__sentence').text()).toBe('Reading notes.txt and filling in the fields.')
+    // The bar has no value to show; the sentence it is named by says where the reading is.
+    expect(card.get('progress').attributes('aria-labelledby')).toBe('run-status-sentence')
+    expect(card.get('progress').attributes('value')).toBeUndefined()
+    expect(stepsOf(page)).toEqual([
+      ['step--done', 'Done: Picked up by a worker'],
+      ['step--active', 'In progress: Reading the source and matching it to 6 fill spots'],
+      ['step--pending', 'Not started: Showing you what I found to approve'],
+    ])
+    expect(card.get('.run-status__note').text()).toBe('Nothing on the document changes until you approve it.')
+    expect(runStatus(page).get('.msg__who').text()).toBe('Brownie')
+  })
+
+  it('shows the first step in progress while no worker has taken the reading up', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('QUEUED')])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    expect(runStatus(page).get('.run-status__sentence').text()).toBe('Waiting for a worker to pick this up.')
+    expect(stepsOf(page).map(([state]) => state)).toEqual(['step--active', 'step--pending', 'step--pending'])
+  })
+
+  it('says it is starting while the server has not yet answered, with nothing to stop until there is a run to stop', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(startExtraction).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    await askToFill(page)
+
+    expect(runStatus(page).get('.run-status__sentence').text()).toBe('Starting to read notes.txt…')
+    expect(stepsOf(page).map(([state]) => state)).toEqual(['step--active', 'step--pending', 'step--pending'])
+    expect(hasButton(page, 'Stop reading')).toBe(false)
+  })
+
+  it('has no steps to show once a stop is asked for, only that it is stopping', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('CANCEL_REQUESTED', { job: jobResponse('CANCEL_REQUESTED', { cancellationRequestedAt: CREATED_AT }) })])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    expect(runStatus(page).get('.run-status__sentence').text()).toBe('Stopping.')
+    expect(runStatus(page).find('.step-list').exists()).toBe(false)
+    expect(buttonNamed(page, 'Stopping…', '.run-status')!.attributes('aria-disabled')).toBe('true')
+  })
+
+  it('keeps the card while it carries on with the answers, with the first step done', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    vi.mocked(answerQuestion).mockResolvedValue({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Old Title' })
+    const resuming = deferred<CommandReceiptResponse>()
+    vi.mocked(resumeGeneration).mockReturnValue(resuming.promise)
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    await press(page, 'Old Title', '.run-status')
+
+    expect(runStatus(page).get('.run-status__sentence').text()).toBe('Carrying on with your answers…')
+    expect(stepsOf(page).map(([state]) => state)).toEqual(['step--done', 'step--active', 'step--pending'])
+    resuming.resolve(accepted())
+  })
+
+  it('keeps the card, with the last step in progress and nothing to stop, while the values to approve are made ready', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    const applying = deferred<PatchProposalResponse>()
+    vi.mocked(applyGenerationResult).mockReturnValue(applying.promise)
+    const page = await mountPage()
+
+    await press(page, 'Show what I found', '.run-status')
+
+    expect(runStatus(page).get('.run-status__sentence').text()).toBe('Getting the values ready…')
+    expect(stepsOf(page).map(([state]) => state)).toEqual(['step--done', 'step--done', 'step--active'])
+    expect(hasButton(page, 'Stop reading')).toBe(false)
+    applying.resolve(proposalOf({ 'meeting.title': proposedScalar('Spring Planning') }))
+    await flushPromises()
+    expect(proposal(page).exists()).toBe(true)
+  })
+
+  it('numbers each question, and shows what the source says where an answer on offer cites it', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION, MISSING_DATE_QUESTION])
+    vi.mocked(getEvidenceExcerpt).mockResolvedValue({
+      spanId: 1,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: 'minutes.txt',
+      locatorType: 'PLAIN_TEXT',
+      excerptText: 'The Weekly Robotics Club Sync meets on Tuesdays.',
+    })
+    const page = await mountPage()
+
+    const cards = runStatus(page).findAll('.question')
+    expect(cards.map((card) => card.classes().includes('msg-card'))).toEqual([true, true])
+    expect(cards.map((card) => card.get('.question__number').text())).toEqual(['1', '2'])
+    expect(getEvidenceExcerpt).toHaveBeenCalledTimes(1)
+    expect(getEvidenceExcerpt).toHaveBeenCalledWith(7, 1, 1)
+    // Under the question whose answer cites it, and only there.
+    expect(norm(cards[0]!.get('.question__quote').text())).toBe('From minutes.txt: “The Weekly Robotics Club Sync meets on Tuesdays.”')
+    expect(cards[1]!.find('.question__quote').exists()).toBe(false)
+  })
+
+  it('says which choice each passage backs when more than one is shown', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([
+      { ...CONFLICT_QUESTION, candidates: [{ value: 'Old Title', evidenceSpanIds: [2] }, { value: 'Weekly Robotics Club Sync', evidenceSpanIds: [1] }] },
+    ])
+    vi.mocked(getEvidenceExcerpt).mockImplementation(async (_workspace, _document, spanId) => ({
+      spanId,
+      sourceSnapshotId: 3,
+      sourceArtifactId: 5,
+      displayFilename: null,
+      locatorType: 'PLAIN_TEXT',
+      excerptText: `Passage ${spanId}`,
+    }))
+    const page = await mountPage()
+
+    expect(runStatus(page).findAll('.question__quote').map((quote) => norm(quote.text()))).toEqual([
+      'From the source, for choice 1: “Passage 2”',
+      'From the source, for choice 2: “Passage 1”',
+    ])
+  })
+
+  it('asks the question without the passage when the passage cannot be read', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    vi.mocked(getEvidenceExcerpt).mockRejectedValue(networkFailure())
+    const page = await mountPage()
+
+    expect(getEvidenceExcerpt).toHaveBeenCalledTimes(1)
+    expect(runStatus(page).find('.question__quote').exists()).toBe(false)
+    expect(hasButton(page, 'Weekly Robotics Club Sync', '.run-status')).toBe(true)
+  })
+
+  it('says which answer the document holds and which the source gives, and sends the value alone when one is chosen', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ fields: { 'meeting.title': scalarField('Old Title') } })))
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    vi.mocked(answerQuestion).mockResolvedValue({ ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Weekly Robotics Club Sync' })
+    vi.mocked(resumeGeneration).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    const choices = runStatus(page).get('[role="group"][aria-label="Your answer for Meeting title"]')
+    expect(choices.findAll('button.choices__option').map((button) => accessibleName(button.element))).toEqual([
+      'Old Title, in the document now',
+      'Weekly Robotics Club Sync, from the source',
+    ])
+
+    await press(page, 'Weekly Robotics Club Sync, from the source', '.run-status')
+
+    expect(answerQuestion).toHaveBeenCalledWith(7, 9, 'Weekly Robotics Club Sync')
+  })
+
+  it('offers a question about a value the document does not hold as the values alone', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('WAITING_FOR_INPUT')])
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ fields: { 'meeting.title': scalarField('Something else') } })))
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    const page = await mountPage()
+
+    const choices = runStatus(page).get('[role="group"][aria-label="Your answer for Meeting title"]')
+    expect(choices.findAll('button.choices__option').map((button) => accessibleName(button.element))).toEqual([
+      'Old Title',
+      'Weekly Robotics Club Sync',
+    ])
+  })
+
+  it("says over the values which questions the person answered, and labels those values as theirs, even on a page opened after they answered", async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    vi.mocked(getGenerationQuestions).mockResolvedValue([
+      { ...MISSING_DATE_QUESTION, status: 'ANSWERED', answerValue: '2026-03-12' },
+      { ...CONFLICT_QUESTION, status: 'ANSWERED', answerValue: 'Old Title' },
+    ])
+    vi.mocked(applyGenerationResult).mockResolvedValue(
+      proposalOf({ 'meeting.date': proposedScalar('2026-03-12', 'DATE'), 'meeting.attendees': { ...proposedScalar('Maria Lopez'), evidenceSpanIds: [4] } }),
+    )
+    const page = await mountPage()
+
+    await press(page, 'Show what I found', '.run-status')
+
+    expect(norm(runStatus(page).text())).toBe('You answered 2 questions: Meeting date and Meeting title.')
+    expect(proposalRowOf(page, 'Meeting date')).toBe('Meeting date March 12, 2026 Your answer')
+    expect(proposalRowOf(page, 'Meeting attendees')).toBe('Meeting attendees Maria Lopez Source cited')
+  })
+
+  it('shows what a reading found even when its questions cannot be read, only without calling any value the answer of the person', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    vi.mocked(getGenerationQuestions).mockRejectedValue(networkFailure())
+    vi.mocked(applyGenerationResult).mockResolvedValue(proposalOf({ 'meeting.date': proposedScalar('2026-03-12', 'DATE') }))
+    const page = await mountPage()
+
+    await press(page, 'Show what I found', '.run-status')
+
+    expect(proposalRowOf(page, 'Meeting date')).toBe('Meeting date March 12, 2026')
+    // No answers to name, so the reading says nothing more once its values are up.
+    expect(page.find('.run-status').exists()).toBe(false)
+    expect(proposal(page).find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('draws the typing line as a line of Brownie, with a ring beside the words', async () => {
+    const reading = deferred<AssistInterpretationResponse>()
+    vi.mocked(interpretAssist).mockReturnValue(reading.promise)
+    const page = await mountPage()
+
+    await send(page, 'write me a poem')
+
+    const line = chatLog(page).get('.chat-typing').element.parentElement!
+    expect(line.classList.contains('msg--brownie')).toBe(true)
+    expect(line.querySelector('.msg__who')?.textContent).toBe('Brownie')
+    expect(chatLog(page).get('.chat-typing .activity-indicator').attributes('aria-hidden')).toBe('true')
+    reading.resolve(NOT_RECOGNISED)
+    await flushPromises()
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: what an accepted proposal leaves to review', () => {
+  const FILLED = documentAt(
+    revision({
+      id: 2,
+      revisionNumber: 2,
+      contentHash: HASH_B,
+      fields: {
+        'meeting.title': { ...scalarField('Spring Planning', { ...IMPORTED_STATE, authorship: 'AI_COMPOSED' }), evidenceSourceSpanIds: [1] },
+        'meeting.date': scalarField('2026-03-12', { ...TYPED_STATE, authorship: 'AI_COMPOSED' }, 'DATE'),
+        'action.item.task': rowField(['Order seedlings', 'Book the hall'], 'TEXT', [IMPORTED_STATE, IMPORTED_STATE]),
+        'action.item.owner': rowField(['Maria Lopez', 'Sam Ortiz'], 'TEXT', [IMPORTED_STATE, IMPORTED_STATE]),
+        // The page does not save a table with a row that has no date, so the rows have theirs.
+        'action.item.due': rowField(['2026-03-20', '2026-03-21'], 'DATE', [IMPORTED_STATE, IMPORTED_STATE]),
+      },
+    }),
+  )
+  const ACCEPTED_ALL = acceptedProposal({ 'meeting.title': 'CLEAN', 'meeting.date': 'CLEAN', 'action.item.task': 'CLEAN', 'action.item.owner': 'CLEAN' })
+  const FOUND = proposalOf({
+    'action.item.owner': { ...proposedRows(['Maria Lopez', 'Sam Ortiz']), evidenceSpanIds: [3] },
+    'meeting.title': { ...proposedScalar('Spring Planning'), evidenceSpanIds: [1] },
+    'action.item.task': { ...proposedRows(['Order seedlings', 'Book the hall']), evidenceSpanIds: [3] },
+    'meeting.date': proposedScalar('2026-03-12', 'DATE'),
+  })
+
+  async function acceptWhatWasFound(): Promise<Page> {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('SUCCEEDED', { resultArtifactId: 900 })])
+    // The person's own answer: the date was asked about, and nothing cites it.
+    vi.mocked(getGenerationQuestions).mockResolvedValue([{ ...MISSING_DATE_QUESTION, status: 'ANSWERED', answerValue: '2026-03-12' }])
+    vi.mocked(applyGenerationResult).mockResolvedValue(FOUND)
+    vi.mocked(acceptPatchProposal).mockResolvedValue(ACCEPTED_ALL)
+    const page = await mountPage()
+    await press(page, 'Show what I found', '.run-status')
+    vi.mocked(getDocument).mockResolvedValue(FILLED)
+    await press(page, 'I approve, fill it in', '.proposal')
+    return page
+  }
+
+  const reviewCard = (page: Page) => page.get('.proposal-review')
+  /** Each row as it reads across: its name, where its value came from, its review, and the way to it. */
+  const reviewRows = (page: Page) =>
+    reviewCard(page)
+      .findAll('.proposal-review__row')
+      .map((row) => Array.from(row.element.querySelectorAll('.proposal-review__name, .tag, button')).map((part) => norm(part.textContent ?? '')).join(' '))
+
+  it('lists each fill spot it filled in, in the order of the page, with a table once, and where each value came from', async () => {
+    const page = await acceptWhatWasFound()
+
+    // What was found is a table too, in the same order: the fill spots first as the page draws them, the table last.
+    expect(norm(chatLog(page).text())).toContain('Filled in 3 fill spots. Check each one before you export.')
+    expect(norm(reviewCard(page).get('.proposal-review__title').text())).toBe('To review')
+    expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 3 accepted')
+    expect(reviewRows(page)).toEqual([
+      'Meeting title Source cited Not reviewed Go to Meeting title',
+      'Meeting date Your answer Not reviewed Go to Meeting date',
+      'Table, 2 rows Source cited Not reviewed Go to Table, 2 rows',
+    ])
+    expect(reviewCard(page).classes()).toContain('msg-card')
+    expect((await axe(page.element)).violations).toEqual([])
+  })
+
+  it('counts the decisions as they are recorded, since it follows the document', async () => {
+    const page = await acceptWhatWasFound()
+    expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 3 accepted')
+
+    // Any reload of the document moves it: here, a save that brings back the two reviewed values.
+    vi.mocked(patchDocumentContent).mockResolvedValue(revision({ id: 3, revisionNumber: 3, contentHash: HASH_C }))
+    vi.mocked(getDocument).mockResolvedValue(
+      documentAt(
+        revision({
+          id: 3,
+          revisionNumber: 3,
+          contentHash: HASH_C,
+          fields: {
+            ...FILLED.currentRevision.fields,
+            'meeting.title': { ...FILLED.currentRevision.fields['meeting.title']!, fieldState: { ...IMPORTED_STATE, authorship: 'AI_COMPOSED', review: 'ACCEPTED' } },
+            'action.item.task': rowField(['Order seedlings', 'Book the hall'], 'TEXT', [{ ...IMPORTED_STATE, review: 'ACCEPTED' }, { ...IMPORTED_STATE, review: 'ACCEPTED' }]),
+            'action.item.owner': rowField(['Maria Lopez', 'Sam Ortiz'], 'TEXT', [{ ...IMPORTED_STATE, review: 'ACCEPTED' }, { ...IMPORTED_STATE, review: 'ACCEPTED' }]),
+          },
+        }),
+      ),
+    )
+    await type(page, 'edit-meeting.date', '2026-03-13')
+    await press(page, 'Save now')
+
+    expect(reviewCard(page).get('.proposal-review__count').text()).toBe('2 of 3 accepted')
+    expect(reviewRows(page)[0]).toBe('Meeting title Source cited Accepted Go to Meeting title')
+    expect(reviewRows(page)[2]).toBe('Table, 2 rows Source cited Accepted Go to Table, 2 rows')
+  })
+
+  it('takes the person to the fill spot, and says the one that is open is open', async () => {
+    const page = await acceptWhatWasFound()
+    const rows = () => reviewCard(page).findAll('.proposal-review__row')
+    expect(rows().some((row) => row.classes().includes('proposal-review__row--open'))).toBe(false)
+
+    await press(page, 'Go to Meeting title', '.proposal-review')
+
+    expect(document.activeElement?.id).toBe('edit-meeting.title')
+    expect(rows()[0]!.classes()).toContain('proposal-review__row--open')
+    expect(accessibleName(rows()[0]!.get('button').element)).toBe('Open Meeting title')
+    expect(accessibleName(rows()[1]!.get('button').element)).toBe('Go to Meeting date')
+
+    // A table is gone to by its first column, wherever the person was.
+    await press(page, 'Go to Table, 2 rows', '.proposal-review')
+    expect(document.activeElement?.id).toBe('edit-action.item.task-0')
+    expect(rows()[2]!.classes()).toContain('proposal-review__row--open')
+  })
+
+  it('leaves no list when nothing was filled in, and keeps only the latest one', async () => {
+    const page = await acceptWhatWasFound()
+    expect(page.findAll('.proposal-review')).toHaveLength(1)
+
+    vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
+    vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
+    await send(page, 'change meeting title to Autumn Planning')
+    vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    await press(page, 'I approve, make the change', '.proposal')
+
+    expect(page.findAll('.proposal-review')).toHaveLength(1)
+    expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 1 accepted')
+
+    vi.mocked(acceptPatchProposal).mockResolvedValue({ ...acceptedProposal({ 'meeting.title': 'LOCKED' }), applied: false })
+    await send(page, 'change meeting title to Winter Planning')
+    await press(page, 'I approve, make the change', '.proposal')
+    // Nothing was filled in this time, so the list from before stands as it was.
+    expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 1 accepted')
+  })
+})
+
+// =================================================================================================
+
+describe('WorkspaceView: the panel for adding a source', () => {
+  it('floats over the conversation as a named dialog with what Brownie reads, what it does not browse, and a way to close it', async () => {
+    // The footer about Brownie's reach into Calendar and Drive only makes sense once one of those is offered.
+    vi.mocked(getCapabilities).mockResolvedValue({ ...TEN_MEGABYTE_LIMIT, googleConnectorAccess: ['CALENDAR_EVENTS'] })
+    const page = await mountPage()
+    await press(page, 'Add a source')
+
+    const panel = page.get('#add-source-panel')
+    expect(panel.attributes('role')).toBe('dialog')
+    expect(panel.attributes('aria-modal')).toBeUndefined()
+    expect(panel.attributes('aria-labelledby')).toBe('add-source-title')
+    expect(panel.get('#add-source-title').text()).toBe('Add a source')
+    expect(panel.get('.add-source__lede').text()).toBe('Brownie reads only what you add here, and only when you ask.')
+    expect(norm(panel.get('.add-source__foot').text())).toBe(
+      'A copied event or file is a text snapshot. Brownie never browses the rest of your calendar or Drive.',
+    )
+    // The panel is not part of the conversation, so the conversation does not move for it.
+    expect(chatLog(page).find('#add-source-panel').exists()).toBe(false)
+    expect((await axe(page.element)).violations).toEqual([])
+  })
+
+  it('says nothing about Calendar or Drive when neither is offered, since Brownie only reads files here', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({ ...TEN_MEGABYTE_LIMIT, googleConnectorAccess: [] })
+    const page = await mountPage()
+    await press(page, 'Add a source')
+
+    expect(page.find('.add-source__foot').exists()).toBe(false)
+  })
+
+  it('closes on Escape from anywhere in it, and puts the focus back on the + that opened it', async () => {
+    const page = await mountPage()
+    await press(page, 'Add a source')
+    expect(document.activeElement?.id).toBe('attach-source')
+
+    await page.get('#attach-source').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+
+    expect(page.find('#add-source-panel').exists()).toBe(false)
+    expect(document.activeElement).toBe(buttonNamed(page, 'Add a source')!.element)
+  })
+
+  it('folds the upload row away and opens it again, keeping its file picker in the page either way, and starts open every time', async () => {
+    const page = await mountPage()
+    await press(page, 'Add a source')
+    const toggle = () => buttonNamed(page, 'Upload notes or a transcript', '#add-source-panel')!
+    expect(toggle().attributes('aria-expanded')).toBe('true')
+    expect(toggle().attributes('aria-controls')).toBe('add-source-upload')
+
+    await toggle().trigger('click')
+    expect(toggle().attributes('aria-expanded')).toBe('false')
+    expect(page.get('#add-source-upload').attributes('style')).toContain('display: none')
+    expect(page.find('#attach-source').exists()).toBe(true)
+
+    await press(page, 'Close adding a source')
+    await press(page, 'Add a source')
+    expect(toggle().attributes('aria-expanded')).toBe('true')
+  })
+
+  it('names the file picker for what it does, with the button beside it as its label', async () => {
+    const page = await mountPage()
+    await press(page, 'Add a source')
+
+    const label = page.get('label[for="attach-source"]')
+    expect(accessibleName(label.element)).toBe('Choose a file to upload notes or a transcript')
+    expect(label.classes()).toContain('button')
+    expect(page.get('#attach-source').classes()).toContain('visually-hidden')
+  })
+
+  it('confirms a file just added as a small card in the panel, with no way to remove it, and forgets it once the panel is closed', async () => {
+    const page = await mountPage()
+    await attachUpload(page)
+
+    const cards = page.findAll('#add-source-panel .add-source__files li')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.get('.source-chip__name').text()).toBe('minutes.txt')
+    // minutes.txt is the 5-byte file chooseSourceFile() makes by default (new File(['notes'], ...)).
+    expect(norm(cards[0]!.get('.source-chip__meta').text())).toBe('Text file · 5 bytes · added just now')
+    expect(cards[0]!.classes()).toContain('source-chip')
+    expect(hasButton(page, 'Remove', '#add-source-panel')).toBe(false)
+
+    await press(page, 'Close adding a source')
+    await press(page, 'Add a source')
+    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
+  })
+
+  it('shows the chip in place of the file chooser once a file is attached, not both at once', async () => {
+    const page = await mountPage()
+    await press(page, 'Add a source')
+    expect(page.find('label[for="attach-source"]').exists()).toBe(true)
+    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
+
+    await attachUpload(page)
+
+    // The chip replaces the chooser; it does not sit beside it.
+    expect(page.find('label[for="attach-source"]').exists()).toBe(false)
+    expect(page.find('#attach-source').exists()).toBe(false)
+    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(true)
+
+    // Closing and reopening the panel forgets the chip, so the chooser comes back for the next file.
+    await press(page, 'Close adding a source')
+    await press(page, 'Add a source')
+    expect(page.find('label[for="attach-source"]').exists()).toBe(true)
+    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
+  })
+
+  it('says it is uploading while a file goes up, and keeps its picker from being pressed twice', async () => {
+    // A first step that never answers: the file stays on its way up.
+    vi.mocked(allocateUpload).mockReturnValue(new Promise(() => {}))
+    const page = await mountPage()
+
+    await chooseSourceFile(page, 'notes.txt')
+
+    expect(page.get('#add-source-panel .add-source__status').text()).toBe('Uploading…')
+    expect(page.get('#attach-source').attributes('disabled')).toBeDefined()
+    expect(page.get('label[for="attach-source"]').classes()).toContain('add-source__choose--busy')
+    // Folding the row away mid-upload would hide that status with no way back, so its own toggle is out of use too.
+    expect(buttonNamed(page, 'Upload notes or a transcript', '#add-source-panel')!.attributes('disabled')).toBeDefined()
+  })
+
+  it('opens the row again to show an error, even if the row had been folded away before the upload failed', async () => {
+    const page = await mountPage()
+    await press(page, 'Add a source')
+    await press(page, 'Upload notes or a transcript', '#add-source-panel')
+    expect(page.get('#add-source-upload').attributes('style')).toContain('display: none')
+
+    vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
+    await chooseSourceFile(page)
+
+    expect(buttonNamed(page, 'Upload notes or a transcript', '#add-source-panel')!.attributes('aria-expanded')).toBe('true')
+    expect(page.get('#add-source-panel [role="alert"]').text()).toBe(
+      'That file was not attached. Brownie could not be reached. Check your connection, then try again.',
+    )
+  })
+})
+
+// =================================================================================================
+
 describe('WorkspaceView says what went wrong, and keeps what the person has', () => {
   describe('when the document is loaded again after an action', () => {
     it('keeps the page, the typed values and keyboard focus when the reload fails, and says the page may be out of date', async () => {
@@ -3415,6 +4781,10 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       expect(said.find('a[href="/trash"]').exists()).toBe(true)
       expect(said.text()).toContain('Back to your documents')
       expect(page.find('.workspace').exists()).toBe(false)
+      // A page with no heading would leave a screen reader nothing to say it is on; the icon is only a picture.
+      expect(page.get('h1').text()).toBe('Could not load document')
+      expect(said.get('svg').attributes('aria-hidden')).toBe('true')
+      expect(await axe(page.element)).toHaveNoViolations()
     })
 
     it('says Brownie could not be reached when the first load gets no answer', async () => {
@@ -3665,9 +5035,16 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       vi.mocked(resumeGeneration).mockRejectedValueOnce(RATE_LIMITED).mockResolvedValue(accepted())
       vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
       const page = await mountPage()
-      expect(hasButton(page, 'Carry on reading')).toBe(false)
+      // While a question is open it is there, but waits for the answer; pressing it does nothing.
+      const early = buttonNamed(page, 'Carry on reading', '.run-status')!
+      expect(early.attributes('aria-disabled')).toBe('true')
+      expect(norm(runStatus(page).get('.run-status__note').text())).toBe('Brownie waits for your answers. Nothing is filled yet.')
+      await early.trigger('click')
+      expect(resumeGeneration).not.toHaveBeenCalled()
       await press(page, 'Weekly Robotics Club Sync', '.run-status')
       expect(runStatus(page).text()).toContain('Wait 12 seconds and try again.')
+      expect(buttonNamed(page, 'Carry on reading', '.run-status')!.attributes('aria-disabled')).toBe('false')
+      expect(norm(runStatus(page).get('.run-status__note').text())).toBe('Your answers are saved. Nothing is filled yet.')
 
       await press(page, 'Carry on reading', '.run-status')
       expect(resumeGeneration).toHaveBeenCalledTimes(2)
@@ -3876,7 +5253,7 @@ describe('WorkspaceView: a document handed over by the screen that created it', 
     vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
     const page = await mountPage('/documents/1', { attachedSources: [HANDED], sourceWarning: null, formNotes: [] })
 
-    expect(sourceCards(page).map((card) => card.get('.source-card__name').text())).toEqual(['minutes.txt'])
+    expect(sourceCards(page).map((card) => card.get('.source-chip__name').text())).toEqual(['minutes.txt'])
     expect(page.findAll('[role="alert"]')).toHaveLength(0)
 
     await askToFill(page)
@@ -3891,6 +5268,9 @@ describe('WorkspaceView: a document handed over by the screen that created it', 
     const alerts = page.findAll('[role="alert"]')
     expect(alerts.length).toBeGreaterThan(0)
     expect(alerts[0]!.text()).toBe(warning)
+    // A caution, drawn as a strip with its own hidden icon, so the words are the whole of what is announced.
+    expect(alerts[0]!.classes()).toEqual(expect.arrayContaining(['workspace-notice', 'workspace-notice--warning']))
+    expect(alerts[0]!.get('svg').attributes('aria-hidden')).toBe('true')
     expect(sourceCards(page)).toHaveLength(0)
   })
 
@@ -3900,6 +5280,64 @@ describe('WorkspaceView: a document handed over by the screen that created it', 
     expect(page.findAll('[role="alert"]')).toHaveLength(0)
     expect(sourceCards(page)).toHaveLength(0)
     expect(page.find('ul[aria-label="Sources"]').exists()).toBe(false)
+  })
+
+  describe('a request made in the chat before this document existed', () => {
+    it("shows the request as the person's own first line and reads the source it names, then forgets it so a reload never repeats either", async () => {
+      vi.mocked(listDocumentSources).mockResolvedValue([HANDED])
+      vi.mocked(startExtraction).mockResolvedValue(accepted())
+      vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
+      const page = await mountPage('/documents/1', {
+        attachedSources: [HANDED],
+        sourceWarning: null,
+        formNotes: [],
+        request: { text: 'Make minutes for Tuesday’s meeting from my transcript', sourceId: 3 },
+      })
+
+      expect(chatLog(page).findAll('.msg--user')).toHaveLength(1)
+      expect(chatLog(page).text()).toContain('Make minutes for Tuesday’s meeting from my transcript')
+      expect(startExtraction).toHaveBeenCalledTimes(1)
+      expect(startExtraction).toHaveBeenCalledWith(7, 1, 5, expect.any(String))
+      // Read once, so the person's own history no longer carries it once the page has acted on it.
+      expect(readDocumentHandoff()).not.toHaveProperty('request')
+
+      // A reload re-runs the page against the same history entry, which no longer carries the request.
+      const reloaded = mount(Host, {
+        attachTo: document.body,
+        global: { plugins: [router], stubs: { DriveSavePanel: DriveStub, CalendarEventPanel: CalendarStub } },
+      })
+      mounted.push(reloaded)
+      await flushPromises()
+      await flushPromises()
+
+      expect(reloaded.findAll('.msg--user')).toHaveLength(0)
+      expect(startExtraction).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows the request but reads nothing when it named no source', async () => {
+      const page = await mountPage('/documents/1', {
+        attachedSources: [],
+        sourceWarning: null,
+        formNotes: [],
+        request: { text: 'Start the minutes, I will add the transcript later', sourceId: null },
+      })
+
+      expect(chatLog(page).text()).toContain('Start the minutes, I will add the transcript later')
+      expect(startExtraction).not.toHaveBeenCalled()
+      expect(readDocumentHandoff()).not.toHaveProperty('request')
+    })
+
+    it('shows the request but reads nothing, without failing, if it names a source this document does not have', async () => {
+      const page = await mountPage('/documents/1', {
+        attachedSources: [],
+        sourceWarning: null,
+        formNotes: [],
+        request: { text: 'Fill it in from what I attached', sourceId: 99 },
+      })
+
+      expect(chatLog(page).text()).toContain('Fill it in from what I attached')
+      expect(startExtraction).not.toHaveBeenCalled()
+    })
   })
 })
 
@@ -3987,7 +5425,7 @@ describe('WorkspaceView: sources copied from Google', () => {
     const page = await mountPage()
 
     const [copied, uploaded] = sourceCards(page)
-    expect(norm(copied!.get('.source-card__meta').text())).toBe('Calendar event · Brownie reads this one')
+    expect(norm(copied!.get('.source-chip__meta').text())).toBe('Calendar event · Brownie reads this one')
     expect(norm(copied!.text())).toContain('Copied from Google Calendar as text on')
     expect(norm(copied!.text())).toContain(', when it had last been changed there on')
     const link = copied!.get('a')
@@ -3995,7 +5433,7 @@ describe('WorkspaceView: sources copied from Google', () => {
     expect(link.attributes('target')).toBe('_blank')
     expect(link.attributes('rel')).toBe('noopener noreferrer')
     expect(link.text()).toBe('Open in Google Calendar (opens in a new tab)')
-    expect(norm(uploaded!.get('.source-card__meta').text())).toBe('Text file')
+    expect(norm(uploaded!.get('.source-chip__meta').text())).toBe('Text file')
     expect(uploaded!.text()).not.toContain('Copied from')
     expect(uploaded!.find('a').exists()).toBe(false)
   })
@@ -4164,6 +5602,7 @@ describe('WorkspaceView: sources copied from Google', () => {
           'document. Choose a file to copy into this document in Brownie\'s panel.',
       )
       expect(document.activeElement).toBe(said.element)
+      expect(said.classes()).toContain('workspace-notice--success')
       expect(page.get('.drive-picker > button').attributes('aria-expanded')).toBe('true')
       expect(page.get('.calendar-picker > button').attributes('aria-expanded'), 'the calendar control stays closed').toBe('false')
     })
@@ -4190,7 +5629,7 @@ describe('WorkspaceView: sources copied from Google', () => {
       const cards = sourceCards(page)
       expect(cards).toHaveLength(2)
       expect(cards[0]!.text()).toContain('Minutes.txt')
-      expect(norm(cards[0]!.get('.source-card__meta').text())).toBe('Google Doc · Brownie reads this one')
+      expect(norm(cards[0]!.get('.source-chip__meta').text())).toBe('Google Doc · Brownie reads this one')
       expect(cards[0]!.text()).toContain('Copied from Google Drive as text')
       expect(cards[0]!.get('a').text()).toBe('Open in Google Drive (opens in a new tab)')
       expect(await axe(page.element)).toHaveNoViolations()
@@ -4237,6 +5676,7 @@ describe('WorkspaceView: sources copied from Google', () => {
       const page = await mountPage('/documents/1?google=failed&access=drive_saving&reason=access_denied')
 
       expect(notices(page).get('[role="alert"]').text()).toBe("You chose not to allow access on Google's page, so nothing was connected.")
+      expect(notices(page).get('[role="alert"]').classes()).toContain('workspace-notice--error')
       expect(exportDialog(page).find('h2').exists()).toBe(false)
       expect(page.find('#add-source-panel').exists()).toBe(false)
     })
@@ -4434,7 +5874,7 @@ describe('WorkspaceView: a form uploaded on Home', () => {
     const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
 
     // The form had places of its own, so the ones Brownie found are more beside them.
-    expect(stripText(page)).toBe('Brownie found 3 more places to fill in. Check the ones marked Found by Brownie.')
+    expect(stripText(page)).toBe('Brownie found 3 more places to fill in. Check the ones marked Found by Brownie, then keep them.')
     expect(strip(page).classes()).toContain('form-strip--found')
     expect(hasButton(page, 'Keep all the places Brownie found', 'section.form-strip')).toBe(true)
     expect(hasButton(page, 'Details about this document', 'section.form-strip')).toBe(true)
@@ -4451,7 +5891,7 @@ describe('WorkspaceView: a form uploaded on Home', () => {
     })
     const page = await mountPage()
 
-    expect(stripText(page)).toMatch(/^Brownie found \d+ places to fill in\. Check the ones marked Found by Brownie\.$/)
+    expect(stripText(page)).toMatch(/^Brownie found \d+ places to fill in\. Check the ones marked Found by Brownie, then keep them\.$/)
   })
 
   it('keeps every place from the line and leaves the notes on it, moving focus to its next button', async () => {
@@ -4477,7 +5917,7 @@ describe('WorkspaceView: a form uploaded on Home', () => {
     expect(badge.attributes('aria-hidden')).toBe('true')
     const description = (location.attributes('aria-describedby') ?? '').split(' ').map((id) => window.document.getElementById(id)?.textContent ?? '')
     expect(description.join(' ')).toContain('Found by Brownie; check that this is the right place.')
-    expect(stripText(page)).toBe('2 of the 3 places Brownie found are not checked yet. Check the ones marked Found by Brownie.')
+    expect(stripText(page)).toBe('2 of the 3 places Brownie found are not checked yet. Check the ones marked Found by Brownie, then keep them.')
     expect(await axe(page.element)).toHaveNoViolations()
   })
 
@@ -4497,7 +5937,7 @@ describe('WorkspaceView: a form uploaded on Home', () => {
     expect(hasButton(page, 'Keep this fill spot', 'section.selection-bar')).toBe(false)
     // Its button has gone; the bar it was in keeps the focus.
     expect(window.document.activeElement).toBe(selectionBar(page).element)
-    expect(stripText(page)).toBe('1 of the 3 places Brownie found is not checked yet. Check the one marked Found by Brownie.')
+    expect(stripText(page)).toBe('1 of the 3 places Brownie found is not checked yet. Check the one marked Found by Brownie, then keep it.')
   })
 
   it('offers nothing to keep for a place the form had, or one already kept', async () => {
@@ -4565,11 +6005,12 @@ describe('WorkspaceView: a form uploaded on Home', () => {
 
       const button = about(page)!
       expect(button.attributes('aria-expanded')).toBe('false')
-      expect(button.attributes('aria-controls')).toBe('about-this-form')
-      expect((page.get('#about-this-form').element as HTMLElement).style.display).toBe('none')
+      expect(button.attributes('aria-controls')).toBe('rules-card-details')
+      expect((page.get('#rules-card-details').element as HTMLElement).style.display).toBe('none')
       await press(page, 'About this form', 'section.rules-card')
 
       expect(button.attributes('aria-expanded')).toBe('true')
+      expect((page.get('#rules-card-details').element as HTMLElement).style.display).toBe('')
       expect(page.get('#about-this-form').findAll('li').map((item) => item.text())).toEqual([
         "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged.",
         // Every place it found is kept, so none is said to be marked.
@@ -4586,7 +6027,7 @@ describe('WorkspaceView: a form uploaded on Home', () => {
       expect((page.get('#form-notes-list').element as HTMLElement).style.display).toBe('')
 
       await press(page, 'About this form', 'section.rules-card')
-      expect((page.get('#about-this-form').element as HTMLElement).style.display).toBe('')
+      expect((page.get('#rules-card-details').element as HTMLElement).style.display).toBe('')
       expect(details()).toBeUndefined()
       expect(page.find('#form-notes-list').exists()).toBe(false)
       expect(await axe(page.element)).toHaveNoViolations()
@@ -4609,11 +6050,22 @@ describe('WorkspaceView: a form uploaded on Home', () => {
     it.each([
       ['a version made before the notes were kept', undefined],
       ['a version whose upload had nothing to say', []],
-    ])('is not offered for %s', async (_case, preparationNotices) => {
+    ])('has no notes to show for %s, though the card still opens', async (_case, preparationNotices) => {
       vi.mocked(getTemplateVersion).mockResolvedValue(withNotices(MINUTES_TEMPLATE_VERSION, preparationNotices))
       const page = await mountPage()
+      await press(page, 'About this form', 'section.rules-card')
 
-      expect(about(page)).toBeUndefined()
+      expect(about(page)!.attributes('aria-expanded')).toBe('true')
+      expect(page.find('#about-this-form').exists()).toBe(false)
+    })
+
+    it('keeps the line over the page its Details while the open card has no notes of its own to say instead', async () => {
+      vi.mocked(getTemplateVersion).mockResolvedValue(withNotices(FOUND_VERSION, undefined))
+      const page = await mountPage('/documents/1', { attachedSources: [], sourceWarning: null, formNotes: NOTES })
+
+      await press(page, 'About this form', 'section.rules-card')
+
+      expect(buttonNamed(page, 'Details about this document', 'section.form-strip')).toBeDefined()
     })
   })
 })

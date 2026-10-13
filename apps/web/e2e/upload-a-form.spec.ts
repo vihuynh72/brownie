@@ -120,7 +120,9 @@ test('a Word file with a blank and no content controls opens with the place Brow
   await expect(page.locator('.workspace-title')).toHaveText(new RegExp(`^${name}, `), { timeout: 15_000 })
   // What Brownie found is news in one line over the page, not an error.
   const strip = page.getByRole('region', { name: 'About this document' })
-  await expect(strip.locator('.form-strip__text')).toHaveText('Brownie found 1 place to fill in. Check the one marked Found by Brownie.')
+  await expect(strip.locator('.form-strip__text')).toHaveText(
+    'Brownie found 1 place to fill in. Check the one marked Found by Brownie, then keep it.',
+  )
   await expect(page.getByRole('alert')).toHaveCount(0)
   // The blank on the line is the place, marked in words beside it, and in view without scrolling.
   await expect(page.locator('.fill-spot__found')).toHaveText(['Found by Brownie'])

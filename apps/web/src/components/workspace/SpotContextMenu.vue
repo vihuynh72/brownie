@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 /**
  * The menu a right-click on the page's text opens, in place of the browser's own: "Fill in here" and
@@ -74,10 +75,10 @@ onBeforeUnmount(() => window.document.removeEventListener('pointerdown', onPoint
     <div ref="root" class="spot-menu" :popover="topLayer ? 'manual' : undefined" :style="{ left: `${left}px`, top: `${top}px` }">
       <ul ref="menu" class="spot-menu__items" role="menu" aria-label="Page text" :aria-describedby="hintId" @keydown="onKeydown">
         <li role="none">
-          <button type="button" role="menuitem" class="spot-menu__item" tabindex="-1" @click="emit('fill-here')">Fill in here</button>
+          <button type="button" role="menuitem" class="spot-menu__item" tabindex="-1" @click="emit('fill-here')"><AppIcon name="fill-here" :size="16" /><span>Fill in here</span></button>
         </li>
         <li v-if="canCopy" role="none">
-          <button type="button" role="menuitem" class="spot-menu__item" tabindex="-1" @click="emit('copy')">Copy</button>
+          <button type="button" role="menuitem" class="spot-menu__item" tabindex="-1" @click="emit('copy')"><AppIcon name="copy" :size="16" /><span>Copy</span></button>
         </li>
       </ul>
       <p :id="hintId" class="spot-menu__hint">Shift+right-click shows your browser's menu</p>
@@ -98,11 +99,11 @@ onBeforeUnmount(() => window.document.removeEventListener('pointerdown', onPoint
   z-index: 60;
   min-inline-size: 12rem;
   padding: var(--space-1);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: 0 0.5rem 1.5rem rgb(42 41 36 / 0.2);
+  box-shadow: var(--shadow-popover);
   overflow: visible;
 }
 
@@ -112,22 +113,27 @@ onBeforeUnmount(() => window.document.removeEventListener('pointerdown', onPoint
   padding: 0;
 }
 
+/* Each row is a small icon and its words, in the interface's label type. */
 .spot-menu__item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   inline-size: 100%;
-  min-block-size: 2rem;
+  min-block-size: 2.25rem;
   padding: 0 var(--space-3);
   border: 0;
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: var(--radius);
   background: transparent;
   color: var(--color-text);
-  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   text-align: start;
   cursor: pointer;
 }
 
+/* Focus sits on the item itself, so the item wears the same wash whether a pointer or a key put it there. */
 .spot-menu__item:hover,
-.spot-menu__item:focus-visible {
+.spot-menu__item:focus {
   background: var(--color-cocoa-wash);
 }
 
@@ -141,7 +147,7 @@ onBeforeUnmount(() => window.document.removeEventListener('pointerdown', onPoint
   margin: var(--space-1) 0 0;
   padding: var(--space-1) var(--space-3) 0;
   border-block-start: 1px solid var(--color-hairline);
-  color: var(--color-text-secondary);
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
 }
 </style>

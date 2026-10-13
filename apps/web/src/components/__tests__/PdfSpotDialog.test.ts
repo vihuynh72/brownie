@@ -42,7 +42,7 @@ function mountDialog(send = vi.fn(async (): Promise<PdfSpotResult> => ({ ok: tru
   document.body.appendChild(opener)
   opener.focus()
   wrapper = mount(PdfSpotDialog, { props: { pages, suggest, send }, attachTo: document.body })
-  const dialog = wrapper.vm as unknown as { open: (mode: unknown) => void }
+  const dialog = wrapper.vm as unknown as { open: (mode: unknown, beside?: HTMLElement | null) => void; close: (focusId?: string | null) => void }
   return { wrapper, dialog, send, suggest, opener }
 }
 
@@ -200,6 +200,163 @@ describe('PdfSpotDialog', () => {
       label: 'Company',
       changes: [{ kind: 'RESTYLE_BOX', fieldId: 'company', sizePt: 8.5, overflow: 'BLOCK' }],
     })
+  })
+
+  it('steps the text size a point at a time with the buttons beside it, within what the server accepts', async () => {
+    const { wrapper, dialog, send } = mountDialog()
+    dialog.open({ kind: 'restyle', fieldId: 'company', label: 'Company', sizePt: 10, overflow: 'SHRINK_TO_FIT' })
+    await flushPromises()
+
+    const size = wrapper.get<HTMLInputElement>('input[type="number"]')
+    const smaller = wrapper.findAll('button').find((button) => button.text() === 'Decrease text size')!
+    const larger = wrapper.findAll('button').find((button) => button.text() === 'Increase text size')!
+    // Minus, the size and plus sit in that order, in one box beside the label that names the size.
+    expect(smaller.element.nextElementSibling).toBe(size.element)
+    expect(size.element.nextElementSibling).toBe(larger.element)
+    expect(wrapper.get('label[for]').text()).toBe('Text size (points)')
+    expect(wrapper.get('label[for]').attributes('for')).toBe(size.attributes('id'))
+
+    // Focus stays on the button, so what the size became is said where the box beside it cannot be seen.
+    const said = () => wrapper.findAll('[role="status"]').at(-1)!.text()
+    await larger.trigger('click')
+    expect(size.element.value).toBe('11')
+    expect(said()).toBe('Text size 11 points')
+    await smaller.trigger('click')
+    await smaller.trigger('click')
+    expect(size.element.value).toBe('9')
+    expect(said()).toBe('Text size 9 points')
+    // Half a point typed in is kept and stepped from.
+    await size.setValue('8.5')
+    await larger.trigger('click')
+    expect(size.element.value).toBe('9.5')
+
+    // At either end of what is accepted the button says so and stays where it is.
+    await size.setValue('4')
+    expect(smaller.attributes('aria-disabled')).toBe('true')
+    await smaller.trigger('click')
+    expect(size.element.value).toBe('4')
+    await size.setValue('72')
+    expect(larger.attributes('aria-disabled')).toBe('true')
+    await larger.trigger('click')
+    expect(size.element.value).toBe('72')
+    // A blank size is stepped from the usual one.
+    await size.setValue('')
+    await larger.trigger('click')
+    expect(size.element.value).toBe('12')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(sent(send).changes).toEqual([{ kind: 'RESTYLE_BOX', fieldId: 'company', sizePt: 12, overflow: 'SHRINK_TO_FIT' }])
+  })
+
+  it('asks the size question in a card with nothing dimmed behind it, and the other questions in a dialog', async () => {
+    const { wrapper, dialog } = mountDialog()
+    dialog.open({ kind: 'restyle', fieldId: 'company', label: 'Company', sizePt: 10, overflow: 'SHRINK_TO_FIT' })
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).toContain('pdf-spot-dialog--popover')
+    expect(wrapper.get('dialog').classes()).not.toContain('dialog')
+    expect(wrapper.get('h2').classes()).toContain('pdf-spot-dialog__title')
+    // Cancel before the answer, which is last: the order they are read in is the order they are seen in.
+    expect(wrapper.findAll('.pdf-spot-dialog__actions button').map((button) => button.text())).toEqual(['Cancel', 'Save'])
+
+    dialog.open({ kind: 'rename', fieldId: 'company', label: 'Company' })
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).toEqual(expect.arrayContaining(['dialog', 'pdf-spot-dialog']))
+    expect(wrapper.get('dialog').classes()).not.toContain('pdf-spot-dialog--popover')
+    expect(wrapper.get('h2').classes()).toContain('dialog__title')
+    expect(wrapper.findAll('.dialog__foot button').map((button) => button.text())).toEqual(['Cancel', 'Rename'])
+  })
+
+  it('shows the two ways long text can go as round choices in one group, the first chosen', async () => {
+    const { wrapper, dialog } = mountDialog()
+    dialog.open({ kind: 'restyle', fieldId: 'company', label: 'Company', sizePt: 10, overflow: 'SHRINK_TO_FIT' })
+    await flushPromises()
+
+    const group = wrapper.get('fieldset')
+    expect(group.get('legend').text()).toBe('If the text is too long:')
+    const choices = group.findAll<HTMLInputElement>('input[type="radio"]')
+    expect(choices.map((choice) => choice.element.value)).toEqual(['SHRINK_TO_FIT', 'BLOCK'])
+    expect(choices.map((choice) => choice.element.checked)).toEqual([true, false])
+    expect(group.findAll('label').map((label) => label.text())).toEqual(['Make the text smaller to fit (down to 6 pt)', 'Stop me before export'])
+    await choices[1]!.setValue(true)
+    expect(choices.map((choice) => choice.element.checked)).toEqual([false, true])
+    expect((await axe(document.body)).violations).toEqual([])
+  })
+
+  it('hangs the size card below its box, level with the box’s right edge, and keeps it inside the window', async () => {
+    const { wrapper, dialog } = mountDialog()
+    const box = document.createElement('div')
+    document.body.appendChild(box)
+    const place = (left: number, top: number, width: number, height: number) =>
+      (box.getBoundingClientRect = () => ({ left, top, right: left + width, bottom: top + height, width, height, x: left, y: top, toJSON: () => ({}) }) as DOMRect)
+    vi.spyOn(HTMLDialogElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 340, bottom: 264, width: 340, height: 264, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+    const restyle = { kind: 'restyle', fieldId: 'company', label: 'Company', sizePt: 10, overflow: 'SHRINK_TO_FIT' } as const
+    const style = () => wrapper.get('dialog').attributes('style') ?? ''
+
+    // A wide box well down the window: 14 below its foot, right edges level.
+    place(139, 200, 504, 74)
+    dialog.open(restyle, box)
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).toContain('pdf-spot-dialog--anchored')
+    expect(style()).toContain('left: 303px')
+    expect(style()).toContain('top: 288px')
+
+    // No room below it: above it instead.
+    dialog.close()
+    place(139, 600, 504, 74)
+    dialog.open(restyle, box)
+    await flushPromises()
+    expect(style()).toContain('top: 322px')
+
+    // A box at the window's left edge: the card is kept inside the window.
+    dialog.close()
+    place(0, 100, 80, 16)
+    dialog.open(restyle, box)
+    await flushPromises()
+    expect(style()).toContain('left: 12px')
+
+    // A box that is not on screen, or none: the card stays in the middle of the window like any dialog.
+    dialog.close()
+    place(139, 5000, 504, 74)
+    dialog.open(restyle, box)
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).not.toContain('pdf-spot-dialog--anchored')
+    expect(wrapper.get('dialog').attributes('style')).toBeUndefined()
+    dialog.close()
+    dialog.open(restyle)
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).not.toContain('pdf-spot-dialog--anchored')
+  })
+
+  it('cancels the size question when the page behind it is clicked, but not the other questions, and not a press that began in the card', async () => {
+    const { wrapper, dialog, send, opener } = mountDialog()
+    const press = async (target: Element, type: 'pointerdown' | 'click') => {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }))
+      await flushPromises()
+    }
+    dialog.open({ kind: 'restyle', fieldId: 'company', label: 'Company', sizePt: 10, overflow: 'SHRINK_TO_FIT' })
+    await flushPromises()
+
+    // Selecting text in the card and letting go outside it is not a click on the page.
+    await press(wrapper.get('h2').element, 'pointerdown')
+    await press(wrapper.get('dialog').element, 'click')
+    expect(wrapper.find('form').exists()).toBe(true)
+    // A click inside the card does nothing to it.
+    await press(wrapper.get('h2').element, 'pointerdown')
+    await press(wrapper.get('h2').element, 'click')
+    expect(wrapper.find('form').exists()).toBe(true)
+
+    await press(wrapper.get('dialog').element, 'pointerdown')
+    await press(wrapper.get('dialog').element, 'click')
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(opener)
+
+    dialog.open({ kind: 'rename', fieldId: 'company', label: 'Company' })
+    await flushPromises()
+    await press(wrapper.get('dialog').element, 'pointerdown')
+    await press(wrapper.get('dialog').element, 'click')
+    expect(wrapper.find('form').exists()).toBe(true)
   })
 
   it('renames a spot', async () => {

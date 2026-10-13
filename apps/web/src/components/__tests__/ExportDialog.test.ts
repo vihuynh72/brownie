@@ -126,6 +126,9 @@ let serverRevision = 9
 
 interface MountOptions {
   currentRevisionId?: number
+  /** Has the page show a number for its revision, which in these tests is the revision's id. */
+  numbered?: boolean
+  fillCounts?: { total: number; filled: number; accepted: number; locked: number }
   unsavedWork?: boolean
   saveBeforeExport?: () => Promise<boolean>
   reloadDocument?: () => Promise<boolean>
@@ -149,7 +152,7 @@ async function mountDialog(options: MountOptions = {}) {
   const reloadDocument =
     options.reloadDocument ??
     vi.fn(async () => {
-      await self?.setProps({ currentRevisionId: serverRevision })
+      await self?.setProps({ currentRevisionId: serverRevision, ...(options.numbered ? { currentRevisionNumber: serverRevision } : {}) })
       return true
     })
   const wrapper: Dialog = mount(ExportDialog, {
@@ -158,6 +161,8 @@ async function mountDialog(options: MountOptions = {}) {
       documentId: 42,
       documentTitle: 'Spring budget: minutes',
       currentRevisionId: options.currentRevisionId ?? 9,
+      currentRevisionNumber: options.numbered ? (options.currentRevisionId ?? 9) : undefined,
+      fillCounts: options.fillCounts,
       unsavedWork: options.unsavedWork ?? false,
       saveBeforeExport: options.saveBeforeExport ?? vi.fn(async () => true),
       reloadDocument,
@@ -207,6 +212,20 @@ function buttonNamed(wrapper: Dialog, name: string) {
 function linkNamed(wrapper: Dialog, name: string) {
   return wrapper.findAll('a').find((link) => link.text().replace(/\s+/g, ' ').trim() === name)
 }
+
+/** The progress rows at the top: where each stands and what it says. */
+function steps(wrapper: Dialog): { state: string; label: string }[] {
+  return wrapper.findAll('.export-dialog__steps .step').map((row) => ({
+    state: /step--(\w+)/.exec(row.classes().join(' '))?.[1] ?? '',
+    label: row.get('.step__label').text(),
+  }))
+}
+
+function subtitle(wrapper: Dialog): string {
+  return wrapper.get('.dialog__subtitle').text().replace(/\s+/g, ' ')
+}
+
+const clockFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 
 function checkedFormat(wrapper: Dialog): string | undefined {
   return wrapper.findAll<HTMLInputElement>('input[name="export-format"]').find((input) => input.element.checked)?.element.value
@@ -274,9 +293,9 @@ describe('opening', () => {
     expect(body.classes()).not.toContain('export-dialog__body--more-below')
     expect(more.classes()).not.toContain('export-dialog__more--shown')
 
-    // "Done", so only the button at the top is named Close.
+    // "Cancel", so only the button at the top is named Close.
     expect(wrapper.findAll('button').filter((button) => button.text() === 'Close')).toHaveLength(1)
-    await buttonNamed(wrapper, 'Done')!.trigger('click')
+    await buttonNamed(wrapper, 'Cancel')!.trigger('click')
     expect(wrapper.emitted('closed')).toHaveLength(1)
   })
 
@@ -330,10 +349,13 @@ describe('opening', () => {
     expect(approveExport).not.toHaveBeenCalled()
     expect(exportDocument).not.toHaveBeenCalled()
     expect(wrapper.find('[aria-live="polite"]').text()).toBe('DOCX exported.')
-    // The format on screen is the one approved, so it matches the file offered below it.
-    expect(checkedFormat(wrapper)).toBe('DOCX')
+    expect(wrapper.find('input[name="export-format"]').exists()).toBe(false)
     expect(linkNamed(wrapper, 'Download Word file (.docx)')?.attributes('href')).toBe(artifactDownloadUrl(7, 13))
     expect(wrapper.findComponent(DriveStub).props('receipt')).toMatchObject({ id: 5 })
+
+    // Going back to the choice shows the format that was approved, so it matches the file that was offered.
+    await buttonNamed(wrapper, 'Export again')!.trigger('click')
+    expect(checkedFormat(wrapper)).toBe('DOCX')
   })
 
   it('offers only the PDF for a PDF form, whose export has no Word file', async () => {
@@ -416,11 +438,76 @@ describe('what the check found', () => {
     ])
     expect(text(wrapper)).toContain('It found 1 thing that blocks export, 1 warning and 1 note.')
     expect(text(wrapper)).not.toMatch(/BLOCKING|WARNING|INFORMATIONAL/)
-    expect(buttonNamed(wrapper, 'Approve and export')).toBeUndefined()
     expect(wrapper.find('input[name="export-format"]').exists()).toBe(false)
 
     await buttonNamed(wrapper, 'Go to Meeting title')!.trigger('click')
     expect(wrapper.emitted('go-to-field')).toEqual([['meeting.title']])
+  })
+
+  it('keeps the approval in sight but unusable while a problem blocks export, and says why', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest({ hasUnresolvedBlocking: true, findings: BLOCKING_FINDINGS }))
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    const approve = buttonNamed(wrapper, 'Approve and export')!
+    expect(approve.attributes('aria-disabled')).toBe('true')
+    expect(document.getElementById(approve.attributes('aria-describedby')!)?.textContent?.trim()).toBe('A check that blocks export cannot be skipped.')
+    await approve.trigger('click')
+    await flushPromises()
+    expect(approveExport).not.toHaveBeenCalled()
+
+    // The way out is the Close at the top; a second button for it would crowd the foot.
+    expect(buttonNamed(wrapper, 'Cancel')).toBeUndefined()
+    expect(buttonNamed(wrapper, 'Done')).toBeUndefined()
+    expect(buttonNamed(wrapper, 'Check again')?.classes()).toContain('button--secondary')
+  })
+
+  it('tags each finding by kind with a word and an icon, and offers a way to the fill spot only for what asks something', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(
+      manifest({
+        hasUnresolvedBlocking: true,
+        findings: [
+          { code: 'A', severity: 'BLOCKING', fieldId: 'meeting.title', message: 'is empty.' },
+          { code: 'B', severity: 'WARNING', fieldId: 'meeting.title', message: 'has a weak source.' },
+          { code: 'C', severity: 'INFORMATIONAL', fieldId: 'meeting.title', message: 'is locked, so Brownie leaves it.' },
+        ],
+      }),
+    )
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    const tags = wrapper.findAll('.export-dialog__finding .tag')
+    expect(tags.map((tag) => tag.text())).toEqual(['Blocks export', 'Warning', 'Note'])
+    expect(tags.map((tag) => tag.classes().filter((name) => name.startsWith('tag--')))).toEqual([['tag--error'], ['tag--honey'], []])
+    expect(tags.every((tag) => tag.find('svg').exists())).toBe(true)
+    // A note only says what Brownie did, so there is nowhere to go for it.
+    const rows = wrapper.findAll('.export-dialog__finding')
+    expect(rows.map((row) => row.findAll('button').length)).toEqual([1, 1, 0])
+    expect(rows[0]!.text().replace(/\s+/g, ' ')).toBe('Blocks export Meeting title is empty. Go to Meeting title')
+  })
+
+  it('lists warnings and notes without stopping the export, and without calling the version clear', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest({ findings: [BLOCKING_FINDINGS[1]!, BLOCKING_FINDINGS[2]!] }))
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(text(wrapper)).toContain('Brownie checked this version. It found 1 warning and 1 note.')
+    expect(wrapper.findAll('.export-dialog__finding')).toHaveLength(2)
+    expect(wrapper.find('.export-dialog__clear').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(buttonNamed(wrapper, 'Approve and export')?.attributes('aria-disabled')).toBe('false')
+    expect(wrapper.findAll('input[name="export-format"]')).toHaveLength(3)
+  })
+
+  it('says a kind of finding it does not know as a note', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(
+      manifest({ findings: [{ code: 'X', severity: 'SOMETHING_NEW' as never, fieldId: null, message: 'Something new was seen.' }] }),
+    )
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(wrapper.get('.export-dialog__finding .tag').text()).toBe('Note')
+    expect(buttonNamed(wrapper, 'Approve and export')?.attributes('aria-disabled')).toBe('false')
   })
 
   it('checks again when asked, keeping the button where the focus is', async () => {
@@ -478,6 +565,7 @@ describe('approving and exporting', () => {
     const button = buttonNamed(wrapper, 'Approve and export')!
     // Before the export it is the main button.
     expect(button.classes()).toContain('button--primary')
+    ;(button.element as HTMLButtonElement).focus()
     await button.trigger('click')
     await flushPromises()
 
@@ -492,18 +580,19 @@ describe('approving and exporting', () => {
 
     exporting.resolve(receipt({ format: 'PDF' }))
     await flushPromises()
-    expect(button.text()).toBe('Approve and export')
+    // The choices and the button that made the files give way to the files.
+    expect(buttonNamed(wrapper, 'Approve and export')).toBeUndefined()
+    expect(wrapper.find('input[name="export-format"]').exists()).toBe(false)
     expect(text(wrapper)).toContain('PDF exported.')
     expect(linkNamed(wrapper, 'Download PDF')?.attributes('href')).toBe(artifactDownloadUrl(7, 14))
     expect(linkNamed(wrapper, 'Download PDF')?.attributes('download')).toBe('')
     expect(linkNamed(wrapper, 'Download Word file (.docx)')).toBeUndefined()
-    // The download is what comes next now, so it is the main button, and exporting again steps back.
+    // The download is what comes next now, so it is the main button and takes the focus the approval held.
     expect(linkNamed(wrapper, 'Download PDF')?.classes()).toContain('button--primary')
-    expect(button.classes()).toContain('button--secondary')
-    expect(button.classes()).not.toContain('button--primary')
+    expect(document.activeElement).toBe(linkNamed(wrapper, 'Download PDF')!.element)
     // Said once, in the live region, so it is read once and a search for it finds one line.
     expect(wrapper.find('[aria-live="polite"]').text()).toBe('PDF exported.')
-    expect(wrapper.findAll('p').filter((line) => line.text().includes('exported'))).toHaveLength(1)
+    expect(wrapper.findAll('p').filter((line) => line.text() === 'PDF exported.')).toHaveLength(1)
   })
 
   it.each([
@@ -528,21 +617,55 @@ describe('approving and exporting', () => {
     await openDialog(wrapper)
 
     expect(text(wrapper)).toContain(sentence)
-    expect(wrapper.findAll('.export-dialog__links a').map((link) => link.text().trim())).toEqual(links)
+    expect(wrapper.findAll('.export-file a').map((link) => link.text().trim())).toEqual(links)
   })
 
-  it('clears the approval and files when the format changes', async () => {
+  it('drops an export that was under way when another format is chosen', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    vi.mocked(approveExport).mockResolvedValue(approval())
+    const exporting = deferred<ExportReceiptResponse>()
+    vi.mocked(exportDocument).mockReturnValue(exporting.promise)
+    await buttonNamed(wrapper, 'Approve and export')!.trigger('click')
+    await flushPromises()
+    expect(buttonNamed(wrapper, 'Exporting…')).toBeTruthy()
+
+    await wrapper.find('input[value="DOCX"]').setValue(true)
+    exporting.resolve(receipt())
+    await flushPromises()
+
+    // What was made was for the choice before this one, so it is not shown as if it were this one's.
+    expect(wrapper.findAll('a')).toHaveLength(0)
+    expect(text(wrapper)).not.toContain('Both files exported.')
+    expect(buttonNamed(wrapper, 'Approve and export')).toBeTruthy()
+    expect(checkedFormat(wrapper)).toBe('DOCX')
+  })
+
+  it('goes back from the files to the choice of format, with the focus on it', async () => {
     onRecord()
     const { wrapper } = await mountDialog({ currentRevisionId: 10 })
     await openDialog(wrapper)
-    expect(linkNamed(wrapper, 'Download PDF')).toBeTruthy()
+    const again = buttonNamed(wrapper, 'Export again')!
+    ;(again.element as HTMLButtonElement).focus()
 
-    await wrapper.find('input[value="DOCX"]').setValue(true)
+    await again.trigger('click')
+    await flushPromises()
 
     expect(wrapper.findAll('a')).toHaveLength(0)
-    expect(text(wrapper)).not.toContain('Both files exported.')
-    expect(wrapper.findComponent(DriveStub).props('receipt')).toBeNull()
+    expect(wrapper.find('.export-dialog__files').exists()).toBe(false)
+    expect(buttonNamed(wrapper, 'Export again')).toBeUndefined()
+    expect(checkedFormat(wrapper)).toBe('BOTH')
+    expect(document.activeElement).toBe(wrapper.get<HTMLInputElement>('input[name="export-format"]:checked').element)
     expect(approveExport).not.toHaveBeenCalled()
+
+    // Another format is a new approval and a new export.
+    await wrapper.find('input[value="PDF"]').setValue(true)
+    vi.mocked(approveExport).mockResolvedValue(approval({ format: 'PDF' }))
+    vi.mocked(exportDocument).mockResolvedValue(receipt({ format: 'PDF' }))
+    await buttonNamed(wrapper, 'Approve and export')!.trigger('click')
+    await flushPromises()
+    expect(approveExport).toHaveBeenCalledWith(7, 42, 3, 'PDF')
+    expect(text(wrapper)).toContain('PDF exported.')
   })
 
   it('clears everything and asks for a new check when the document changed since it was checked', async () => {
@@ -666,8 +789,15 @@ describe('a PDF form', () => {
     await flushPromises()
 
     expect(approveExport).toHaveBeenCalledWith(7, 42, 3, 'PDF')
-    expect(wrapper.findAll('.export-dialog__links a').map((link) => link.text().trim())).toEqual(['Download PDF'])
+    expect(wrapper.findAll('.export-file a').map((link) => link.text().trim())).toEqual(['Download PDF'])
     expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    // A PDF form has one format, so going back from the file lands on the button that makes it again.
+    const again = buttonNamed(wrapper, 'Export again')!
+    ;(again.element as HTMLButtonElement).focus()
+    await again.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(buttonNamed(wrapper, 'Approve and export')!.element)
   })
 
   it('keeps offering the three formats for a Word form', async () => {
@@ -692,7 +822,274 @@ describe('when the document changes under it', () => {
     expect(wrapper.find('[role="alert"]').text()).toBe('This document changed. Check it again.')
     expect(text(wrapper)).not.toContain('Ready to export.')
     expect(wrapper.findAll('a')).toHaveLength(0)
-    expect(wrapper.findComponent(DriveStub).props('receipt')).toBeNull()
+    // The copies elsewhere were of the old export, so they go with it.
+    expect(wrapper.findComponent(DriveStub).exists()).toBe(false)
+  })
+})
+
+describe('where it stands', () => {
+  it('says the save and the check are done once the check is in, in words as well as marks', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(steps(wrapper)).toEqual([
+      { state: 'done', label: 'Saved your changes' },
+      { state: 'done', label: 'Checked this version' },
+    ])
+    // The mark alone is not announced, so a step that is done also says so in words nobody sees.
+    expect(wrapper.findAll('.export-dialog__steps .step')[0]!.text()).toBe('Done: Saved your changes')
+  })
+
+  it('shows the save under way, then the check', async () => {
+    const saving = deferred<boolean>()
+    const { wrapper } = await mountDialog({ unsavedWork: true, saveBeforeExport: vi.fn(() => saving.promise) })
+    await openDialog(wrapper)
+
+    expect(steps(wrapper)).toEqual([
+      { state: 'active', label: 'Saving your changes' },
+      { state: 'pending', label: 'Check this version' },
+    ])
+    expect(wrapper.findAll('.export-dialog__steps .step')[0]!.text()).toBe('In progress: Saving your changes')
+
+    const checking = deferred<ValidationManifestResponse>()
+    vi.mocked(validateDocument).mockImplementation(() => {
+      serverRevision = 10
+      return checking.promise
+    })
+    await wrapper.setProps({ unsavedWork: false })
+    saving.resolve(true)
+    await flushPromises()
+    expect(steps(wrapper)).toEqual([
+      { state: 'done', label: 'Saved your changes' },
+      { state: 'active', label: 'Checking this version' },
+    ])
+
+    checking.resolve(manifest())
+    await flushPromises()
+    expect(steps(wrapper).map((row) => row.state)).toEqual(['done', 'done'])
+  })
+
+  it('shows what failed in the step it failed in, with an icon as well as a colour', async () => {
+    const refused = await mountDialog({ unsavedWork: true, saveBeforeExport: vi.fn(async () => false) })
+    await openDialog(refused.wrapper)
+    expect(steps(refused.wrapper)).toEqual([
+      { state: 'failed', label: 'Your changes are not saved' },
+      { state: 'pending', label: 'Check this version' },
+    ])
+    expect(refused.wrapper.find('.step--failed .step__marker svg').exists()).toBe(true)
+
+    vi.mocked(validateDocument).mockRejectedValue(new TypeError('Failed to fetch'))
+    const failed = await mountDialog()
+    await openDialog(failed.wrapper)
+    expect(steps(failed.wrapper)).toEqual([
+      { state: 'done', label: 'Saved your changes' },
+      { state: 'failed', label: 'Could not check this version' },
+    ])
+    expect(failed.wrapper.find('[role="alert"]').text()).toBe('Brownie could not be reached. Check your connection, then try again.')
+  })
+
+  it('names the version the page shows once the check is in: in the subtitle, the step and the note', async () => {
+    const { wrapper } = await mountDialog({ numbered: true })
+    await openDialog(wrapper)
+
+    expect(subtitle(wrapper)).toBe('Spring budget: minutes • Version 10')
+    expect(steps(wrapper)[1]).toEqual({ state: 'done', label: 'Checked version 10' })
+    expect(text(wrapper)).toContain('You approve exactly version 10 in this format. If anything changes after this, Brownie checks and asks again.')
+  })
+
+  it('says "this version" where the page gave no number', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(subtitle(wrapper)).toBe('Spring budget: minutes')
+    expect(steps(wrapper)[1]!.label).toBe('Checked this version')
+    expect(text(wrapper)).toContain('You approve exactly this version in this format.')
+  })
+
+  it('does not name a version for a check of one the page has not loaded yet', async () => {
+    const reload = deferred<boolean>()
+    const { wrapper } = await mountDialog({ numbered: true, reloadDocument: vi.fn(() => reload.promise) })
+    await openDialog(wrapper)
+
+    // The check made revision 10, but the page still shows 9, and the only number it can give is 9's.
+    expect(subtitle(wrapper)).toBe('Spring budget: minutes')
+    expect(steps(wrapper)[1]!.label).toBe('Checked this version')
+
+    await wrapper.setProps({ currentRevisionId: 10, currentRevisionNumber: 10 })
+    reload.resolve(true)
+    await flushPromises()
+    expect(subtitle(wrapper)).toBe('Spring budget: minutes • Version 10')
+    expect(steps(wrapper)[1]!.label).toBe('Checked version 10')
+  })
+
+  it('says when it was exported once there are files', async () => {
+    const when = new Date()
+    onRecord(receipt({ exportedAt: when.toISOString() }))
+    const { wrapper } = await mountDialog({ currentRevisionId: 10, numbered: true })
+    await openDialog(wrapper)
+
+    expect(subtitle(wrapper)).toBe(`Version 10 • approved and exported today at ${clockFormat.format(when).replace(/\s+/g, ' ')}`)
+  })
+
+  it('names the day of an export from an earlier one, and still reads well without a version', async () => {
+    onRecord(receipt({ exportedAt: '2020-03-04T12:00:00Z' }))
+    const { wrapper } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    // The day is named in the person's own format, so only that it is an earlier day, not today, is held to.
+    expect(subtitle(wrapper)).toMatch(/^Approved and exported .*2020.* at \d{1,2}:\d{2}/)
+    expect(subtitle(wrapper)).not.toContain('today')
+  })
+})
+
+describe('when nothing needs fixing', () => {
+  it('says so on its own panel, with what the page counted beside it', async () => {
+    const { wrapper } = await mountDialog({ fillCounts: { total: 9, filled: 9, accepted: 9, locked: 1 } })
+    await openDialog(wrapper)
+
+    const panel = wrapper.get('.export-dialog__clear')
+    expect(panel.get('.export-dialog__clear-title').text()).toBe('Brownie checked this version. It found nothing to fix.')
+    expect(panel.findAll('.tag').map((tag) => tag.text())).toEqual(['9 of 9 fill spots filled', '9 accepted', '1 locked'])
+    expect(wrapper.find('.export-dialog__findings').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('leaves out what is not there: no counts from the page, and nothing locked', async () => {
+    const bare = await mountDialog()
+    await openDialog(bare.wrapper)
+    expect(bare.wrapper.find('.export-dialog__counts').exists()).toBe(false)
+    expect(bare.wrapper.get('.export-dialog__clear').text()).toBe('Brownie checked this version. It found nothing to fix.')
+
+    const single = await mountDialog({ fillCounts: { total: 1, filled: 1, accepted: 0, locked: 0 } })
+    await openDialog(single.wrapper)
+    expect(single.wrapper.findAll('.export-dialog__counts .tag').map((tag) => tag.text())).toEqual(['1 of 1 fill spot filled', '0 accepted'])
+  })
+
+  it('offers the three formats as cards that say what each is good for', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(wrapper.findAll('.export-format').map((card) => [card.get('.export-format__title').text(), card.get('.export-format__hint').text()])).toEqual([
+      ['Word (.docx)', 'Edit it again in Word'],
+      ['PDF', 'Looks the same everywhere'],
+      ['Word and PDF', 'Both files from this version'],
+    ])
+    expect(checkedFormat(wrapper)).toBe('BOTH')
+    // The choice is the radio's name and what it is good for is its description, so it is said in that order.
+    const radio = wrapper.get('input[value="PDF"]')
+    expect(document.getElementById(radio.attributes('aria-labelledby')!)?.textContent).toBe('PDF')
+    expect(document.getElementById(radio.attributes('aria-describedby')!)?.textContent).toBe('Looks the same everywhere')
+    expect(wrapper.findAll('.export-format .doc-tile').every((tile) => tile.attributes('aria-hidden') === 'true')).toBe(true)
+  })
+
+  it('offers Cancel and the approval, with Check again to the side', async () => {
+    const { wrapper, opener } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(wrapper.findAll('.dialog__foot button').map((button) => button.text())).toEqual(['Check again', 'Cancel', 'Approve and export'])
+    expect(buttonNamed(wrapper, 'Check again')!.classes()).toContain('button--quiet')
+    expect(buttonNamed(wrapper, 'Approve and export')!.classes()).toContain('button--primary')
+    expect(buttonNamed(wrapper, 'Approve and export')!.attributes('aria-disabled')).toBe('false')
+
+    await buttonNamed(wrapper, 'Cancel')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('closed')).toHaveLength(1)
+    expect(approveExport).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(opener)
+  })
+
+  it('keeps the live line out of sight until there are files, and shows it as the result after', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    const outcome = wrapper.get('.export-dialog__outcome')
+    expect(outcome.classes()).toContain('visually-hidden')
+    expect(outcome.get('[aria-live="polite"]').text()).toBe('Ready to export.')
+
+    vi.mocked(approveExport).mockResolvedValue(approval())
+    vi.mocked(exportDocument).mockResolvedValue(receipt())
+    await buttonNamed(wrapper, 'Approve and export')!.trigger('click')
+    await flushPromises()
+    expect(outcome.classes()).not.toContain('visually-hidden')
+    expect(outcome.get('[aria-live="polite"]').text()).toBe('Both files exported.')
+    expect(outcome.find('svg').exists()).toBe(true)
+  })
+
+  it('shows the copies elsewhere only once there is an export', async () => {
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+
+    expect(wrapper.find('.export-dialog__elsewhere').exists()).toBe(false)
+    expect(wrapper.findComponent(DriveStub).exists()).toBe(false)
+    expect(wrapper.findComponent(CalendarStub).exists()).toBe(false)
+  })
+})
+
+describe('once exported', () => {
+  it('lists each file with what it is and a way to download it, the first as the main one', async () => {
+    onRecord()
+    const { wrapper } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    const rows = wrapper.findAll('.export-file')
+    expect(rows.map((row) => [row.get('.export-file__name').text(), row.get('.export-file__meta').text(), row.get('a').text().trim()])).toEqual([
+      ['Spring budget minutes.docx', 'Word', 'Download Word file (.docx)'],
+      ['Spring budget minutes.pdf', 'PDF', 'Download PDF'],
+    ])
+    const kinds = rows.map((row) => row.get('a').classes().filter((name) => ['button--primary', 'button--secondary'].includes(name)))
+    expect(kinds).toEqual([['button--primary'], ['button--secondary']])
+    expect(wrapper.findAll('.export-file .doc-tile').every((tile) => tile.attributes('aria-hidden') === 'true')).toBe(true)
+  })
+
+  it('puts the files in place of the steps and of what the check found', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest({ findings: [BLOCKING_FINDINGS[1]!] }))
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    expect(wrapper.find('.export-dialog__findings').exists()).toBe(true)
+
+    vi.mocked(approveExport).mockResolvedValue(approval())
+    vi.mocked(exportDocument).mockResolvedValue(receipt())
+    await buttonNamed(wrapper, 'Approve and export')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.export-dialog__steps').exists()).toBe(false)
+    expect(wrapper.find('.export-dialog__findings').exists()).toBe(false)
+    expect(wrapper.find('.export-dialog__clear').exists()).toBe(false)
+    expect(wrapper.find('.export-dialog__note').exists()).toBe(false)
+    expect(wrapper.get('.export-dialog__status').text()).toBe('Both files exported.')
+  })
+
+  it('offers Done and Export again, and nothing that would check again', async () => {
+    onRecord()
+    const { wrapper, opener } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    expect(wrapper.findAll('.dialog__foot button').map((button) => button.text())).toEqual(['Export again', 'Done'])
+    await buttonNamed(wrapper, 'Done')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('closed')).toHaveLength(1)
+    expect(document.activeElement).toBe(opener)
+  })
+
+  it('warns rather than celebrates when a file it was asked for could not be made', async () => {
+    onRecord(receipt({ pdfArtifactId: null, pdfSha256: null, isCompletePair: false }))
+    const { wrapper } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    expect(wrapper.get('.export-dialog__status').text()).toBe('The DOCX was exported; the PDF could not be made for this version.')
+    expect(wrapper.find('.export-dialog__outcome-icon--partial').exists()).toBe(true)
+  })
+
+  it('puts the copies elsewhere under a heading of their own, with the export for the Drive panel', async () => {
+    onRecord()
+    const { wrapper } = await mountDialog({ currentRevisionId: 10 })
+    await openDialog(wrapper)
+
+    expect(wrapper.get('.export-dialog__divider').text()).toBe('Save a copy elsewhere')
+    expect(wrapper.get('.export-dialog__divider').element.tagName).toBe('H3')
+    const panels = wrapper.get('.export-dialog__panels')
+    expect(panels.findComponent(DriveStub).props('receipt')).toMatchObject({ id: 5 })
+    expect(panels.findComponent(CalendarStub).exists()).toBe(true)
   })
 })
 
@@ -848,7 +1245,8 @@ describe('Google', () => {
     await openDialog(wrapper)
 
     expect(text(wrapper)).not.toContain('Google')
-    expect(wrapper.find('.export-dialog__elsewhere').element.children).toHaveLength(0)
+    // Nothing is inside the box that holds them, which is what hides the heading above it.
+    expect(wrapper.find('.export-dialog__panels').element.children).toHaveLength(0)
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })
@@ -856,6 +1254,43 @@ describe('Google', () => {
 describe('accessibility', () => {
   it('has no violations with problems listed', async () => {
     vi.mocked(validateDocument).mockResolvedValue(manifest({ hasUnresolvedBlocking: true, findings: BLOCKING_FINDINGS }))
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('has no violations when it is ready to export, with the version and the counts in place', async () => {
+    const { wrapper } = await mountDialog({ numbered: true, fillCounts: { total: 9, filled: 9, accepted: 9, locked: 1 } })
+    await openDialog(wrapper)
+    expect(wrapper.findAll('.export-format')).toHaveLength(3)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('has no violations while it checks', async () => {
+    vi.mocked(validateDocument).mockReturnValue(deferred<ValidationManifestResponse>().promise)
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    expect(steps(wrapper)[1]!.state).toBe('active')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('has no violations when the page could not save', async () => {
+    const { wrapper } = await mountDialog({ unsavedWork: true, saveBeforeExport: vi.fn(async () => false) })
+    await openDialog(wrapper)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('has no violations when the check failed', async () => {
+    vi.mocked(validateDocument).mockRejectedValue(new TypeError('Failed to fetch'))
+    const { wrapper } = await mountDialog()
+    await openDialog(wrapper)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('has no violations with warnings listed and the export still offered', async () => {
+    vi.mocked(validateDocument).mockResolvedValue(manifest({ findings: [BLOCKING_FINDINGS[1]!, BLOCKING_FINDINGS[2]!] }))
     const { wrapper } = await mountDialog()
     await openDialog(wrapper)
     expect(await axe(wrapper.element)).toHaveNoViolations()
