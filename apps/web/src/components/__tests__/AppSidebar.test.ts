@@ -162,6 +162,22 @@ describe('AppSidebar', () => {
     expect(wrapper.findAll('button').find((b) => b.text() === 'Sign out')).toBeUndefined()
     expect(wrapper.text()).toContain('Sign in to see your templates')
     expect(listTemplates).not.toHaveBeenCalled()
+    // Trash Bin stays linked: it sends a visitor to sign in first and then on to where they were going. Connections
+    // and Your data are about an account there is none of yet, so neither is offered.
+    expect(wrapper.find('a[href="/trash"]').exists()).toBe(true)
+    expect(wrapper.find('a[href="/connections"]').exists()).toBe(false)
+    expect(wrapper.find('a[href="/your-data"]').exists()).toBe(false)
+    // A form cannot be added from a file by someone who is not signed in, so the "+" is a link to sign in instead,
+    // carrying the way back here, the same as Home's own upload button offers a signed-out visitor.
+    expect(document.getElementById('sidebar-add-template')).toBeNull()
+    const addLink = wrapper.get('a[href^="/signin?next="]')
+    expect(addLink.text()).toContain('Sign in to add a template from a file')
+  })
+
+  it('sends a signed-out visitor who presses the + to sign in carrying wherever they were, the way Home\'s own upload button does', async () => {
+    wrapper = await mountSidebar({ open: true, docked: true }, '/connections')
+
+    expect(wrapper.get('a[href^="/signin?next="]').attributes('href')).toBe('/signin?next=/connections')
   })
 
   /** On every page load a signed-in person is "loading" first; telling them to sign in then is simply wrong. */
@@ -171,6 +187,118 @@ describe('AppSidebar', () => {
 
     expect(wrapper.text()).not.toContain('Sign in to see your templates')
     expect(wrapper.find('.sidebar__note').text()).toBe('Loading…')
+    // Neither an account nor a sign-in button yet, so no line marking off the place where one will be: only the one under the navigation.
+    expect(wrapper.findAll('hr')).toHaveLength(1)
+    expect(wrapper.find('a[href="/signin"]').exists()).toBe(false)
+  })
+
+  describe('the account row', () => {
+    it('shows the first letter of the name in a disc beside it, with the name and a way to sign out', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+
+      const row = wrapper.get('.sidebar__account')
+      expect(row.get('.sidebar__avatar').text()).toBe('V')
+      // The disc is only for the eye: the name beside it is what is read out.
+      expect(row.get('.sidebar__avatar').attributes('aria-hidden')).toBe('true')
+      expect(row.get('.sidebar__account-name').text()).toBe('Vi Huynh')
+      expect(row.findAll('button').map((b) => b.text())).toEqual(['Sign out'])
+      expect(wrapper.findAll('hr')).toHaveLength(2)
+    })
+
+    it('keeps focus on Sign out while the request is in flight and after it is refused, instead of dropping it', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+      const session = useSessionStore()
+      let settle!: () => void
+      session.signOut = vi.fn(() => new Promise<string>((_resolve, reject) => (settle = () => reject(new Error('offline')))))
+
+      const button = wrapper.get('.sidebar__sign-out')
+      ;(button.element as HTMLButtonElement).focus()
+      await button.trigger('click')
+
+      // Marked unavailable with aria-disabled, not the disabled attribute, which would have dropped the focus above.
+      expect(button.attributes('disabled')).toBeUndefined()
+      expect(button.attributes('aria-disabled')).toBe('true')
+      expect(document.activeElement).toBe(button.element)
+
+      // A second press while the first is still in flight asks nothing twice.
+      await button.trigger('click')
+      expect(session.signOut).toHaveBeenCalledTimes(1)
+
+      settle()
+      await flushPromises()
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.get('.sidebar__error').text()).toBe('Could not sign out. Try again.')
+      expect(button.attributes('aria-disabled')).toBeUndefined()
+      expect(document.activeElement).toBe(button.element)
+    })
+
+    it('capitalises the letter and takes it from the address when there is no name', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+      const session = useSessionStore()
+
+      session.identity = { ...session.identity!, displayName: 'zoë okafor' }
+      await flushPromises()
+      expect(wrapper.get('.sidebar__avatar').text()).toBe('Z')
+
+      session.identity = { ...session.identity!, displayName: undefined, email: 'robin@example.com' }
+      await flushPromises()
+      expect(wrapper.get('.sidebar__avatar').text()).toBe('R')
+      expect(wrapper.get('.sidebar__account-name').text()).toBe('robin@example.com')
+    })
+
+    it('takes the whole first character, not half of one, when a name opens with an emoji', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+      const session = useSessionStore()
+
+      session.identity = { ...session.identity!, displayName: '🦊 Fox' }
+      await flushPromises()
+
+      expect(wrapper.get('.sidebar__avatar').text()).toBe('🦊')
+    })
+
+    it('draws a person instead of a letter when the account has neither a name nor an address', async () => {
+      wrapper = await mountWithTemplates([CLUB])
+      const session = useSessionStore()
+
+      session.identity = { ...session.identity!, displayName: undefined, email: undefined }
+      await flushPromises()
+
+      expect(wrapper.get('.sidebar__avatar').text()).toBe('')
+      expect(wrapper.find('.sidebar__avatar svg').exists()).toBe(true)
+      expect(wrapper.get('.sidebar__account-name').text()).toBe('Your account')
+    })
+  })
+
+  describe('the page being shown', () => {
+    function current(): string[] {
+      return Array.from(document.querySelectorAll<HTMLElement>('#app-sidebar a[aria-current="page"]')).map((link) => link.textContent!.trim())
+    }
+
+    it.each([
+      ['/', 'Home'],
+      ['/chat', 'Chat'],
+      ['/trash', 'Trash Bin'],
+      ['/connections', 'Connections'],
+      ['/your-data', 'Your data'],
+    ])('marks only the row for %s as the current page', async (path, name) => {
+      wrapper = await mountWithTemplates([CLUB], { open: true, docked: true }, path)
+
+      expect(current()).toEqual([name])
+    })
+
+    it('marks nothing on a page the sidebar has no row for, and follows the person from page to page', async () => {
+      wrapper = await mountWithTemplates([CLUB], { open: true, docked: true }, '/documents/5')
+      expect(current()).toEqual([])
+
+      await router.push('/chat')
+      await flushPromises()
+      expect(current()).toEqual(['Chat'])
+
+      await router.push('/your-data')
+      await flushPromises()
+      expect(current()).toEqual(['Your data'])
+    })
   })
 
   it('lists the workspace templates that can actually start a document, each as a button', async () => {
