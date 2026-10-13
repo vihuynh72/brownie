@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import AppIcon from '@/components/AppIcon.vue'
 import { proposeDocAppend, proposeDriveSave, type ActionResponse, type DriveSaveKind, type ExportReceiptResponse } from '@/api/client'
 import { stateSentence } from '@/connections/words'
 import {
@@ -26,6 +27,7 @@ import {
   type DriveSavePreview,
 } from '@/actions/words'
 import { useActionList, type ActionWords } from '@/actions/useActionList'
+import { ADD_STANDING, SAVE_STANDING, connectionStanding, standingOf, type Standing } from '@/actions/standing'
 
 /**
  * Saving the document's latest export to the person's own Google Drive: the
@@ -40,6 +42,10 @@ import { useActionList, type ActionWords } from '@/actions/useActionList'
  * stays reachable after the document changes. Only preparing a new save needs
  * the latest export, and so does adding the current version's text to the end
  * of a Google Doc a save made, which is offered on that save.
+ *
+ * Each save is a card of its own, with where it stands in a chip at the top.
+ * The form that prepares a save gives way to a save waiting for approval, so
+ * there is one thing to decide at a time, and comes back once it is settled.
  */
 const SAVE_WORDS: ActionWords = {
   kind: DRIVE_SAVE_WORDS,
@@ -288,145 +294,187 @@ function acknowledgeLabel(action: ActionResponse): string {
   return action.type === 'GOOGLE_DOC_APPEND' ? 'I looked at the Google Doc' : 'I looked in my Google Drive'
 }
 
+/** What the main button of a card says: to approve it, or, where approving did not get through, to try again. */
+function approveLabel(action: ActionResponse): string {
+  if (action.type === 'GOOGLE_DOC_APPEND') return action.state === 'APPROVED' ? 'Try adding again' : 'Add to the Google Doc'
+  return action.state === 'APPROVED' ? 'Try saving again' : 'Save to Google Drive'
+}
+
 const connectHint = computed(() =>
   connection.value === null ? 'Saving to Google Drive is not connected.' : stateSentence(connection.value),
 )
+
+/** One card for each change on the list, with the chip that says where it stands. */
+const cards = computed(() =>
+  shown.value.map((action) => ({
+    action,
+    standing: standingOf(action, action.type === 'GOOGLE_DOC_APPEND' ? ADD_STANDING : SAVE_STANDING),
+  })),
+)
+
+/** A save waiting for the person's say, which the form to prepare another gives way to. */
+const waiting = computed(() => actions.value.some(withdrawable))
+
+type Entry = 'loading' | 'check' | 'connect' | 'noExport' | 'noFile' | 'form'
+
+/**
+ * What the card for starting a save holds, in the order the checks run: waiting to hear what is offered, asking
+ * again after a failure, connecting, saying why there is nothing to save yet, or the form. Nothing, once a save is
+ * waiting for approval or where saving is not offered, so that card is simply not there.
+ */
+const entry = computed<Entry | null>(() => {
+  if (loadState.value === 'loading') return 'loading'
+  if (loadState.value === 'error' || offerUnknown.value) return 'check'
+  if (loadState.value !== 'loaded' || !savingOffered.value) return null
+  if (reconnectOffered.value) return 'connect'
+  if (props.receipt === null) return 'noExport'
+  if (kinds.value.length === 0) return 'noFile'
+  return waiting.value ? null : 'form'
+})
+
+const connectionChip = computed(() => connectionStanding(connection.value))
+
+function edgeClass(standing: Standing | null): string {
+  return standing?.edge === 'approval' ? 'save-card--approval' : standing?.edge === 'attention' ? 'save-card--attention' : ''
+}
 </script>
 
 <template>
   <section v-if="visible" class="drive-save" aria-labelledby="drive-save-heading">
-    <h3 id="drive-save-heading" class="drive-save__heading" tabindex="-1">Save to Google Drive</h3>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-    <p v-if="offerUnknown" class="field-hint">
-      Brownie could not check whether saving to Google Drive is offered here, so only earlier saves are shown.
+    <p v-if="error" class="save-alert" role="alert">
+      <AppIcon name="alert-circle" :size="16" />
+      <span>{{ error }}</span>
     </p>
 
-    <p v-if="loadState === 'loading'" class="field-hint" aria-live="polite">Checking your Google Drive connection…</p>
-    <button v-else-if="loadState === 'error' || offerUnknown" type="button" class="button button--secondary" @click="checkAgain">
-      Check again<span class="visually-hidden"> for saving to Google Drive</span>
-    </button>
+    <ul v-if="cards.length > 0" class="drive-save__list">
+      <li v-for="({ action, standing }, index) in cards" :key="action.id" class="panel save-card" :class="edgeClass(standing)">
+        <div class="save-card__head">
+          <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="cloud" :size="18" /></span>
+          <h3
+            :id="index === 0 ? 'drive-save-heading' : undefined"
+            :tabindex="index === 0 ? -1 : undefined"
+            class="save-card__title"
+            >{{ action.type === 'GOOGLE_DOC_APPEND' ? 'Add to a Google Doc' : 'Save to Google Drive' }}</h3
+          >
+          <span v-if="standing" class="tag" :class="standing.tone">
+            <AppIcon v-if="standing.icon" :name="standing.icon" :size="14" />
+            {{ standing.label }}
+          </span>
+        </div>
 
-    <template v-else-if="loadState === 'loaded' && savingOffered">
-      <template v-if="reconnectOffered">
-        <p class="field-hint">
-          {{ connectHint }}
-          Saving uses a Google connection of its own, which Brownie uses only for saving a file you approve and for adding text you
-          approve to a Google Doc it saved.
-          <RouterLink to="/connections">More about connections</RouterLink>
-        </p>
-        <button id="drive-save-connect" type="button" class="button button--primary" :disabled="busy" @click="connect">
-          {{ connection?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive for saving again' : 'Connect Google Drive for saving' }}
-        </button>
-      </template>
-
-      <p v-else-if="receipt === null" class="field-hint">
-        Brownie saves the exported file. Once this version is approved and exported, it can be saved to Google Drive.
-      </p>
-
-      <p v-else-if="kinds.length === 0" class="field-hint">The latest export has no file that can be saved to Google Drive here.</p>
-
-      <form v-else class="drive-save__form" @submit.prevent="prepare">
-        <fieldset class="drive-save__choices">
-          <legend class="field-label">What to save</legend>
-          <label v-for="choice in kinds" :key="choice" class="drive-save__choice">
-            <input v-model="kind" type="radio" name="drive-save-kind" :value="choice" />
-            {{ DRIVE_SAVE_CHOICES[choice] }}
-          </label>
-        </fieldset>
-        <!-- Not disabled while preparing: that would drop the focus it holds. A second press is ignored instead. -->
-        <button id="drive-save-prepare" type="submit" class="button button--secondary" :aria-disabled="busy">
-          Prepare the save
-        </button>
-        <p class="field-hint">You see exactly what would be saved first. Nothing is saved until you approve it.</p>
-      </form>
-    </template>
-
-    <ul v-if="shown.length > 0" class="drive-save__list">
-      <li v-for="action in shown" :key="action.id" class="drive-save__item">
-        <p :id="`drive-save-${action.id}`" class="drive-save__state" tabindex="-1">
-          {{ sentenceOf(action) }}
-        </p>
-        <p v-if="timeOf(action.createdAt)" class="field-hint">Prepared at {{ timeOf(action.createdAt) }}.</p>
+        <div class="save-card__summary">
+          <p :id="`drive-save-${action.id}`" class="save-card__state" tabindex="-1">{{ sentenceOf(action) }}</p>
+          <span v-if="timeOf(action.createdAt)" class="save-card__prepared">Prepared at {{ timeOf(action.createdAt) }}.</span>
+        </div>
 
         <template v-if="action.state === 'AWAITING_APPROVAL'">
-          <dl v-if="previewOf(action)" class="drive-save__facts">
-            <dt>What</dt>
-            <dd>{{ driveSaveWhat(previewOf(action)!) }}</dd>
-            <dt>Where</dt>
-            <dd>{{ driveSaveWhere(previewOf(action)!) }}</dd>
-            <dt>Afterwards</dt>
-            <dd>{{ driveSaveAfterwards(previewOf(action)!) }}</dd>
+          <dl v-if="previewOf(action)" class="panel--quiet save-facts">
+            <div class="save-facts__row">
+              <dt>What</dt>
+              <dd>{{ driveSaveWhat(previewOf(action)!) }}</dd>
+            </div>
+            <div class="save-facts__row">
+              <dt>Where</dt>
+              <dd>{{ driveSaveWhere(previewOf(action)!) }}</dd>
+            </div>
+            <div class="save-facts__row">
+              <dt>Afterwards</dt>
+              <dd>{{ driveSaveAfterwards(previewOf(action)!) }}</dd>
+            </div>
           </dl>
-          <dl v-else-if="appendPreviewOf(action)" class="drive-save__facts">
-            <dt>What</dt>
-            <dd>
-              This text, {{ characterCount(appendPreviewOf(action)!.text) }} characters, as new paragraphs. They take the style of
-              the Doc's last paragraph, such as a heading or a list, if it ends in one.
-              <pre
-                class="drive-save__text"
-                role="region"
-                tabindex="0"
-                :aria-label="regionLabel(action)"
-                >{{ appendPreviewOf(action)!.text }}</pre
-              >
-            </dd>
-            <dt>Where</dt>
-            <dd>
-              At the end of the first tab of "{{ appendPreviewOf(action)!.docTitle }}", the Google Doc Brownie saved<template
-                v-if="timeOf(savedFor(action)?.finishedAt)"
-              >
-                at {{ timeOf(savedFor(action)?.finishedAt) }}</template
-              >
-              in the Google Drive of {{ appendPreviewOf(action)!.accountEmail ?? 'your Google account' }}.
-              <template v-if="appendPreviewOf(action)!.shared">
-                This Google Doc is shared: everyone it is shared with will see the added text.</template
-              >
-              <a v-if="savedFor(action) && actionLink(savedFor(action)!)" :href="actionLink(savedFor(action)!) ?? undefined" target="_blank" rel="noopener noreferrer"
-                >Open that Google Doc<span class="visually-hidden"> ({{ nameOf(action) }}, opens in a new tab)</span></a
-              >
-            </dd>
-            <dt>Only if unchanged</dt>
-            <dd>
-              Google adds it only if nobody has changed the Doc since this was prepared. If someone has, nothing is added, and
-              you can prepare it again.
-            </dd>
-            <dt>Afterwards</dt>
-            <dd>
-              When you approve, Brownie sends it, then reads the Doc back to check the text is at the end of its first tab and the
-              rest of that tab's text is as it was.
-            </dd>
+          <dl v-else-if="appendPreviewOf(action)" class="panel--quiet save-facts">
+            <div class="save-facts__row">
+              <dt>What</dt>
+              <dd>
+                This text, {{ characterCount(appendPreviewOf(action)!.text) }} characters, as new paragraphs. They take the style of
+                the Doc's last paragraph, such as a heading or a list, if it ends in one.
+                <pre
+                  class="drive-save__text"
+                  role="region"
+                  tabindex="0"
+                  :aria-label="regionLabel(action)"
+                  >{{ appendPreviewOf(action)!.text }}</pre
+                >
+              </dd>
+            </div>
+            <div class="save-facts__row">
+              <dt>Where</dt>
+              <dd>
+                At the end of the first tab of "{{ appendPreviewOf(action)!.docTitle }}", the Google Doc Brownie saved<template
+                  v-if="timeOf(savedFor(action)?.finishedAt)"
+                >
+                  at {{ timeOf(savedFor(action)?.finishedAt) }}</template
+                >
+                in the Google Drive of {{ appendPreviewOf(action)!.accountEmail ?? 'your Google account' }}.
+                <template v-if="appendPreviewOf(action)!.shared">
+                  This Google Doc is shared: everyone it is shared with will see the added text.</template
+                >
+                <a
+                  v-if="savedFor(action) && actionLink(savedFor(action)!)"
+                  class="save-facts__link"
+                  :href="actionLink(savedFor(action)!) ?? undefined"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Open that Google Doc<span class="visually-hidden"> ({{ nameOf(action) }}, opens in a new tab)</span></a
+                >
+              </dd>
+            </div>
+            <div class="save-facts__row">
+              <dt>Only if unchanged</dt>
+              <dd>
+                Google adds it only if nobody has changed the Doc since this was prepared. If someone has, nothing is added, and
+                you can prepare it again.
+              </dd>
+            </div>
+            <div class="save-facts__row">
+              <dt>Afterwards</dt>
+              <dd>
+                When you approve, Brownie sends it, then reads the Doc back to check the text is at the end of its first tab and the
+                rest of that tab's text is as it was.
+              </dd>
+            </div>
           </dl>
-          <p v-else class="field-hint">
+          <p v-else class="save-note">
             Brownie cannot show everything this {{ action.type === 'GOOGLE_DOC_APPEND' ? 'addition' : 'save' }} would do, so it is
             not offered for approval here.
           </p>
         </template>
-        <p v-if="alreadySaved(action)?.state === 'SUCCEEDED'" class="field-hint">
-          You already saved this exact file to Google Drive<template v-if="timeOf(alreadySaved(action)!.finishedAt)">
-            at {{ timeOf(alreadySaved(action)!.finishedAt) }}</template
-          >. Approving this one saves another copy.
+        <p v-if="alreadySaved(action)?.state === 'SUCCEEDED'" class="save-note save-note--warning">
+          <AppIcon name="warning" :size="14" />
+          <span>
+            You already saved this exact file to Google Drive<template v-if="timeOf(alreadySaved(action)!.finishedAt)">
+              at {{ timeOf(alreadySaved(action)!.finishedAt) }}</template
+            >. Approving this one saves another copy.
+          </span>
         </p>
-        <p v-else-if="alreadySaved(action)" class="field-hint">
-          An earlier try may already have saved this exact file. Look in your Google Drive before approving this one.
+        <p v-else-if="alreadySaved(action)" class="save-note save-note--warning">
+          <AppIcon name="warning" :size="14" />
+          <span>An earlier try may already have saved this exact file. Look in your Google Drive before approving this one.</span>
         </p>
         <template v-if="action.type === 'GOOGLE_DOC_APPEND' || appendable(action)">
-          <p v-if="alreadyAdded(action)?.state === 'SUCCEEDED'" class="field-hint">
-            {{ action.type === 'GOOGLE_DOC_APPEND' ? 'This text' : "This version's text" }} was already added to this Google Doc<template
-              v-if="timeOf(alreadyAdded(action)!.finishedAt)"
-            >
-              at {{ timeOf(alreadyAdded(action)!.finishedAt) }}</template
-            >. Adding it again puts it there a second time.
+          <p v-if="alreadyAdded(action)?.state === 'SUCCEEDED'" class="save-note save-note--warning">
+            <AppIcon name="warning" :size="14" />
+            <span>
+              {{ action.type === 'GOOGLE_DOC_APPEND' ? 'This text' : "This version's text" }} was already added to this Google Doc<template
+                v-if="timeOf(alreadyAdded(action)!.finishedAt)"
+              >
+                at {{ timeOf(alreadyAdded(action)!.finishedAt) }}</template
+              >. Adding it again puts it there a second time.
+            </span>
           </p>
-          <p v-else-if="alreadyAdded(action)" class="field-hint">
-            An earlier try may already have added {{ action.type === 'GOOGLE_DOC_APPEND' ? 'this text' : "this version's text" }} to
-            this Google Doc. Look at the end of the Doc before adding it again.
+          <p v-else-if="alreadyAdded(action)" class="save-note save-note--warning">
+            <AppIcon name="warning" :size="14" />
+            <span>
+              An earlier try may already have added {{ action.type === 'GOOGLE_DOC_APPEND' ? 'this text' : "this version's text" }} to
+              this Google Doc. Look at the end of the Doc before adding it again.
+            </span>
           </p>
         </template>
-        <p v-if="noLongerOffered(action)" class="field-hint">
+        <p v-if="noLongerOffered(action)" class="save-note">
           This Brownie no longer {{ action.type === 'GOOGLE_DOC_APPEND' ? 'adds text to Google Docs' : 'makes this kind of save' }}, so
           this can only be cancelled.
         </p>
-        <p v-if="mayAcknowledge(action) && action.state !== 'OUTCOME_UNKNOWN'" class="field-hint">
+        <p v-if="mayAcknowledge(action) && action.state !== 'OUTCOME_UNKNOWN'" class="save-note">
           <template v-if="action.sent">
             That try stopped before Brownie heard how it ended. Check again to ask Google; if Brownie cannot ask, look for yourself
             and say so.
@@ -436,40 +484,42 @@ const connectHint = computed(() =>
           </template>
         </p>
 
-        <p v-if="action.state === 'SUCCEEDED' && conversionSentence(action.conversionCheck)" class="field-hint">
+        <p v-if="action.state === 'SUCCEEDED' && conversionSentence(action.conversionCheck)" class="save-note">
           {{ conversionSentence(action.conversionCheck) }}
         </p>
-        <p v-if="actionLink(action)">
-          <a :href="actionLink(action) ?? undefined" target="_blank" rel="noopener noreferrer"
-            >{{ linkLabel(action) }}<span class="visually-hidden"> ({{ nameOf(action) }}, opens in a new tab)</span></a
-          >
-        </p>
-        <p v-if="unread.has(action.id)" class="field-hint">
+        <p v-if="unread.has(action.id)" class="save-note">
           Brownie could not be asked where this {{ action.type === 'GOOGLE_DOC_APPEND' ? 'addition' : 'save' }} stands.
         </p>
 
-        <div class="drive-save__actions">
-          <button v-if="approvable(action, stated(action))" type="button" class="button button--primary" :aria-disabled="busy" @click="approve(action)">
-            <span
-              >{{
-                action.type === 'GOOGLE_DOC_APPEND'
-                  ? action.state === 'APPROVED'
-                    ? 'Try adding again'
-                    : 'Add to the Google Doc'
-                  : action.state === 'APPROVED'
-                    ? 'Try saving again'
-                    : 'Save to Google Drive'
-              }}
-              <span class="visually-hidden">{{ nameOf(action) }}</span></span
-            >
+        <div class="save-card__actions">
+          <a
+            v-if="actionLink(action)"
+            class="button button--secondary button--small"
+            :href="actionLink(action) ?? undefined"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <AppIcon name="external" :size="16" />
+            <span>{{ linkLabel(action) }}<span class="visually-hidden"> ({{ nameOf(action) }}, opens in a new tab)</span></span>
+          </a>
+          <button
+            v-if="approvable(action, stated(action))"
+            type="button"
+            class="button button--primary button--small"
+            :aria-disabled="busy"
+            @click="approve(action)"
+          >
+            <AppIcon :name="action.state === 'APPROVED' ? 'refresh' : action.type === 'GOOGLE_DOC_APPEND' ? 'plus' : 'cloud'" :size="16" />
+            <span>{{ approveLabel(action) }} <span class="visually-hidden">{{ nameOf(action) }}</span></span>
           </button>
-          <button v-if="appendable(action)" type="button" class="button button--secondary" :aria-disabled="busy" @click="prepareAppend(action)">
+          <button v-if="appendable(action)" type="button" class="button button--secondary button--small" :aria-disabled="busy" @click="prepareAppend(action)">
+            <AppIcon name="plus" :size="16" />
             <span>Add this version's text to this Google Doc <span class="visually-hidden">{{ nameOf(action) }}</span></span>
           </button>
           <button
             v-if="withdrawable(action)"
             type="button"
-            class="button button--secondary"
+            class="button button--quiet button--small"
             :aria-disabled="busy"
             @click="settle(action, 'cancel')"
           >
@@ -478,10 +528,11 @@ const connectHint = computed(() =>
           <button
             v-if="action.state === 'OUTCOME_UNKNOWN' || action.state === 'EXECUTING' || action.state === 'RECONCILING'"
             type="button"
-            class="button button--secondary"
+            class="button button--secondary button--small"
             :aria-disabled="busy"
             @click="ask(action, 'reconcile')"
           >
+            <AppIcon name="refresh" :size="16" />
             <span
               >{{ action.state === 'OUTCOME_UNKNOWN' ? 'Ask Google what happened' : 'Check again' }}
               <span class="visually-hidden">to {{ nameOf(action) }}</span></span
@@ -490,7 +541,7 @@ const connectHint = computed(() =>
           <button
             v-if="mayAcknowledge(action)"
             type="button"
-            class="button button--secondary"
+            class="button button--secondary button--small"
             :aria-disabled="busy"
             @click="settle(action, 'acknowledge')"
           >
@@ -502,10 +553,11 @@ const connectHint = computed(() =>
           <button
             v-if="unread.has(action.id)"
             type="button"
-            class="button button--secondary"
+            class="button button--secondary button--small"
             :aria-disabled="busy"
             @click="ask(action, 'read')"
           >
+            <AppIcon name="refresh" :size="16" />
             <span
               >Check again
               <span class="visually-hidden"
@@ -516,104 +568,388 @@ const connectHint = computed(() =>
         </div>
       </li>
     </ul>
+
+    <div v-if="entry !== null" class="panel save-card" :class="{ 'save-card--attention': entry === 'connect' && connectionChip.edge === 'attention' }">
+      <div class="save-card__head">
+        <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="cloud" :size="18" /></span>
+        <h3
+          :id="cards.length === 0 ? 'drive-save-heading' : undefined"
+          :tabindex="cards.length === 0 ? -1 : undefined"
+          class="save-card__title"
+          >Save to Google Drive</h3
+        >
+        <span v-if="entry === 'connect'" class="tag" :class="connectionChip.tone">
+          <AppIcon v-if="connectionChip.icon" :name="connectionChip.icon" :size="14" />
+          {{ connectionChip.label }}
+        </span>
+      </div>
+
+      <p v-if="entry === 'loading'" class="save-card__summary" aria-live="polite">Checking your Google Drive connection…</p>
+
+      <template v-else-if="entry === 'check'">
+        <p v-if="offerUnknown" class="save-card__summary">
+          Brownie could not check whether saving to Google Drive is offered here, so only earlier saves are shown.
+        </p>
+        <div class="save-card__actions">
+          <button type="button" class="button button--secondary button--small" @click="checkAgain">
+            <AppIcon name="refresh" :size="16" />
+            <span>Check again<span class="visually-hidden"> for saving to Google Drive</span></span>
+          </button>
+        </div>
+      </template>
+
+      <template v-else-if="entry === 'connect'">
+        <p class="save-card__summary">{{ connectHint }}</p>
+        <p class="save-note">
+          <span>
+            Saving uses a Google connection of its own, which Brownie uses only for saving a file you approve and for adding text you
+            approve to a Google Doc it saved.
+            <RouterLink to="/connections">More about connections</RouterLink>
+          </span>
+        </p>
+        <div class="save-card__actions">
+          <button id="drive-save-connect" type="button" class="button button--primary button--small" :disabled="busy" @click="connect">
+            <AppIcon name="cloud" :size="16" />
+            {{ connection?.state === 'RECONNECT_REQUIRED' ? 'Connect Google Drive for saving again' : 'Connect Google Drive for saving' }}
+          </button>
+        </div>
+      </template>
+
+      <p v-else-if="entry === 'noExport'" class="save-card__summary">
+        Brownie saves the exported file. Once this version is approved and exported, it can be saved to Google Drive.
+      </p>
+
+      <p v-else-if="entry === 'noFile'" class="save-card__summary">The latest export has no file that can be saved to Google Drive here.</p>
+
+      <template v-else-if="entry === 'form'">
+        <p class="save-card__summary">You see exactly what would be saved first. Nothing is saved until you approve it.</p>
+        <form class="drive-save__form" @submit.prevent="prepare">
+          <fieldset class="drive-save__choices">
+            <legend class="field-label">What to save</legend>
+            <label v-for="choice in kinds" :key="choice" class="drive-save__choice">
+              <input v-model="kind" type="radio" name="drive-save-kind" :value="choice" />
+              <span>{{ DRIVE_SAVE_CHOICES[choice] }}</span>
+            </label>
+          </fieldset>
+          <!-- Not disabled while preparing: that would drop the focus it holds. A second press is ignored instead. -->
+          <button id="drive-save-prepare" type="submit" class="button button--secondary button--small" :aria-disabled="busy">
+            <AppIcon name="cloud" :size="16" />
+            Prepare the save
+          </button>
+        </form>
+      </template>
+    </div>
   </section>
 </template>
 
 <style scoped>
+/* One card for each save and one for starting another, a rem apart as the other blocks of the dialog are. */
 .drive-save {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin-block-start: var(--space-4);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
 }
 
 .drive-save p {
   margin: 0;
 }
 
-.drive-save__heading {
-  margin: 0;
-  font-size: var(--font-size-base);
-}
-
-.drive-save__form {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-
-.drive-save__choices {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.drive-save__choice {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
 .drive-save__list {
-  list-style: none;
-  inline-size: 100%;
+  display: grid;
+  gap: var(--space-4);
   margin: 0;
   padding: 0;
+  list-style: none;
+}
+
+/*
+ * A save or the form to start one, drawn as the cards of connected accounts are: a tile, what it is, a chip for where
+ * it stands, a sentence, and the one thing to do. A save waiting for approval has the action colour for its edge, a
+ * pixel and a half thick, and one that needs a look has honey, so either stands out from the plain hairline of the rest.
+ */
+.save-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.75rem;
+  padding: 1rem;
+  /* The head and the table lay themselves out by the card's width, which depends on the dialog and not on the window. */
+  container-type: inline-size;
 }
 
-.drive-save__item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+.save-card--approval {
+  border-color: var(--color-cocoa);
+  box-shadow: inset 0 0 0 0.5px var(--color-cocoa);
 }
 
-.drive-save__state {
-  overflow-wrap: anywhere;
+.save-card--attention {
+  border-color: var(--color-honey);
+  box-shadow: inset 0 0 0 0.5px var(--color-honey);
 }
 
-.drive-save__facts {
-  margin: 0;
+/* The tile, what it is and the chip on one line; a name that is long wraps inside its own column and never under the chip. */
+.save-card__head {
   display: grid;
-  gap: var(--space-1);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) 0.75rem;
 }
 
-.drive-save__facts dt {
-  font-weight: 500;
+.save-card__title {
+  min-inline-size: 0;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
 }
 
-.drive-save__facts dd {
-  margin: 0 0 var(--space-1);
-  color: var(--color-text-secondary);
+/* The chip carries its icon a little smaller, with a little more air, than a chip that only labels. */
+.save-card__head > .tag {
+  justify-self: end;
+  gap: 0.3125rem;
+}
+
+.save-card__head > .tag > svg {
+  inline-size: 0.875rem;
+  block-size: 0.875rem;
+}
+
+/* So little room that the name would be squeezed to a few letters: the chip goes on a line of its own, under the name. */
+@container (max-width: 24rem) {
+  .save-card__head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .save-card__head > .tag {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+/* The sentence and, run on after it in quieter type, when the save was prepared, so the pair costs no line of its own. */
+.save-card__summary {
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.save-card__state {
+  display: inline;
+}
+
+.save-card__prepared {
+  margin-inline-start: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  /* All of it or none of it on the line, so a time is never split from the words before it. */
+  white-space: nowrap;
+}
+
+/*
+ * What approving does, as label and value rows in an inset panel separated by hairlines. Narrow, the label sits above
+ * its value; wide enough, the rows share two columns so the values line up, however long the longest label is.
+ */
+.save-facts {
+  margin: 0;
+  padding: 0;
+}
+
+.save-facts__row {
+  display: grid;
+  /* Only the space between a label and its value when they are stacked: side by side the table's own column gap holds them apart. */
+  row-gap: var(--space-1);
+  padding: 0.5625rem 0.75rem;
+}
+
+.save-facts__row + .save-facts__row {
+  border-block-start: 1px solid var(--color-hairline);
+}
+
+.save-facts dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  /* Tighter than the value beside it, so the label's first line sits a little above the value's, as a caption does. */
+  line-height: 1.2;
+}
+
+.save-facts dd {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@container (min-width: 25rem) {
+  .save-facts {
+    display: grid;
+    /* The first track also holds the row's own side padding, since a row takes its columns from here. */
+    grid-template-columns: minmax(5.625rem, max-content) minmax(0, 1fr);
+    column-gap: 0.75rem;
+  }
+
+  .save-facts__row {
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+  }
+}
+
+/* On its own line under the sentence it follows, which ends in a full stop and would otherwise run into it. */
+.save-facts__link {
+  display: block;
+  inline-size: fit-content;
+  margin-block-start: var(--space-1);
 }
 
 .drive-save__text {
   max-block-size: 12rem;
   overflow: auto;
-  margin: var(--space-1) 0 0;
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) 0.625rem;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: inherit;
   color: var(--color-text);
 }
 
-.drive-save__actions {
+/* A line of small print about this save; the ones that warn before a second copy is made have a honey panel and an icon. */
+.save-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.save-note > svg {
+  flex: none;
+  margin-block-start: 0.0625rem;
+}
+
+.save-note--warning {
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-honey-soft);
+  color: var(--color-text);
+}
+
+.save-note--warning > svg {
+  color: var(--color-honey-ink);
+}
+
+.save-card__actions {
   display: flex;
   flex-wrap: wrap;
+  gap: 0.625rem;
+}
+
+/* A card with nothing left to do has no buttons, and then no row for them either, so no gap is left under its last line. */
+.save-card__actions:empty {
+  display: none;
+}
+
+/* Something went wrong with a request: a wash of the error colour, an icon and the words in the main text colour, so it reads without the colour. */
+.save-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-error-wash);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.save-alert > svg {
+  flex: none;
+  margin-block-start: 0.125rem;
+  color: var(--color-error);
+}
+
+.drive-save__form {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+}
+
+.drive-save__choices {
+  display: grid;
   gap: var(--space-2);
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.drive-save__choices legend {
+  padding: 0;
+  margin-block-end: var(--space-2);
+}
+
+/* Each choice is a row to press anywhere on; the chosen one has the cocoa edge and wash the format cards have, thickened inside so nothing moves. */
+.drive-save__choice {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-block-size: 2.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.drive-save__choice:hover {
+  background: var(--color-paper-soft);
+}
+
+.drive-save__choice:has(input:checked) {
+  border-color: var(--color-cocoa);
+  background: var(--color-cocoa-soft);
+  box-shadow: inset 0 0 0 1px var(--color-cocoa);
+}
+
+.drive-save__choice:has(input:focus-visible) {
+  box-shadow: var(--focus-ring);
+}
+
+.drive-save__choice:has(input:checked:focus-visible) {
+  box-shadow:
+    inset 0 0 0 1px var(--color-cocoa),
+    var(--focus-ring);
+}
+
+.drive-save__choice input {
+  flex: none;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  margin: 0;
+  accent-color: var(--color-cocoa);
+  cursor: pointer;
+}
+
+/* The row carries the focus ring, so the small circle draws none of its own. */
+.drive-save__choice input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+/* A display that forces its own colours drops backgrounds and shadows, which would erase which choice is made. */
+@media (forced-colors: active) {
+  .drive-save__choice:has(input:checked) {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 </style>

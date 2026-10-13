@@ -124,10 +124,15 @@ function text(wrapper: Wrapper): string {
   return wrapper.text().replace(/\s+/g, ' ')
 }
 
+/** What a button is called: its label when it has one (the row's button does), else the words on it, hidden ones included. */
+function nameOf(button: { attributes(key: string): string | undefined; text(): string }): string {
+  return (button.attributes('aria-label') ?? button.text()).replace(/\s+/g, ' ').trim()
+}
+
 function buttonNamed(wrapper: Wrapper, name: string) {
-  const found = wrapper.findAll('button').find((candidate) => candidate.text().replace(/\s+/g, ' ').trim() === name)
+  const found = wrapper.findAll('button').find((candidate) => nameOf(candidate) === name)
   if (!found) {
-    throw new Error(`No button named "${name}" among: ${wrapper.findAll('button').map((b) => b.text()).join(' | ')}`)
+    throw new Error(`No button named "${name}" among: ${wrapper.findAll('button').map(nameOf).join(' | ')}`)
   }
   return found
 }
@@ -185,6 +190,70 @@ describe('DriveSourcePicker', () => {
     expect(buttonNamed(wrapper, 'Stop reading Minutes').exists()).toBe(true)
     expect(buttonNamed(wrapper, 'Choose more files in Google Drive').exists()).toBe(true)
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('is a row of the Add a source panel: its title names the button, its sentence describes it, and it opens what it controls', async () => {
+    vi.mocked(listConnections).mockResolvedValue([drive()])
+    const wrapper = await mountPicker()
+    const toggle = buttonNamed(wrapper, 'Copy a file from Google Drive')
+
+    // The name is the title alone; the sentence under it is read after the name, not run into it.
+    expect(toggle.attributes('aria-label')).toBe('Copy a file from Google Drive')
+    const about = document.getElementById(toggle.attributes('aria-describedby') ?? '')
+    expect(about?.textContent).toBe('Google Docs and .txt files you choose in Google Drive, up to 10 at a time.')
+    expect(toggle.text()).toContain(about?.textContent)
+
+    const panel = wrapper.get('#drive-picker-panel')
+    expect(toggle.attributes('aria-controls')).toBe('drive-picker-panel')
+    expect(panel.isVisible()).toBe(false)
+    expect(wrapper.classes()).not.toContain('drive-picker--open')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    await toggle.trigger('click')
+    await flushPromises()
+    expect(panel.isVisible()).toBe(true)
+    expect(wrapper.classes()).toContain('drive-picker--open')
+
+    await toggle.trigger('click')
+    expect(panel.isVisible()).toBe(false)
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('says it is checking the connection while it waits', async () => {
+    let known: (value: ConnectionResponse[]) => void = () => {}
+    vi.mocked(listConnections).mockReturnValue(new Promise((resolve) => (known = resolve)))
+    const wrapper = await mountPicker()
+    await buttonNamed(wrapper, 'Copy a file from Google Drive').trigger('click')
+
+    expect(text(wrapper)).toContain('Checking your Google Drive connection…')
+    expect(wrapper.find('#drive-pick').exists()).toBe(false)
+    known([drive()])
+    await flushPromises()
+    expect(text(wrapper)).not.toContain('Checking your Google Drive connection…')
+    expect(wrapper.find('#drive-pick').exists()).toBe(true)
+  })
+
+  it('puts what choosing files means, and the way to choose, together in one quiet card until a file is chosen', async () => {
+    let wrapper = await openWith([])
+    let card = wrapper.get('.msg-card')
+    expect(card.text().replace(/\s+/g, ' ')).toContain(
+      "Choose files in Google's own file picker. Brownie can then read only those files, and only Google Docs and plain-text (.txt) files, and copies one only when you ask.",
+    )
+    expect(card.get('a[href="/connections"]').text()).toBe('More about connections')
+    expect(card.get('#drive-pick').text()).toBe('Choose files in Google Drive')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+
+    wrapper = await openWith([drive({ grants: [] })])
+    card = wrapper.get('.msg-card')
+    expect(card.text()).toContain('No files chosen yet.')
+    expect(card.get('#drive-pick').text()).toBe('Choose files in Google Drive')
+
+    // Once there are files, they are the list, and choosing more is a quieter button below it.
+    wrapper = await openWith([drive()])
+    expect(wrapper.find('.msg-card').exists()).toBe(false)
+    expect(wrapper.findAll('li')).toHaveLength(2)
+    expect(wrapper.get('#drive-pick').text()).toBe('Choose more files in Google Drive')
+    expect(wrapper.get('#drive-pick').classes()).not.toContain('button--primary')
   })
 
   it('offers to choose files where Drive is not connected, is waiting to be connected again, or has none chosen', async () => {

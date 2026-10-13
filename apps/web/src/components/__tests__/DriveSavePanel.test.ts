@@ -27,6 +27,7 @@ import {
   ApiRequestError,
   acknowledgeAction,
   approveAction,
+  cancelAction,
   getAction,
   getCapabilities,
   listActions,
@@ -210,6 +211,16 @@ function choices(wrapper: Wrapper): string[] {
   return wrapper.findAll('input[type="radio"]').map((input) => (input.element as HTMLInputElement).value)
 }
 
+/** The card of one save: the list item that holds its sentence, its chip, its table and its buttons. */
+function cardOf(wrapper: Wrapper, id: number): HTMLElement {
+  return wrapper.find(`#drive-save-${id}`).element.closest('li') as HTMLElement
+}
+
+/** What the chip at the top of a save's card says. */
+function chipOf(wrapper: Wrapper, id: number): string {
+  return (cardOf(wrapper, id).querySelector('.tag')?.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
 beforeEach(() => {
   resetCapabilitiesCache()
   vi.mocked(getCapabilities).mockResolvedValue(capabilities(['DRIVE_SAVE_FILE', 'DRIVE_SAVE_AS_GOOGLE_DOC']))
@@ -313,6 +324,101 @@ describe('where saving is offered', () => {
   it('has no accessibility violations with a save shown', async () => {
     vi.mocked(listActions).mockResolvedValue([action(), action({ id: 30, state: 'OUTCOME_UNKNOWN', sent: true })])
     const wrapper = await mountPanel()
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+})
+
+describe('each save as a card of its own', () => {
+  it('shows a save waiting for approval with a chip that says so and no form beside it, and gives the form back once it is settled', async () => {
+    vi.mocked(listActions).mockResolvedValue([action()])
+    vi.mocked(cancelAction).mockResolvedValue(action({ state: 'CANCELLED' }))
+    const wrapper = await mountPanel()
+
+    expect(wrapper.find('h3').text()).toBe('Save to Google Drive')
+    expect(chipOf(wrapper, 31)).toBe('Waiting for your approval')
+    expect(cardOf(wrapper, 31).classList.contains('save-card--approval')).toBe(true)
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(wrapper.findAll('dt').map((term) => term.text())).toEqual(['What', 'Where', 'Afterwards'])
+
+    await buttonNamed(wrapper, `Cancel saving ${FILE}`).trigger('click')
+    await flushPromises()
+    expect(chipOf(wrapper, 31)).toBe('Cancelled')
+    expect(cardOf(wrapper, 31).classList.contains('save-card--approval')).toBe(false)
+    expect(wrapper.find('form').exists()).toBe(true)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('keeps the form when a save is already made or beyond approving, and puts it after the saves', async () => {
+    vi.mocked(listActions).mockResolvedValue([action({ state: 'SUCCEEDED', sent: true, verification: 'MATCHED' })])
+    const wrapper = await mountPanel()
+
+    const [first, second] = wrapper.findAll('.save-card').map((card) => card.element)
+    expect(first).toBe(cardOf(wrapper, 31))
+    expect(second?.contains(wrapper.find('form').element)).toBe(true)
+  })
+
+  it('says where each save stands in the chip at the top of its card, and draws one that needs a look with an edge of its own', async () => {
+    vi.mocked(listActions).mockResolvedValue([
+      action({ id: 36, state: 'SUCCEEDED', sent: true, verification: 'MATCHED', externalLink: 'https://drive.google.com/file/d/abc/view' }),
+      action({ id: 35, state: 'OUTCOME_UNKNOWN', sent: true }),
+      action({ id: 34, state: 'FAILED', failure: 'PROVIDER_REFUSED' }),
+      action({ id: 33, state: 'EXECUTING', sent: true }),
+      action({ id: 32, state: 'EXPIRED' }),
+    ])
+    const wrapper = await mountPanel()
+
+    expect([36, 35, 34, 33, 32].map((id) => chipOf(wrapper, id))).toEqual(['Saved', 'Not confirmed', 'Not saved', 'In progress', 'Expired'])
+    expect(cardOf(wrapper, 35).classList.contains('save-card--attention')).toBe(true)
+    expect(cardOf(wrapper, 36).classList.contains('save-card--attention')).toBe(false)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('opens what was saved from a button that says where it goes, in a new tab, and names the save', async () => {
+    vi.mocked(listActions).mockResolvedValue([
+      action({ state: 'SUCCEEDED', sent: true, verification: 'MATCHED', externalLink: 'https://drive.google.com/file/d/abc/view' }),
+    ])
+    const wrapper = await mountPanel()
+
+    const link = wrapper.find('a[target="_blank"]')
+    expect(link.classes()).toContain('button')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(link.text().replace(/\s+/g, ' ')).toBe(`Open in Google Drive (${FILE}, opens in a new tab)`)
+  })
+
+  it('runs on when it was prepared after the sentence, outside the sentence the focus lands on', async () => {
+    vi.mocked(listActions).mockResolvedValue([action()])
+    const wrapper = await mountPanel()
+
+    expect(cardOf(wrapper, 31).textContent).toContain(`Prepared at ${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date('2026-09-28T10:00:00Z'))}.`)
+    expect(wrapper.find('#drive-save-31').text()).not.toContain('Prepared')
+  })
+
+  it('puts the heading on the first card whatever it is, so the focus has somewhere to return to', async () => {
+    vi.mocked(listActions).mockResolvedValue([action({ id: 31, state: 'CANCELLED' }), action({ id: 30, state: 'CANCELLED' })])
+    const saves = await mountPanel()
+    expect(saves.findAll('#drive-save-heading')).toHaveLength(1)
+    expect(saves.find('#drive-save-heading').element.closest('li')).toBe(cardOf(saves, 31))
+    expect(saves.find('section').attributes('aria-labelledby')).toBe('drive-save-heading')
+
+    vi.mocked(listActions).mockResolvedValue([])
+    const form = await mountPanel()
+    expect(form.findAll('#drive-save-heading')).toHaveLength(1)
+    expect(form.find('#drive-save-heading').element.closest('form, li')).toBeNull()
+    expect(form.find('#drive-save-heading').text()).toBe('Save to Google Drive')
+  })
+
+  it('puts what went wrong in an alert with an icon, so it is not told by its colour alone', async () => {
+    vi.mocked(listActions).mockResolvedValue([action()])
+    vi.mocked(approveAction).mockRejectedValue(new ApiRequestError(401, undefined))
+    vi.mocked(getAction).mockResolvedValue(action())
+    const wrapper = await mountPanel()
+
+    await buttonNamed(wrapper, `Save to Google Drive ${FILE}`).trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.text()).toContain('Nothing was sent this time. Your session has ended.')
+    expect(alert.find('svg').exists()).toBe(true)
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 })
@@ -516,7 +622,7 @@ describe('what the review of this panel found', () => {
     ])
     const wrapper = await mountPanel()
 
-    const waiting = wrapper.find('#drive-save-32').element.parentElement!
+    const waiting = cardOf(wrapper, 32)
     expect(waiting.textContent?.replace(/\s+/g, ' ')).toContain('You already saved this exact file to Google Drive at')
     expect(waiting.textContent).toContain('Approving this one saves another copy.')
   })
@@ -535,6 +641,12 @@ describe('what the review of this panel found', () => {
     expect(vi.mocked(listActions).mock.calls.length).toBe(listed + 1)
     expect(text(wrapper)).toContain('Ready to save "Spring Budget Planning minutes.docx"')
 
+    // The save found on the list is waiting for approval, so the form is not there until it is settled.
+    expect(wrapper.find('form').exists()).toBe(false)
+    vi.mocked(cancelAction).mockResolvedValue(action({ state: 'CANCELLED' }))
+    await buttonNamed(wrapper, `Cancel saving ${FILE}`).trigger('click')
+    await flushPromises()
+
     vi.mocked(proposeDriveSave).mockRejectedValueOnce(new ApiRequestError(409, problem(409, 'ACTION_NOT_PROPOSABLE', 'EXPORT_STALE')))
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -547,7 +659,7 @@ describe('what the review of this panel found', () => {
       action({ id: 31, state: 'FAILED', failure: 'READBACK_MISMATCH', sent: true }),
     ])
     const mismatched = await mountPanel()
-    expect(mismatched.find('#drive-save-32').element.parentElement!.textContent).toContain('An earlier try may already have saved this exact file.')
+    expect(cardOf(mismatched, 32).textContent).toContain('An earlier try may already have saved this exact file.')
 
     vi.mocked(listActions).mockResolvedValue([
       action({ id: 32 }),
@@ -555,7 +667,7 @@ describe('what the review of this panel found', () => {
       action({ id: 30, state: 'OUTCOME_UNKNOWN', sent: false, outcomeAcknowledged: true }),
     ])
     const gone = await mountPanel()
-    const waiting = gone.find('#drive-save-32').element.parentElement!.textContent ?? ''
+    const waiting = cardOf(gone, 32).textContent ?? ''
     expect(waiting).not.toContain('already saved')
     expect(waiting).not.toContain('may already have saved')
     expect(gone.find('#drive-save-31').text()).toContain('and has since been deleted there')
@@ -650,13 +762,19 @@ describe('adding this version to a Google Doc a save made', () => {
     vi.mocked(listActions).mockResolvedValue([converted()])
     vi.mocked(proposeDocAppend).mockResolvedValue(appended())
     const wrapper = await mountPanel()
+    expect(wrapper.find('form').exists()).toBe(true)
 
     await buttonNamed(wrapper, `Add this version's text to this Google Doc Spring Budget Planning minutes, prepared at ${AT}`).trigger('click')
     await flushPromises()
 
+    // An addition waiting for approval is one more thing to decide, so the form to prepare a save gives way to it too.
+    expect(wrapper.find('form').exists()).toBe(false)
     expect(proposeDocAppend).toHaveBeenCalledWith(7, 42, 31)
     expect(approveAction).not.toHaveBeenCalled()
-    const card = wrapper.find('#drive-save-50').element.parentElement!
+    const card = cardOf(wrapper, 50)
+    expect(card.querySelector('h3')?.textContent).toBe('Add to a Google Doc')
+    expect(chipOf(wrapper, 50)).toBe('Waiting for your approval')
+    expect(Array.from(card.querySelectorAll('dt')).map((term) => term.textContent)).toEqual(['What', 'Where', 'Only if unchanged', 'Afterwards'])
     expect(card.querySelector('pre')?.textContent).toBe('Spring Budget Planning, revised\nMarch 6, 2026')
     expect(card.textContent?.replace(/\s+/g, ' ')).toContain('This Google Doc is shared: everyone it is shared with will see the added text.')
     expect(card.textContent?.replace(/\s+/g, ' ')).toContain('Google adds it only if nobody has changed the Doc since this was prepared.')
@@ -711,7 +829,7 @@ describe('adding this version to a Google Doc a save made', () => {
     ])
     const wrapper = await mountPanel()
 
-    const card = wrapper.find('#drive-save-50').element.parentElement!
+    const card = cardOf(wrapper, 50)
     const said = card.textContent?.replace(/\s+/g, ' ') ?? ''
     expect(said).toContain('This text, 17 characters, as new paragraphs.')
     expect(said).toContain("They take the style of the Doc's last paragraph")
@@ -758,14 +876,14 @@ describe('adding this version to a Google Doc a save made', () => {
     ])
     const wrapper = await mountPanel()
 
-    const save = wrapper.find('#drive-save-31').element.parentElement!.textContent?.replace(/\s+/g, ' ') ?? ''
+    const save = cardOf(wrapper, 31).textContent?.replace(/\s+/g, ' ') ?? ''
     expect(save).toContain("This version's text was already added to this Google Doc at")
     expect(save).toContain('Adding it again puts it there a second time.')
-    const waiting = wrapper.find('#drive-save-51').element.parentElement!.textContent?.replace(/\s+/g, ' ') ?? ''
+    const waiting = cardOf(wrapper, 51).textContent?.replace(/\s+/g, ' ') ?? ''
     expect(waiting).toContain('This text was already added to this Google Doc at')
 
     const other = await mountPanel({ receipt: receipt({ revisionId: 10 }) })
-    const newer = other.find('#drive-save-31').element.parentElement!.textContent ?? ''
+    const newer = cardOf(other, 31).textContent ?? ''
     expect(newer).not.toContain('already added')
   })
 
@@ -797,6 +915,26 @@ describe('adding this version to a Google Doc a save made', () => {
 })
 
 describe('connecting for saving', () => {
+  it('says in a chip that nothing is connected, and has no edge of its own', async () => {
+    vi.mocked(listConnections).mockResolvedValue([])
+    const wrapper = await mountPanel()
+
+    expect(wrapper.find('.save-card .tag').text()).toBe('Not connected')
+    expect(wrapper.find('.save-card').classes()).not.toContain('save-card--attention')
+    expect(wrapper.find('#drive-save-connect').exists()).toBe(true)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('says in a chip that a connection Google ended is paused, draws it with the honey edge, and asks to connect again', async () => {
+    vi.mocked(listConnections).mockResolvedValue([saving({ state: 'RECONNECT_REQUIRED', reconnectReason: 'TOKEN_REJECTED' })])
+    const wrapper = await mountPanel()
+
+    expect(wrapper.find('.save-card .tag').text()).toBe('Paused')
+    expect(wrapper.find('.save-card').classes()).toContain('save-card--attention')
+    expect(wrapper.find('#drive-save-connect').text()).toBe('Connect Google Drive for saving again')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
   it('asks for the saving connection, back to this document, and waits for unsaved changes', async () => {
     vi.mocked(listConnections).mockResolvedValue([])
     const waiting = await mountPanel({ unsavedWork: true })
