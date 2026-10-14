@@ -381,6 +381,32 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
     }
 
     @Test
+    void consentPageCarriesItsOwnContentSecurityPolicy() throws Exception {
+        Browser browser = signIn("subject-oauth-csp", ISSUER);
+        JsonNode registration = register(Map.of("token_endpoint_auth_method", "none"), 201);
+        String clientId = registration.get("client_id").asText();
+        String consentLocation = getRaw(browser,
+                authorizeQuery(clientId, pkce().challenge, "csp-state", "read"))
+                .headers().firstValue("Location").orElseThrow();
+        URI consent = URI.create(consentLocation);
+        HttpResponse<String> page =
+                getRaw(browser, consent.getRawPath() + "?" + consent.getRawQuery());
+        assertThat(page.statusCode()).isEqualTo(200);
+
+        // The page's own policy: no form-action (Allow's answer is a redirect
+        // to the chat app's origin), a nonce that matches the style block's,
+        // and no inline style attributes.
+        String csp = page.headers().firstValue("Content-Security-Policy").orElseThrow();
+        Matcher nonce = Pattern.compile(
+                "^default-src 'none'; style-src 'nonce-([A-Za-z0-9+/=]+)'; frame-ancestors 'none'; base-uri 'none'$")
+                .matcher(csp);
+        assertThat(nonce.matches()).as("CSP header: %s", csp).isTrue();
+        assertThat(csp).doesNotContain("form-action");
+        assertThat(page.body()).contains("<style nonce=\"" + nonce.group(1) + "\">");
+        assertThat(page.body()).doesNotContain("style=\"");
+    }
+
+    @Test
     void aHostileClientNameIsEscapedOnTheConsentPage() throws Exception {
         Browser browser = signIn("subject-oauth-escape", ISSUER);
         String hostile = "\"><script>alert(document.cookie)</script>";

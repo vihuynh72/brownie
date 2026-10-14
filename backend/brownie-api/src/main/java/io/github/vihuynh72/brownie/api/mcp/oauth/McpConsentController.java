@@ -1,6 +1,8 @@
 package io.github.vihuynh72.brownie.api.mcp.oauth;
 
 import java.net.URI;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -33,6 +35,8 @@ import org.springframework.web.bind.annotation.ResponseBody;
 @Controller
 @ConditionalOnProperty(name = "brownie.mcp.enabled", havingValue = "true")
 final class McpConsentController {
+
+    private static final SecureRandom NONCES = new SecureRandom();
 
     private final RegisteredClientRepository registeredClientRepository;
     private final AuthorizationServerSettings authorizationServerSettings;
@@ -79,18 +83,21 @@ final class McpConsentController {
                     .append(scopeWords(scope)).append("</li>");
             scopeFields.append("<input type=\"hidden\" name=\"scope\" value=\"").append(escape(scope)).append("\">");
         }
+        String nonce = nonce();
         String page = """
                 <!doctype html>
                 <html lang="en"><head><meta charset="utf-8"><title>Connect to Brownie</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>
+                <style nonce="%s">
                 body { font-family: system-ui, sans-serif; background: #f4f1ec; color: #2d2a26;
                        display: flex; justify-content: center; padding: 3rem 1rem; }
                 main { background: #fff; border-radius: 12px; padding: 2rem; max-width: 30rem;
                        box-shadow: 0 1px 3px rgba(0,0,0,.12); }
                 h1 { font-size: 1.3rem; margin-top: 0; }
                 ul { padding-left: 1.2rem; }
+                form { margin: 0; }
                 .actions { display: flex; gap: .75rem; margin-top: 1.5rem; }
+                .actions form { display: inline; }
                 button { font: inherit; padding: .6rem 1.4rem; border-radius: 8px; cursor: pointer; }
                 .allow { background: #4a6741; color: #fff; border: none; }
                 .deny { background: transparent; border: 1px solid #b8b0a4; color: #5c564c; }
@@ -101,19 +108,20 @@ final class McpConsentController {
                 <ul>%s</ul>
                 <p>Brownie never fills or exports a document without your confirmation in the chat.</p>
                 <div class="actions">
-                <form method="post" action="%s" style="display:inline">
+                <form method="post" action="%s">
                 <input type="hidden" name="client_id" value="%s">
                 <input type="hidden" name="state" value="%s">
                 %s
                 <button type="submit" class="allow">Allow</button>
                 </form>
-                <form method="post" action="%s" style="display:inline">
+                <form method="post" action="%s">
                 <input type="hidden" name="client_id" value="%s">
                 <input type="hidden" name="state" value="%s">
                 <button type="submit" class="deny">Deny</button>
                 </form>
                 </div></main></body></html>
                 """.formatted(
+                nonce,
                 escape(client.getClientName()),
                 escape(client.getClientName()),
                 escape(redirectHost(client)),
@@ -125,7 +133,24 @@ final class McpConsentController {
                 escape(authorizationServerSettings.getAuthorizationEndpoint()),
                 escape(clientId),
                 escape(state));
-        return ResponseEntity.ok(page);
+        // The page's own content security policy travels with it because the
+        // proxy's site-wide one would both strip these styles and break the
+        // flow. There is deliberately no form-action: Allow's answer is a
+        // redirect to the chat app's registered redirect URI on another
+        // origin, and browsers check form-action against that redirect.
+        // Scripts are impossible under default-src 'none', and every value on
+        // the page is escaped.
+        return ResponseEntity.ok()
+                .header("Content-Security-Policy",
+                        "default-src 'none'; style-src 'nonce-" + nonce
+                                + "'; frame-ancestors 'none'; base-uri 'none'")
+                .body(page);
+    }
+
+    private static String nonce() {
+        byte[] bytes = new byte[16];
+        NONCES.nextBytes(bytes);
+        return Base64.getEncoder().encodeToString(bytes);
     }
 
     /** The host the client's first redirect URI points at -- where an Allow sends the code. */

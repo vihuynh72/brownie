@@ -68,13 +68,34 @@ server {
         root /var/www/acme;
     }
 
+    # The chat-app sign-in machinery: the authorization server's endpoints and
+    # the consent page. The consent page sets its own content security policy,
+    # so this block takes only the shared headers -- the site-wide policy would
+    # strip the page's styles, and its form-action would block the redirect
+    # back to the chat app that answers an Allow. Everything else about the
+    # API's proxying is the same.
+    location ^~ /mcp-auth/ {
+        access_log /var/log/nginx/access.log brownie_path_only;
+        proxy_pass http://${BROWNIE_API_HOST}:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${BROWNIE_SERVER_NAME};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host ${BROWNIE_SERVER_NAME};
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        include /etc/nginx/brownie-security-headers-base.conf;
+    }
+
     # Everything the API owns. The scheme and host below are what let it build
     # the sign-in callback and its cookies for the address the browser
-    # actually used, rather than for the container's own name. The mcp and
-    # mcp-auth paths are the chat-app endpoint and its sign-in machinery; the
-    # same forwarded headers are what let the authorization server answer
-    # with addresses under the public name.
-    location ~ ^/(api|oauth2|login|logout|mcp|mcp-auth)(/|$) {
+    # actually used, rather than for the container's own name. The mcp path is
+    # the chat-app endpoint; the same forwarded headers are what let the
+    # authorization server answer with addresses under the public name.
+    location ~ ^/(api|oauth2|login|logout|mcp)(/|$) {
         access_log /var/log/nginx/access.log brownie_path_only;
         proxy_pass http://${BROWNIE_API_HOST}:8081;
         proxy_http_version 1.1;
