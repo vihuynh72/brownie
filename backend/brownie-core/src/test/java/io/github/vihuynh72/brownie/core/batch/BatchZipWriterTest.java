@@ -167,10 +167,10 @@ class BatchZipWriterTest {
                     return honest;
                 }, out));
         String served = new String(out.bytes(), StandardCharsets.ISO_8859_1);
-        assertTrue(served.contains("PK"), "the first entry's local header was served");
+        assertTrue(served.contains("PK\u0003\u0004"), "the first entry's local header was served");
         assertTrue(served.contains("001 Ana.pdf"));
-        assertFalse(served.contains("PK"), "a finished archive's central directory was written");
-        assertFalse(served.contains("PK"), "a finished archive's end record was written");
+        assertFalse(served.contains("PK\u0001\u0002"), "a finished archive's central directory was written");
+        assertFalse(served.contains("PK\u0005\u0006"), "a finished archive's end record was written");
         assertFalse(out.closed, "the stream must be left open so the response aborts");
     }
 
@@ -190,8 +190,8 @@ class BatchZipWriterTest {
                 IllegalStateException.class,
                 () -> BatchZipWriter.write(zip, artifactId -> honest, out));
         String served = new String(out.bytes(), StandardCharsets.ISO_8859_1);
-        assertFalse(served.contains("PK"), "a finished archive's central directory was written");
-        assertFalse(served.contains("PK"), "a finished archive's end record was written");
+        assertFalse(served.contains("PK\u0001\u0002"), "a finished archive's central directory was written");
+        assertFalse(served.contains("PK\u0005\u0006"), "a finished archive's end record was written");
     }
 
     private static String sha256(byte[] bytes) throws NoSuchAlgorithmException {

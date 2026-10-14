@@ -647,8 +647,8 @@ class BatchExportIntegrationTest {
         // once the stream is committed there is no error page to swap in,
         // so what the person gets is the unfinished archive itself.
         String body = new String(dispatched.getResponse().getContentAsByteArray(), StandardCharsets.ISO_8859_1);
-        assertThat(body).contains("PK");
-        assertThat(body).doesNotContain("%PDF-tampered").doesNotContain("PK");
+        assertThat(body).contains("PK\u0003\u0004");
+        assertThat(body).doesNotContain("%PDF-tampered").doesNotContain("PK\u0005\u0006");
     }
 
     /** The export still ships the version the batch was made on after the template moved on. */
