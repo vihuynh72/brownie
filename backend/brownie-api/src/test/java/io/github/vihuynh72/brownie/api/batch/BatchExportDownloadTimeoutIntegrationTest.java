@@ -74,7 +74,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * ({@code RANDOM_PORT}) because the container's async timeout -- not
  * MockMvc, which never enforces one -- is what bounds that: Tomcat's
  * Connector default is 30 seconds, and this class pins
- * {@code spring.mvc.async.request-timeout} to 2 seconds so a slow stored
+ * {@code spring.mvc.async.request-timeout} to 5 seconds so a slow stored
  * read provokes the cut-off in seconds rather than half a minute. The
  * configured 30-minute production bound only exists to stop a stuck
  * client holding a thread for ever.
@@ -82,7 +82,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@TestPropertySource(properties = {"spring.autoconfigure.exclude=", "spring.mvc.async.request-timeout=2s"})
+@TestPropertySource(properties = {"spring.autoconfigure.exclude=", "spring.mvc.async.request-timeout=5s"})
 @DockerTest
 class BatchExportDownloadTimeoutIntegrationTest {
 
@@ -158,7 +158,7 @@ class BatchExportDownloadTimeoutIntegrationTest {
 
     /**
      * Half a second per stored-bytes read: a ~200 KB PDF needs dozens of
-     * reads, so the archive is still mid-first-entry when the 2-second
+     * reads, so the archive is still mid-first-entry when the 5-second
      * async bound fires and the container ends the request.
      */
     @Test
