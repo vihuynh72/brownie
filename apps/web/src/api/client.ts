@@ -89,6 +89,10 @@ export type BatchAcceptResponse = components['schemas']['BatchAcceptResponse']
 export type BatchExportResponse = components['schemas']['BatchExportResponse']
 export type BatchExportItemResponse = components['schemas']['BatchExportItemSchema']
 export type BatchExportStepResponse = components['schemas']['BatchExportStepResponse']
+export type McpGrantResponse = components['schemas']['McpGrantResponse']
+export type McpScope = McpGrantResponse['scopes'][number]
+export type IssuedMcpTokenResponse = components['schemas']['IssuedMcpTokenResponse']
+export type McpToolCallResponse = components['schemas']['McpToolCallResponse']
 export type ApiError = components['schemas']['Error']
 
 /**
@@ -354,6 +358,45 @@ export function approveAction(workspaceId: number, actionId: number, payloadHash
 /** Asks Google what became of a change whose outcome is unknown. Only reads. */
 export function reconcileAction(workspaceId: number, actionId: number): Promise<ActionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/actions/${actionId}/reconcile`, { method: 'POST' })
+}
+
+// ---- Chat apps (MCP) ------------------------------------------------------------------
+
+/**
+ * The workspace's MCP credentials: the personal tokens a chat app is given to paste, and the chat
+ * apps that signed in for themselves. Revoked grants are listed too, so a page can tell them apart
+ * or leave them out; a token itself is never returned after its creation.
+ */
+export function listMcpGrants(workspaceId: number): Promise<McpGrantResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/mcp/grants`)
+}
+
+/**
+ * Mints a personal token for a chat app. The token is in this answer and nowhere else: only its
+ * hash is stored, so the page that asked shows it once and then forgets it.
+ */
+export function issueMcpPersonalToken(
+  workspaceId: number,
+  name: string,
+  scopes: McpScope[],
+): Promise<IssuedMcpTokenResponse> {
+  return request(`/api/v1/workspaces/${workspaceId}/mcp/personal-tokens`, {
+    method: 'POST',
+    body: { name, scopes },
+  })
+}
+
+/** Ends one grant's access at once: a token stops working with the next request it makes. */
+export function revokeMcpGrant(workspaceId: number, grantId: number): Promise<void> {
+  return request(`/api/v1/workspaces/${workspaceId}/mcp/grants/${grantId}/revoke`, { method: 'POST' })
+}
+
+/**
+ * The calls chat apps made that named this document, oldest first -- answered, refused and failed
+ * alike -- interleaved into the document's version history by the page.
+ */
+export function listMcpToolCalls(workspaceId: number, documentId: number): Promise<McpToolCallResponse[]> {
+  return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/mcp-calls`)
 }
 
 /** Withdraws a change nothing has been sent for yet. */

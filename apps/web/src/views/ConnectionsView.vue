@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import ChatAppsPanel from '@/components/ChatAppsPanel.vue'
 import type { IconName } from '@/components/icons'
 import { useSessionStore } from '@/stores/session'
 import { loadCapabilities } from '@/capabilities'
@@ -49,6 +50,9 @@ const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref<string | null>(null)
 /** What this deployment offers to connect; null when the server did not say. */
 const offered = ref<ConnectorAccess[] | null>(null)
+/** Whether this deployment serves chat apps (MCP) at all, and the address to give them when it does. */
+const mcpEnabled = ref(false)
+const mcpServerUrl = ref<string | null>(null)
 
 const outcome = ref<{ tone: 'success' | 'failure'; text: string } | null>(null)
 const outcomeElement = ref<HTMLElement | null>(null)
@@ -140,7 +144,10 @@ async function load(): Promise<void> {
   }
   // What can be connected is a nicety on top of the list; without it the page offers nothing new, and says why.
   try {
-    offered.value = offeredAccess(await loadCapabilities())
+    const capabilities = await loadCapabilities()
+    offered.value = offeredAccess(capabilities)
+    mcpEnabled.value = capabilities.mcpEnabled === true
+    mcpServerUrl.value = capabilities.mcpServerUrl ?? null
   } catch {
     offered.value = null
   }
@@ -270,6 +277,13 @@ async function tryPicker(): Promise<void> {
             }`
     busy.value = null
   }
+}
+
+/** What a chat-app action did, said once in the page's own status line. */
+async function chatAppOutcome(payload: { tone: 'success' | 'failure'; text: string }): Promise<void> {
+  outcome.value = payload
+  await nextTick()
+  outcomeElement.value?.focus()
 }
 
 async function askToDisconnect(): Promise<void> {
@@ -603,6 +617,14 @@ async function disconnect(): Promise<void> {
             </div>
           </section>
         </div>
+
+        <ChatAppsPanel
+          v-if="mcpEnabled && session.personalWorkspaceId !== undefined"
+          :workspace-id="session.personalWorkspaceId"
+          :enabled="mcpEnabled"
+          :server-url="mcpServerUrl"
+          @outcome="chatAppOutcome"
+        />
 
         <section v-if="pickerTestVisible" class="panel account" aria-labelledby="connections-picker-test">
           <h2 id="connections-picker-test" class="account__title">Google's file picker (test)</h2>

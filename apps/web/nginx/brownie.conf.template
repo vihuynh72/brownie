@@ -70,8 +70,11 @@ server {
 
     # Everything the API owns. The scheme and host below are what let it build
     # the sign-in callback and its cookies for the address the browser
-    # actually used, rather than for the container's own name.
-    location ~ ^/(api|oauth2|login|logout)(/|$) {
+    # actually used, rather than for the container's own name. The mcp and
+    # mcp-auth paths are the chat-app endpoint and its sign-in machinery; the
+    # same forwarded headers are what let the authorization server answer
+    # with addresses under the public name.
+    location ~ ^/(api|oauth2|login|logout|mcp|mcp-auth)(/|$) {
         access_log /var/log/nginx/access.log brownie_path_only;
         proxy_pass http://${BROWNIE_API_HOST}:8081;
         proxy_http_version 1.1;
@@ -96,6 +99,27 @@ server {
         # Progress arrives as a stream of events that must not be held back
         # until a buffer fills, and a generation can take longer than the
         # default minute before its first byte.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # The two metadata documents a chat app reads to find the endpoint and
+    # its sign-in, which live under /.well-known/. The acme-challenge sibling
+    # stays served by this machine, so each API-owned name is spelled out.
+    location ~ ^/\.well-known/(oauth-protected-resource|oauth-authorization-server)(/|$) {
+        access_log /var/log/nginx/access.log brownie_path_only;
+        proxy_pass http://${BROWNIE_API_HOST}:8081;
+        proxy_http_version 1.1;
+        # The same forwarded headers as the API block above, and for the
+        # same reason: these documents are built from the request's origin,
+        # and only this machine's observation of it may be trusted.
+        proxy_set_header Host ${BROWNIE_SERVER_NAME};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host ${BROWNIE_SERVER_NAME};
+        proxy_set_header X-Forwarded-Port $server_port;
         proxy_buffering off;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;

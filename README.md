@@ -284,6 +284,56 @@ The Google Docs API has to be enabled in the Google Cloud project for the
 converted-Doc check and additions to work, and `calendar.events.owned` added to
 the project's consent screen for adding events.
 
+## Connecting chat apps
+
+A person can let a chat app -- Claude Code, VS Code, Cursor, or a custom
+connector in Claude or ChatGPT -- work with the documents in their workspace
+through Brownie's MCP endpoint. The Connections page has a "Chat apps" panel
+for it, shown only on a deployment where the feature is on. The address the
+app is given is the deployment's public origin followed by `/mcp`, exactly as
+the panel displays it.
+
+There are two ways in, and both end at the same thing. A developer tool takes
+a personal token: the person names it, chooses its scopes, and pastes the
+token with the address into the tool's configuration. Brownie shows the token
+exactly once, in the dialog that answers Create, and stores only its hash;
+the same dialog offers ready-made lines for Claude Code, VS Code
+(`.vscode/mcp.json`) and Cursor (`~/.cursor/mcp.json`). Claude and ChatGPT
+instead sign in to Brownie themselves: they find the authorization server
+through the endpoint's metadata, the person signs in on Brownie's own consent
+page and chooses the scopes there, and the app holds an OAuth grant that can
+be refreshed but is withdrawn the moment the grant is revoked.
+
+A token or a connected app carries the scopes it was given, never more:
+"See your templates and documents" (`read`) lets it list templates and read
+documents; "Fill documents, with your confirmation" (`fill`) lets it start
+documents, add text sources, ask the model to propose values and answer its
+questions; "Export documents" (`export`) lets it export a document and hand
+back a one-time download link. A call that needs a scope the grant does not
+hold is refused, and every call -- answered, refused or failed -- is recorded
+and appears in the document's version history beside its own versions.
+
+Nothing is filled or exported until the chat app confirms the exact proposal
+it was shown: `confirm_fill` only accepts the hash of the payload the person
+was shown, and a changed or already-settled proposal is refused. The chat
+apps themselves are built to ask the person before calling the confirming
+tools, and each grant may be revoked at any time from the same panel -- a
+personal token then fails its very next call, and a connected app loses its
+stored authorizations too.
+
+The one tool that spends model allowance is `propose_fill`: it is an ordinary
+model reading of the document's sources, drawn on the workspace's allowance
+and recorded in the same ledger as a proposal started on the page.
+
+For hosting, `BROWNIE_MCP_ENABLED` turns the endpoint and its routes on
+(true/false only; anything else fails the deploy before it starts), and on
+requires `BROWNIE_MCP_TOKEN_KEY` -- base64 of 32 random bytes, `openssl rand
+-base64 32`, kept as the `mcp-token-key` Key Vault secret on the pilot host
+and read from it by `infra/azure/host/deploy.sh` like the other secrets. The
+API refuses to start when the endpoint is on without the key. When it is off,
+`/mcp`, the metadata documents, the download link and the grant routes do not
+exist at all, and the panel does not appear.
+
 ## Filling many documents from a spreadsheet
 
 A template's "..." menu under My Templates has **Fill from a
