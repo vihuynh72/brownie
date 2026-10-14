@@ -76,6 +76,11 @@ class McpSecurityConfig {
                         .protectedResourceMetadata(metadata -> metadata.protectedResourceMetadataCustomizer(builder -> builder
                                 .resource(settings.resource())
                                 .authorizationServer(settings.publicOrigin())
+                                // The default document claims
+                                // certificate-bound tokens are accepted;
+                                // nothing on this chain ever checks a
+                                // client certificate, so the claim goes.
+                                .claims(claims -> claims.remove("tls_client_certificate_bound_access_tokens"))
                                 .scopes(scopes -> {
                                     scopes.add(McpScope.READ.token());
                                     scopes.add(McpScope.FILL.token());

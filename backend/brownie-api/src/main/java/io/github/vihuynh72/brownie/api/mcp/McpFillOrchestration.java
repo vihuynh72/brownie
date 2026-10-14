@@ -15,7 +15,6 @@ import io.github.vihuynh72.brownie.core.job.JobState;
 import io.github.vihuynh72.brownie.core.mcp.McpAppliedRunRepository;
 import io.github.vihuynh72.brownie.core.mcp.McpCaller;
 import io.github.vihuynh72.brownie.core.mcp.McpConfirmationHash;
-import io.github.vihuynh72.brownie.core.mcp.McpTokenGeneration;
 import io.github.vihuynh72.brownie.core.question.Question;
 import io.github.vihuynh72.brownie.core.question.QuestionService;
 import io.github.vihuynh72.brownie.core.question.QuestionStatus;
@@ -44,15 +43,16 @@ import java.util.UUID;
  * <p>Waiting is bounded polling inside the request: up to
  * {@value #POLL_BUDGET_MS} ms, so a chat client gets a finished answer
  * when the model is quick and a {@code RUNNING} it can poll when not.
- * The idempotency key for a start is derived from the grant, the
- * document, the source artifact and the call's own JSON-RPC id (a server
- * nonce when the client sent none), so a retried identical call replays
- * the same job instead of starting a second one.
+ * A second call for a document and source whose run is still going joins
+ * it rather than starting a twin: a JSON-RPC request id is only unique
+ * per connection, so it cannot key idempotent starts -- the document and
+ * artifact name the work, and a call that finds no live run starts one
+ * with a fresh key.
  */
 class McpFillOrchestration {
 
     private static final long POLL_BUDGET_MS = 40_000;
-    private static final long POLL_SLEEP_MS = 150;
+    private static final long POLL_SLEEP_MS = 500;
 
     private final GenerationOrchestrationService orchestrationService;
     private final GenerationRunRepository runRepository;
@@ -89,16 +89,23 @@ class McpFillOrchestration {
     }
 
     /** Starts extraction for the document from the named source artifact, then waits for it within the call's budget. */
-    Map<String, Object> proposeFill(McpCaller caller, long documentId, long sourceArtifactId, String requestId) {
+    Map<String, Object> proposeFill(McpCaller caller, long documentId, long sourceArtifactId) {
         long workspaceId = caller.workspaceId();
         long userId = caller.userId();
-        // The key names this call, not just this work: identical retries of
-        // the same JSON-RPC request replay the same job, while a genuinely
-        // new call (a different request id) is free to start another run.
-        String basis = caller.grantId() + ":" + documentId + ":" + sourceArtifactId + ":"
-                + (requestId != null ? "request:" + requestId : "nonce:" + UUID.randomUUID());
-        IdempotencyKey idempotencyKey =
-                new IdempotencyKey("mcp-fill-" + McpTokenGeneration.sha256Hex(basis).substring(0, 40));
+        // A run already in flight for this document and source is the
+        // answer: retried and repeated calls join it instead of starting
+        // another reading of the same source over the same document.
+        GenerationRun inFlight = orchestrationService.listRuns(workspaceId, userId, documentId).stream()
+                .filter(view -> view.run().sourceArtifactId() == sourceArtifactId)
+                .filter(view -> !view.job().state().isTerminal()
+                        && view.job().state() != JobState.CANCEL_REQUESTED)
+                .map(GenerationRunView::run)
+                .findFirst()
+                .orElse(null);
+        if (inFlight != null) {
+            return runState(caller, documentId, inFlight, POLL_BUDGET_MS);
+        }
+        IdempotencyKey idempotencyKey = new IdempotencyKey("mcp-fill-" + UUID.randomUUID());
         CanonicalRequestHash requestHash = CanonicalRequestHash.sha256OfCanonicalText(CanonicalJson.write(Map.of(
                 "tool", BrownieMcpToolScopes.PROPOSE_FILL,
                 "document", documentId,

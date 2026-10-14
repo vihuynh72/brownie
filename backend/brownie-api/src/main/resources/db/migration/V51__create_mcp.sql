@@ -224,11 +224,13 @@ CREATE POLICY mcp_applied_run_member_insert ON mcp_applied_run
     );
 
 -- A grant's identity columns are written once: the only mutable state is
--- when it was last used and whether it was revoked. Tool calls are
+-- when it was last used and whether it was revoked -- plus, for an OAuth
+-- grant, its label and scopes, because a repeated consent refreshes the
+-- same row rather than stacking a second one. Tool calls are
 -- append-only -- the record of what happened is never edited. A download
 -- link's only change is its one-time claim.
 REVOKE UPDATE, DELETE, TRUNCATE ON mcp_grant FROM brownie_api, brownie_worker;
-GRANT UPDATE (last_used_at, revoked_at) ON mcp_grant TO brownie_api;
+GRANT UPDATE (last_used_at, revoked_at, name, scopes) ON mcp_grant TO brownie_api;
 
 REVOKE UPDATE, DELETE, TRUNCATE ON mcp_tool_call FROM brownie_api, brownie_worker;
 
@@ -402,6 +404,12 @@ CREATE TABLE oauth2_authorization_consent (
     authorities varchar(1000) NOT NULL,
     PRIMARY KEY (registered_client_id, principal_name)
 );
+
+-- The authorization server's tables are deliberately not row-secured:
+-- they are not workspace-scoped, so the API gets plain CRUD on them and
+-- every other role gets nothing.
+GRANT SELECT, INSERT, UPDATE, DELETE ON oauth2_registered_client, oauth2_authorization, oauth2_authorization_consent
+    TO brownie_api;
 
 -- Four new audited actions: a grant made, a grant revoked, a fill
 -- confirmed, an export handed out -- each through a chat app rather than

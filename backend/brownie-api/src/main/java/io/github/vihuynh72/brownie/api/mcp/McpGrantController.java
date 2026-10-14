@@ -82,9 +82,9 @@ class McpGrantController {
             @AuthenticationPrincipal OidcUser principal) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
-        // Revoking a connected app only marks the grant here; the OAuth
-        // authorizations it was issued under are removed when the
-        // authorization server ships.
+        // A revoked OAuth grant also loses every authorization it issued:
+        // the repository drops those rows inside the same transaction, so
+        // the access and refresh tokens die with the grant.
         grantService.revoke(workspaceId, userId, grantId);
     }
 

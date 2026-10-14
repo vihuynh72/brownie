@@ -9,11 +9,11 @@ import java.util.Base64;
  * authenticates; the key is validated at start-up even before that slice
  * ships so the switch-on is never half-configured.
  */
-record McpTokenKey(byte[] key) {
+public record McpTokenKey(byte[] key) {
 
     private static final int KEY_BYTES = 32;
 
-    static McpTokenKey fromBase64(String configured) {
+    public static McpTokenKey fromBase64(String configured) {
         if (configured == null || configured.isBlank()) {
             throw new IllegalStateException(
                     "BROWNIE_MCP_ENABLED is true but BROWNIE_MCP_TOKEN_KEY is not set: MCP will not start without it."

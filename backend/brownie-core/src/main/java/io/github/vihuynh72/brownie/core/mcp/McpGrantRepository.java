@@ -26,6 +26,22 @@ public interface McpGrantRepository {
     /** The live grant for this token digest, or empty when the token is unknown or its grant is revoked. */
     Optional<ResolvedMcpGrant> resolvePersonalToken(String tokenSha256);
 
+    /**
+     * The live OAuth-client grant this person holds for the registered
+     * client, or empty when none was granted or it was revoked. The
+     * caller's workspace rides on the grant row itself, so the lookup
+     * needs only the pair the authorization carries.
+     */
+    Optional<ResolvedMcpGrant> findLiveOAuthGrant(long userId, String registeredClientId);
+
+    /**
+     * Records a consent grant: creates the OAuth-client grant when none is
+     * live, or refreshes the live one's client name and scopes when the
+     * same person consents to the same client again.
+     */
+    McpGrant createOrRefreshOAuthGrant(
+            long workspaceId, long userId, String clientName, String registeredClientId, Set<McpScope> scopes);
+
     /** Every grant this member owns in this workspace, live and revoked, newest first. */
     List<McpGrant> findAllForUser(long workspaceId, long userId);
 

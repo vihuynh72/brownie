@@ -83,6 +83,15 @@
       <artifactId>spring-security-oauth2-resource-server</artifactId>
     </dependency>
     <dependency>
+      <!-- The OAuth 2.1 authorization server a chat app connects through:
+           relocated under /mcp-auth in api.mcp.oauth, with DCR, PKCE,
+           rotating refresh tokens and revocation. In Spring Security 7
+           the server lives in the security project itself, so the version
+           comes from the Boot BOM like every other security artifact. -->
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-oauth2-authorization-server</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.session</groupId>
       <artifactId>spring-session-jdbc</artifactId>
     </dependency>

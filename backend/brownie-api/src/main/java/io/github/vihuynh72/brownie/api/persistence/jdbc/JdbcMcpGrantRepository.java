@@ -93,6 +93,55 @@ class JdbcMcpGrantRepository implements McpGrantRepository {
 
     @Override
     @Transactional
+    public Optional<ResolvedMcpGrant> findLiveOAuthGrant(long userId, String registeredClientId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                        "SELECT id, workspace_id, user_id, kind, name, scopes FROM mcp_grant"
+                                + " WHERE user_id = ? AND registered_client_id = ? AND kind = 'OAUTH_CLIENT' AND revoked_at IS NULL",
+                        (rs, rowNum) -> new ResolvedMcpGrant(
+                                rs.getLong("workspace_id"),
+                                rs.getLong("id"),
+                                rs.getLong("user_id"),
+                                McpGrantKind.valueOf(rs.getString("kind")),
+                                rs.getString("name"),
+                                toScopes(rs.getArray("scopes"))),
+                        userId,
+                        registeredClientId)
+                .stream()
+                .findFirst();
+    }
+
+    @Override
+    @Transactional
+    public McpGrant createOrRefreshOAuthGrant(
+            long workspaceId, long userId, String clientName, String registeredClientId, Set<McpScope> scopes) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        // One live grant per person and client, so a repeated consent
+        // updates the same row: the partial unique index backs the
+        // conflict target and the refresh replaces name and scopes.
+        McpGrant grant = jdbcTemplate.queryForObject(
+                """
+                INSERT INTO mcp_grant
+                    (workspace_id, user_id, kind, name, registered_client_id, scopes)
+                VALUES (?, ?, 'OAUTH_CLIENT', ?, ?, ?::text[])
+                ON CONFLICT (user_id, registered_client_id) WHERE kind = 'OAUTH_CLIENT' AND revoked_at IS NULL
+                DO UPDATE SET name = EXCLUDED.name, scopes = EXCLUDED.scopes
+                RETURNING \
+                """ + COLUMNS,
+                this::mapGrant,
+                workspaceId,
+                userId,
+                clientName,
+                registeredClientId,
+                scopesArray(scopes));
+        AuditWriter.append(
+                jdbcTemplate, workspaceId, userId, "MCP_GRANT_CREATED", "mcp-grant", grant.id(),
+                "{\"kind\":\"OAUTH_CLIENT\"}");
+        return grant;
+    }
+
+    @Override
+    @Transactional
     public List<McpGrant> findAllForUser(long workspaceId, long userId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.query(
@@ -116,8 +165,20 @@ class JdbcMcpGrantRepository implements McpGrantRepository {
                         grantId)
                 .stream()
                 .findFirst();
-        revoked.ifPresent(grant -> AuditWriter.append(
-                jdbcTemplate, workspaceId, userId, "MCP_GRANT_REVOKED", "mcp-grant", grant.id(), "{}"));
+        revoked.ifPresent(grant -> {
+            AuditWriter.append(
+                    jdbcTemplate, workspaceId, userId, "MCP_GRANT_REVOKED", "mcp-grant", grant.id(), "{}");
+            // A revoked OAuth grant must kill the tokens it issued, not
+            // wait for expiry: the authorizations they live in go in the
+            // same transaction as the revocation itself. The consents stay
+            // -- re-connecting asks again regardless.
+            if (grant.kind() == McpGrantKind.OAUTH_CLIENT && grant.registeredClientId() != null) {
+                jdbcTemplate.update(
+                        "DELETE FROM oauth2_authorization WHERE principal_name = ? AND registered_client_id = ?",
+                        "user:" + grant.userId(),
+                        grant.registeredClientId());
+            }
+        });
         return revoked;
     }
 

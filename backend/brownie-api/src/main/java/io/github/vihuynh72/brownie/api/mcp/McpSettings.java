@@ -9,11 +9,11 @@ import java.util.regex.Pattern;
  * header, so a forged Host cannot change the issuer a client is told to
  * trust.
  */
-record McpSettings(String publicOrigin) {
+public record McpSettings(String publicOrigin) {
 
     private static final Pattern ORIGIN_ONLY = Pattern.compile("^https?://[A-Za-z0-9.-]+(?::\\d{1,5})?$");
 
-    McpSettings {
+    public McpSettings {
         if (publicOrigin == null || !ORIGIN_ONLY.matcher(publicOrigin).matches()) {
             throw new IllegalStateException(
                     "BROWNIE_PUBLIC_ORIGIN must be an absolute http(s) origin with no path, query, or fragment; got \"" + publicOrigin + "\".");
@@ -21,12 +21,12 @@ record McpSettings(String publicOrigin) {
     }
 
     /** The metadata document address every /mcp challenge names. */
-    String protectedResourceMetadataUrl() {
+    public String protectedResourceMetadataUrl() {
         return publicOrigin + "/.well-known/oauth-protected-resource/mcp";
     }
 
     /** The resource identifier the protected-resource document and the authorization server share. */
-    String resource() {
+    public String resource() {
         return publicOrigin + "/mcp";
     }
 

@@ -223,6 +223,26 @@ class McpContractIntegrationTest {
     }
 
     @Test
+    void theResourceAndAuthorizationServerAreTheConfiguredOriginWhateverTheRequestSays() throws Exception {
+        // A request that arrives under a different host -- here the same
+        // port reached through 127.0.0.1 instead of localhost -- must not
+        // move the resource the document names: the authorization server
+        // enforces exactly the configured <public origin>/mcp, so a
+        // request-derived value would send clients asking for a resource
+        // the server refuses.
+        HttpResponse<String> response = http.send(
+                HttpRequest.newBuilder(URI.create(
+                        "http://127.0.0.1:" + port + "/.well-known/oauth-protected-resource/mcp"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        JsonNode document = JSON.readTree(response.body());
+        assertThat(document.get("resource").asText()).isEqualTo("http://localhost:8081/mcp");
+        assertThat(document.get("authorization_servers").get(0).asText()).isEqualTo("http://localhost:8081");
+    }
+
+    @Test
     void aTokenMissingTheToolScopeGets403WithTheInsufficientScopeHeaderAndARecordedRefusal() throws Exception {
         Browser browser = signIn("subject-mcp-scope");
         JsonNode issued = readJson(postJson(

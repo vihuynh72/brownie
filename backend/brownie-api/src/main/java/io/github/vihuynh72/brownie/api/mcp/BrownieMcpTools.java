@@ -302,7 +302,7 @@ class BrownieMcpTools {
                         "Artifact " + source_artifact_id + " is not a source of document " + document_id + ".");
             }
             Map<String, Object> state =
-                    fillOrchestration.proposeFill(caller, document_id, source_artifact_id, McpJsonRpc.currentRequestId());
+                    fillOrchestration.proposeFill(caller, document_id, source_artifact_id);
             return new McpToolExecutor.ToolResult(state, "Fill run " + state.get("run_id") + ": " + state.get("state") + ".");
         });
     }

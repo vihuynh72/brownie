@@ -6,10 +6,11 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Issues, lists, resolves and revokes MCP grants. In this slice the only
- * kind minted here is the personal token; OAuth client grants arrive
- * through the authorization server in a later slice and only ever meet
- * this service's {@link #revoke}, which treats every kind alike.
+ * Issues, lists, resolves and revokes MCP grants. The two credential
+ * kinds arrive through different doors -- personal tokens are minted
+ * here; OAuth client grants are recorded by {@link #grantOAuthAccess},
+ * which the authorization server's consent flow calls -- but the tools,
+ * the listing and revocation treat every kind alike.
  */
 public class McpGrantService {
 
@@ -59,10 +60,29 @@ public class McpGrantService {
     }
 
     /**
-     * Marks the grant revoked. For an OAUTH_CLIENT grant this is the whole
-     * operation in this slice: dropping the authorization rows the OAuth
-     * slice adds is its own concern, and a revoked grant already fails
-     * every token resolution.
+     * The grant a consent creates or refreshes: the registered client's
+     * name becomes the grant's name, and the consented scopes replace the
+     * live grant's on a re-consent.
+     */
+    public McpGrant grantOAuthAccess(
+            long workspaceId, long userId, String clientName, String registeredClientId, Set<McpScope> scopes) {
+        if (scopes == null || scopes.isEmpty()) {
+            throw new McpRequestInvalidException("A grant needs at least one scope.");
+        }
+        return grantRepository.createOrRefreshOAuthGrant(
+                workspaceId, userId, clientName, registeredClientId, EnumSet.copyOf(scopes));
+    }
+
+    /** The live OAuth grant behind an access token's authorization, for the resource server's caller resolution. */
+    public Optional<ResolvedMcpGrant> findLiveOAuthGrant(long userId, String registeredClientId) {
+        return grantRepository.findLiveOAuthGrant(userId, registeredClientId);
+    }
+
+    /**
+     * Marks the grant revoked. For an OAUTH_CLIENT grant the same call
+     * also drops the authorization rows its access and refresh tokens
+     * live in, so revocation ends the whole session at once rather than
+     * waiting on token expiry.
      */
     public McpGrant revoke(long workspaceId, long userId, long grantId) {
         return grantRepository.revoke(workspaceId, userId, grantId)

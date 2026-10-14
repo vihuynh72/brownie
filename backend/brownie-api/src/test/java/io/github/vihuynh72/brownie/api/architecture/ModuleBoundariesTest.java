@@ -141,8 +141,9 @@ class ModuleBoundariesTest {
      * one place. The MCP endpoint is an inbound protocol adapter the same
      * way the model provider is an outbound one, so the MCP-specific parts
      * of Spring AI and the MCP SDK are confined to it in exactly the same
-     * way; the authorization server, when it exists, is a smaller adapter
-     * inside that one.
+     * way; the authorization server is a smaller adapter inside that one,
+     * and its JDBC stores a smaller one still, beside the other
+     * repositories in the persistence package.
      */
     @Test
     void vendorSdksStayInsideTheirAdapters() {
@@ -159,6 +160,7 @@ class ModuleBoundariesTest {
                 .should().dependOnClassesThat().resideInAnyPackage("io.modelcontextprotocol..", "org.springframework.ai.mcp..")
                 .check(production);
         noClasses().that().resideOutsideOfPackage("io.github.vihuynh72.brownie.api.mcp.oauth..")
+                .and().resideOutsideOfPackage("io.github.vihuynh72.brownie.api.persistence.oauth..")
                 .and().resideInAPackage("io.github.vihuynh72.brownie..")
                 .should().dependOnClassesThat().resideInAPackage("org.springframework.security.oauth2.server.authorization..")
                 .check(production);
