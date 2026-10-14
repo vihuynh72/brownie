@@ -12,6 +12,7 @@ import {
   type McpToolCallResponse,
 } from '@/api/client'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
+import { loadCapabilities } from '@/capabilities'
 import { mcpCallSentence } from '@/mcp/words'
 import { formatDateLikeExport } from '@/workspace/layout'
 
@@ -185,16 +186,19 @@ async function loadVersions(): Promise<void> {
     if (token !== listToken) return
     versions.value = loaded
     // The calls chat apps made sit in this list beside the versions; the grants' names are what the lines read
-    // with. A deployment without MCP, an older server without the routes, or a failure answering either must not
-    // take the versions with it -- the calls simply do not appear.
+    // with. A deployment without MCP is asked nothing -- the routes are not there to answer; an older server
+    // without them or a failure answering must not take the versions with it either -- the calls simply do
+    // not appear.
     try {
-      const [calls, grants] = await Promise.all([
-        listMcpToolCalls(props.workspaceId, props.documentId),
-        listMcpGrants(props.workspaceId),
-      ])
-      if (token !== listToken) return
-      mcpCalls.value = calls
-      grantNames.value = new Map(grants.map((grant) => [grant.id, grant.name]))
+      if ((await loadCapabilities()).mcpEnabled === true) {
+        const [calls, grants] = await Promise.all([
+          listMcpToolCalls(props.workspaceId, props.documentId),
+          listMcpGrants(props.workspaceId),
+        ])
+        if (token !== listToken) return
+        mcpCalls.value = calls
+        grantNames.value = new Map(grants.map((grant) => [grant.id, grant.name]))
+      }
     } catch {
       if (token !== listToken) return
       mcpCalls.value = []

@@ -301,17 +301,20 @@ the same dialog offers ready-made lines for Claude Code, VS Code
 (`.vscode/mcp.json`) and Cursor (`~/.cursor/mcp.json`). Claude and ChatGPT
 instead sign in to Brownie themselves: they find the authorization server
 through the endpoint's metadata, the person signs in on Brownie's own consent
-page and chooses the scopes there, and the app holds an OAuth grant that can
+page and approves the scopes the app asked for, or denies them, and the app
+holds an OAuth grant that can
 be refreshed but is withdrawn the moment the grant is revoked.
 
 A token or a connected app carries the scopes it was given, never more:
 "See your templates and documents" (`read`) lets it list templates and read
 documents; "Fill documents, with your confirmation" (`fill`) lets it start
 documents, add text sources, ask the model to propose values and answer its
-questions; "Export documents" (`export`) lets it export a document and hand
-back a one-time download link. A call that needs a scope the grant does not
-hold is refused, and every call -- answered, refused or failed -- is recorded
-and appears in the document's version history beside its own versions.
+questions, check on a proposal and confirm one (`get_fill_status`,
+`confirm_fill`); "Export documents" (`export`) lets it export a document and
+hand back a one-time download link. A call that needs a scope the grant does
+not hold is refused, and every call -- answered, refused or failed -- is
+recorded; each call about a document appears in that document's version
+history beside its own versions.
 
 Nothing is filled or exported until the chat app confirms the exact proposal
 it was shown: `confirm_fill` only accepts the hash of the payload the person
@@ -331,8 +334,9 @@ requires `BROWNIE_MCP_TOKEN_KEY` -- base64 of 32 random bytes, `openssl rand
 -base64 32`, kept as the `mcp-token-key` Key Vault secret on the pilot host
 and read from it by `infra/azure/host/deploy.sh` like the other secrets. The
 API refuses to start when the endpoint is on without the key. When it is off,
-`/mcp`, the metadata documents, the download link and the grant routes do not
-exist at all, and the panel does not appear.
+`/mcp`, the metadata documents, the sign-in endpoints under `/mcp-auth/`,
+the download link and the grant routes do not exist at all, and the panel
+does not appear.
 
 ## Filling many documents from a spreadsheet
 

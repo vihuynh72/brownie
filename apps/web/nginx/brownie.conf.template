@@ -111,9 +111,12 @@ server {
         access_log /var/log/nginx/access.log brownie_path_only;
         proxy_pass http://${BROWNIE_API_HOST}:8081;
         proxy_http_version 1.1;
-        # The same forwarded headers as the API block above, and for the
-        # same reason: these documents are built from the request's origin,
-        # and only this machine's observation of it may be trusted.
+        # The same forwarded headers as the API block above. What these
+        # documents name -- the issuer and the resource -- is the
+        # deployment's configured public origin, never read from the
+        # request; the headers are so anything else the API derives from
+        # the request agrees with that configured origin rather than the
+        # container's own name.
         proxy_set_header Host ${BROWNIE_SERVER_NAME};
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $remote_addr;

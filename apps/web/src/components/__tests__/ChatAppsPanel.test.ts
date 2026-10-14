@@ -49,6 +49,10 @@ async function mountPanel(props: { enabled?: boolean; serverUrl?: string | null 
   return wrapper
 }
 
+function stubClipboard(value: unknown) {
+  Object.defineProperty(window.navigator, 'clipboard', { value, configurable: true, writable: true })
+}
+
 function buttonNamed(wrapper: Awaited<ReturnType<typeof mountPanel>>, name: string) {
   const found = wrapper.findAll('button').find((candidate) => (candidate.attributes('aria-label') ?? candidate.text().replace(/\s+/g, ' ').trim()) === name)
   if (!found) {
@@ -82,7 +86,53 @@ describe('ChatAppsPanel', () => {
     expect(buttonNamed(wrapper, 'Copy').exists()).toBe(true)
     expect(wrapper.text()).toContain('Developer tools (Claude Code, VS Code, Cursor): create a token below and paste it with the URL.')
     expect(wrapper.text()).toContain('custom connector')
-    expect(wrapper.text()).toContain('sign in to Brownie and choose what it may do')
+    expect(wrapper.text()).toContain('sign in to Brownie and approve what it asks to do')
+    wrapper.unmount()
+  })
+
+  it('says copying is unavailable when there is no clipboard, rather than claiming the copy worked', async () => {
+    stubClipboard(undefined)
+    vi.mocked(issueMcpPersonalToken).mockResolvedValue({ grantId: 9, token: 'brn_tok_secret-xyz' })
+    const wrapper = await mountPanel()
+
+    await wrapper.get('.chat-apps__create input.text-field').setValue('Claude Code on my laptop')
+    await wrapper.get('.chat-apps__create').trigger('submit')
+    await flushPromises()
+
+    const dialog = wrapper.get('dialog')
+    await dialog.get('.chat-apps__token-value button').trigger('click')
+    await flushPromises()
+    expect(dialog.text()).toContain('Copying is not available here; select it and copy it yourself.')
+    expect(dialog.text()).not.toContain('Token copied.')
+    wrapper.unmount()
+  })
+
+  it('says copying is unavailable when the clipboard refuses, rather than claiming the copy worked', async () => {
+    stubClipboard({ writeText: vi.fn().mockRejectedValue(new Error('denied')) })
+    vi.mocked(issueMcpPersonalToken).mockResolvedValue({ grantId: 9, token: 'brn_tok_secret-xyz' })
+    const wrapper = await mountPanel()
+
+    await wrapper.get('.chat-apps__create input.text-field').setValue('Claude Code on my laptop')
+    await wrapper.get('.chat-apps__create').trigger('submit')
+    await flushPromises()
+
+    const dialog = wrapper.get('dialog')
+    await dialog.get('.chat-apps__token-value button').trigger('click')
+    await flushPromises()
+    expect(dialog.text()).toContain('Copying is not available here; select it and copy it yourself.')
+    expect(dialog.text()).not.toContain('Token copied.')
+    wrapper.unmount()
+  })
+
+  it("says copying is unavailable for the address too, in the page's own status line", async () => {
+    stubClipboard(undefined)
+    const wrapper = await mountPanel()
+
+    await buttonNamed(wrapper, 'Copy').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('outcome')).toEqual([
+      [{ tone: 'failure', text: 'Copying is not available here; select it and copy it yourself.' }],
+    ])
     wrapper.unmount()
   })
 

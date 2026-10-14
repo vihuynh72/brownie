@@ -169,16 +169,23 @@ function closeTokenDialog(): void {
   void nextTick(() => createButton.value?.focus())
 }
 
+/**
+ * There is no fallback for copying: the legacy API it would use copies
+ * nothing without a selection but still reports success -- a claim this
+ * panel must never make about a token it shows exactly once.
+ */
+const COPY_UNAVAILABLE = 'Copying is not available here; select it and copy it yourself.'
+
 async function copyText(text: string, announcement: string): Promise<void> {
   try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(text)
-    } else {
-      window.document.execCommand('copy')
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      dialogStatus.value = COPY_UNAVAILABLE
+      return
     }
+    await navigator.clipboard.writeText(text)
     dialogStatus.value = announcement
   } catch {
-    dialogStatus.value = 'The copy did not work; select the line and copy it yourself.'
+    dialogStatus.value = COPY_UNAVAILABLE
   }
 }
 
@@ -186,17 +193,17 @@ const urlCopied = ref(false)
 async function copyServerUrl(): Promise<void> {
   if (props.serverUrl == null) return
   try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(props.serverUrl)
-    } else {
-      window.document.execCommand('copy')
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      emit('outcome', { tone: 'failure', text: COPY_UNAVAILABLE })
+      return
     }
+    await navigator.clipboard.writeText(props.serverUrl)
     urlCopied.value = true
     setTimeout(() => {
       urlCopied.value = false
     }, 2000)
   } catch {
-    urlCopied.value = false
+    emit('outcome', { tone: 'failure', text: COPY_UNAVAILABLE })
   }
 }
 
@@ -284,7 +291,7 @@ async function revoke(grant: McpGrantResponse): Promise<void> {
         </p>
         <p class="field-hint">
           Claude or ChatGPT: add Brownie's URL as a custom connector (Claude) or an app in developer mode (ChatGPT);
-          you will sign in to Brownie and choose what it may do.
+          you will sign in to Brownie and approve what it asks to do.
         </p>
       </div>
 

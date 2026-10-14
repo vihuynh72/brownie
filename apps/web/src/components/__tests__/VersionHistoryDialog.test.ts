@@ -13,19 +13,23 @@ vi.mock('@/api/client', async () => {
     restoreRevision: vi.fn(),
     listMcpToolCalls: vi.fn(),
     listMcpGrants: vi.fn(),
+    getCapabilities: vi.fn(),
   }
 })
 
 import {
   ApiRequestError,
+  getCapabilities,
   getDocumentRevision,
   listDocumentRevisions,
   listMcpGrants,
   listMcpToolCalls,
   restoreRevision,
+  type CapabilitiesResponse,
   type McpGrantResponse,
   type McpToolCallResponse,
 } from '@/api/client'
+import { resetCapabilitiesCache } from '@/capabilities'
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
@@ -33,6 +37,15 @@ function flushPromises(): Promise<void> {
 
 function problem(status: number, code: string, detail: string): ApiError {
   return { status, title: code, detail, code, correlationId: 'c', fields: [], recoveryActions: [] }
+}
+
+const CAPABILITIES: CapabilitiesResponse = {
+  maxUploadBytes: 10485760,
+  uploadMediaTypes: [],
+  assistSourceMediaTypes: [],
+  templateMediaTypes: [],
+  trashRetentionDays: 30,
+  mcpEnabled: false,
 }
 
 const REVISION_1: DocumentRevisionResponse = {
@@ -204,12 +217,15 @@ describe('VersionHistoryDialog', () => {
     vi.mocked(restoreRevision).mockReset()
     vi.mocked(listMcpToolCalls).mockReset().mockResolvedValue([])
     vi.mocked(listMcpGrants).mockReset().mockResolvedValue([])
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue({ ...CAPABILITIES, mcpEnabled: true })
   })
 
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
     opener.remove()
+    resetCapabilitiesCache()
     vi.useRealTimers()
   })
 
@@ -893,6 +909,26 @@ describe('VersionHistoryDialog', () => {
     function callRows(mounted: DialogWrapper) {
       return mounted.findAll('.revision-row--call')
     }
+
+    it('asks for the calls where the deployment serves chat apps', async () => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([call({ tool: 'get_document' })])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(listMcpToolCalls).toHaveBeenCalledWith(7, 1)
+      expect(listMcpGrants).toHaveBeenCalledWith(7)
+      expect(callRows(mounted)).toHaveLength(1)
+    })
+
+    it('on a deployment without chat apps it asks for no calls, and the versions still load', async () => {
+      vi.mocked(getCapabilities).mockResolvedValue({ ...CAPABILITIES, mcpEnabled: false })
+      const mounted = await openDialog()
+
+      expect(listMcpToolCalls).not.toHaveBeenCalled()
+      expect(listMcpGrants).not.toHaveBeenCalled()
+      expect(mounted.findAll('.revision-row').length).toBeGreaterThan(0)
+      expect(callRows(mounted)).toHaveLength(0)
+    })
 
     it('interleaves the calls with the versions by time, each naming its grant, and names a grant it cannot place plainly', async () => {
       vi.mocked(listMcpToolCalls).mockResolvedValue([
