@@ -616,6 +616,41 @@ class BatchExportIntegrationTest {
         assertThat(body).doesNotContain("%PDF-tampered").doesNotContain("PK\u0003\u0004");
     }
 
+    /**
+     * A blob changed under the receipt's back when the first entry is
+     * already on the wire must not leave an archive that still opens: the
+     * stream dies unfinished rather than getting a central directory
+     * written behind the failure.
+     */
+    @Test
+    void aBlobAlteredUnderTheSecondEntryLeavesNoFinishedArchive() throws Exception {
+        Member member = signIn("subject-bx-integrity-late");
+        Certificate certificate = certificate(member);
+        long batchId = createBatch(member, upload(member, smallCsv(), "members.csv"), certificate, 0)
+                .get("id").asLong();
+        fillAll(member, batchId);
+        checkAll(member, batchId);
+        long exportId = createExport(member, batchId, "PDF", "exp-" + UUID.randomUUID()).get("id").asLong();
+        advanceAll(member, batchId, exportId);
+
+        String blobKey = text("SELECT a.blob_key FROM artifact a JOIN export_receipt e ON e.pdf_artifact_id = a.id"
+                + " JOIN batch_export_item i ON i.export_receipt_id = e.id"
+                + " WHERE i.batch_export_id = ? ORDER BY i.row_number LIMIT 1 OFFSET 1", exportId);
+        byte[] tampered = "%PDF-tampered".getBytes(StandardCharsets.UTF_8);
+        blobStore.writeAndDigest(blobKey, new ByteArrayInputStream(tampered), tampered.length + 1);
+
+        MvcResult started = mockMvc.perform(get(batchPath(member, batchId) + "/exports/" + exportId + "/download")
+                        .cookie(member.session()))
+                .andReturn();
+        MvcResult dispatched = mockMvc.perform(asyncDispatch(started)).andReturn();
+        // The answer is already underway when the second entry fails --
+        // once the stream is committed there is no error page to swap in,
+        // so what the person gets is the unfinished archive itself.
+        String body = new String(dispatched.getResponse().getContentAsByteArray(), StandardCharsets.ISO_8859_1);
+        assertThat(body).contains("PK");
+        assertThat(body).doesNotContain("%PDF-tampered").doesNotContain("PK");
+    }
+
     /** The export still ships the version the batch was made on after the template moved on. */
     @Test
     void thePinnedVersionIsWhatExportsAfterTheTemplateMovesOn() throws Exception {
@@ -1057,10 +1092,9 @@ class BatchExportIntegrationTest {
                 files.put(entryName, in.readAllBytes());
             }
         } catch (IOException e) {
-            // Diagnostic for a rare, unexplained corruption seen once under
-            // full-suite load: keep the offending bytes under the build
-            // directory and say which entry failed, so a recurrence can be
-            // examined instead of guessed at.
+            // Keep the bytes of any archive that fails to unpack under the
+            // build directory and say which entry failed, so the corruption
+            // can be examined instead of guessed at.
             Path dump = Path.of("target", "zip-failures",
                     "BatchExportIntegrationTest-" + System.currentTimeMillis() + ".zip");
             try {
