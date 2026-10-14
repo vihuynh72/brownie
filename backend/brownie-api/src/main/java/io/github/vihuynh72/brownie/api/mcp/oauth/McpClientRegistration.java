@@ -27,9 +27,9 @@ import org.springframework.security.oauth2.server.authorization.settings.TokenSe
  * The stock validator is replaced because it refuses a {@code scope}
  * field outright, while the clients this server registers for send one;
  * everything else it checked is repeated here and the pieces that settle
- * what this server is -- safe redirect URIs, a name, the client
- * authentication methods we answer, the two grant types -- are enforced
- * on top. The converter then turns a valid registration into the client
+ * what this server is -- redirect URIs that are https or loopback http, a
+ * name, the client authentication methods we answer, the two grant types --
+ * are enforced on top. The converter then turns a valid registration into the client
  * that gets stored: PKCE and consent on for everyone, opaque one-hour
  * access tokens, refresh tokens that rotate and live until revoked, and
  * a hashed secret only when the client asked to be confidential.
@@ -46,7 +46,6 @@ final class McpClientRegistration {
             ClientAuthenticationMethod.CLIENT_SECRET_POST.getValue());
     private static final Set<String> GRANT_TYPES = Set.of(
             AuthorizationGrantType.AUTHORIZATION_CODE.getValue(), AuthorizationGrantType.REFRESH_TOKEN.getValue());
-    private static final Set<String> SAFE_SCHEMES = Set.of("javascript", "data", "vbscript");
 
     private McpClientRegistration() {
     }
@@ -149,13 +148,15 @@ final class McpClientRegistration {
         if (scheme == null) {
             throw invalidRedirectUri("redirect_uri has no scheme", redirectUri);
         }
-        if (SAFE_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT))) {
-            throw invalidRedirectUri("redirect_uri uses an unsafe scheme", redirectUri);
-        }
-        // http is fine on a loopback host only -- that is where a chat app
-        // listens during authorization; everything else must be https.
-        if ("http".equalsIgnoreCase(scheme) && !isLoopback(parsed.getHost())) {
-            throw invalidRedirectUri("redirect_uri uses http for a non-loopback host", redirectUri);
+        // The only two shapes a chat app's callback may take: https to
+        // wherever it lives, or http to the loopback host it listens on
+        // during authorization. Anything else -- a private scheme a desktop
+        // app would register, say -- hands the code to a place this server
+        // has no reason to send one.
+        boolean https = "https".equalsIgnoreCase(scheme);
+        boolean loopbackHttp = "http".equalsIgnoreCase(scheme) && isLoopback(parsed.getHost());
+        if (!https && !loopbackHttp) {
+            throw invalidRedirectUri("redirect_uri must use https, or http on a loopback address", redirectUri);
         }
     }
 

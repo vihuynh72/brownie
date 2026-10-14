@@ -254,6 +254,29 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
     }
 
     @Test
+    void registrationAcceptsOnlyHttpsOrLoopbackHttpRedirects() throws Exception {
+        for (String refused : List.of(
+                "cursor://anysphere.cursor-mcp/oauth/callback",
+                "http://example.com/callback",
+                "javascript:alert(1)")) {
+            HttpResponse<String> response = postRaw(REGISTER,
+                    "{\"redirect_uris\":[\"" + refused + "\"],\"client_name\":\"Rejected Redirect\","
+                            + "\"token_endpoint_auth_method\":\"none\"}");
+            assertThat(response.statusCode()).as("%s -> %s", refused, response.body()).isEqualTo(400);
+            assertThat(readJson(response).get("error").asText())
+                    .as(refused).isEqualTo("invalid_redirect_uri");
+        }
+        for (String accepted : List.of(
+                "https://chatgpt.com/connector/oauth/abc",
+                "http://127.0.0.1:33418/callback")) {
+            HttpResponse<String> response = postRaw(REGISTER,
+                    "{\"redirect_uris\":[\"" + accepted + "\"],\"client_name\":\"Accepted Redirect\","
+                            + "\"token_endpoint_auth_method\":\"none\"}");
+            assertThat(response.statusCode()).as("%s -> %s", accepted, response.body()).isEqualTo(201);
+        }
+    }
+
+    @Test
     void anUnsupportedAuthMethodIsRefused() throws Exception {
         HttpResponse<String> response = postRaw(REGISTER,
                 "{\"redirect_uris\":[\"" + REDIRECT + "\"],\"client_name\":\"Private Key\","
