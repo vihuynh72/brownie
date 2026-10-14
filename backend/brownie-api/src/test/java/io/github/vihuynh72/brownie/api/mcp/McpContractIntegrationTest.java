@@ -187,6 +187,40 @@ class McpContractIntegrationTest {
     }
 
     @Test
+    void aBearerCallThatAlsoCarriesTheBrowserSessionLeavesThatSessionAlone() throws Exception {
+        Browser browser = signIn("subject-mcp-session");
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Mixed credentials\",\"scopes\":[\"read\"]}", 201));
+        String token = issued.get("token").asText();
+
+        // A request holding both a bearer token and the browser's session
+        // cookie authenticates as the grant alone: answering it must not
+        // rotate, replace or otherwise touch the browser session the
+        // cookie names, or every other request that cookie makes breaks.
+        for (String body : List.of(
+                initializeBody("2025-06-18"),
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}")) {
+            HttpResponse<String> response = http.send(
+                    HttpRequest.newBuilder(URI.create(url("/mcp")))
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "application/json, text/event-stream")
+                            .header("Authorization", "Bearer " + token)
+                            .header("Cookie", "SESSION=" + browser.sessionCookie())
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.headers().allValues("Set-Cookie"))
+                    .as("no answer to a bearer call may carry a session")
+                    .noneMatch(value -> value.startsWith("SESSION="));
+        }
+
+        // The session the calls left alone still answers a session route.
+        get(browser, "/api/v1/me", 200);
+    }
+
+    @Test
     void mcpWithoutATokenOrWithAnUnknownOneAnswers401WithTheChallenge() throws Exception {
         signIn("subject-mcp-challenge");
 

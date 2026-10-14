@@ -69,7 +69,10 @@ class McpSecurityConfig {
                         .anyRequest()
                         .authenticated())
                 .csrf(csrf -> csrf.disable())
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                        // A bearer request must never change the person's web session.
+                        .sessionFixation(fixation -> fixation.none()))
                 .oauth2ResourceServer(resourceServer -> resourceServer
                         .authenticationEntryPoint(entryPoint)
                         .authenticationManagerResolver(request -> bearer -> authenticate(bearer, resolvers))

@@ -9,10 +9,8 @@ import { startDocumentFromSidebar } from './documents'
  * grant revoked on the page really stops answering the very next call.
  *
  * The MCP calls go through plain fetch, not the browser's request context:
- * a chat app holds a bearer token, not a session cookie, and page.request
- * would send the seeded SESSION cookie along -- on which the bearer
- * endpoint's session-fixation defence answers with a new session and
- * deletes the one every other spec was seeded with.
+ * a chat app holds a bearer token and no session cookie, so nothing it
+ * sends should ride the seeded browser session.
  */
 const API_ORIGIN = process.env.BROWNIE_E2E_BACKEND_ORIGIN ?? 'http://localhost:8081'
 
