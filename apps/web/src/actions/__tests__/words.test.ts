@@ -228,7 +228,7 @@ describe('failures of requests about a save', () => {
   })
 
   it('reads which changes this Brownie makes, and nothing from a server that does not say', () => {
-    const base = { maxUploadBytes: 1, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30 }
+    const base = { maxUploadBytes: 1, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30, mcpEnabled: false }
     expect(offeredActions({ ...base, googleActions: ['DRIVE_SAVE_FILE'] })).toEqual(['DRIVE_SAVE_FILE'])
     expect(offeredActions(base)).toBeNull()
     expect(offeredActions(null)).toBeNull()

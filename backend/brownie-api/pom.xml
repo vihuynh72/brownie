@@ -68,6 +68,21 @@
       <artifactId>spring-boot-starter-oauth2-client</artifactId>
     </dependency>
     <dependency>
+      <!-- The MCP endpoint itself: a stateless JSON-RPC transport mounted
+           at /mcp, guarded by its own bearer-token security chain. The
+           version comes from the spring-ai-bom already imported in the
+           parent POM, the same rule every Spring AI artifact follows. -->
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+    </dependency>
+    <dependency>
+      <!-- The bearer-token boundary in front of /mcp: the filter, its
+           entry point and the protected-resource metadata document all
+           come from the resource-server support. -->
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-oauth2-resource-server</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.session</groupId>
       <artifactId>spring-session-jdbc</artifactId>
     </dependency>
@@ -242,6 +257,14 @@
                either's HttpChannel class loads. -->
           <groupId>org.eclipse.jetty.http2</groupId>
           <artifactId>http2-server</artifactId>
+        </exclusion>
+        <exclusion>
+          <!-- wiremock pins json-schema-validator 1.5.9, which wins
+               nearest-wins mediation over the 3.x the MCP Java SDK needs
+               (it calls com.networknt.schema.dialect.Dialects, absent in
+               1.5.x); excluding it lets 3.x resolve. -->
+          <groupId>com.networknt</groupId>
+          <artifactId>json-schema-validator</artifactId>
         </exclusion>
       </exclusions>
     </dependency>

@@ -76,6 +76,7 @@ function capabilities(
     assistSourceMediaTypes: [],
     templateMediaTypes: [],
     trashRetentionDays: 30,
+    mcpEnabled: false,
     ...(googleConnectorAccess === undefined ? {} : { googleConnectorAccess }),
   }
 }

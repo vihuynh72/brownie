@@ -135,12 +135,32 @@ class ModuleBoundariesTest {
         rule.check(production);
     }
 
-    /** One adapter each for the model provider and for blob storage, so that a change of vendor is a change in one place. */
+    /**
+     * One adapter each for the model provider, the MCP protocol surface and
+     * blob storage, so that a change of vendor or protocol is a change in
+     * one place. The MCP endpoint is an inbound protocol adapter the same
+     * way the model provider is an outbound one, so the MCP-specific parts
+     * of Spring AI and the MCP SDK are confined to it in exactly the same
+     * way; the authorization server, when it exists, is a smaller adapter
+     * inside that one.
+     */
     @Test
     void vendorSdksStayInsideTheirAdapters() {
         noClasses().that().resideOutsideOfPackage("io.github.vihuynh72.brownie.ai..")
                 .and().resideInAPackage("io.github.vihuynh72.brownie..")
-                .should().dependOnClassesThat().resideInAnyPackage("com.openai..", "org.springframework.ai..")
+                .should().dependOnClassesThat().resideInAnyPackage("com.openai..")
+                .orShould().dependOnClassesThat(DescribedPredicate.describe(
+                        "a Spring AI class that is not part of the MCP protocol surface",
+                        javaClass -> javaClass.getPackageName().startsWith("org.springframework.ai")
+                                && !javaClass.getPackageName().startsWith("org.springframework.ai.mcp")))
+                .check(production);
+        noClasses().that().resideOutsideOfPackage("io.github.vihuynh72.brownie.api.mcp..")
+                .and().resideInAPackage("io.github.vihuynh72.brownie..")
+                .should().dependOnClassesThat().resideInAnyPackage("io.modelcontextprotocol..", "org.springframework.ai.mcp..")
+                .check(production);
+        noClasses().that().resideOutsideOfPackage("io.github.vihuynh72.brownie.api.mcp.oauth..")
+                .and().resideInAPackage("io.github.vihuynh72.brownie..")
+                .should().dependOnClassesThat().resideInAPackage("org.springframework.security.oauth2.server.authorization..")
                 .check(production);
         noClasses().that().resideOutsideOfPackage("io.github.vihuynh72.brownie.storage..")
                 .and().resideInAPackage("io.github.vihuynh72.brownie..")

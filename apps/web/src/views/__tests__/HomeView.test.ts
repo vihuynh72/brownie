@@ -40,7 +40,7 @@ import { readDocumentHandoff } from '@/router/handoff'
 /** What the server says it can do; `fillSpotNaming` is left out as an older server leaves it out. */
 function capabilities(fillSpotNaming?: CapabilitiesResponse['fillSpotNaming']): CapabilitiesResponse {
   return {
-    maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30,
+    maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30, mcpEnabled: false,
     ...(fillSpotNaming ? { fillSpotNaming } : {}),
   }
 }

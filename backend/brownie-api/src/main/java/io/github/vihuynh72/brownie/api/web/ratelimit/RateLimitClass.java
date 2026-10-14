@@ -26,6 +26,8 @@ public enum RateLimitClass {
     WRITE,
     /** Any read. The web app polls a running job about forty times a minute, so this is the generous one. */
     READ,
+    /** A call to the MCP endpoint, counted per grant because several people can ride one connected app. */
+    MCP,
     /** Anything from someone who is not signed in, counted per address because there is no person to count by. */
     ANONYMOUS
 }

@@ -1235,6 +1235,7 @@ describe('Google', () => {
       assistSourceMediaTypes: [],
       templateMediaTypes: [],
       trashRetentionDays: 30,
+      mcpEnabled: false,
       googleConnectorAccess: [],
       googleActions: [],
     })

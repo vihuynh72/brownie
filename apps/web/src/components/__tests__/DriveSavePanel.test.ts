@@ -117,6 +117,7 @@ function capabilities(googleActions?: ActionResponse['type'][]): CapabilitiesRes
     assistSourceMediaTypes: [],
     templateMediaTypes: [],
     trashRetentionDays: 30,
+    mcpEnabled: false,
     googleConnectorAccess: googleActions && googleActions.length > 0 ? ['DRIVE_SAVING'] : [],
     ...(googleActions === undefined ? {} : { googleActions }),
   }

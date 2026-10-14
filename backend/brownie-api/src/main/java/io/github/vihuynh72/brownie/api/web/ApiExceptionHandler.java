@@ -248,7 +248,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             ValidationManifestNotFoundException.class, ExportNotApprovedException.class,
             ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
             RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class,
-            FillableFormNotFoundException.class, TemplateFieldNotFoundException.class})
+            FillableFormNotFoundException.class, TemplateFieldNotFoundException.class,
+            io.github.vihuynh72.brownie.core.mcp.McpGrantNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -837,8 +838,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             DocumentSourceRequestValidationException.class, AssistRequestValidationException.class,
             DeletionRequestValidationException.class, SupportGrantRequestValidationException.class,
             ConnectionRequestValidationException.class, InvalidCalendarRequestException.class,
-            ActionRequestValidationException.class, BatchRequestValidationException.class})
-    public ResponseEntity<Object> handleRequestValidation(IllegalArgumentException ex, WebRequest request) {
+            ActionRequestValidationException.class, BatchRequestValidationException.class,
+            io.github.vihuynh72.brownie.core.mcp.McpRequestInvalidException.class})
+    public ResponseEntity<Object> handleRequestValidation(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Bad Request");
         problem.setDetail(ex.getMessage());

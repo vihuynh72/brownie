@@ -1593,6 +1593,20 @@ class RevisionServiceTest {
         }
 
         @Override
+        public Optional<PatchProposal> findById(long workspaceId, long userId, long proposalId) {
+            PatchProposal proposal = proposals.get(proposalId);
+            return proposal != null && proposal.workspaceId() == workspaceId ? Optional.of(proposal) : Optional.empty();
+        }
+
+        @Override
+        public List<PatchProposal> findForDocument(long workspaceId, long userId, long documentId) {
+            return proposals.values().stream()
+                    .filter(proposal -> proposal.workspaceId() == workspaceId && proposal.documentId() == documentId)
+                    .sorted((a, b) -> Long.compare(b.id(), a.id()))
+                    .toList();
+        }
+
+        @Override
         public void markAccepted(long workspaceId, long userId, long documentId, long proposalId) {
             PatchProposal proposal = proposals.get(proposalId);
             if (proposal == null

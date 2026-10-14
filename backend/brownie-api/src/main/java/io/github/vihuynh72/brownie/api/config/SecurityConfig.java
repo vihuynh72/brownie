@@ -78,6 +78,14 @@ class SecurityConfig {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/oauth2/**", "/login/**", "/logout", "/error", "/test-support/**")
                         .permitAll()
+                        // A chat-app download link is its own one-time
+                        // credential, claimed in the database itself; the
+                        // route exists only while MCP is on, and it does
+                        // its own expiry and revocation checks before a
+                        // byte is served. The anonymous rate class counts
+                        // it like any other unauthenticated traffic.
+                        .requestMatchers("/api/v1/mcp-downloads", "/api/v1/mcp-downloads/**")
+                        .permitAll()
                         // Liveness and readiness are answered without a session so a
                         // load balancer or orchestrator can ask; health shows no
                         // details (management.endpoint.health.show-details: never)

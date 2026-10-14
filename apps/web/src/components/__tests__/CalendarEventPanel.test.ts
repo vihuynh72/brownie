@@ -94,6 +94,7 @@ function capabilities(googleActions?: ActionResponse['type'][]): CapabilitiesRes
     assistSourceMediaTypes: [],
     templateMediaTypes: [],
     trashRetentionDays: 30,
+    mcpEnabled: false,
     googleConnectorAccess: googleActions && googleActions.length > 0 ? ['CALENDAR_EVENT_CREATION'] : [],
     ...(googleActions === undefined ? {} : { googleActions }),
   }

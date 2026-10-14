@@ -34,6 +34,21 @@ spring:
       max-retries: 0
       chat:
         max-retries: 0
+    mcp:
+      server:
+        # The one MCP endpoint: stateless JSON-RPC over POST /mcp -- no
+        # SSE stream to hold open, which is what keeps each call
+        # independently authenticated against a live grant row. Bound to
+        # brownie.mcp.enabled so a disabled deployment exposes no /mcp at
+        # all, not even an empty one.
+        enabled: ${brownie.mcp.enabled}
+        protocol: STATELESS
+        name: brownie
+        version: 1.0.0
+        streamable-http:
+          # The stateless transport reads its path from this property;
+          # the name is Spring AI's, not a hint that streaming is on.
+          mcp-endpoint: /mcp
   datasource:
     url: ${BROWNIE_DB_URL}
     username: ${BROWNIE_DB_USERNAME}
@@ -176,6 +191,19 @@ brownie:
       refused-file: ${BROWNIE_RETENTION_REFUSED_FILE:PT24H}
       unused-file: ${BROWNIE_RETENTION_UNUSED_FILE:PT24H}
       audit-record: ${BROWNIE_RETENTION_AUDIT_RECORD:P90D}
+  mcp:
+    # Whether the MCP endpoint and everything that belongs to it -- the
+    # metadata document, the one-time download route, the grant routes --
+    # exist at all. Off is the default: the routes are not mapped and the
+    # feature's beans are not built. On requires the token key, and
+    # start-up refuses a half-configured deployment rather than serving a
+    # muted one.
+    enabled: ${BROWNIE_MCP_ENABLED:false}
+    # Base64 of 32 random bytes. The secret the OAuth authorization server
+    # and token-related signing keys derive from; required when MCP is on,
+    # refused at start-up when it is absent or malformed. Generate with
+    # `openssl rand -base64 32`.
+    token-key: ${BROWNIE_MCP_TOKEN_KEY:}
   invitations:
     # Whether signing in requires an invitation, and who has one. The
     # identity provider's own sign-up is open to anyone who reaches the
@@ -364,6 +392,12 @@ brownie:
   # an upload; the rules name the places found in a form instead.
   fill-spots:
     model: disabled
+  mcp:
+    # On in this profile whatever a developer's shell exports: the MCP
+    # integration tests speak to a real /mcp, and a fixed throwaway key
+    # keeps that wiring live where no deployment will ever run.
+    enabled: true
+    token-key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   connectors:
     # Off in this profile whatever a developer's shell exports; the tests that
     # need a connection set their own values, pointing at a stand-in Google.

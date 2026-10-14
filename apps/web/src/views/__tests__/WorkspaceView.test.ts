@@ -516,6 +516,7 @@ const TEN_MEGABYTE_LIMIT = {
   assistSourceMediaTypes: ['text/plain'],
   templateMediaTypes: [],
   trashRetentionDays: 30,
+  mcpEnabled: false,
 }
 
 /** A refusal from a Brownie server, carrying its own explanation. */

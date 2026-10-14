@@ -81,9 +81,13 @@ class CapabilitiesController {
     private final String fillSpotNaming;
     private final int batchMaxRows;
     private final boolean batchComposeOffered;
+    private final boolean mcpEnabled;
+    private final String mcpServerUrl;
 
     CapabilitiesController(
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes,
+            @Value("${brownie.mcp.enabled:false}") boolean mcpEnabled,
+            @Value("${brownie.public-origin:}") String publicOrigin,
             DeletionService deletionService,
             GoogleConnectorSetup googleConnectorSetup,
             DriveOffer driveOffer,
@@ -105,6 +109,10 @@ class CapabilitiesController {
         this.fillSpotNaming = fillSpotNamingSetting.naming();
         this.batchMaxRows = batchService.maxRows();
         this.batchComposeOffered = batchService.composeOffered();
+        this.mcpEnabled = mcpEnabled;
+        // The address a chat app is pointed at only exists while the
+        // feature does; off means null, not a URL that answers 404.
+        this.mcpServerUrl = mcpEnabled ? publicOrigin + "/mcp" : null;
     }
 
     @GetMapping
@@ -121,7 +129,9 @@ class CapabilitiesController {
                 fillSpotNaming,
                 TABLE_FILE_TYPES,
                 batchMaxRows,
-                batchComposeOffered);
+                batchComposeOffered,
+                mcpEnabled,
+                mcpServerUrl);
     }
 
     /** How a form in this format is filled: as the Word document it is, as a Word copy converted from it, or as a PDF. */
@@ -170,6 +180,8 @@ class CapabilitiesController {
             String fillSpotNaming,
             List<MediaTypeResponse> tableFileTypes,
             int batchMaxRows,
-            boolean batchComposeOffered) {
+            boolean batchComposeOffered,
+            boolean mcpEnabled,
+            String mcpServerUrl) {
     }
 }

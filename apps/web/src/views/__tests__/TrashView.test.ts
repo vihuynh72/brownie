@@ -102,6 +102,7 @@ const CAPABILITIES = {
   assistSourceMediaTypes: [],
   templateMediaTypes: [],
   trashRetentionDays: 30,
+  mcpEnabled: false,
 }
 
 /** The paragraph under the heading that says how long things stay, as one line of text. */

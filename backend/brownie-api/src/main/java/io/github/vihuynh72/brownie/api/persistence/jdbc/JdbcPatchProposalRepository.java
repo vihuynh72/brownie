@@ -74,6 +74,34 @@ class JdbcPatchProposalRepository implements PatchProposalRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public Optional<PatchProposal> findById(long workspaceId, long userId, long proposalId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                        "SELECT " + COLUMNS + " FROM document_patch_proposal WHERE workspace_id = ? AND id = ?",
+                        this::mapProposal,
+                        workspaceId,
+                        proposalId)
+                .stream()
+                .findFirst()
+                .map(proposal -> withEvidence(proposal, loadEvidence(workspaceId, proposalId)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PatchProposal> findForDocument(long workspaceId, long userId, long documentId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        List<PatchProposal> proposals = jdbcTemplate.query(
+                "SELECT " + COLUMNS + " FROM document_patch_proposal WHERE workspace_id = ? AND document_id = ? ORDER BY id DESC",
+                this::mapProposal,
+                workspaceId,
+                documentId);
+        return proposals.stream()
+                .map(proposal -> withEvidence(proposal, loadEvidence(workspaceId, proposal.id())))
+                .toList();
+    }
+
+    @Override
     @Transactional
     public void markAccepted(long workspaceId, long userId, long documentId, long proposalId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);

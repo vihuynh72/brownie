@@ -295,6 +295,11 @@ class ExportServiceTest {
         public Optional<ExportReceipt> findLatest(long workspaceId, long userId, long documentId) {
             throw new UnsupportedOperationException();
         }
+
+        @Override
+        public Optional<ExportReceipt> find(long workspaceId, long userId, long receiptId) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     private static final class EmptyDocumentRepository implements DocumentRepository {
