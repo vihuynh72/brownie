@@ -1049,13 +1049,52 @@ class BatchExportIntegrationTest {
 
     private static Map<String, byte[]> unzip(byte[] zip) throws IOException {
         Map<String, byte[]> files = new LinkedHashMap<>();
+        String entryName = null;
         try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(zip))) {
             ZipEntry entry;
             while ((entry = in.getNextEntry()) != null) {
-                files.put(entry.getName(), in.readAllBytes());
+                entryName = entry.getName();
+                files.put(entryName, in.readAllBytes());
+            }
+        } catch (IOException e) {
+            // Diagnostic for a rare, unexplained corruption seen once under
+            // full-suite load: keep the offending bytes under the build
+            // directory and say which entry failed, so a recurrence can be
+            // examined instead of guessed at.
+            Path dump = Path.of("target", "zip-failures",
+                    "BatchExportIntegrationTest-" + System.currentTimeMillis() + ".zip");
+            try {
+                Files.createDirectories(dump.getParent());
+                Files.write(dump, zip);
+            } catch (IOException ignored) {
+            }
+            throw new AssertionError(
+                    "Archive entry " + (files.size() + 1) + " (" + entryName + ") failed to unpack: " + e.getMessage()
+                            + ". The bytes are kept at " + dump.toAbsolutePath(),
+                    e);
+        }
+        // Every entry unpacking is not enough on its own: the archive's
+        // central directory must also be there and complete, or a download
+        // cut off at the tail would still pass the loop above.
+        int eocd = endOfCentralDirectory(zip);
+        assertThat(eocd).as("the archive ends with an end-of-central-directory record").isNotNegative();
+        // EOCD: signature (4), disk (2), directory disk (2), entries on
+        // this disk (2), entries total (2), directory size (4), directory
+        // offset (4), comment length (2).
+        int entriesTotal = (zip[eocd + 10] & 0xff) | ((zip[eocd + 11] & 0xff) << 8);
+        assertThat(entriesTotal).as("central directory entries").isEqualTo(files.size());
+        return files;
+    }
+
+    /** The offset of the EOCD signature, scanning backwards from the end as the format allows a trailing comment. */
+    private static int endOfCentralDirectory(byte[] zip) {
+        int earliest = Math.max(0, zip.length - 22 - 0xFFFF);
+        for (int i = zip.length - 22; i >= earliest; i--) {
+            if (zip[i] == 0x50 && zip[i + 1] == 0x4B && zip[i + 2] == 0x05 && zip[i + 3] == 0x06) {
+                return i;
             }
         }
-        return files;
+        return -1;
     }
 
     private static Map<Integer, JsonNode> rowsByNumber(JsonNode detail) {
