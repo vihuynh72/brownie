@@ -13,11 +13,14 @@ import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
@@ -94,10 +97,8 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
         assertThat(consentPage.statusCode()).isEqualTo(200);
         assertThat(consentPage.body()).contains("Chat Client");
 
-        // Allow is the consent POST carrying one scope parameter per
-        // granted scope.
-        HttpResponse<String> allowed =
-                postConsentAllow(browser, clientId, consentParams.get("state"), List.of("read", "fill", "export"));
+        // Allow is the page's own form, submitted exactly as rendered.
+        HttpResponse<String> allowed = submitRenderedConsent(browser, consentPage);
         String code = codeFrom(allowed);
         assertThat(queryParams(allowed.headers().firstValue("Location").orElseThrow()).get("state"))
                 .isEqualTo("client-state-1");
@@ -139,9 +140,12 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
 
         Pkce pkce = pkce();
         String consented = authorizeQuery(clientId, pkce.challenge, "state-c", "read");
-        Map<String, String> consentParams = queryParams(
-                getRaw(browser, consented).headers().firstValue("Location").orElseThrow());
-        HttpResponse<String> allowed = postConsentAllow(browser, clientId, consentParams.get("state"), List.of("read"));
+        String consentLocation =
+                getRaw(browser, consented).headers().firstValue("Location").orElseThrow();
+        URI consent = URI.create(consentLocation);
+        HttpResponse<String> consentPage =
+                getRaw(browser, consent.getRawPath() + "?" + consent.getRawQuery());
+        HttpResponse<String> allowed = submitRenderedConsent(browser, consentPage);
         String code = codeFrom(allowed);
 
         JsonNode tokens = tokenExchange(clientId, secret, code, pkce.verifier);
@@ -156,6 +160,36 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
         JsonNode rotated = refresh(clientId, secret, tokens.get("refresh_token").asText());
         assertThat(rotated.get("access_token").asText()).isNotBlank();
         assertThat(revoke(clientId, secret, rotated.get("access_token").asText()).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void consentPageListsEachRequestedScopeAndSubmitsThemAsSeparateFields() throws Exception {
+        Browser browser = signIn("subject-oauth-scope-list", ISSUER);
+        JsonNode registration = register(Map.of("token_endpoint_auth_method", "none"), 201);
+        String clientId = registration.get("client_id").asText();
+        Pkce pkce = pkce();
+        String consentLocation = getRaw(browser,
+                authorizeQuery(clientId, pkce.challenge, "scope-state", "read fill export"))
+                .headers().firstValue("Location").orElseThrow();
+        URI consent = URI.create(consentLocation);
+        HttpResponse<String> page =
+                getRaw(browser, consent.getRawPath() + "?" + consent.getRawQuery());
+        assertThat(page.statusCode()).isEqualTo(200);
+
+        // Each requested scope is its own described row and its own hidden
+        // field, so the rendered form submits them back as separate values.
+        assertThat(page.body())
+                .contains("<li><strong>read</strong>")
+                .contains("<li><strong>fill</strong>")
+                .contains("<li><strong>export</strong>")
+                .doesNotContain("does not describe");
+        assertThat(Pattern.compile("name=\"scope\"").matcher(page.body()).results().count())
+                .isEqualTo(3);
+
+        String code = codeFrom(submitRenderedConsent(browser, page));
+        JsonNode tokens = tokenExchange(clientId, null, code, pkce.verifier);
+        assertThat(tokens.get("scope").asText().split(" "))
+                .containsExactlyInAnyOrder("read", "fill", "export");
     }
 
     @Test
@@ -541,6 +575,50 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
                         .GET()
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * What a browser does with the consent page: submits the Allow form
+     * exactly as rendered -- its action, and every hidden field it carried.
+     */
+    private HttpResponse<String> submitRenderedConsent(Browser browser, HttpResponse<String> consentPage)
+            throws Exception {
+        assertThat(consentPage.statusCode()).isEqualTo(200);
+        String allowForm = null;
+        for (String segment : consentPage.body().split("<form")) {
+            if (segment.contains("class=\"allow\"")) {
+                allowForm = "<form" + segment;
+            }
+        }
+        assertThat(allowForm).as("an Allow form on the consent page").isNotNull();
+        Matcher action = Pattern.compile("action=\"([^\"]*)\"").matcher(allowForm);
+        assertThat(action.find()).isTrue();
+        Map<String, List<String>> fields = new LinkedHashMap<>();
+        Matcher inputs = Pattern.compile("<input type=\"hidden\" name=\"([^\"]*)\" value=\"([^\"]*)\">")
+                .matcher(allowForm);
+        while (inputs.find()) {
+            fields.computeIfAbsent(unescapeHtml(inputs.group(1)), key -> new ArrayList<>())
+                    .add(unescapeHtml(inputs.group(2)));
+        }
+        return postFormMulti(browser, unescapeHtml(action.group(1)), fields);
+    }
+
+    /** The five entities the consent page's escaping can produce, undone in one pass. */
+    private static String unescapeHtml(String value) {
+        Matcher entities = Pattern.compile("&(?:amp|lt|gt|quot|#39);").matcher(value);
+        StringBuilder out = new StringBuilder();
+        while (entities.find()) {
+            String unescaped = switch (entities.group()) {
+                case "&amp;" -> "&";
+                case "&lt;" -> "<";
+                case "&gt;" -> ">";
+                case "&quot;" -> "\"";
+                default -> "'";
+            };
+            entities.appendReplacement(out, Matcher.quoteReplacement(unescaped));
+        }
+        entities.appendTail(out);
+        return out.toString();
     }
 
     /** The Allow: one scope parameter per granted scope, the way the consent provider reads them. */

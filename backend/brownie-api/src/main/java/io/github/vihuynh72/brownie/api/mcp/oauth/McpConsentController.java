@@ -1,7 +1,9 @@
 package io.github.vihuynh72.brownie.api.mcp.oauth;
 
 import java.net.URI;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -54,7 +56,22 @@ final class McpConsentController {
                     .contentType(MediaType.TEXT_PLAIN)
                     .body("Unknown client.");
         }
-        List<String> requested = scopes == null ? List.of() : scopes;
+        // The authorization server's redirect hands the scope over as one
+        // space-joined value, though a client could equally send several --
+        // either way what the person approves is the set of individual scopes.
+        Set<String> requested = new LinkedHashSet<>();
+        for (String value : scopes == null ? List.<String>of() : scopes) {
+            for (String scope : value.split("\\s+")) {
+                if (!scope.isBlank()) {
+                    requested.add(scope);
+                }
+            }
+        }
+        if (requested.isEmpty()) {
+            return ResponseEntity.badRequest()
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body("No permissions were requested.");
+        }
         StringBuilder scopeRows = new StringBuilder();
         StringBuilder scopeFields = new StringBuilder();
         for (String scope : requested) {
