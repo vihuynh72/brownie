@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.mcp;
 
+import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
 import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
 import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
 import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
@@ -89,6 +90,9 @@ class McpContractIntegrationTest {
 
     @Autowired
     private FindByIndexNameSessionRepository<? extends Session> sessionRepository;
+
+    @Autowired
+    private BuiltInTemplateProvisioningService builtInTemplateProvisioningService;
 
     private final HttpClient http = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
@@ -267,6 +271,100 @@ class McpContractIntegrationTest {
                 assertThat(rs.next()).isTrue();
                 assertThat(rs.getString(1)).isEqualTo("REFUSED");
                 assertThat(rs.getString(2)).isEqualTo("INSUFFICIENT_SCOPE");
+            }
+        }
+    }
+
+    @Test
+    void aRefusalForADocumentThatDoesNotExistIsStillRecordedWithNoDocument() throws Exception {
+        Browser browser = signIn("subject-mcp-null-doc");
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Records\",\"scopes\":[\"read\",\"fill\",\"export\"]}", 201));
+        String token = issued.get("token").asText();
+        long grantId = issued.get("grantId").asLong();
+
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        JsonNode refused = readJson(mcpCall(token,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"export_document\","
+                        + "\"arguments\":{\"document_id\":999999999,\"format\":\"docx\"}}}"));
+        assertThat(refused.get("result").get("isError").asBoolean()).isTrue();
+
+        // The named document never existed, so the record must carry no
+        // document id -- storing the caller's number would either violate
+        // the workspace-scoped foreign key or point at a row that is not
+        // this workspace's.
+        try (Connection connection = ownerConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT outcome, code, document_id FROM mcp_tool_call WHERE grant_id = ?")) {
+            statement.setLong(1, grantId);
+            try (ResultSet rs = statement.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString(1)).isEqualTo("REFUSED");
+                assertThat(rs.getString(2)).isEqualTo("NOT_FOUND");
+                assertThat(rs.getObject(3)).isNull();
+                assertThat(rs.next()).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void aRefusalForAnotherWorkspacesDocumentIsRecordedWithoutThatDocument() throws Exception {
+        Browser owner = signIn("subject-mcp-xdoc-owner");
+        Browser caller = signIn("subject-mcp-xdoc-caller");
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(owner.workspaceId(), owner.userId());
+
+        // Mint a real document in the owner's workspace over MCP itself.
+        JsonNode ownerGrant = readJson(postJson(
+                owner, "/api/v1/workspaces/" + owner.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Owner\",\"scopes\":[\"read\",\"fill\",\"export\"]}", 201));
+        String ownerToken = ownerGrant.get("token").asText();
+        assertThat(mcpInitialize(ownerToken).statusCode()).isEqualTo(200);
+        JsonNode templates = readJson(mcpCall(ownerToken,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_templates\",\"arguments\":{}}}"));
+        long templateId = templates.get("result").get("structuredContent")
+                .get("templates").get(0).get("template_id").asLong();
+        JsonNode started = readJson(mcpCall(ownerToken,
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"start_document\","
+                        + "\"arguments\":{\"template_id\":" + templateId + "}}}"));
+        long ownerDocumentId = started.get("result").get("structuredContent").get("document_id").asLong();
+
+        // The caller's grant names that foreign document id; the refusal
+        // is recorded in the caller's workspace but must not pin the row
+        // to a document the caller cannot see.
+        JsonNode callerGrant = readJson(postJson(
+                caller, "/api/v1/workspaces/" + caller.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Caller\",\"scopes\":[\"read\",\"fill\",\"export\"]}", 201));
+        String callerToken = callerGrant.get("token").asText();
+        long callerGrantId = callerGrant.get("grantId").asLong();
+        assertThat(mcpInitialize(callerToken).statusCode()).isEqualTo(200);
+        JsonNode refused = readJson(mcpCall(callerToken,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"export_document\","
+                        + "\"arguments\":{\"document_id\":" + ownerDocumentId + ",\"format\":\"docx\"}}}"));
+        assertThat(refused.get("result").get("isError").asBoolean()).isTrue();
+
+        try (Connection connection = ownerConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT workspace_id, outcome, code, document_id FROM mcp_tool_call WHERE grant_id = ?")) {
+            statement.setLong(1, callerGrantId);
+            try (ResultSet rs = statement.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getLong(1)).isEqualTo(caller.workspaceId());
+                assertThat(rs.getString(2)).isEqualTo("REFUSED");
+                assertThat(rs.getString(3)).isEqualTo("NOT_FOUND");
+                assertThat(rs.getObject(4)).isNull();
+                assertThat(rs.next()).isFalse();
+            }
+        }
+        // The other workspace's document id must not appear in any record.
+        try (Connection connection = ownerConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT count(*) FROM mcp_tool_call WHERE document_id = ?")) {
+            statement.setLong(1, ownerDocumentId);
+            try (ResultSet rs = statement.executeQuery()) {
+                rs.next();
+                // Only the owner's own start_document call may name it.
+                assertThat(rs.getLong(1)).isEqualTo(1);
             }
         }
     }

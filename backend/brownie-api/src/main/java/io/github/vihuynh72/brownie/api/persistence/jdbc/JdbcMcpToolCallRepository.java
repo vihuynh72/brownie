@@ -30,12 +30,13 @@ class JdbcMcpToolCallRepository implements McpToolCallRepository {
         return jdbcTemplate.queryForObject(
                 """
                 INSERT INTO mcp_tool_call (workspace_id, grant_id, document_id, tool, outcome, code)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, (SELECT id FROM document WHERE workspace_id = ? AND id = ?), ?, ?, ?)
                 RETURNING \
                 """ + COLUMNS,
                 this::mapCall,
                 workspaceId,
                 grantId,
+                workspaceId,
                 documentId,
                 tool,
                 outcome.name(),
