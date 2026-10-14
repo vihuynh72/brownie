@@ -138,6 +138,7 @@ class McpAuthorizationServerConfig {
                                         code.setAuthenticationValidator(context -> {
                                             new OAuth2AuthorizationCodeRequestAuthenticationValidator().accept(context);
                                             resourceEnforcement.validateAuthorizeRequest(context);
+                                            McpScopeRequirement.validate(context);
                                         });
                                     }
                                 })))

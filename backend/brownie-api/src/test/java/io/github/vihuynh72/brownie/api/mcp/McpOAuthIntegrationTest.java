@@ -269,15 +269,39 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
 
         HttpResponse<String> missing = http.send(HttpRequest.newBuilder(URI.create(url(
                 AUTHORIZE + "?response_type=code&client_id=" + clientId + "&redirect_uri=" + encode(REDIRECT)
-                        + "&resource=" + encode(RESOURCE)))).GET().build(), HttpResponse.BodyHandlers.ofString());
+                        + "&resource=" + encode(RESOURCE) + "&scope=read"))).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
         assertThat(errorAtClient(missing)).isEqualTo("invalid_request");
 
         HttpResponse<String> plain = http.send(HttpRequest.newBuilder(URI.create(url(
                 AUTHORIZE + "?response_type=code&client_id=" + clientId + "&redirect_uri=" + encode(REDIRECT)
-                        + "&resource=" + encode(RESOURCE)
+                        + "&resource=" + encode(RESOURCE) + "&scope=read"
                         + "&code_challenge=abc&code_challenge_method=plain"))).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         assertThat(errorAtClient(plain)).isEqualTo("invalid_request");
+    }
+
+    @Test
+    void authorizeWithoutScopeIsRefusedWithInvalidScope() throws Exception {
+        Browser browser = signIn("subject-oauth-no-scope", ISSUER);
+        JsonNode registration = register(Map.of("token_endpoint_auth_method", "none"), 201);
+        String clientId = registration.get("client_id").asText();
+
+        // A signed-in request that asks for no scope is answered to the
+        // client as invalid_scope -- it never reaches the consent page.
+        HttpResponse<String> response = getRaw(browser,
+                AUTHORIZE + "?response_type=code&client_id=" + clientId
+                        + "&redirect_uri=" + encode(REDIRECT)
+                        + "&state=no-scope-state"
+                        + "&resource=" + encode(RESOURCE)
+                        + "&code_challenge=" + pkce().challenge
+                        + "&code_challenge_method=S256");
+        assertThat(response.statusCode()).isEqualTo(302);
+        String location = response.headers().firstValue("Location").orElseThrow();
+        assertThat(location).startsWith(REDIRECT);
+        Map<String, String> back = queryParams(location);
+        assertThat(back.get("error")).isEqualTo("invalid_scope");
+        assertThat(back.get("state")).isEqualTo("no-scope-state");
     }
 
     @Test
