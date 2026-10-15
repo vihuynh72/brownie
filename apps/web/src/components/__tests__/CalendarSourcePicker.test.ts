@@ -72,6 +72,7 @@ function capabilities(googleConnectorAccess?: ('CALENDAR_EVENTS' | 'DRIVE_FILES'
     assistSourceMediaTypes: [],
     templateMediaTypes: [],
     trashRetentionDays: 30,
+    mcpEnabled: false,
     ...(googleConnectorAccess === undefined ? {} : { googleConnectorAccess }),
   }
 }

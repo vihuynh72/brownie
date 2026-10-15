@@ -16,6 +16,7 @@ vi.mock('@/api/client', async () => {
     forgetDriveFile: vi.fn(),
     disconnectGoogle: vi.fn(),
     getCapabilities: vi.fn(),
+    listMcpGrants: vi.fn(),
   }
 })
 vi.mock('@/navigation', () => ({ navigateTo: vi.fn(), releaseIfStillHere: vi.fn() }))
@@ -26,6 +27,7 @@ import {
   forgetDriveFile,
   getCapabilities,
   listConnections,
+  listMcpGrants,
   startDrivePick,
   startGoogleConsent,
   type CapabilitiesResponse,
@@ -76,6 +78,7 @@ function capabilities(
     assistSourceMediaTypes: [],
     templateMediaTypes: [],
     trashRetentionDays: 30,
+    mcpEnabled: false,
     ...(googleConnectorAccess === undefined ? {} : { googleConnectorAccess }),
   }
 }
@@ -120,6 +123,7 @@ describe('ConnectionsView', () => {
     vi.mocked(forgetDriveFile).mockReset()
     vi.mocked(disconnectGoogle).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities(['CALENDAR_EVENTS']))
+    vi.mocked(listMcpGrants).mockReset().mockResolvedValue([])
     vi.mocked(navigateTo).mockReset()
     vi.mocked(releaseIfStillHere).mockReset()
     window.localStorage.clear()
@@ -266,6 +270,24 @@ describe('ConnectionsView', () => {
       expect(wrapper.find('section[aria-labelledby="connections-saving"]').text()).toContain('To save a document, open Export on it')
       wrapper.unmount()
     })
+  })
+
+  it('offers the Chat apps panel only when this Brownie serves chat apps, with the address to give them', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({ ...capabilities(['CALENDAR_EVENTS']), mcpEnabled: true, mcpServerUrl: 'http://brownie.example/mcp' })
+    const withMcp = await mountAt()
+
+    const panel = withMcp.find('.chat-apps')
+    expect(panel.exists()).toBe(true)
+    expect(panel.get('h2').text()).toBe('Chat apps')
+    expect((panel.get('.chat-apps__url .text-field').element as HTMLInputElement).value).toBe('http://brownie.example/mcp')
+    withMcp.unmount()
+
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockResolvedValue(capabilities(['CALENDAR_EVENTS']))
+    const without = await mountAt()
+
+    expect(without.find('.chat-apps').exists()).toBe(false)
+    without.unmount()
   })
 
   it.each([

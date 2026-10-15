@@ -23,6 +23,7 @@ const BASE: CapabilitiesResponse = {
   assistSourceMediaTypes: [],
   templateMediaTypes: [],
   trashRetentionDays: 30,
+  mcpEnabled: false,
 }
 
 function file(name: string, type = ''): Pick<File, 'name' | 'type'> {

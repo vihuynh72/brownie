@@ -29,6 +29,10 @@
 #                                    lets people pick Google Drive files, once
 #                                    the API can read them, and only with a
 #                                    Google client id
+#   BROWNIE_MCP_ENABLED              optional, true or false (the default);
+#                                    lets chat apps reach the MCP endpoint,
+#                                    and then one more secret is read from
+#                                    the vault
 #
 # The order matters and is the point of the script: migrate first with the new
 # image and stop if that fails, so a failed migration leaves the running
@@ -108,6 +112,25 @@ elif [ "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" = true ]; then
   log "BROWNIE_GOOGLE_DRIVE_OFFERED is set but Google is not; Drive stays off."
 fi
 
+# Chat apps reaching the MCP endpoint is optional. On needs the key the
+# token machinery derives its secrets from, read from the vault like the
+# others; and the same refuse-before-migrating rule applies to a value that
+# is neither true nor false.
+case "${BROWNIE_MCP_ENABLED:-}" in
+  ''|true|false) ;;
+  *) fail "BROWNIE_MCP_ENABLED must be true or false." ;;
+esac
+mcp_settings=()
+if [ "${BROWNIE_MCP_ENABLED:-}" = true ]; then
+  log "Reading the secret chat apps need."
+  mcp_token_key="$(secret mcp-token-key)"
+  mcp_settings=(
+    "BROWNIE_MCP_ENABLED=true"
+    "BROWNIE_MCP_TOKEN_KEY=${mcp_token_key}")
+elif [ -n "${BROWNIE_MCP_ENABLED:-}" ]; then
+  mcp_settings=("BROWNIE_MCP_ENABLED=${BROWNIE_MCP_ENABLED}")
+fi
+
 log "Pulling images."
 for image in "$BROWNIE_API_IMAGE" "$BROWNIE_WORKER_IMAGE" "$BROWNIE_WEB_IMAGE" "$BROWNIE_RENDER_IMAGE"; do
   docker pull --quiet "$image" > /dev/null || fail "Could not pull $image."
@@ -150,7 +173,8 @@ write_env /etc/brownie/api.env \
   "BROWNIE_RENDER_EXPECTED_IMAGE_ID=${render_image_id}" \
   "BROWNIE_SUPPORT_CONTACT=${BROWNIE_SUPPORT_CONTACT:-}" \
   "BROWNIE_INVITED_ADDRESSES=${BROWNIE_INVITED_ADDRESSES:-}" \
-  ${google_settings[@]+"${google_settings[@]}"}
+  ${google_settings[@]+"${google_settings[@]}"} \
+  ${mcp_settings[@]+"${mcp_settings[@]}"}
 
 write_env /etc/brownie/worker.env \
   "BROWNIE_ENVIRONMENT=pilot" \

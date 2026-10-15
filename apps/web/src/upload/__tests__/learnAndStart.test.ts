@@ -113,7 +113,7 @@ function artifact(status: ArtifactResponse['status'], detectedMediaType: Artifac
 /** Every request answers the way a real server does for a Word form it made ready to fill. */
 function serverMakesTheFormReady(): void {
   vi.mocked(getCapabilities).mockResolvedValue({
-    maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30,
+    maxUploadBytes: 10 * 1024 * 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30, mcpEnabled: false,
   })
   vi.mocked(allocateUpload).mockResolvedValue(artifact('UPLOADING', null, 'Club minutes.docx'))
   vi.mocked(uploadArtifactContent).mockResolvedValue(artifact('UPLOADING', 'DOCX', 'Club minutes.docx'))

@@ -83,6 +83,13 @@
           <groupId>org.eclipse.jetty.http2</groupId>
           <artifactId>http2-server</artifactId>
         </exclusion>
+        <exclusion>
+          <!-- Same mediation problem as brownie-api's identical entry:
+               wiremock's json-schema-validator 1.5.9 would override the
+               3.x the MCP Java SDK requires. -->
+          <groupId>com.networknt</groupId>
+          <artifactId>json-schema-validator</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>

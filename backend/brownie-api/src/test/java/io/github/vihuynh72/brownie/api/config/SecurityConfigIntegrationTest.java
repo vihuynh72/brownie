@@ -157,7 +157,9 @@ class SecurityConfigIntegrationTest {
                 .andExpect(jsonPath("$.googleConnectorAccess").isEmpty())
                 .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'docx')].route").value(org.hamcrest.Matchers.contains("NATIVE")))
                 .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'ott')].route").value(org.hamcrest.Matchers.contains("CONVERTED")))
-                .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'pdf')].mediaType").value(org.hamcrest.Matchers.contains("application/pdf")));
+                .andExpect(jsonPath("$.formFileTypes[?(@.extension == 'pdf')].mediaType").value(org.hamcrest.Matchers.contains("application/pdf")))
+                .andExpect(jsonPath("$.mcpEnabled").value(true))
+                .andExpect(jsonPath("$.mcpServerUrl").value("http://localhost:8081/mcp"));
 
         HttpResponse<String> anonymous = client.send(
                 HttpRequest.newBuilder(URI.create(url("/api/v1/capabilities"))).GET().build(),

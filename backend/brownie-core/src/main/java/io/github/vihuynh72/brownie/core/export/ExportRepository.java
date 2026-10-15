@@ -20,4 +20,7 @@ public interface ExportRepository {
             ExportFormat format);
 
     Optional<ExportReceipt> findLatest(long workspaceId, long userId, long documentId);
+
+    /** One receipt by id within the caller's workspace, for a route that names the receipt rather than the document. */
+    Optional<ExportReceipt> find(long workspaceId, long userId, long receiptId);
 }

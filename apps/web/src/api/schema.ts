@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mcp-downloads/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The anonymous one-time download an MCP export link names. The token in the path is the whole credential: unknown, expired, already-used or revoked-grant links all answer the same 404, and nothing else is asked -- no session, no CSRF. Present only when the deployment's MCP feature is on. */
+        get: operations["downloadMcpExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/documents": {
         parameters: {
             query?: never;
@@ -1023,6 +1040,74 @@ export interface paths {
         };
         /** The latest export receipt recorded for this document, if any. */
         get: operations["getLatestExportReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/mcp/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The workspace's MCP credentials -- pasted personal tokens and connected chat apps -- each with its scopes, its display hint, and when it was made, last used and revoked. The token itself and its hash are never listed. Requires MANAGE_WORKSPACE; the routes are not mapped at all when MCP is off. */
+        get: operations["listMcpGrants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/mcp/personal-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a personal MCP token: the bearer credential a chat app pastes to reach this workspace's MCP endpoint. The token itself is returned exactly once, here; only its hash is stored. Requires MANAGE_WORKSPACE. */
+        post: operations["issueMcpPersonalToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/mcp/grants/{grantId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke one MCP grant: a personal token stops resolving at once. Revoking a connected app marks the grant revoked; its stored OAuth authorizations are removed by the authorization-server slice. Requires MANAGE_WORKSPACE. */
+        post: operations["revokeMcpGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/documents/{documentId}/mcp-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The MCP tool calls that named this document, newest first -- answered, refused and failed alike -- for the document's history. Requires MANAGE_WORKSPACE. */
+        get: operations["listMcpToolCalls"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2733,6 +2818,51 @@ export interface components {
             batchMaxRows?: number;
             /** @description Whether a batch may ask the model to write a field's value from a row's other cells. */
             batchComposeOffered?: boolean;
+            /** @description Whether this deployment serves an MCP endpoint at all. When false, none of the MCP routes exist. */
+            mcpEnabled: boolean;
+            /** @description The MCP endpoint's absolute address when MCP is on; null when it is not. */
+            mcpServerUrl?: string | null;
+        };
+        McpGrantResponse: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            kind: "PERSONAL_TOKEN" | "OAUTH_CLIENT";
+            /** @description The name the grant was issued under. */
+            name: string;
+            scopes: ("read" | "fill" | "export")[];
+            /** @description The few characters shown at creation to tell one token from another; never the token or its hash. */
+            tokenHint: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+        };
+        IssueMcpPersonalTokenRequest: {
+            /** @description What the person calls this token, to recognize it later. */
+            name: string;
+            scopes: ("read" | "fill" | "export")[];
+        };
+        IssuedMcpTokenResponse: {
+            /** Format: int64 */
+            grantId: number;
+            /** @description The bearer token itself, returned only by this response; only its hash is stored. */
+            token: string;
+        };
+        McpToolCallResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            grantId: number;
+            tool: string;
+            /** @enum {string} */
+            outcome: "OK" | "REFUSED" | "ERROR";
+            /** @description The refusal code when the outcome is REFUSED; null otherwise. */
+            code?: string | null;
+            /** Format: date-time */
+            at: string;
         };
         /** @description A place selected on a PDF form's page: page pageNumber, and either a point (points, on the page as stored, before it is turned, origin at the top-left of its visible area, Y down: the convention boxes use) or one of the page's lines by its index in the page layout. Exactly one of point and lineIndex. */
         PdfPageAnchor: {
@@ -3721,6 +3851,36 @@ export interface operations {
             };
             /** @description Missing or invalid CSRF token. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    downloadMcpExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exported file's bytes, with an attachment disposition. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
+                    "application/pdf": string;
+                };
+            };
+            /** @description No live link under that token. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5700,6 +5860,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportReceiptResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listMcpGrants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every grant of the workspace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpGrantResponse"][];
+                };
+            };
+            /** @description The caller is not a member of this workspace, or lacks MANAGE_WORKSPACE. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    issueMcpPersonalToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueMcpPersonalTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Issued; the token is in this response and nowhere else. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedMcpTokenResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The caller is not a member of this workspace, or lacks MANAGE_WORKSPACE. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    revokeMcpGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                grantId: components["parameters"]["GrantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller is not a member of this workspace, or lacks MANAGE_WORKSPACE. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listMcpToolCalls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                documentId: components["parameters"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every recorded call against the document. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolCallResponse"][];
+                };
+            };
+            /** @description The caller is not a member of this workspace, or lacks MANAGE_WORKSPACE. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
                 };
             };
             404: components["responses"]["NotFound"];

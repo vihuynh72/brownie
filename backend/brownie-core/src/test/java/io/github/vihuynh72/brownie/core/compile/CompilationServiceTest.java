@@ -300,6 +300,18 @@ class CompilationServiceTest {
         }
 
         @Override
+        public java.util.Optional<io.github.vihuynh72.brownie.core.revision.PatchProposal> findById(
+                long workspaceId, long userId, long proposalId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public List<io.github.vihuynh72.brownie.core.revision.PatchProposal> findForDocument(
+                long workspaceId, long userId, long documentId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void markAccepted(long workspaceId, long userId, long documentId, long proposalId) {
             throw new UnsupportedOperationException();
         }

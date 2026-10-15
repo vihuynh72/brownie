@@ -127,6 +127,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
     })
     vi.mocked(deleteWorkspace).mockReset()
     vi.mocked(listConnections).mockReset().mockResolvedValue([])
@@ -186,6 +187,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: ['CALENDAR_EVENTS'],
     })
     const wrapper = await mountPage()
@@ -206,6 +208,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess,
     })
     vi.mocked(getCapabilities).mockResolvedValue(offering(['CALENDAR_EVENTS', 'DRIVE_SAVING']))
@@ -261,6 +264,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: ['CALENDAR_EVENTS', 'CALENDAR_EVENT_CREATION'],
     })
     const wrapper = await mountPage()
@@ -283,6 +287,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: ['CALENDAR_EVENTS'],
     })
     let text = (await mountPage()).text().replace(/\s+/g, ' ')
@@ -296,6 +301,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: ['CALENDAR_EVENTS', 'DRIVE_FILES'],
     })
     text = (await mountPage()).text().replace(/\s+/g, ' ')
@@ -316,6 +322,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: [],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: [],
     })
     vi.mocked(listConnections).mockResolvedValue([
@@ -341,6 +348,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: [],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: [],
     })
     expect((await mountPage()).text()).not.toContain('Google')
@@ -363,6 +371,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: [],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: [],
     })
     vi.mocked(listConnections).mockResolvedValue([
@@ -426,6 +435,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: [],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
     })
 
     vi.mocked(getCapabilities).mockResolvedValue(capabilities(['.docx', '.pdf'], 0))
@@ -637,6 +647,7 @@ describe('YourDataView', () => {
       assistSourceMediaTypes: ['text/plain'],
       templateMediaTypes: [],
       trashRetentionDays: 14,
+      mcpEnabled: false,
       googleConnectorAccess: ['CALENDAR_EVENTS', 'DRIVE_SAVING', 'CALENDAR_EVENT_CREATION'],
     })
     wrapper = await mountPage()

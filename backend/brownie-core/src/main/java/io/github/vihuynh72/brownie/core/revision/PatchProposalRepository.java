@@ -21,6 +21,12 @@ public interface PatchProposalRepository {
 
     Optional<PatchProposal> find(long workspaceId, long userId, long documentId, long proposalId);
 
+    /** One proposal by id alone, for a caller that names it without knowing its document. */
+    Optional<PatchProposal> findById(long workspaceId, long userId, long proposalId);
+
+    /** Every proposal against one document, open or settled, newest first. */
+    List<PatchProposal> findForDocument(long workspaceId, long userId, long documentId);
+
     /** Marks exactly one PROPOSED proposal ACCEPTED. Throws if it does not exist, belongs to another workspace, or is already accepted. */
     void markAccepted(long workspaceId, long userId, long documentId, long proposalId);
 }

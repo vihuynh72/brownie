@@ -29,6 +29,7 @@ class RateLimitConfig {
             @Value("${brownie.rate-limit.per-minute.connector:60}") int connector,
             @Value("${brownie.rate-limit.per-minute.write:300}") int write,
             @Value("${brownie.rate-limit.per-minute.read:1200}") int read,
+            @Value("${brownie.rate-limit.per-minute.mcp:60}") int mcp,
             @Value("${brownie.rate-limit.per-minute.anonymous:120}") int anonymous) {
         Map<RateLimitClass, Integer> perMinute = new EnumMap<>(RateLimitClass.class);
         perMinute.put(RateLimitClass.MODEL, model);
@@ -37,6 +38,7 @@ class RateLimitConfig {
         perMinute.put(RateLimitClass.CONNECTOR, connector);
         perMinute.put(RateLimitClass.WRITE, write);
         perMinute.put(RateLimitClass.READ, read);
+        perMinute.put(RateLimitClass.MCP, mcp);
         perMinute.put(RateLimitClass.ANONYMOUS, anonymous);
         return new RateLimiter(perMinute, System::nanoTime);
     }

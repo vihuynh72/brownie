@@ -5,10 +5,15 @@ import {
   ApiRequestError,
   getDocumentRevision,
   listDocumentRevisions,
+  listMcpGrants,
+  listMcpToolCalls,
   restoreRevision,
   type DocumentRevisionResponse,
+  type McpToolCallResponse,
 } from '@/api/client'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
+import { loadCapabilities } from '@/capabilities'
+import { mcpCallSentence } from '@/mcp/words'
 import { formatDateLikeExport } from '@/workspace/layout'
 
 /**
@@ -117,6 +122,8 @@ function onFallbackKeydown(event: KeyboardEvent): void {
 function resetState(): void {
   listToken += 1
   versions.value = []
+  mcpCalls.value = []
+  grantNames.value = new Map()
   listState.value = 'idle'
   listError.value = null
   selectedRevisionId.value = null
@@ -130,6 +137,9 @@ defineExpose({ open, close })
 // ---- The list of versions ------------------------------------------------------------------
 
 const versions = ref<DocumentRevisionResponse[]>([])
+/** The calls chat apps made against this document, and their grants' names; empty on a deployment without them. */
+const mcpCalls = ref<McpToolCallResponse[]>([])
+const grantNames = ref<ReadonlyMap<number, string>>(new Map())
 type ListState = 'idle' | 'loading' | 'loaded' | 'error'
 const listState = ref<ListState>('idle')
 const listError = ref<string | null>(null)
@@ -141,6 +151,26 @@ let listToken = 0
 const orderedVersions = computed<DocumentRevisionResponse[]>(() =>
   [...versions.value].sort((a, b) => b.revisionNumber - a.revisionNumber),
 )
+
+/**
+ * One line in the list: a version, or a call a chat app made against the
+ * document. Both are ordered by when they happened, newest first, so the
+ * calls sit between the versions the way they actually occurred.
+ */
+type ListItem =
+  | { kind: 'version'; at: string; revision: DocumentRevisionResponse }
+  | { kind: 'call'; at: string; call: McpToolCallResponse }
+
+const timelineItems = computed<ListItem[]>(() =>
+  [
+    ...orderedVersions.value.map((revision) => ({ kind: 'version' as const, at: revision.createdAt, revision })),
+    ...mcpCalls.value.map((call) => ({ kind: 'call' as const, at: call.at, call })),
+  ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)),
+)
+
+function grantNameFor(call: McpToolCallResponse): string | null {
+  return grantNames.value.get(call.grantId) ?? null
+}
 
 async function loadVersions(): Promise<void> {
   const token = ++listToken
@@ -155,6 +185,25 @@ async function loadVersions(): Promise<void> {
     const loaded = await listDocumentRevisions(props.workspaceId, props.documentId)
     if (token !== listToken) return
     versions.value = loaded
+    // The calls chat apps made sit in this list beside the versions; the grants' names are what the lines read
+    // with. A deployment without MCP is asked nothing -- the routes are not there to answer; an older server
+    // without them or a failure answering must not take the versions with it either -- the calls simply do
+    // not appear.
+    try {
+      if ((await loadCapabilities()).mcpEnabled === true) {
+        const [calls, grants] = await Promise.all([
+          listMcpToolCalls(props.workspaceId, props.documentId),
+          listMcpGrants(props.workspaceId),
+        ])
+        if (token !== listToken) return
+        mcpCalls.value = calls
+        grantNames.value = new Map(grants.map((grant) => [grant.id, grant.name]))
+      }
+    } catch {
+      if (token !== listToken) return
+      mcpCalls.value = []
+      grantNames.value = new Map()
+    }
     listState.value = 'loaded'
     if (firstLoad) status.value = ''
     // It opens on the version just before this one, the likeliest to be wanted back, rather than on nothing.
@@ -193,8 +242,8 @@ const monthDayFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', d
 const fullDayFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
 /** "Today, 3:42 PM", or the day instead of "Today" for an older version, with the year only when it is not this one. */
-function when(revision: DocumentRevisionResponse): string {
-  const made = new Date(revision.createdAt)
+function whenAt(iso: string): string {
+  const made = new Date(iso)
   if (Number.isNaN(made.getTime())) return ''
   const now = new Date()
   const sameDay =
@@ -508,61 +557,74 @@ async function confirmRestore(revision: DocumentRevisionResponse): Promise<void>
             Try again
           </button>
 
-          <div v-if="orderedVersions.length > 0" class="revision-list" role="radiogroup" aria-label="Versions">
-            <div
-              v-for="revision in orderedVersions"
-              :key="revision.id"
-              class="revision-row"
-              :class="{ 'revision-row--selected': revision.id === selectedRevisionId }"
+          <div v-if="timelineItems.length > 0" class="revision-list" role="radiogroup" aria-label="Versions">
+            <template
+              v-for="item in timelineItems"
+              :key="item.kind === 'version' ? `version-${item.revision.id}` : `call-${item.call.id}`"
             >
-              <label class="revision-row__choice">
-                <input
-                  class="revision-row__radio visually-hidden"
-                  type="radio"
-                  :name="choiceName"
-                  :checked="revision.id === selectedRevisionId"
-                  :disabled="restoreStage === 'restoring' && revision.id !== selectedRevisionId"
-                  @change="choose(revision)"
-                />
-                <span class="revision-row__line">
-                  <span class="revision-row__name">Version {{ revision.revisionNumber }}</span>
-                  <span v-if="isCurrent(revision)" class="tag tag--success">
-                    <AppIcon name="check-circle" :size="16" />
-                    Current version
-                  </span>
-                </span>
-                <span class="revision-row__summary">{{ revision.editReason }}</span>
-                <time class="revision-row__time" :datetime="revision.createdAt">{{ when(revision) }}</time>
-              </label>
-
-              <!-- Gone while this row's own restore question is open or its restore is running, so Compare cannot overwrite the single status announcement meant for the restore. -->
               <div
-                v-if="revision.id === selectedRevisionId && confirmingRevisionId !== revision.id && restoreStage !== 'restoring'"
-                class="revision-row__actions"
+                v-if="item.kind === 'version'"
+                class="revision-row"
+                :class="{ 'revision-row--selected': item.revision.id === selectedRevisionId }"
               >
-                <button
-                  class="button button--secondary button--small"
-                  type="button"
-                  :aria-label="`Compare version ${revision.revisionNumber} with the current version`"
-                  :aria-disabled="compareStage === 'loading' && compareRevisionId === revision.id ? 'true' : undefined"
-                  @click="compareWithNow(revision)"
+                <label class="revision-row__choice">
+                  <input
+                    class="revision-row__radio visually-hidden"
+                    type="radio"
+                    :name="choiceName"
+                    :checked="item.revision.id === selectedRevisionId"
+                    :disabled="restoreStage === 'restoring' && item.revision.id !== selectedRevisionId"
+                    @change="choose(item.revision)"
+                  />
+                  <span class="revision-row__line">
+                    <span class="revision-row__name">Version {{ item.revision.revisionNumber }}</span>
+                    <span v-if="isCurrent(item.revision)" class="tag tag--success">
+                      <AppIcon name="check-circle" :size="16" />
+                      Current version
+                    </span>
+                  </span>
+                  <span class="revision-row__summary">{{ item.revision.editReason }}</span>
+                  <time class="revision-row__time" :datetime="item.revision.createdAt">{{ whenAt(item.at) }}</time>
+                </label>
+
+                <!-- Gone while this row's own restore question is open or its restore is running, so Compare cannot overwrite the single status announcement meant for the restore. -->
+                <div
+                  v-if="item.revision.id === selectedRevisionId && confirmingRevisionId !== item.revision.id && restoreStage !== 'restoring'"
+                  class="revision-row__actions"
                 >
-                  <AppIcon name="compare" :size="16" />
-                  Compare
-                </button>
-                <button
-                  v-if="!isCurrent(revision) && confirmingRevisionId !== revision.id"
-                  :id="restoreButtonId(revision)"
-                  class="button button--secondary button--small"
-                  type="button"
-                  :aria-label="`Restore version ${revision.revisionNumber}`"
-                  @click="askToRestore(revision)"
-                >
-                  <AppIcon name="restore" :size="16" />
-                  Restore
-                </button>
+                  <button
+                    class="button button--secondary button--small"
+                    type="button"
+                    :aria-label="`Compare version ${item.revision.revisionNumber} with the current version`"
+                    :aria-disabled="compareStage === 'loading' && compareRevisionId === item.revision.id ? 'true' : undefined"
+                    @click="compareWithNow(item.revision)"
+                  >
+                    <AppIcon name="compare" :size="16" />
+                    Compare
+                  </button>
+                  <button
+                    v-if="!isCurrent(item.revision) && confirmingRevisionId !== item.revision.id"
+                    :id="restoreButtonId(item.revision)"
+                    class="button button--secondary button--small"
+                    type="button"
+                    :aria-label="`Restore version ${item.revision.revisionNumber}`"
+                    @click="askToRestore(item.revision)"
+                  >
+                    <AppIcon name="restore" :size="16" />
+                    Restore
+                  </button>
+                </div>
               </div>
-            </div>
+
+              <!-- A call a chat app made: a line in the same list, not a version -- nothing to choose, compare or restore. -->
+              <div v-else class="revision-row revision-row--call">
+                <span class="revision-row__call">
+                  <AppIcon name="chat" :size="14" />
+                  <span class="revision-row__call-text">{{ mcpCallSentence(item.call, grantNameFor(item.call)) }}</span>
+                  <time class="revision-row__time" :datetime="item.call.at">{{ whenAt(item.at) }}</time>
+                </span>
+              </div>
+            </template>
           </div>
           <p v-else-if="listState === 'loaded'" class="field-hint version-history__note">This document has no saved versions.</p>
           <p v-if="listState === 'loaded' && versions.length === 1" class="field-hint version-history__note">
@@ -829,6 +891,33 @@ async function confirmRestore(revision: DocumentRevisionResponse): Promise<void>
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0 0.875rem 0.75rem;
+}
+
+/* A chat app's call sits between the versions it happened among: the same row shape, quieter, with nothing to press. */
+.revision-row--call:hover {
+  background: none;
+}
+
+.revision-row__call {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.125rem 0.5rem;
+  align-items: center;
+  padding: 0.5rem 0.875rem;
+}
+
+.revision-row__call > svg {
+  color: var(--color-text-muted);
+}
+
+.revision-row__call-text {
+  font-size: var(--font-size-sm);
+  line-height: 1.43;
+  overflow-wrap: anywhere;
+}
+
+.revision-row__call > .revision-row__time {
+  grid-column: 2;
 }
 
 /* The buttons come straight after the words, so the chosen card takes up the space between them. */

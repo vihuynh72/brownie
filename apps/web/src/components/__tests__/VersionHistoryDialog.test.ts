@@ -11,10 +11,25 @@ vi.mock('@/api/client', async () => {
     listDocumentRevisions: vi.fn(),
     getDocumentRevision: vi.fn(),
     restoreRevision: vi.fn(),
+    listMcpToolCalls: vi.fn(),
+    listMcpGrants: vi.fn(),
+    getCapabilities: vi.fn(),
   }
 })
 
-import { ApiRequestError, getDocumentRevision, listDocumentRevisions, restoreRevision } from '@/api/client'
+import {
+  ApiRequestError,
+  getCapabilities,
+  getDocumentRevision,
+  listDocumentRevisions,
+  listMcpGrants,
+  listMcpToolCalls,
+  restoreRevision,
+  type CapabilitiesResponse,
+  type McpGrantResponse,
+  type McpToolCallResponse,
+} from '@/api/client'
+import { resetCapabilitiesCache } from '@/capabilities'
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
@@ -22,6 +37,15 @@ function flushPromises(): Promise<void> {
 
 function problem(status: number, code: string, detail: string): ApiError {
   return { status, title: code, detail, code, correlationId: 'c', fields: [], recoveryActions: [] }
+}
+
+const CAPABILITIES: CapabilitiesResponse = {
+  maxUploadBytes: 10485760,
+  uploadMediaTypes: [],
+  assistSourceMediaTypes: [],
+  templateMediaTypes: [],
+  trashRetentionDays: 30,
+  mcpEnabled: false,
 }
 
 const REVISION_1: DocumentRevisionResponse = {
@@ -191,12 +215,17 @@ describe('VersionHistoryDialog', () => {
     vi.mocked(listDocumentRevisions).mockReset().mockResolvedValue([REVISION_1, REVISION_2, REVISION_3])
     vi.mocked(getDocumentRevision).mockReset()
     vi.mocked(restoreRevision).mockReset()
+    vi.mocked(listMcpToolCalls).mockReset().mockResolvedValue([])
+    vi.mocked(listMcpGrants).mockReset().mockResolvedValue([])
+    resetCapabilitiesCache()
+    vi.mocked(getCapabilities).mockReset().mockResolvedValue({ ...CAPABILITIES, mcpEnabled: true })
   })
 
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
     opener.remove()
+    resetCapabilitiesCache()
     vi.useRealTimers()
   })
 
@@ -850,6 +879,148 @@ describe('VersionHistoryDialog', () => {
 
       expect(mounted.emitted('closed')).toHaveLength(1)
       expect(mounted.findAll('button')).toHaveLength(0)
+    })
+  })
+
+  describe('the calls chat apps made', () => {
+    const GRANT: McpGrantResponse = {
+      id: 5,
+      kind: 'PERSONAL_TOKEN',
+      name: 'Claude Code',
+      scopes: ['read', 'fill', 'export'],
+      tokenHint: 'ab12',
+      createdAt: '2026-03-01T08:00:00Z',
+      lastUsedAt: null,
+      revokedAt: null,
+    }
+
+    function call(overrides: Partial<McpToolCallResponse>): McpToolCallResponse {
+      return {
+        id: 1,
+        grantId: 5,
+        tool: 'get_document',
+        outcome: 'OK',
+        code: null,
+        at: '2026-03-02T12:00:00Z',
+        ...overrides,
+      }
+    }
+
+    function callRows(mounted: DialogWrapper) {
+      return mounted.findAll('.revision-row--call')
+    }
+
+    it('asks for the calls where the deployment serves chat apps', async () => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([call({ tool: 'get_document' })])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(listMcpToolCalls).toHaveBeenCalledWith(7, 1)
+      expect(listMcpGrants).toHaveBeenCalledWith(7)
+      expect(callRows(mounted)).toHaveLength(1)
+    })
+
+    it('on a deployment without chat apps it asks for no calls, and the versions still load', async () => {
+      vi.mocked(getCapabilities).mockResolvedValue({ ...CAPABILITIES, mcpEnabled: false })
+      const mounted = await openDialog()
+
+      expect(listMcpToolCalls).not.toHaveBeenCalled()
+      expect(listMcpGrants).not.toHaveBeenCalled()
+      expect(mounted.findAll('.revision-row').length).toBeGreaterThan(0)
+      expect(callRows(mounted)).toHaveLength(0)
+    })
+
+    it('interleaves the calls with the versions by time, each naming its grant, and names a grant it cannot place plainly', async () => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([
+        call({ id: 1, tool: 'start_document', at: '2026-03-01T09:30:00Z' }),
+        call({ id: 2, tool: 'get_document', at: '2026-03-02T12:00:00Z', grantId: 99 }),
+        call({ id: 3, tool: 'export_document', at: '2026-03-03T12:00:00Z' }),
+      ])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(listMcpToolCalls).toHaveBeenCalledWith(7, 1)
+      const sentences = callRows(mounted).map((rowElement) => rowElement.get('.revision-row__call-text').text())
+      expect(sentences).toEqual([
+        'Claude Code exported it',
+        'A chat app read it',
+        'Claude Code started this document',
+      ])
+      // The calls sit in time order with the versions: the newest row is a call made after version 3,
+      // another sits between versions 2 and 1, and the call that started the document lands between
+      // versions 1 and its own moment, so version 1 stays last.
+      const allRows = mounted.findAll('.revision-row')
+      const order = allRows.map((rowElement) => rowElement.find('.revision-row__name, .revision-row__call-text').text())
+      expect(order).toEqual([
+        'Claude Code exported it',
+        'Version 3',
+        'A chat app read it',
+        'Version 2',
+        'Claude Code started this document',
+        'Version 1',
+      ])
+      expect(await axe(mounted.element)).toHaveNoViolations()
+    })
+
+    it.each([
+      ['start_document', 'Claude Code started this document'],
+      ['add_text_source', 'Claude Code added a text source'],
+      ['propose_fill', 'Claude Code asked Brownie to propose values'],
+      ['answer_question', 'Claude Code answered a question'],
+      ['confirm_fill', 'Confirmed in Claude Code'],
+      ['export_document', 'Claude Code exported it'],
+      ['get_document', 'Claude Code read it'],
+      ['get_export_link', 'Claude Code asked for a download link'],
+      ['get_fill_status', 'Claude Code asked how a proposal was doing'],
+      ['list_templates', 'Claude Code listed your templates'],
+      ['a_tool_added_later', 'Claude Code used Brownie'],
+    ])('says an answered call to %s in one sentence', async (tool, sentence) => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([call({ tool })])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(callRows(mounted)[0].get('.revision-row__call-text').text()).toBe(sentence)
+    })
+
+    it.each([
+      ['PAYLOAD_CHANGED', 'the proposal changed after it was shown'],
+      ['PROPOSAL_NOT_OPEN', 'the proposal was already settled'],
+      ['PROPOSAL_PENDING', 'a proposal was still waiting'],
+      ['UNREVIEWED_FIELDS', 'some proposed values were never confirmed'],
+      ['VALIDATION_BLOCKING', 'a check blocks export'],
+      ['NOT_FOUND', 'something it named was not there'],
+      ['INVALID_ARGUMENT', 'it asked in a way Brownie could not use'],
+      ['INSUFFICIENT_SCOPE', 'it was not allowed to do that'],
+      ['CONFLICT', 'the document changed in the meantime'],
+      ['A_CODE_ADDED_LATER', 'Brownie refused it'],
+      [null, 'Brownie refused it'],
+    ])("says a refusal with code %s in words", async (code, reason) => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([call({ outcome: 'REFUSED', code })])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(callRows(mounted)[0].get('.revision-row__call-text').text()).toBe(
+        `Claude Code's request was refused: ${reason}`,
+      )
+    })
+
+    it('says a failed call as a failure, not a refusal', async () => {
+      vi.mocked(listMcpToolCalls).mockResolvedValue([call({ outcome: 'ERROR' })])
+      vi.mocked(listMcpGrants).mockResolvedValue([GRANT])
+      const mounted = await openDialog()
+
+      expect(callRows(mounted)[0].get('.revision-row__call-text').text()).toBe("Claude Code's request failed")
+    })
+
+    it('still lists the versions when the calls cannot be loaded, as on a deployment without chat apps', async () => {
+      vi.mocked(listMcpToolCalls).mockRejectedValue(
+        new ApiRequestError(404, problem(404, 'NOT_FOUND', 'No static resource api/v1/workspaces/7/documents/1/mcp-calls.')),
+      )
+      const mounted = await openDialog()
+
+      expect(mounted.findAll('.revision-row')).toHaveLength(3)
+      expect(callRows(mounted)).toHaveLength(0)
+      expect(mounted.findAll('.revision-row')[0].find('.revision-row__name').text()).toBe('Version 3')
     })
   })
 

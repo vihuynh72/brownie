@@ -266,7 +266,7 @@ beforeEach(() => {
   vi.mocked(listTemplateVersionRules).mockResolvedValue([])
   vi.mocked(listDocumentSources).mockResolvedValue([])
   vi.mocked(listGenerationRuns).mockResolvedValue([])
-  vi.mocked(getCapabilities).mockResolvedValue({ maxUploadBytes: 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30 })
+  vi.mocked(getCapabilities).mockResolvedValue({ maxUploadBytes: 1024, uploadMediaTypes: [], assistSourceMediaTypes: [], templateMediaTypes: [], trashRetentionDays: 30, mcpEnabled: false })
   for (const nothing of [getLatestCompilation, getLatestValidation, getLatestExportApproval, getLatestExportReceipt]) {
     vi.mocked(nothing).mockRejectedValue(new ApiRequestError(404, undefined))
   }

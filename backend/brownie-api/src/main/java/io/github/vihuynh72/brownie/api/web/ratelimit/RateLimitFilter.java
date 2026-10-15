@@ -143,7 +143,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * its 2^64 addresses separately would give whoever holds one a new
      * allowance with every request.
      */
-    static String networkOf(String address) {
+    /** Public so the authorization-server chain's address-keyed filter buckets IPv6 callers the same way. */
+    public static String networkOf(String address) {
         if (address == null || address.indexOf(':') < 0) {
             return String.valueOf(address);
         }

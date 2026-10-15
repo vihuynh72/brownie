@@ -18,6 +18,7 @@ RUN npm run build
 FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
 # The image's own entrypoint fills ${...} in anything under templates/ at
 # start-up, which is how one image serves whatever address it is deployed at.
+COPY apps/web/nginx/security-headers-base.conf /etc/nginx/brownie-security-headers-base.conf
 COPY apps/web/nginx/security-headers.conf /etc/nginx/brownie-security-headers.conf
 COPY apps/web/nginx/brownie.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /src/dist/ /usr/share/nginx/html/

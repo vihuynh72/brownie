@@ -81,7 +81,8 @@ class DeletionIntegrationTest {
     private static final List<String> DOCUMENT_TABLES = List.of(
             "document_revision", "document_revision_field_evidence", "document_revision_field_state",
             "document_command_receipt", "document_compilation", "document_patch_proposal", "document_source",
-            "question", "generation_run", "validation_manifest", "export_approval", "export_receipt");
+            "question", "generation_run", "validation_manifest", "export_approval", "export_receipt",
+            "mcp_tool_call", "mcp_applied_run");
 
     /** Every table that carries a workspace id and must hold nothing of a deleted workspace. The two ledger tables are deliberately absent. */
     private static final List<String> WORKSPACE_TABLES = List.of(
@@ -93,7 +94,8 @@ class DeletionIntegrationTest {
             "document_revision_field_evidence", "document_compilation", "question", "document_revision_field_state",
             "document_patch_proposal", "document_patch_proposal_evidence", "validation_manifest", "export_approval",
             "export_receipt", "document_source", "generation_run", "connector_connection", "connector_resource_grant",
-            "artifact_derivation", "fill_spot_review");
+            "artifact_derivation", "fill_spot_review", "mcp_grant", "mcp_tool_call", "mcp_applied_run",
+            "mcp_download_link");
 
     static final TestDatabase DB = SharedContainers.newDatabase();
 
@@ -583,6 +585,52 @@ class DeletionIntegrationTest {
 
     /** Entirely or not at all: while a worker still holds a job, the workspace, its documents and every session are exactly as they were. */
     @Test
+    void purgingADocumentTakesItsMcpCallsAndPurgingTheWorkspaceTakesTheGrant() throws Exception {
+        Owner owner = signIn("subject-mcp-retention");
+        long documentId = createDocument(owner, "Minutes filled over MCP");
+
+        // A personal token through the session grant route, then one
+        // document-scoped call through the real MCP endpoint, leave the
+        // exact rows the purge has to take.
+        JsonNode grant = readJson(mockMvc.perform(post("/api/v1/workspaces/" + owner.workspaceId() + "/mcp/personal-tokens")
+                        .cookie(owner.session()).with(csrf())
+                        .contentType("application/json")
+                        .content("{\"name\":\"chat app\",\"scopes\":[\"read\"]}"))
+                .andExpect(status().isCreated()).andReturn());
+        String token = grant.get("token").asText();
+        long grantId = grant.get("grantId").asLong();
+        mockMvc.perform(post("/mcp")
+                        .header("Authorization", "Bearer " + token)
+                        .header("Accept", "application/json, text/event-stream")
+                        .contentType("application/json")
+                        .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_document\",\"arguments\":{\"document_id\":" + documentId + "}}}"))
+                .andExpect(status().isOk());
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_tool_call WHERE document_id = ?", documentId)).isEqualTo(1);
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_grant WHERE id = ?", grantId)).isEqualTo(1);
+
+        long deletionId = trash(owner, documentId);
+        // The call row counts among what is still to remove.
+        assertThat(remainingRows(deletionId)).isGreaterThan(0);
+        mockMvc.perform(post(deletionsPath(owner) + "/" + deletionId + "/purge").cookie(owner.session()).with(csrf()))
+                .andExpect(status().isOk());
+
+        assertThat(remainingRows(deletionId)).isZero();
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_tool_call WHERE document_id = ?", documentId)).isZero();
+        // The grant is the workspace's, not the document's: it survives until the workspace goes.
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_grant WHERE id = ?", grantId)).isEqualTo(1);
+
+        JsonNode deleted = readJson(mockMvc.perform(post(deletionsPath(owner))
+                        .cookie(owner.session()).with(csrf())
+                        .contentType("application/json").content("{\"scope\":\"WORKSPACE\"}"))
+                .andExpect(status().isOk()).andReturn());
+        long workspaceDeletionId = deleted.get("deletionId").asLong();
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_grant WHERE workspace_id = ?", owner.workspaceId())).isZero();
+        assertThat(countAsOwner("SELECT count(*) FROM mcp_tool_call WHERE workspace_id = ?", owner.workspaceId())).isZero();
+        // Nothing the request knew about is left to count.
+        assertThat(remainingRows(workspaceDeletionId)).isZero();
+    }
+
+    @Test
     void aWorkspaceWithAJobStillRunningIsNotDeletedAndNobodyIsSignedOut() throws Exception {
         Owner owner = signIn("subject-workspace-busy");
         long documentId = createDocument(owner, "Minutes with a running job");
@@ -902,6 +950,19 @@ class DeletionIntegrationTest {
     /** As the table owner, which sees every row whatever the row-level security policies say: the only honest way to check that nothing is left. */
     private static Connection ownerConnection() throws SQLException {
         return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+    }
+
+    /** The rows {@code retention_remaining} still names for a deletion request, read as the routine's owner. */
+    private static long remainingRows(long deletionId) throws SQLException {
+        try (Connection connection = ownerConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT remaining_rows FROM retention_remaining(?)")) {
+            statement.setLong(1, deletionId);
+            try (ResultSet rs = statement.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                return rs.getLong(1);
+            }
+        }
     }
 
     private static long countAsOwner(String sql, long parameter) throws SQLException {

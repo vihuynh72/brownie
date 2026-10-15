@@ -104,6 +104,19 @@ class JdbcExportReceiptRepository implements ExportRepository {
                 .findFirst();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<ExportReceipt> find(long workspaceId, long userId, long receiptId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return jdbcTemplate.query(
+                        "SELECT " + COLUMNS + " FROM export_receipt WHERE workspace_id = ? AND id = ?",
+                        this::mapReceipt,
+                        workspaceId,
+                        receiptId)
+                .stream()
+                .findFirst();
+    }
+
     private ExportReceipt mapReceipt(ResultSet rs, int rowNum) throws SQLException {
         Long pdfArtifactId = (Long) rs.getObject("pdf_artifact_id");
         return new ExportReceipt(
