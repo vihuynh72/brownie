@@ -444,6 +444,48 @@ class McpContractIntegrationTest {
         postJson(owner, "/api/v1/workspaces/" + owner.workspaceId() + "/mcp/grants/999999/revoke", null, 404);
     }
 
+    @Test
+    void everyToolResultCarriesItsDataAsJsonText() throws Exception {
+        Browser browser = signIn("subject-mcp-text-json");
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Text only\",\"scopes\":[\"read\"]}", 201));
+        String token = issued.get("token").asText();
+
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        JsonNode result = readJson(mcpCall(token,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_templates\",\"arguments\":{}}}"))
+                .get("result");
+
+        // Some chat apps hand the model only the text content of a tool
+        // result, so alongside structuredContent the protocol asks for the
+        // same data serialized as a JSON text block; without it the model
+        // sees the summary line and none of the fields.
+        JsonNode structured = result.get("structuredContent");
+        JsonNode echoed = null;
+        for (JsonNode block : result.get("content")) {
+            if ("text".equals(block.path("type").asText())) {
+                try {
+                    JsonNode parsed = JSON.readTree(block.get("text").asText());
+                    if (parsed.equals(structured)) {
+                        echoed = parsed;
+                    }
+                } catch (Exception notJson) {
+                    // The summary line is for people; it does not parse.
+                }
+            }
+        }
+        assertThat(echoed)
+                .as("a text block carrying the structured content as JSON")
+                .isNotNull();
+        assertThat(echoed.get("templates")).isNotEmpty();
+        for (JsonNode template : echoed.get("templates")) {
+            assertThat(template.get("template_id").isNumber()).isTrue();
+            assertThat(template.get("name").asText()).isNotBlank();
+        }
+    }
+
     // -- plumbing ---------------------------------------------------------------
 
     /** A signed-in browser: a real Spring Session row the main chain trusts, plus its CSRF token for mutations. */

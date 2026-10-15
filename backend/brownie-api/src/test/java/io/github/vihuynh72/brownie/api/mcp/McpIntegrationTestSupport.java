@@ -130,13 +130,45 @@ abstract class McpIntegrationTestSupport {
 
     /** The structured payload of a successful tool call, or the refusal map for an isError one. */
     JsonNode toolResult(McpSyncClient client, String tool, Map<String, Object> arguments) throws Exception {
-        McpSchema.CallToolResult result = client.callTool(
-                new McpSchema.CallToolRequest(tool, arguments));
+        return toolResult(callTool(client, tool, arguments));
+    }
+
+    /**
+     * The structured payload of any finished call. A successful result
+     * must also carry its data in a text block: some chat apps hand the
+     * model only the text content, so without it the model sees the
+     * summary line and none of the fields.
+     */
+    static JsonNode toolResult(McpSchema.CallToolResult result) throws Exception {
         if (result.structuredContent() != null) {
-            return JSON.readTree(JSON.writeValueAsString(result.structuredContent()));
+            JsonNode structured = JSON.readTree(JSON.writeValueAsString(result.structuredContent()));
+            if (!Boolean.TRUE.equals(result.isError())) {
+                assertStructuredContentEchoedAsText(result, structured);
+            }
+            return structured;
         }
         JsonNode first = JSON.readTree(JSON.writeValueAsString(result.content().get(0)));
         return JSON.readTree(first.get("text").asText());
+    }
+
+    private static void assertStructuredContentEchoedAsText(McpSchema.CallToolResult result, JsonNode structured)
+            throws Exception {
+        boolean echoed = false;
+        for (Object block : result.content()) {
+            JsonNode node = JSON.readTree(JSON.writeValueAsString(block));
+            JsonNode text = node.get("text");
+            if (text != null && text.isTextual()) {
+                try {
+                    echoed |= JSON.readTree(text.asText()).equals(structured);
+                } catch (Exception notJson) {
+                    // The summary line is for people; it does not parse.
+                }
+            }
+        }
+        assertThat(echoed)
+                .as("one text block must carry the same data as structuredContent "
+                        + "(a chat app that gives the model only text otherwise sees none of it)")
+                .isTrue();
     }
 
     boolean isRefusal(McpSchema.CallToolResult result) {
