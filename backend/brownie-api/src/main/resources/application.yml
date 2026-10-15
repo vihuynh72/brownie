@@ -83,6 +83,19 @@ spring:
     jdbc:
       initialize-schema: never
   mvc:
+    async:
+      # Batch ZIP downloads stream through a StreamingResponseBody, which
+      # Spring MVC runs as an async request. Left unset, Tomcat's own
+      # default async timeout applies -- 30 seconds on a Connector
+      # (org.apache.catalina.connector.Connector#asyncTimeout) -- and a
+      # large archive on an ordinary connection can easily stream longer
+      # than that, so the container would cut the download off partway.
+      # A streamed ZIP has to live as long as the person's connection
+      # needs; this bound only stops a stuck client from holding a worker
+      # thread for ever. The only other async route is the job-event SSE
+      # stream, which sets its own 30-second emitter timeout and is
+      # unaffected.
+      request-timeout: 30m
     formcontent:
       filter:
         # Spring's FormContentFilter is enabled by default and rewrites a

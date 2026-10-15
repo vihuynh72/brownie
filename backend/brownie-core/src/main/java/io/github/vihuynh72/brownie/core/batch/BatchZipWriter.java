@@ -19,8 +19,10 @@ import java.util.zip.ZipOutputStream;
  * read whole (it must be -- its SHA-256 has to be proven before a byte of
  * it is written), checked against the receipt's hash, and only then put
  * on the wire. A file whose bytes no longer match what was approved is
- * never served: the write stops and the half-written archive is all the
- * caller's stream aborts with, which is the honest answer.
+ * never served: the write stops and the stream is left unfinished --
+ * no central directory, no end record, the stream itself unclosed --
+ * so the caller's answer aborts instead of ending on a partial archive
+ * that still opens like a whole one.
  *
  * <p>The trailing {@code rows.csv} is written after every file entry;
  * every cell that could open as a spreadsheet formula is prefixed with
@@ -56,7 +58,9 @@ public final class BatchZipWriter {
     }
 
     public static void write(BatchExportZip zip, ArtifactBytesReader reader, OutputStream out) throws IOException {
-        try (ZipOutputStream zipOut = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
+        SealableOutputStream sealable = new SealableOutputStream(out);
+        ZipOutputStream zipOut = new ZipOutputStream(sealable, StandardCharsets.UTF_8);
+        try {
             for (BatchExportZip.Entry entry : zip.entries()) {
                 byte[] bytes = reader.read(entry.artifactId());
                 String actual = sha256Hex(bytes);
@@ -74,6 +78,68 @@ public final class BatchZipWriter {
             zipOut.putNextEntry(new ZipEntry(ROWS_CSV_NAME));
             zipOut.write(rowsCsv(zip.csvRows()).getBytes(StandardCharsets.UTF_8));
             zipOut.closeEntry();
+        } catch (IOException | RuntimeException failure) {
+            // Nothing may follow a failed write: sealing the stream drops
+            // the central directory the ZipOutputStream's own close would
+            // append, and leaves out itself open, so the container aborts
+            // the response instead of ending it cleanly on a partial
+            // archive. The close still runs -- it frees the Deflater --
+            // and the failure that caused all this is the one thrown.
+            sealable.seal();
+            try {
+                zipOut.close();
+            } catch (IOException | RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+        zipOut.close();
+    }
+
+    /**
+     * A breakable pipe in front of the real stream: once sealed, writes
+     * and closes go nowhere, so a closing {@code ZipOutputStream} cannot
+     * append a finished archive's trailing records or end the response.
+     */
+    private static final class SealableOutputStream extends OutputStream {
+
+        private final OutputStream delegate;
+        private boolean sealed;
+
+        SealableOutputStream(OutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        void seal() {
+            sealed = true;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            if (!sealed) {
+                delegate.write(b);
+            }
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (!sealed) {
+                delegate.write(b, off, len);
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            if (!sealed) {
+                delegate.flush();
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (!sealed) {
+                delegate.close();
+            }
         }
     }
 

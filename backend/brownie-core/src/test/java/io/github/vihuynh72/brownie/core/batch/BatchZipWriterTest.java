@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -142,7 +143,99 @@ class BatchZipWriterTest {
                 "not one byte of the wrong file was served");
     }
 
+    @Test
+    void aFailedReadLeavesAnUnfinishedArchiveAndTheStreamOpen() throws NoSuchAlgorithmException {
+        // The second entry's read dies inside the stream's own write path:
+        // whatever the failure is, the archive must not be finished behind
+        // it -- no central directory, no end record, and the stream itself
+        // left open so the caller aborts the answer rather than ending it.
+        byte[] honest = "honest bytes".getBytes(StandardCharsets.UTF_8);
+        String hash = sha256(honest);
+        BatchExportZip zip = new BatchExportZip(
+                "The batch",
+                List.of(
+                        new BatchExportZip.Entry("001 Ana.pdf", 9L, hash),
+                        new BatchExportZip.Entry("002 Ben.pdf", 10L, hash)),
+                List.of());
+        CloseAwareStream out = new CloseAwareStream();
+        assertThrows(
+                BatchZipWriter.IntegrityMismatchException.class,
+                () -> BatchZipWriter.write(zip, artifactId -> {
+                    if (artifactId == 10L) {
+                        throw new BatchZipWriter.IntegrityMismatchException(artifactId);
+                    }
+                    return honest;
+                }, out));
+        String served = new String(out.bytes(), StandardCharsets.ISO_8859_1);
+        assertTrue(served.contains("PK\u0003\u0004"), "the first entry's local header was served");
+        assertTrue(served.contains("001 Ana.pdf"));
+        assertFalse(served.contains("PK\u0001\u0002"), "a finished archive's central directory was written");
+        assertFalse(served.contains("PK\u0005\u0006"), "a finished archive's end record was written");
+        assertFalse(out.closed, "the stream must be left open so the response aborts");
+    }
+
+    @Test
+    void aDyingStreamLeavesNoCentralDirectoryBehindIt() throws NoSuchAlgorithmException {
+        byte[] honest = "honest bytes".getBytes(StandardCharsets.UTF_8);
+        String hash = sha256(honest);
+        BatchExportZip zip = new BatchExportZip(
+                "The batch",
+                List.of(new BatchExportZip.Entry("001 Ana.pdf", 9L, hash)),
+                List.of());
+        // The stream dies mid-entry, on its eighth write: nothing written
+        // after the failure may reach it, so the bytes it took contain no
+        // finished-archive marker anywhere.
+        CloseAwareStream out = new CloseAwareStream().failingOnWrite(8);
+        assertThrows(
+                IllegalStateException.class,
+                () -> BatchZipWriter.write(zip, artifactId -> honest, out));
+        String served = new String(out.bytes(), StandardCharsets.ISO_8859_1);
+        assertFalse(served.contains("PK\u0001\u0002"), "a finished archive's central directory was written");
+        assertFalse(served.contains("PK\u0005\u0006"), "a finished archive's end record was written");
+    }
+
     private static String sha256(byte[] bytes) throws NoSuchAlgorithmException {
         return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    /** A stream that remembers whether it was closed, and can be told to die on a chosen write. */
+    private static final class CloseAwareStream extends OutputStream {
+
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        private int writesUntilFailure = -1;
+        private boolean closed;
+
+        CloseAwareStream failingOnWrite(int writeNumber) {
+            writesUntilFailure = writeNumber;
+            return this;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            failIfItIsTime();
+            bytes.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            failIfItIsTime();
+            bytes.write(b, off, len);
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            bytes.close();
+        }
+
+        private void failIfItIsTime() {
+            if (--writesUntilFailure == 0) {
+                throw new IllegalStateException("the wire died");
+            }
+        }
+
+        byte[] bytes() {
+            return bytes.toByteArray();
+        }
     }
 }
