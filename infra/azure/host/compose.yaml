@@ -28,7 +28,12 @@ name: brownie
 services:
   web:
     image: ${BROWNIE_WEB_IMAGE}
-    restart: unless-stopped
+    # always, not unless-stopped like the others: the certificate job reloads
+    # the proxy with a signal sent through docker kill, and Docker records any
+    # docker kill as the container having been stopped by hand. Under
+    # unless-stopped that record keeps the proxy down after the machine next
+    # restarts, with the API still running and nothing in front of it.
+    restart: always
     environment:
       BROWNIE_SERVER_NAME: ${BROWNIE_SERVER_NAME}
       BROWNIE_API_HOST: api
