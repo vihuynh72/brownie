@@ -339,12 +339,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     }
 
     private JsonNode toolResult(Future<McpSchema.CallToolResult> pending) throws Exception {
-        McpSchema.CallToolResult result = pending.get();
-        if (result.structuredContent() != null) {
-            return JSON.readTree(JSON.writeValueAsString(result.structuredContent()));
-        }
-        JsonNode first = JSON.readTree(JSON.writeValueAsString(result.content().get(0)));
-        return JSON.readTree(first.get("text").asText());
+        return toolResult(pending.get());
     }
 
     private Future<McpSchema.CallToolResult> inBackground(Callable<McpSchema.CallToolResult> call) {

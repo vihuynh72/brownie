@@ -61,8 +61,10 @@ class McpConfig {
 
     @Bean
     @ConditionalOnProperty(name = ENABLED, havingValue = "true")
-    McpToolExecutor mcpToolExecutor(io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository) {
-        return new McpToolExecutor(toolCallRepository);
+    McpToolExecutor mcpToolExecutor(
+            tools.jackson.databind.ObjectMapper objectMapper,
+            io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository) {
+        return new McpToolExecutor(objectMapper, toolCallRepository);
     }
 
     @Bean
