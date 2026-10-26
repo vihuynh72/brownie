@@ -19,6 +19,9 @@
     <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <spring-boot.version>4.1.1</spring-boot.version>
+    <tomcat.version>11.0.27</tomcat.version>
+    <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
     <spring-ai.version>2.0.1</spring-ai.version>
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -34,6 +37,41 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- These overrides clear the published Tomcat and Jackson
+           advisories ahead of the Boot release that carries them; they
+           go away when Boot moves past 4.1.1, since 4.1.2 ships exactly
+           these versions. The managed entries must precede the
+           spring-boot-dependencies import below to win: property
+           overrides alone cannot reach inside an imported BOM. -->
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-core</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-el</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-websocket</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson-2-bom.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson-bom.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-dependencies</artifactId>
