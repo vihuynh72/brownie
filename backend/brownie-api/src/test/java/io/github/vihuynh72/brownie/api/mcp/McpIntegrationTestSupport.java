@@ -153,22 +153,20 @@ abstract class McpIntegrationTestSupport {
 
     private static void assertStructuredContentEchoedAsText(McpSchema.CallToolResult result, JsonNode structured)
             throws Exception {
-        boolean echoed = false;
-        for (Object block : result.content()) {
-            JsonNode node = JSON.readTree(JSON.writeValueAsString(block));
-            JsonNode text = node.get("text");
-            if (text != null && text.isTextual()) {
-                try {
-                    echoed |= JSON.readTree(text.asText()).equals(structured);
-                } catch (Exception notJson) {
-                    // The summary line is for people; it does not parse.
-                }
+        JsonNode first = JSON.readTree(JSON.writeValueAsString(result.content().get(0)));
+        JsonNode text = first.get("text");
+        JsonNode echoed = null;
+        if (text != null && text.isTextual()) {
+            try {
+                echoed = JSON.readTree(text.asText());
+            } catch (Exception notJson) {
+                // Not the JSON block.
             }
         }
         assertThat(echoed)
-                .as("one text block must carry the same data as structuredContent "
-                        + "(a chat app that gives the model only text otherwise sees none of it)")
-                .isTrue();
+                .as("the FIRST text block must carry the same data as structuredContent "
+                        + "(a chat app that gives the model only the first text block otherwise sees none of it)")
+                .isEqualTo(structured);
     }
 
     boolean isRefusal(McpSchema.CallToolResult result) {
