@@ -300,7 +300,7 @@ class McpFillOrchestration {
                 .map(version -> version.fieldDefinitions().stream()
                         .collect(java.util.stream.Collectors.toMap(
                                 FieldDefinition::fieldId,
-                                field -> field.label() != null ? field.label() : field.fieldId(),
+                                FieldDefinition::displayLabel,
                                 (a, b) -> a)))
                 .orElse(Map.of());
     }

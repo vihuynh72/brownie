@@ -536,7 +536,7 @@ class BrownieMcpTools {
                 .map(field -> {
                     Map<String, Object> spot = new LinkedHashMap<String, Object>();
                     spot.put("field_id", field.fieldId());
-                    spot.put("label", field.label() != null ? field.label() : field.fieldId());
+                    spot.put("label", field.displayLabel());
                     spot.put("type", field.type().name());
                     spot.put("required", field.requiredness() == FieldRequiredness.REQUIRED);
                     return spot;
@@ -550,7 +550,7 @@ class BrownieMcpTools {
         }
         Map<String, String> labels = new LinkedHashMap<>();
         for (FieldDefinition field : version.fieldDefinitions()) {
-            labels.put(field.fieldId(), field.label() != null ? field.label() : field.fieldId());
+            labels.put(field.fieldId(), field.displayLabel());
         }
         return labels;
     }
