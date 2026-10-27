@@ -557,7 +557,11 @@ class BrownieMcpTools {
     }
 
     @McpTool(name = BrownieMcpToolScopes.REQUEST_FORM_UPLOAD,
-            description = "Ask for a one-time link the person can open to give Brownie a form file to fill: hand the person the upload_url, tell them it lives for a few minutes, then call get_form_upload with the upload_id to learn the new template's id.")
+            description = "Get a one-time link the person opens to give Brownie a form file (Word, PDF, ODT, RTF and "
+                    + "the like). Use it whenever the person has a form to fill and you cannot pass the file itself; "
+                    + "in Claude, always. Give the person upload_url, tell them it works once and expires at "
+                    + "expires_at, then call get_form_upload with upload_id until it answers READY, and "
+                    + "start_document with its template_id.")
     McpSchema.CallToolResult requestFormUpload(
             @McpToolParam(required = false, description = "The file's name when the caller already knows it") String file_name) {
         return executor.run(BrownieMcpToolScopes.REQUEST_FORM_UPLOAD, null, () -> {
