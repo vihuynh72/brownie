@@ -22,6 +22,10 @@ public record PreparationNotice(String code, int count, String detail) {
     public static final String FIELDS_FROZEN = "FIELDS_FROZEN";
     /** A static or hybrid XFA layer was dropped; the AcroForm fields it shadowed fill as usual. */
     public static final String XFA_LAYER_REMOVED = "XFA_LAYER_REMOVED";
+    /** Files attached to the form were dropped from the copy Brownie fills. */
+    public static final String ATTACHED_FILES_REMOVED = "ATTACHED_FILES_REMOVED";
+    /** Scripts that would run when the file opens were dropped from the copy Brownie fills. */
+    public static final String SCRIPTS_REMOVED = "SCRIPTS_REMOVED";
     public static final String EMBEDDED_FILES_TO_PICTURES = "EMBEDDED_FILES_TO_PICTURES";
     public static final String EDITING_RESTRICTION_REMOVED = "EDITING_RESTRICTION_REMOVED";
     /** {@code detail} is the format converted from. */

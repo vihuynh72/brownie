@@ -171,7 +171,11 @@ public record PdfFormGraph(String parserVersion, List<Page> pages, AcroForm acro
      * so in a graph they are all false; they are kept so a stored reading
      * says what was checked.
      */
-    public record Risks(boolean documentJavaScript, boolean launchActions, boolean embeddedFiles) {
+    public record Risks(
+            boolean documentJavaScript, boolean launchActions, boolean embeddedFiles, boolean scriptsDroppedFromCopies) {
+        public Risks(boolean documentJavaScript, boolean launchActions, boolean embeddedFiles) {
+            this(documentJavaScript, launchActions, embeddedFiles, false);
+        }
 
         public boolean any() {
             return documentJavaScript || launchActions || embeddedFiles;
