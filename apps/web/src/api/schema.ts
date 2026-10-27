@@ -2914,7 +2914,7 @@ export interface components {
         };
         AssistInterpretationResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
             summary: string;
             scope?: components["schemas"]["AssistScopeResponse"] | null;
             executable: boolean;
@@ -2925,7 +2925,7 @@ export interface components {
         };
         AssistExecutionResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
             summary: string;
             proposal?: components["schemas"]["PatchProposalResponse"] | null;
             explanation?: string | null;
