@@ -114,7 +114,7 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"add_form_file\","
                         + "\"arguments\":{\"form\":\"chat_upload:file-9\"}}}"));
         assertThat(answer.get("result").get("isError").asBoolean()).isTrue();
-        assertThat(answer.get("result").toString()).contains("attach it in the desktop or web app");
+        assertThat(answer.get("result").toString()).contains("request_form_upload");
     }
 
     private static String initialize() {
