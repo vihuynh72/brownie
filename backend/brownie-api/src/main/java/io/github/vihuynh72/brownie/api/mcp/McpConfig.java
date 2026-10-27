@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /**
  * Wires the MCP feature's beans. Everything here exists only while
@@ -65,6 +66,36 @@ class McpConfig {
             tools.jackson.databind.ObjectMapper objectMapper,
             io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository) {
         return new McpToolExecutor(objectMapper, toolCallRepository);
+    }
+
+    /**
+     * The transport the server wiring sees: delegates everything to the
+     * real stateless transport except the handler it installs, which it
+     * wraps so a request the handler cannot answer becomes a JSON-RPC
+     * error response instead of the transport's serialized-exception 500.
+     * Primary because the concrete transport bean implements the same
+     * interface and must keep serving the HTTP router itself.
+     */
+    @Bean
+    @Primary
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    McpJsonRpcErrorBoundary mcpJsonRpcErrorBoundary(
+            org.springframework.ai.mcp.server.webmvc.transport.WebMvcStatelessServerTransport transport) {
+        return new McpJsonRpcErrorBoundary(transport);
+    }
+
+    /**
+     * Replaces the autoconfigured router bean, which is conditional on a
+     * missing bean, so a 5xx the transport produces before any handler
+     * runs -- its catch-all serializes the exception into the body -- is
+     * answered with the same clean internal-error body instead.
+     */
+    @Bean
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    org.springframework.web.servlet.function.RouterFunction<org.springframework.web.servlet.function.ServerResponse>
+            webMvcStatelessServerRouterFunction(
+                    org.springframework.ai.mcp.server.webmvc.transport.WebMvcStatelessServerTransport transport) {
+        return transport.getRouterFunction().filter(McpJsonRpcErrorBoundary::rewriteServerErrors);
     }
 
     @Bean
