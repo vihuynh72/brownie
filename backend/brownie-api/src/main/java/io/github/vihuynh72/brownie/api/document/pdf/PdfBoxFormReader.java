@@ -175,7 +175,10 @@ public final class PdfBoxFormReader implements PdfFormReader {
         PdfReadingBudget budget = new PdfReadingBudget(maxExpandedBytes, maxCharacters, PdfReadingBudget.MAX_CHARACTERS_ON_ONE_PAGE);
 
         PdfFormGraph.AcroForm acroForm = readAcroForm(catalog, pages, pageOfAnnotation, budget);
-        if (acroForm.xfa() != PdfFormGraph.XfaKind.NONE) {
+        // A static or hybrid XFA sits alongside real AcroForm fields, which are read normally; the
+        // filler strips the XFA from the copy it fills. Only a dynamic XFA, whose fields exist only
+        // in the XFA, is refused.
+        if (acroForm.xfa() == PdfFormGraph.XfaKind.DYNAMIC) {
             return refused(UnsupportedPdfFormReason.XFA, "The form is an XFA form (" + acroForm.xfa() + ").");
         }
         if (acroForm.signedSignatureCount() > 0 || certified(catalog)) {

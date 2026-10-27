@@ -20,6 +20,8 @@ public record PreparationNotice(String code, int count, String detail) {
     public static final String LINKED_CONTENT_REMOVED = "LINKED_CONTENT_REMOVED";
     /** Fields that fetch or run something were replaced by the text they showed. */
     public static final String FIELDS_FROZEN = "FIELDS_FROZEN";
+    /** A static or hybrid XFA layer was dropped; the AcroForm fields it shadowed fill as usual. */
+    public static final String XFA_LAYER_REMOVED = "XFA_LAYER_REMOVED";
     public static final String EMBEDDED_FILES_TO_PICTURES = "EMBEDDED_FILES_TO_PICTURES";
     public static final String EDITING_RESTRICTION_REMOVED = "EDITING_RESTRICTION_REMOVED";
     /** {@code detail} is the format converted from. */

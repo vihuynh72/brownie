@@ -189,7 +189,13 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
             return null;
         }
         if (form.hasXFA()) {
-            throw new PdfFormNotFillableException(UnsupportedPdfFormReason.XFA, "The form is an XFA form.");
+            boolean dynamic = catalog.getCOSObject().getBoolean("NeedsRendering", false) || form.xfaIsDynamic();
+            if (dynamic) {
+                throw new PdfFormNotFillableException(UnsupportedPdfFormReason.XFA, "The form is an XFA form.");
+            }
+            // A static or hybrid XFA is dropped from the copy being filled: the AcroForm fields
+            // carry everything, and what goes out fills in any PDF reader.
+            form.setXFA(null);
         }
         for (PDField field : form.getFieldTree()) {
             if (field instanceof PDSignatureField && field.getCOSObject().getDictionaryObject(COSName.V) instanceof COSDictionary) {

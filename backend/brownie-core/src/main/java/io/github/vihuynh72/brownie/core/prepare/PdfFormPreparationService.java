@@ -122,6 +122,10 @@ public class PdfFormPreparationService {
         PdfFormGraph graph = reading.graph();
         Found found = candidates(graph);
         List<PreparationNotice> notices = new ArrayList<>();
+        if (graph.acroForm().xfa() == PdfFormGraph.XfaKind.STATIC) {
+            notices.add(new PreparationNotice(PreparationNotice.XFA_LAYER_REMOVED, 1,
+                    "This form also carried an XFA layer, which Brownie removed so the form can be filled in any PDF reader; its fields are unchanged."));
+        }
         if (found.leftFields() > 0) {
             notices.add(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, found.leftFields(), null));
         }
