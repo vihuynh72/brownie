@@ -2822,6 +2822,8 @@ export interface components {
             mcpEnabled: boolean;
             /** @description The MCP endpoint's absolute address when MCP is on; null when it is not. */
             mcpServerUrl?: string | null;
+            /** @description A microphone button in the chat composers, only when the deployment has a speech model to call. A server from before voice input leaves it out. */
+            voiceInput?: boolean;
         };
         McpGrantResponse: {
             /** Format: int64 */

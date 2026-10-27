@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { RouterLink, isNavigationFailure, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import VoiceMicButton from '@/components/VoiceMicButton.vue'
 import ChoiceList from '@/components/workspace/ChoiceList.vue'
 import {
   ApiRequestError,
@@ -449,6 +450,34 @@ async function replanWithFile(): Promise<void> {
 // ---- Sending a request and planning ---------------------------------------------------------------
 
 const composerText = ref('')
+const voiceEnabled = ref(false)
+const voiceError = ref('')
+try {
+  void loadCapabilities()
+    .then((caps) => {
+      voiceEnabled.value = caps.voiceInput === true
+    })
+    .catch(() => {})
+} catch {
+  // Capabilities unreadable for now -- the button stays hidden.
+}
+const chatWorkspaceId = computed(() => session.personalWorkspaceId ?? -1)
+function onVoiceTranscript(text: string) {
+  const el = composerRef.value
+  if (el && el.selectionStart !== undefined && el.selectionStart !== null) {
+    const at = el.selectionStart
+    composerText.value = composerText.value.slice(0, at) + text + composerText.value.slice(el.selectionEnd ?? at)
+    void nextTick(() => {
+      el.focus()
+      el.selectionStart = el.selectionEnd = at + text.length
+    })
+  } else {
+    composerText.value += text
+  }
+}
+function onVoiceError(message: string) {
+  voiceError.value = message
+}
 const composerRef = ref<HTMLTextAreaElement | null>(null)
 const canSend = computed(() => composerText.value.trim() !== '' && !busy.value)
 
@@ -942,6 +971,13 @@ async function focusFailure(): Promise<void> {
             <AppIcon name="plus" :size="24" />
             <span class="visually-hidden">Attach notes or a transcript</span>
           </button>
+          <VoiceMicButton
+            v-if="voiceEnabled"
+            :workspace-id="chatWorkspaceId"
+            :enabled="voiceEnabled"
+            @transcript="onVoiceTranscript"
+            @error="onVoiceError"
+          />
           <input
             ref="fileInputRef"
             class="visually-hidden"
@@ -957,6 +993,7 @@ async function focusFailure(): Promise<void> {
           </button>
         </div>
       </form>
+      <p v-if="voiceError" class="chat__disclaimer" role="alert">{{ voiceError }}</p>
       <p class="chat__disclaimer">Brownie can make mistakes. It never fills, sends or saves anything without your approval.</p>
     </div>
   </div>

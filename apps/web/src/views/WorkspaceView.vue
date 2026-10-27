@@ -103,6 +103,7 @@ import {
   type StateTag,
 } from '@/workspace/proposalWords'
 import AppIcon from '@/components/AppIcon.vue'
+import VoiceMicButton from '@/components/VoiceMicButton.vue'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 import ChoiceList from '@/components/workspace/ChoiceList.vue'
@@ -2880,6 +2881,26 @@ type AssistStage = 'idle' | 'interpreting' | 'executing' | 'done' | 'failed'
 const assistStage = ref<AssistStage>('idle')
 const assistBusy = computed(() => assistStage.value === 'interpreting' || assistStage.value === 'executing')
 const composerText = ref('')
+const voiceEnabled = ref(false)
+const voiceError = ref('')
+const composerTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const wsId = computed(() => session.personalWorkspaceId ?? -1)
+try {
+  void loadCapabilities().then((c) => { voiceEnabled.value = c.voiceInput === true }).catch(() => {})
+} catch {
+  // Capabilities unreadable for now -- the button stays hidden.
+}
+function onVoiceTranscript(text: string) {
+  const el = composerTextareaRef.value
+  if (el && el.selectionStart != null) {
+    const at = el.selectionStart
+    composerText.value = composerText.value.slice(0, at) + text + composerText.value.slice(el.selectionEnd ?? at)
+    void nextTick(() => { el.focus(); el.selectionStart = el.selectionEnd = at + text.length })
+  } else {
+    composerText.value += text
+  }
+}
+function onVoiceError(message: string) { voiceError.value = message }
 /**
  * The message box looks busy while Brownie is working on a request or reading a source. A reading that is under
  * way can be stopped from the box as well as from its own card; a request being read can only be waited for.
@@ -4766,6 +4787,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
           <label class="visually-hidden" for="assist-composer">How may I help you?</label>
           <textarea
+            ref="composerTextareaRef"
             id="assist-composer"
             v-model="composerText"
             class="composer__input"
@@ -4791,6 +4813,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <AppIcon name="plus" :size="24" />
               <span class="visually-hidden">Add a source</span>
             </button>
+            <VoiceMicButton
+              v-if="voiceEnabled"
+              :workspace-id="wsId"
+              :enabled="voiceEnabled"
+              @transcript="onVoiceTranscript"
+              @error="onVoiceError"
+            />
             <label v-if="attachedSources.length > 1" class="composer__source">
               <span class="composer__source-label">Read</span>
               <span class="composer__source-select">
@@ -4812,6 +4841,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <span class="visually-hidden">{{ composerStops ? (cancellationRequested ? 'Stopping…' : 'Stop this reading') : 'Send' }}</span>
             </button>
           </div>
+        <p v-if="voiceError" class="composer__error" role="alert">{{ voiceError }}</p>
         </form>
         <p class="assistant-disclaimer">Brownie can make mistakes. Check each filled value before you export.</p>
       </aside>

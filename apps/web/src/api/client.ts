@@ -1108,3 +1108,12 @@ export function getBatchExport(workspaceId: number, batchId: number, exportId: n
 export function batchExportDownloadUrl(workspaceId: number, batchId: number, exportId: number): string {
   return `/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports/${exportId}/download`
 }
+
+/** A voice note's words, from the workspace's transcription route; the audio is never kept. */
+export function transcribeVoice(workspaceId: number, audio: Blob): Promise<{ text: string; language?: string; duration_seconds?: number }> {
+  return request(`/api/v1/workspaces/${workspaceId}/transcriptions`, {
+    method: 'POST',
+    headers: { 'Content-Type': audio.type || 'audio/webm' },
+    rawBody: audio,
+  })
+}
