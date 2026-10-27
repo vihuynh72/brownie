@@ -65,7 +65,9 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         JsonNode first = templates.get("templates").get(0);
         assertThat(first.get("template_id").asLong()).isPositive();
         assertThat(first.get("name").asText()).isNotBlank();
-        assertThat(first.get("fill_spots").get(0).has("label")).isTrue();
+        // A field with no stored label shows the name worked out from
+        // its id, the same one the workspace shows -- not the raw id.
+        assertThat(first.get("fill_spots").get(0).get("label").asText()).isEqualTo("Meeting title");
     }
 
     @Test
@@ -85,8 +87,8 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         assertThat(document.get("document_id").asLong()).isEqualTo(documentId);
         assertThat(document.get("fields")).isNotEmpty();
         JsonNode field = document.get("fields").get(0);
-        assertThat(field.get("field_id").asText()).isNotBlank();
-        assertThat(field.get("label").asText()).isNotBlank();
+        assertThat(field.get("field_id").asText()).isEqualTo("meeting.title");
+        assertThat(field.get("label").asText()).isEqualTo("Meeting title");
         assertThat(document.get("open_in_brownie").asText()).endsWith("/documents/" + documentId);
     }
 

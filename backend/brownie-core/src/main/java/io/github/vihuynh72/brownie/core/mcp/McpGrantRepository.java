@@ -42,6 +42,13 @@ public interface McpGrantRepository {
     McpGrant createOrRefreshOAuthGrant(
             long workspaceId, long userId, String clientName, String registeredClientId, Set<McpScope> scopes);
 
+    /**
+     * Touches the grant's {@code last_used_at}, at most once a minute --
+     * the throttle lives in the database function the call rides on, so
+     * a chatty client cannot turn each call into a write.
+     */
+    void markUsed(long grantId);
+
     /** Every grant this member owns in this workspace, live and revoked, newest first. */
     List<McpGrant> findAllForUser(long workspaceId, long userId);
 
