@@ -33,4 +33,14 @@ class JdbcMcpAuditRepository implements McpAuditRepository {
                 jdbcTemplate, workspaceId, userId, "MCP_EXPORTED", "document", documentId,
                 "{\"exportReceiptId\":" + receiptId + "}");
     }
+
+    @Override
+    @Transactional
+    public void formUploaded(long workspaceId, long userId, long uploadId, String state) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        // Ids and the outcome state only: the file's name is the person's data and stays out.
+        AuditWriter.append(
+                jdbcTemplate, workspaceId, userId, "MCP_FORM_UPLOADED", "mcp-form-upload", uploadId,
+                "{\"state\":\"" + state + "\"}");
+    }
 }

@@ -11,4 +11,7 @@ public interface McpAuditRepository {
     void fillConfirmed(long workspaceId, long userId, long documentId, long proposalId);
 
     void exported(long workspaceId, long userId, long documentId, long receiptId);
+
+    /** A form arrived through an upload link: ids and the outcome state only, never the file's name. */
+    void formUploaded(long workspaceId, long userId, long uploadId, String state);
 }

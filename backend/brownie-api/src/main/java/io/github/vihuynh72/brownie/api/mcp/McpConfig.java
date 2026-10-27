@@ -56,6 +56,13 @@ class McpConfig {
 
     @Bean
     @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    io.github.vihuynh72.brownie.core.mcp.McpFormUploadService mcpFormUploadService(
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadRepository uploadRepository) {
+        return new io.github.vihuynh72.brownie.core.mcp.McpFormUploadService(uploadRepository);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
     McpCallerResolver personalTokenCallerResolver(McpGrantService grantService) {
         return new PersonalTokenCallerResolver(grantService);
     }
@@ -132,10 +139,12 @@ class McpConfig {
             io.github.vihuynh72.brownie.core.validation.ValidationService validationService,
             io.github.vihuynh72.brownie.core.export.ExportService exportService,
             io.github.vihuynh72.brownie.core.mcp.McpAuditRepository auditRepository,
-            McpSettings settings) {
+            McpSettings settings,
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService formUploadService) {
         return new BrownieMcpTools(
                 executor, fillOrchestration, templateService, revisionService, artifactService, documentSourceService,
                 downloadLinkService, exportRepository, questionRepository, proposalRepository,
-                validationService, exportService, auditRepository, settings);
+                validationService, exportService, auditRepository, settings,
+                formUploadService);
     }
 }

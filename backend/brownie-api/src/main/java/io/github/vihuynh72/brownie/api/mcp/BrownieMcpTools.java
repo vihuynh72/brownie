@@ -80,6 +80,7 @@ class BrownieMcpTools {
     private final ValidationService validationService;
     private final ExportService exportService;
     private final McpAuditRepository auditRepository;
+    private final io.github.vihuynh72.brownie.core.mcp.McpFormUploadService formUploadService;
     private final McpSettings settings;
 
     BrownieMcpTools(
@@ -96,7 +97,8 @@ class BrownieMcpTools {
             ValidationService validationService,
             ExportService exportService,
             McpAuditRepository auditRepository,
-            McpSettings settings) {
+            McpSettings settings,
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService formUploadService) {
         this.executor = executor;
         this.fillOrchestration = fillOrchestration;
         this.templateService = templateService;
@@ -111,6 +113,7 @@ class BrownieMcpTools {
         this.exportService = exportService;
         this.auditRepository = auditRepository;
         this.settings = settings;
+        this.formUploadService = formUploadService;
     }
 
     @McpTool(name = BrownieMcpToolScopes.LIST_TEMPLATES,
@@ -542,6 +545,57 @@ class BrownieMcpTools {
                     return spot;
                 })
                 .toList();
+    }
+
+    @McpTool(name = BrownieMcpToolScopes.REQUEST_FORM_UPLOAD,
+            description = "Ask for a one-time link the person can open to give Brownie a form file to fill: hand the person the upload_url, tell them it lives for a few minutes, then call get_form_upload with the upload_id to learn the new template's id.")
+    McpSchema.CallToolResult requestFormUpload(
+            @McpToolParam(required = false, description = "The file's name when the caller already knows it") String file_name) {
+        return executor.run(BrownieMcpToolScopes.REQUEST_FORM_UPLOAD, null, () -> {
+            McpCaller caller = caller();
+            require(caller, McpScope.FILL);
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService.IssuedFormUpload issued = formUploadService.create(caller, file_name);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("upload_id", issued.upload().id());
+            out.put("upload_url", settings.publicOrigin() + "/upload/" + issued.token());
+            out.put("expires_at", issued.upload().expiresAt().toString());
+            return new McpToolExecutor.ToolResult(out, "Upload link " + issued.upload().id() + ", live until " + issued.upload().expiresAt() + ".");
+        });
+    }
+
+    @McpTool(name = BrownieMcpToolScopes.GET_FORM_UPLOAD,
+            description = "Check a form upload's state: PENDING or PROCESSING while the file travels, READY with the template it became (template_id, name and fill_spots, the same shape list_templates returns), FAILED with the reason in words.",
+            annotations = @McpTool.McpAnnotations(readOnlyHint = true))
+    McpSchema.CallToolResult getFormUpload(
+            @McpToolParam(description = "The upload id request_form_upload returned") long upload_id) {
+        return executor.run(BrownieMcpToolScopes.GET_FORM_UPLOAD, null, () -> {
+            McpCaller caller = caller();
+            require(caller, McpScope.READ);
+            io.github.vihuynh72.brownie.core.mcp.McpFormUpload upload = formUploadService
+                    .findForWorkspace(caller, upload_id)
+                    .orElseThrow(() -> new McpToolRefusal(McpToolRefusal.NOT_FOUND, "No upload " + upload_id + "."));
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("upload_id", upload.id());
+            out.put("state", upload.state());
+            if ("READY".equals(upload.state()) && upload.templateId() != null) {
+                out.put("template_id", upload.templateId());
+                templateService.findAll(caller.workspaceId(), caller.userId()).stream()
+                        .filter(t -> t.id() == upload.templateId())
+                        .findFirst()
+                        .ifPresent(template -> {
+                            out.put("name", template.displayName());
+                            if (template.currentActiveVersionId() != null) {
+                                templateService.findVersion(caller.workspaceId(), caller.userId(),
+                                        template.id(), template.currentActiveVersionId())
+                                        .ifPresent(version -> out.put("fill_spots", fillSpots(version)));
+                            }
+                        });
+            }
+            if ("FAILED".equals(upload.state()) && upload.failureCode() != null) {
+                out.put("reason", upload.failureCode());
+            }
+            return new McpToolExecutor.ToolResult(out, "Upload " + upload.id() + ": " + upload.state() + ".");
+        });
     }
 
     private static Map<String, String> labels(TemplateVersion version) {

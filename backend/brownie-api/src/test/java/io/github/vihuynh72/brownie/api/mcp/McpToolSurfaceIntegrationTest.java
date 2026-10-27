@@ -58,7 +58,8 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         List<String> names = client.listTools().tools().stream().map(McpSchema.Tool::name).sorted().toList();
         assertThat(names).containsExactlyInAnyOrder(
                 "add_text_source", "answer_question", "confirm_fill", "export_document", "get_document",
-                "get_export_link", "get_fill_status", "list_templates", "propose_fill", "start_document");
+                "get_export_link", "get_fill_status", "get_form_upload", "list_templates", "propose_fill",
+                "request_form_upload", "start_document");
 
         JsonNode templates = toolResult(client, "list_templates", Map.of());
         assertThat(templates.get("templates")).isNotEmpty();
