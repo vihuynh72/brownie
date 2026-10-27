@@ -290,19 +290,19 @@ class FillSpotNamingRealModelIntegrationTest {
         @Override
         public UsageReservationOutcome reserve(long workspaceId, long userId, String modelName, String promptVersion, String rateCard,
                                                int estimatedInputTokens, int estimatedMaxOutputTokens, BigDecimal estimatedCostUsd,
-                                               BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits) {
+                                               BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits, String purpose) {
             promptVersions.add(promptVersion);
             return new UsageReservationOutcome("RESERVED", (long) promptVersions.size());
         }
 
         @Override
-        public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd) {
+        public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd, String purpose) {
             settledCosts.add(actualCostUsd);
             return true;
         }
 
         @Override
-        public boolean retain(long workspaceId, long userId, long usageId) {
+        public boolean retain(long workspaceId, long userId, long usageId, String purpose) {
             return true;
         }
 
