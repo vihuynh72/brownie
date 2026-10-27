@@ -444,10 +444,14 @@ class BrownieMcpTools {
             DocumentRevision revision = revisionService
                     .findRevision(caller.workspaceId(), caller.userId(), document_id, document.currentRevisionId())
                     .orElseThrow(() -> new McpToolRefusal(McpToolRefusal.NOT_FOUND, "The document's current revision is gone."));
-            Map<String, String> labels = labels(
-                    templateService
-                            .findVersion(caller.workspaceId(), caller.userId(), document.templateId(), revision.templateVersionId())
-                            .orElse(null));
+            io.github.vihuynh72.brownie.core.template.TemplateVersion version = templateService
+                    .findVersion(caller.workspaceId(), caller.userId(), document.templateId(), revision.templateVersionId())
+                    .orElse(null);
+            if (version != null && version.fieldDefinitions().isEmpty()) {
+                throw new McpToolRefusal(McpToolRefusal.NO_FILL_SPOTS,
+                        "This document's template has no places to fill, so there is nothing to export.");
+            }
+            Map<String, String> labels = labels(version);
             List<String> unreviewed = revision.fieldStates().entrySet().stream()
                     .filter(entry -> entry.getValue().authorship() == Authorship.AI_COMPOSED
                             && entry.getValue().review() != ReviewState.ACCEPTED)
@@ -481,8 +485,13 @@ class BrownieMcpTools {
             files.put("pdf", receipt.pdfArtifactId() != null);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("receipt_id", receipt.id());
+            out.put("format", normalized);
             out.put("files", files);
-            return new McpToolExecutor.ToolResult(out, "Export recorded as receipt " + receipt.id() + ".");
+            List<String> kinds = files.entrySet().stream()
+                    .filter(e -> Boolean.TRUE.equals(e.getValue())).map(Map.Entry::getKey).toList();
+            return new McpToolExecutor.ToolResult(out,
+                    "Export recorded as receipt " + receipt.id() + " (" + String.join(" and ", kinds)
+                            + " file); ask get_export_link with receipt_id and the file kind the person wants.");
         });
     }
 

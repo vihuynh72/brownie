@@ -9,9 +9,6 @@ import io.github.vihuynh72.brownie.core.mcp.McpToolCallOutcome;
 import io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository;
 import io.github.vihuynh72.brownie.core.mcp.PeekedFormUpload;
 import io.github.vihuynh72.brownie.core.template.Template;
-import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
-import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparation;
-import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import java.io.IOException;
 import java.time.OffsetDateTime;
@@ -47,8 +44,8 @@ class McpFormUploadController {
     private final McpFormUploadService uploadService;
     private final ArtifactService artifactService;
     private final TemplateService templateService;
-    private final DocumentExtractionService documentExtractionService;
-    private final PdfFormPreparationService pdfFormPreparationService;
+    private final io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService;
+    private final io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService;
     private final McpToolCallRepository toolCallRepository;
     private final McpAuditRepository auditRepository;
 
@@ -56,15 +53,15 @@ class McpFormUploadController {
             McpFormUploadService uploadService,
             ArtifactService artifactService,
             TemplateService templateService,
-            DocumentExtractionService documentExtractionService,
-            PdfFormPreparationService pdfFormPreparationService,
+            io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
+            io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService,
             McpToolCallRepository toolCallRepository,
             McpAuditRepository auditRepository) {
         this.uploadService = uploadService;
         this.artifactService = artifactService;
         this.templateService = templateService;
-        this.documentExtractionService = documentExtractionService;
-        this.pdfFormPreparationService = pdfFormPreparationService;
+        this.fillableFormService = fillableFormService;
+        this.fillSpotReviewService = fillSpotReviewService;
         this.toolCallRepository = toolCallRepository;
         this.auditRepository = auditRepository;
     }
@@ -105,46 +102,46 @@ class McpFormUploadController {
                     claimed.workspaceId(), claimed.userId(), artifact.id(), request.getInputStream());
             artifact = artifactService.finalizeUpload(claimed.workspaceId(), claimed.userId(), artifact.id());
             // Then the same read the web's own upload-as-template step
-            // runs: a DOCX goes through extraction and its candidate spots
-            // are accepted as FOUND_BY_BROWNIE, a fillable PDF through the
-            // form preparation whose notices stay with the draft the way
-            // they do for a person. Either way the draft activates, so the
-            // link's answer is a template start_document can use now.
-            Template template;
-            io.github.vihuynh72.brownie.core.template.TemplateVersion active;
-            if (artifact.detectedMediaType() == io.github.vihuynh72.brownie.core.artifact.SupportedMediaType.PDF) {
-                PdfFormPreparation prepared =
-                        pdfFormPreparationService.prepare(claimed.workspaceId(), claimed.userId(), artifact.id());
-                template = templateService.createDraft(claimed.workspaceId(), claimed.userId(), name,
-                        artifact.id(), prepared.notices());
-                io.github.vihuynh72.brownie.core.template.TemplateVersion draft = templateService
-                        .findDraftVersion(claimed.workspaceId(), claimed.userId(), template.id())
-                        .orElseThrow(() -> new IllegalStateException("Fresh draft " + template.id() + " is gone."));
-                active = templateService.activate(claimed.workspaceId(), claimed.userId(), template.id(),
-                        draft.versionNumber(), true);
-            } else {
-                documentExtractionService.extract(claimed.workspaceId(), claimed.userId(), artifact.id());
-                template = templateService.createDraft(claimed.workspaceId(), claimed.userId(), name, artifact.id());
-                java.util.List<io.github.vihuynh72.brownie.core.template.FieldDefinition> fields =
-                        templateService.proposeCandidateBindings(claimed.workspaceId(), claimed.userId(), template.id())
-                                .candidates().stream()
-                                .map(c -> new io.github.vihuynh72.brownie.core.template.FieldDefinition(
-                                        c.fieldId(), c.type(), c.cardinality(),
-                                        io.github.vihuynh72.brownie.core.template.FieldRequiredness.OPTIONAL,
-                                        c.binding(), null,
-                                        io.github.vihuynh72.brownie.core.template.SpotOrigin.FOUND_BY_BROWNIE,
-                                        null, null))
-                                .toList();
-                io.github.vihuynh72.brownie.core.template.TemplateVersion draft = templateService
-                        .findDraftVersion(claimed.workspaceId(), claimed.userId(), template.id())
-                        .orElseThrow(() -> new IllegalStateException("Fresh draft " + template.id() + " is gone."));
-                if (!fields.isEmpty()) {
-                    draft = templateService.replaceDraftBindings(
-                            claimed.workspaceId(), claimed.userId(), template.id(), draft.versionNumber(), fields);
-                }
-                active = templateService.activate(claimed.workspaceId(), claimed.userId(), template.id(),
-                        draft.versionNumber(), true);
+            // runs: FillableFormService.prepare finds and names the spots
+            // (AcroForm fields and Brownie-found boxes on a PDF; the
+            // deterministic candidates plus the one bounded naming call on
+            // a Word file, turned into tagged controls on a clean working
+            // copy). The draft pins the prepared source, the spots go in as
+            // FOUND_BY_BROWNIE just as a person's "Keep all" would leave
+            // them, and the draft activates -- so the link's answer is a
+            // template start_document can use now.
+            io.github.vihuynh72.brownie.core.prepare.FillableForm form =
+                    fillableFormService.prepare(claimed.workspaceId(), claimed.userId(), artifact.id());
+            Template template = templateService.createDraft(claimed.workspaceId(), claimed.userId(), name,
+                    form.templateSourceArtifactId(),
+                    form.kind() == io.github.vihuynh72.brownie.core.prepare.FillableForm.Kind.PDF
+                            ? form.notices() : null);
+            // Each prepared spot is already the field it becomes -- binding,
+            // name and all; the origin goes to FOUND_BY_BROWNIE the way a
+            // person's "Keep all" over the found spots would leave it.
+            java.util.List<io.github.vihuynh72.brownie.core.template.FieldDefinition> fields =
+                    form.spots().stream()
+                            .map(spot -> spot.field())
+                            .map(fd -> new io.github.vihuynh72.brownie.core.template.FieldDefinition(
+                                    fd.fieldId(), fd.type(), fd.cardinality(), fd.requiredness(),
+                                    fd.binding(), fd.label(),
+                                    io.github.vihuynh72.brownie.core.template.SpotOrigin.FOUND_BY_BROWNIE,
+                                    fd.docxControl(), fd.blankText()))
+                            .toList();
+            io.github.vihuynh72.brownie.core.template.TemplateVersion draft = templateService
+                    .findDraftVersion(claimed.workspaceId(), claimed.userId(), template.id())
+                    .orElseThrow(() -> new IllegalStateException("Fresh draft " + template.id() + " is gone."));
+            if (!fields.isEmpty()) {
+                draft = templateService.replaceDraftBindings(
+                        claimed.workspaceId(), claimed.userId(), template.id(), draft.versionNumber(), fields);
             }
+            // A template with no places to fill is a failure worth saying
+            // back, not an empty template, so the person gets told.
+            io.github.vihuynh72.brownie.core.template.TemplateVersion active =
+                    templateService.activate(claimed.workspaceId(), claimed.userId(), template.id(),
+                            draft.versionNumber(), false);
+            fillSpotReviewService.keep(claimed.workspaceId(), claimed.userId(), template.id(),
+                    fields.stream().map(io.github.vihuynh72.brownie.core.template.FieldDefinition::fieldId).toList());
             uploadService.finish(claimed.workspaceId(), claimed.uploadId(), "READY", template.id(), null);
             record(claimed, McpToolCallOutcome.OK, null);
             auditRepository.formUploaded(claimed.workspaceId(), claimed.userId(), claimed.uploadId(), "READY");

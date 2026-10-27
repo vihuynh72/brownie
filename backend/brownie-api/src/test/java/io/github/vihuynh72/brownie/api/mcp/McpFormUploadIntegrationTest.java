@@ -75,6 +75,35 @@ class McpFormUploadIntegrationTest extends McpIntegrationTestSupport {
         assertThat(state.get("state").asText()).isEqualTo("READY");
         assertThat(state.get("template_id").asLong()).isEqualTo(templateId);
         assertThat(state.get("fill_spots")).isNotNull();
+        // The form's blanks are real spots now: each label line yielded one.
+        assertThat(state.get("fill_spots").size()).isGreaterThanOrEqualTo(7);
+        for (JsonNode spot : state.get("fill_spots")) {
+            assertThat(spot.get("label").asText()).isNotBlank();
+            assertThat(spot.get("label").asText()).isNotEqualTo(spot.get("field_id").asText());
+        }
+    }
+
+    @Test
+    void aFillablePdfUploadGivesOneSpotPerField() throws Exception {
+        Browser browser = signIn("subject-mcp-upload-pdf", ISSUER);
+        String token = issueToken(browser, "u3", "[\"fill\",\"read\"]").token();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        JsonNode issued = readJson(mcpRaw(token, call("request_form_upload", "")))
+                .get("result").get("structuredContent");
+        long uploadId = issued.get("upload_id").asLong();
+        String uploadToken = issued.get("upload_url").asText();
+        uploadToken = uploadToken.substring(uploadToken.lastIndexOf('/') + 1);
+
+        HttpResponse<String> posted = postUpload(URI.create(url("/api/v1/mcp-uploads/" + uploadToken)),
+                "volunteer.pdf", io.github.vihuynh72.brownie.api.document.pdf.PdfFormFixtures.fillableForm());
+        
+        
+        assertThat(posted.statusCode()).isEqualTo(200);
+        assertThat(readJson(posted).get("spot_count").asInt()).isGreaterThanOrEqualTo(5);
+
+        JsonNode state = readJson(mcpRaw(token, call("get_form_upload",
+                "\"upload_id\":" + uploadId))).get("result").get("structuredContent");
+        assertThat(state.get("state").asText()).isEqualTo("READY");
     }
 
     @Test
@@ -203,9 +232,31 @@ class McpFormUploadIntegrationTest extends McpIntegrationTestSupport {
 
     private static byte[] minimalDocx() throws Exception {
         try (XWPFDocument doc = new XWPFDocument()) {
-            doc.createParagraph().createRun().setText("Name: ______");
+            for (String label : new String[] {"Name", "Email", "Phone", "Date of birth", "Address",
+                    "Availability", "Emergency contact", "Signature date"}) {
+                doc.createParagraph().createRun().setText(label + ": ______________________________");
+            }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             doc.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    private static byte[] acroformPdf() throws Exception {
+        try (org.apache.pdfbox.pdmodel.PDDocument pdf = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            pdf.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm form =
+                    new org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm(pdf);
+            pdf.getDocumentCatalog().setAcroForm(form);
+            for (String name : new String[] {"name", "email", "phone", "date_of_birth", "address",
+                    "availability", "emergency_contact", "signature_date"}) {
+                org.apache.pdfbox.pdmodel.interactive.form.PDTextField field =
+                        new org.apache.pdfbox.pdmodel.interactive.form.PDTextField(form);
+                field.setPartialName(name);
+                form.getFields().add(field);
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            pdf.save(out);
             return out.toByteArray();
         }
     }
