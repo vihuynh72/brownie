@@ -1,7 +1,10 @@
 package io.github.vihuynh72.brownie.api.generation;
 
 import io.github.vihuynh72.brownie.api.revision.FillSpotService;
+import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
+import io.github.vihuynh72.brownie.core.artifact.Artifact;
+import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.assist.AssistCommand;
 import io.github.vihuynh72.brownie.core.assist.AssistCommandParser;
 import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException;
@@ -17,6 +20,7 @@ import io.github.vihuynh72.brownie.core.job.CanonicalRequestHash;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.model.JsonSchema;
 import io.github.vihuynh72.brownie.core.model.ModelCompletion;
+import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.model.ModelGateway;
 import io.github.vihuynh72.brownie.core.model.ModelMessage;
 import io.github.vihuynh72.brownie.core.model.ModelMessageRole;
@@ -33,6 +37,7 @@ import io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy;
 import io.github.vihuynh72.brownie.core.document.PdfPoint;
 import io.github.vihuynh72.brownie.core.prepare.DocxAnchor;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
+import io.github.vihuynh72.brownie.core.source.DocumentSourceService;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldIds;
@@ -61,6 +66,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -109,7 +115,8 @@ public class AssistService {
             "Explain this finding: I explain, in plain words, a problem that Export's check found.",
             "Add a fill spot for <name> after \"<words>\": I add a place to fill in right after those words, and new documents from this form get it too. Select a place on the page and say \"add a fill spot for <name> here\" to put it exactly there.",
             "Rename <fill spot> to <name>: I give a fill spot a new name and keep what it holds.",
-            "Remove the <fill spot> fill spot: I remove a fill spot and its value. You can undo it.");
+            "Remove the <fill spot> fill spot: I remove a fill spot and its value. You can undo it.",
+            "You can also just tell me the answers, for example: My name is \u2026, my phone number is \u2026.");
 
     private static final String COULD_NOT_PLACE =
             "I could not tell where that goes. Select the place on the page and choose Fill in here, or put the words it goes after in quotes.";
@@ -158,6 +165,10 @@ public class AssistService {
     private final MonthlyUsageLimits monthlyUsageLimits;
     private final ModelPricing modelPricing;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
+    private final ArtifactService artifactService;
+    private final DocumentSourceService documentSourceService;
+    private final GenerationOrchestrationService generationOrchestrationService;
+    private final CanonicalRequestHasher canonicalRequestHasher;
     private final String modelName;
 
     public AssistService(
@@ -173,6 +184,10 @@ public class AssistService {
             MonthlyUsageLimits monthlyUsageLimits,
             ModelPricing modelPricing,
             WorkspaceAuthorizationService workspaceAuthorizationService,
+            ArtifactService artifactService,
+            DocumentSourceService documentSourceService,
+            GenerationOrchestrationService generationOrchestrationService,
+            CanonicalRequestHasher canonicalRequestHasher,
             @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
         this.templateService = templateService;
@@ -186,11 +201,16 @@ public class AssistService {
         this.monthlyUsageLimits = monthlyUsageLimits;
         this.modelPricing = modelPricing;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
+        this.artifactService = artifactService;
+        this.documentSourceService = documentSourceService;
+        this.generationOrchestrationService = generationOrchestrationService;
+        this.canonicalRequestHasher = canonicalRequestHasher;
         this.modelName = modelName;
     }
 
     public enum Kind {
         DRAFT,
+        ANSWERS,
         CHANGE_FIELD,
         REWRITE_FIELD,
         EXPLAIN_FINDING,
@@ -326,6 +346,20 @@ public class AssistService {
                         "Removed the fill spot " + label + ". Its value stays in the version history." + NOT_FOR_NEW_FORMS,
                         null, null, List.of(), spotChange(result, label, null));
             }
+            case AssistCommand.SupplyAnswers answers -> {
+                // The message becomes a pasted-text source through the same store, scan and attach an
+                // uploaded source goes through; the run that follows is the usual fill-from-source one.
+                Artifact artifact = artifactService.storeGenerated(
+                        workspaceId, userId, "Answers in the chat.txt", answers.text().getBytes(StandardCharsets.UTF_8));
+                documentSourceService.attach(workspaceId, userId, documentId, artifact.id());
+                generationOrchestrationService.startExtraction(
+                        workspaceId, userId, documentId, artifact.id(),
+                        new IdempotencyKey("assist-answers-" + documentId + "-" + artifact.id()),
+                        canonicalRequestHasher.hashJson(
+                                "{\"operation\":\"generation.start-extraction\",\"workspaceId\":" + workspaceId
+                                        + ",\"documentId\":" + documentId + ",\"sourceArtifactId\":" + artifact.id() + "}"));
+                yield new Execution(Kind.DRAFT, interpretation.summary(), null, null, List.of());
+            }
             case AssistCommand.Unrecognized ignored -> new Execution(Kind.NONE, interpretation.summary(), null, null, HELP);
         };
     }
@@ -349,6 +383,11 @@ public class AssistService {
             case AssistCommand.AddFillSpot add -> interpretAdd(context, add, pageAnchor);
             case AssistCommand.RenameFillSpot rename -> interpretRename(context, rename);
             case AssistCommand.RemoveFillSpot remove -> interpretRemove(context, remove);
+            case AssistCommand.SupplyAnswers ignored -> new Interpretation(
+                    Kind.ANSWERS,
+                    "Fill this document's fields from the answers in your message. Assist reads what you wrote like a source, "
+                            + "and you accept every value before it lands.",
+                    null, true, true, List.of());
             case AssistCommand.Unrecognized ignored -> new Interpretation(
                     Kind.NONE,
                     "I did not understand that, or it names a fill spot this document does not have. Here is what I can do, "
