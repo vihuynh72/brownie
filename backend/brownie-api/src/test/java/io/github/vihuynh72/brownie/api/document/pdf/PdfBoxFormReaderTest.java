@@ -230,7 +230,8 @@ class PdfBoxFormReaderTest {
         assertRefused(UnsupportedPdfFormReason.ENCRYPTED, PdfFixtures.encryptedDocument());
         assertRefused(UnsupportedPdfFormReason.ENCRYPTED, PdfFormFixtures.ownerPasswordOnlyForm());
         assertRefused(UnsupportedPdfFormReason.SIGNED, PdfFormFixtures.signedForm());
-        assertRefused(UnsupportedPdfFormReason.XFA, PdfFormFixtures.xfaForm(false));
+        // A hybrid form's XFA is static: its AcroForm fields are read and the layer is dropped at fill time.
+        assertInstanceOf(PdfFormReading.Supported.class, reader.read(PdfFormFixtures.xfaForm(false)));
         assertRefused(UnsupportedPdfFormReason.XFA, PdfFormFixtures.xfaForm(true));
     }
 

@@ -283,7 +283,8 @@ class PdfBoxFormFillerTest {
         assertEquals(UnsupportedPdfFormReason.ENCRYPTED, refusal(PdfFormFixtures.ownerPasswordOnlyForm(), request));
         assertEquals(UnsupportedPdfFormReason.ENCRYPTED, refusal(PdfFixtures.encryptedDocument(), request));
         assertEquals(UnsupportedPdfFormReason.SIGNED, refusal(PdfFormFixtures.signedForm(), request));
-        assertEquals(UnsupportedPdfFormReason.XFA, refusal(PdfFormFixtures.xfaForm(false), request));
+        // A dynamic XFA is still refused; a static or hybrid one is stripped and the fields fill.
+        assertEquals(UnsupportedPdfFormReason.XFA, refusal(PdfFormFixtures.xfaForm(true), request));
         assertEquals(UnsupportedPdfFormReason.DAMAGED, refusal(PdfFixtures.corruptPdf(), request));
     }
 
