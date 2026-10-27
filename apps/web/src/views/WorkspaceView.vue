@@ -3004,6 +3004,16 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
     const outcome = anchor
       ? await executeAssist(workspaceId, props.documentId, text, expectedRevisionId, anchor)
       : await executeAssist(workspaceId, props.documentId, text, expectedRevisionId)
+    if (outcome.kind === 'DRAFT') {
+      // The message itself carried the answers: the server stored it as a source and started the
+      // usual fill-from-source run, so the page adopts that run and offers the proposal when it lands.
+      say({ from: 'brownie', text: outcome.summary })
+      await loadDocumentSources()
+      await followLatestRun()
+      if (extractionJobId.value !== null) runFollowedHere.value = extractionJobId.value
+      assistStage.value = 'done'
+      return
+    }
     if (outcome.spotChange) {
       // Done at once, like a change made from the page: the page shows the form's new version, and Undo sits beside the answer.
       const change = outcome.spotChange
