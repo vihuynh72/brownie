@@ -21,11 +21,12 @@ public interface MemberUsageRepository {
             int estimatedMaxOutputTokens,
             BigDecimal estimatedCostUsd,
             BigDecimal runLimitUsd,
-            MonthlyUsageLimits monthlyLimits);
+            MonthlyUsageLimits monthlyLimits,
+            String purpose);
 
-    boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd);
+    boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd, String purpose);
 
-    boolean retain(long workspaceId, long userId, long usageId);
+    boolean retain(long workspaceId, long userId, long usageId, String purpose);
 
     /** Empty when the person is not a member of the workspace. */
     Optional<UsageSummary> summary(long workspaceId, long userId, BigDecimal globalMonthLimitUsd, BigDecimal nextRequestUsd);

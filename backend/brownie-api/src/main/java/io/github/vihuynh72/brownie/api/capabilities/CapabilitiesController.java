@@ -83,11 +83,13 @@ class CapabilitiesController {
     private final boolean batchComposeOffered;
     private final boolean mcpEnabled;
     private final String mcpServerUrl;
+    private final boolean voiceInput;
 
     CapabilitiesController(
             @Value("${brownie.artifacts.max-upload-bytes:10485760}") long maxUploadBytes,
             @Value("${brownie.mcp.enabled:false}") boolean mcpEnabled,
             @Value("${brownie.public-origin:}") String publicOrigin,
+            @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
             DeletionService deletionService,
             GoogleConnectorSetup googleConnectorSetup,
             DriveOffer driveOffer,
@@ -110,6 +112,9 @@ class CapabilitiesController {
         this.batchMaxRows = batchService.maxRows();
         this.batchComposeOffered = batchService.composeOffered();
         this.mcpEnabled = mcpEnabled;
+        // Voice input is offered only when the deployment has a key to call
+        // the speech model with -- an empty property is the same as none.
+        this.voiceInput = openAiApiKey != null && !openAiApiKey.isBlank();
         // The address a chat app is pointed at only exists while the
         // feature does; off means null, not a URL that answers 404.
         this.mcpServerUrl = mcpEnabled ? publicOrigin + "/mcp" : null;
@@ -131,7 +136,8 @@ class CapabilitiesController {
                 batchMaxRows,
                 batchComposeOffered,
                 mcpEnabled,
-                mcpServerUrl);
+                mcpServerUrl,
+                voiceInput);
     }
 
     /** How a form in this format is filled: as the Word document it is, as a Word copy converted from it, or as a PDF. */
@@ -182,6 +188,7 @@ class CapabilitiesController {
             int batchMaxRows,
             boolean batchComposeOffered,
             boolean mcpEnabled,
-            String mcpServerUrl) {
+            String mcpServerUrl,
+            boolean voiceInput) {
     }
 }

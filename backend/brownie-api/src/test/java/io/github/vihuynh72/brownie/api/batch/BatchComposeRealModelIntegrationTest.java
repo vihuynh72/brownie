@@ -193,14 +193,14 @@ class BatchComposeRealModelIntegrationTest {
         public UsageReservationOutcome reserve(long workspaceId, long userId, String modelName, String promptVersion,
                                                String rateCard, int estimatedInputTokens, int estimatedMaxOutputTokens,
                                                BigDecimal estimatedCostUsd, BigDecimal runLimitUsd,
-                                               MonthlyUsageLimits monthlyLimits) {
+                                               MonthlyUsageLimits monthlyLimits, String purpose) {
             calls.add(new Call(promptVersion, -1, -1, BigDecimal.ZERO));
             return new UsageReservationOutcome("RESERVED", (long) calls.size());
         }
 
         @Override
         public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens,
-                              BigDecimal actualCostUsd) {
+                              BigDecimal actualCostUsd, String purpose) {
             Call reserved = calls.get((int) usageId - 1);
             calls.set((int) usageId - 1,
                     new Call(reserved.promptVersion(), inputTokens, outputTokens, actualCostUsd));
@@ -208,7 +208,7 @@ class BatchComposeRealModelIntegrationTest {
         }
 
         @Override
-        public boolean retain(long workspaceId, long userId, long usageId) {
+        public boolean retain(long workspaceId, long userId, long usageId, String purpose) {
             return true;
         }
 

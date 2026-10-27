@@ -39,10 +39,11 @@ class JdbcMemberUsageRepository implements MemberUsageRepository {
             int estimatedMaxOutputTokens,
             BigDecimal estimatedCostUsd,
             BigDecimal runLimitUsd,
-            MonthlyUsageLimits monthlyLimits) {
+            MonthlyUsageLimits monthlyLimits,
+            String purpose) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.queryForObject(
-                "SELECT outcome, usage_id FROM reserve_member_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "SELECT outcome, usage_id FROM reserve_member_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rs, rowNum) -> new UsageReservationOutcome(rs.getString("outcome"), (Long) rs.getObject("usage_id")),
                 workspaceId,
                 modelName,
@@ -53,24 +54,25 @@ class JdbcMemberUsageRepository implements MemberUsageRepository {
                 estimatedCostUsd,
                 runLimitUsd,
                 monthlyLimits.workspaceUsd(),
-                monthlyLimits.globalUsd());
+                monthlyLimits.globalUsd(),
+                purpose);
     }
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd) {
+    public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd, String purpose) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
-                "SELECT close_member_model_usage(?, ?, 'SETTLED', ?, ?, ?)",
-                Boolean.class, workspaceId, usageId, inputTokens, outputTokens, actualCostUsd));
+                "SELECT close_member_model_usage(?, ?, 'SETTLED', ?, ?, ?, ?)",
+                Boolean.class, workspaceId, usageId, inputTokens, outputTokens, actualCostUsd, purpose));
     }
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public boolean retain(long workspaceId, long userId, long usageId) {
+    public boolean retain(long workspaceId, long userId, long usageId, String purpose) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
-                "SELECT close_member_model_usage(?, ?, 'RETAINED', NULL, NULL, NULL)", Boolean.class, workspaceId, usageId));
+                "SELECT close_member_model_usage(?, ?, 'RETAINED', NULL, NULL, NULL, ?)", Boolean.class, workspaceId, usageId, purpose));
     }
 
     @Override
