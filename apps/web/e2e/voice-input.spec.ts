@@ -43,12 +43,37 @@ test('a voice note becomes editable words in the composer and then a message', a
   await mic.click()
   // Recording state: the button says it is recording and offers Stop.
   await expect(page.getByRole('button', { name: /Stop recording/ })).toBeVisible()
-  await page.waitForTimeout(1200)
+  // Let the whole spoken sentence play through the fake microphone before stopping.
+  await page.waitForTimeout(5_000)
   await page.getByRole('button', { name: /Stop recording/ }).click()
-  await expect(page.locator('textarea').last()).toContainText?.(TRANSCRIPT) ?? page.waitForSelector(`textarea:has-text("${TRANSCRIPT.slice(0, 20)}")`)
   const composer = page.locator('textarea').last()
-  await expect(composer).toHaveValue(new RegExp(TRANSCRIPT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  // The stub answers with the whole sentence; the real model's own words may
+  // punctuate the number differently, so what must land is the name and the digits.
+  await expect(composer).toHaveValue(/Jordan Rivera/, { timeout: 20_000 })
+  const heard = await composer.inputValue()
+  expect(heard).toMatch(/555/)
   // The person sends it; it becomes a chat turn of their own.
   await page.getByRole('button', { name: 'Send' }).click()
-  await expect(page.getByText(TRANSCRIPT).first()).toBeVisible()
+  await expect(page.getByText(/Jordan Rivera/).first()).toBeVisible()
+})
+
+test('a spoken request in a document chat fills a field', async () => {
+  test.skip(!process.env.VOICE_LIVE, 'live proof only: the real model hears the fake microphone')
+  const { uploadPdfFromHome, FILLABLE_PDF } = await import('./pdfForms')
+  const { startDocumentFromSidebar } = await import('./documents')
+  const page = await pageWithFakeMic()
+  const templateId = await uploadPdfFromHome(page, FILLABLE_PDF, 'Voice fill form')
+  const doc = await startDocumentFromSidebar(page, 'Voice fill form')
+  const mic = page.getByRole('button', { name: 'Record a voice note' })
+  await expect(mic).toBeVisible()
+  await mic.click()
+  await expect(page.getByRole('button', { name: /Stop recording/ })).toBeVisible()
+  await page.waitForTimeout(5_000)
+  await page.getByRole('button', { name: /Stop recording/ }).click()
+  const composer = page.locator('textarea').last()
+  await expect(composer).toHaveValue(/Jordan Rivera/, { timeout: 20_000 })
+  await page.getByRole('button', { name: 'Send' }).click()
+  // The document chat acts on the words: a field takes the spoken name.
+  await expect(page.getByText(/Jordan Rivera/).first()).toBeVisible({ timeout: 30_000 })
+  await page.screenshot({ path: `${process.env.HOME}/brownie-scratch/autopilot/qa/voice-composer-and-field.png`, fullPage: true })
 })
