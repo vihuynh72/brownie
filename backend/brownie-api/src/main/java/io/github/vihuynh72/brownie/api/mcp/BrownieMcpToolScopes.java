@@ -20,18 +20,22 @@ final class BrownieMcpToolScopes {
     static final String CONFIRM_FILL = "confirm_fill";
     static final String EXPORT_DOCUMENT = "export_document";
     static final String GET_EXPORT_LINK = "get_export_link";
+    static final String REQUEST_FORM_UPLOAD = "request_form_upload";
+    static final String GET_FORM_UPLOAD = "get_form_upload";
 
-    static final Map<String, McpScope> REQUIRED = Map.of(
-            LIST_TEMPLATES, McpScope.READ,
-            GET_DOCUMENT, McpScope.READ,
-            START_DOCUMENT, McpScope.FILL,
-            ADD_TEXT_SOURCE, McpScope.FILL,
-            PROPOSE_FILL, McpScope.FILL,
-            GET_FILL_STATUS, McpScope.FILL,
-            ANSWER_QUESTION, McpScope.FILL,
-            CONFIRM_FILL, McpScope.FILL,
-            EXPORT_DOCUMENT, McpScope.EXPORT,
-            GET_EXPORT_LINK, McpScope.EXPORT);
+    static final Map<String, McpScope> REQUIRED = Map.ofEntries(
+            Map.entry(LIST_TEMPLATES, McpScope.READ),
+            Map.entry(GET_DOCUMENT, McpScope.READ),
+            Map.entry(START_DOCUMENT, McpScope.FILL),
+            Map.entry(ADD_TEXT_SOURCE, McpScope.FILL),
+            Map.entry(PROPOSE_FILL, McpScope.FILL),
+            Map.entry(GET_FILL_STATUS, McpScope.FILL),
+            Map.entry(ANSWER_QUESTION, McpScope.FILL),
+            Map.entry(CONFIRM_FILL, McpScope.FILL),
+            Map.entry(EXPORT_DOCUMENT, McpScope.EXPORT),
+            Map.entry(GET_EXPORT_LINK, McpScope.EXPORT),
+            Map.entry(REQUEST_FORM_UPLOAD, McpScope.FILL),
+            Map.entry(GET_FORM_UPLOAD, McpScope.READ));
 
     private BrownieMcpToolScopes() {
     }

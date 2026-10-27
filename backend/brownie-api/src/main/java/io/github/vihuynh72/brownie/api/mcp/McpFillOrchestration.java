@@ -92,6 +92,21 @@ class McpFillOrchestration {
     Map<String, Object> proposeFill(McpCaller caller, long documentId, long sourceArtifactId) {
         long workspaceId = caller.workspaceId();
         long userId = caller.userId();
+        // A document whose template has no places to fill cannot take a
+        // proposal; say so up front rather than spending a run on it.
+        var spotlessDoc = revisionService.findDocument(workspaceId, userId, documentId);
+        if (spotlessDoc.isPresent()) {
+            var spotlessRev = revisionService.findRevision(
+                    workspaceId, userId, documentId, spotlessDoc.get().currentRevisionId());
+            if (spotlessRev.isPresent()) {
+                var spotlessVersion = templateService.findVersion(
+                        workspaceId, userId, spotlessDoc.get().templateId(), spotlessRev.get().templateVersionId());
+                if (spotlessVersion.isPresent() && spotlessVersion.get().fieldDefinitions().isEmpty()) {
+                    throw new McpToolRefusal(McpToolRefusal.NO_FILL_SPOTS,
+                            "This document's template has no places to fill, so there is nothing to propose.");
+                }
+            }
+        }
         // A run already in flight for this document and source is the
         // answer: retried and repeated calls join it instead of starting
         // another reading of the same source over the same document.
