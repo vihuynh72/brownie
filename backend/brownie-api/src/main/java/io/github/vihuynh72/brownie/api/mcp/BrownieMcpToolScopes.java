@@ -22,6 +22,7 @@ final class BrownieMcpToolScopes {
     static final String GET_EXPORT_LINK = "get_export_link";
     static final String REQUEST_FORM_UPLOAD = "request_form_upload";
     static final String GET_FORM_UPLOAD = "get_form_upload";
+    static final String ADD_FORM_FILE = "add_form_file";
 
     static final Map<String, McpScope> REQUIRED = Map.ofEntries(
             Map.entry(LIST_TEMPLATES, McpScope.READ),
@@ -35,7 +36,8 @@ final class BrownieMcpToolScopes {
             Map.entry(EXPORT_DOCUMENT, McpScope.EXPORT),
             Map.entry(GET_EXPORT_LINK, McpScope.EXPORT),
             Map.entry(REQUEST_FORM_UPLOAD, McpScope.FILL),
-            Map.entry(GET_FORM_UPLOAD, McpScope.READ));
+            Map.entry(GET_FORM_UPLOAD, McpScope.READ),
+            Map.entry(ADD_FORM_FILE, McpScope.FILL));
 
     private BrownieMcpToolScopes() {
     }
