@@ -65,11 +65,10 @@ class McpConfig {
     @ConditionalOnProperty(name = ENABLED, havingValue = "true")
     McpFormIntakeService mcpFormIntakeService(
             io.github.vihuynh72.brownie.core.artifact.ArtifactService artifactService,
-            io.github.vihuynh72.brownie.core.document.DocumentExtractionService documentExtractionService,
-            io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService pdfFormPreparationService,
-            io.github.vihuynh72.brownie.core.template.TemplateService templateService) {
-        return new McpFormIntakeService(
-                artifactService, documentExtractionService, pdfFormPreparationService, templateService);
+            io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
+            io.github.vihuynh72.brownie.core.template.TemplateService templateService,
+            io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService) {
+        return new McpFormIntakeService(artifactService, fillableFormService, templateService, fillSpotReviewService);
     }
 
     @Bean
