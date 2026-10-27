@@ -236,6 +236,8 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
             names.removeItem(COSName.EMBEDDED_FILES);
             names.removeItem(COSName.JAVA_SCRIPT);
         }
+        root.removeItem(COSName.AF);
+        root.removeItem(COSName.COLLECTION);
         // A JavaScript open action goes; anything else the form does on open stays.
         if (root.getDictionaryObject(COSName.OPEN_ACTION) instanceof COSDictionary open
                 && "JavaScript".equalsIgnoreCase(String.valueOf(open.getNameAsString(COSName.S)))) {
@@ -245,6 +247,7 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         for (PDPage page : document.getPages()) {
             COSDictionary pageDictionary = page.getCOSObject();
             pageDictionary.removeItem(COSName.AA);
+            pageDictionary.removeItem(COSName.AF);
             COSArray annotations = pageDictionary.getCOSArray(COSName.ANNOTS);
             if (annotations == null) {
                 continue;

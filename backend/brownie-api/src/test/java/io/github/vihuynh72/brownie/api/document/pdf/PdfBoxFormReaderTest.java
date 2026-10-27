@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -270,6 +272,18 @@ class PdfBoxFormReaderTest {
     void aPageOpenScriptBehindMoreActionsThanAreFollowedIsStillRefused() throws IOException {
         assertRefused(UnsupportedPdfFormReason.DOCUMENT_JAVASCRIPT, PdfFormFixtures.longOutlineThenPageOpenScript(4_000));
         assertRefused(UnsupportedPdfFormReason.TOO_LARGE, PdfFormFixtures.longOutlineThenPageOpenScript(6_000));
+    }
+
+    @Test
+    void theRealW9ReadsAsAHybridXfaFormWhoseDocumentsPiecesAreStripped() throws IOException {
+        PdfFormReading reading = reader.read(Files.readAllBytes(Path.of("src/test/resources/w9.pdf")));
+        assertInstanceOf(PdfFormReading.Supported.class, reading);
+        PdfFormGraph.AcroForm acroForm = ((PdfFormReading.Supported) reading).graph().acroForm();
+        assertEquals(PdfFormGraph.XfaKind.STATIC, acroForm.xfa());
+        assertFalse(acroForm.fields().isEmpty());
+        PdfFormGraph.Risks risks = ((PdfFormReading.Supported) reading).graph().risks();
+        assertTrue(risks.scriptsDroppedFromCopies());
+        assertFalse(risks.embeddedFiles());
     }
 
     @Test
