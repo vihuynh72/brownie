@@ -96,8 +96,8 @@ class McpFormUploadIntegrationTest extends McpIntegrationTestSupport {
 
         HttpResponse<String> posted = postUpload(URI.create(url("/api/v1/mcp-uploads/" + uploadToken)),
                 "volunteer.pdf", io.github.vihuynh72.brownie.api.document.pdf.PdfFormFixtures.fillableForm());
-        
-        
+
+
         assertThat(posted.statusCode()).isEqualTo(200);
         assertThat(readJson(posted).get("spot_count").asInt()).isGreaterThanOrEqualTo(5);
 
