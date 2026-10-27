@@ -59,7 +59,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         assertThat(names).containsExactlyInAnyOrder(
                 "add_text_source", "answer_question", "confirm_fill", "export_document", "get_document",
                 "get_export_link", "get_fill_status", "get_form_upload", "list_templates", "propose_fill",
-                "request_form_upload", "start_document");
+                "request_form_upload", "start_document", "add_form_file");
 
         JsonNode templates = toolResult(client, "list_templates", Map.of());
         assertThat(templates.get("templates")).isNotEmpty();

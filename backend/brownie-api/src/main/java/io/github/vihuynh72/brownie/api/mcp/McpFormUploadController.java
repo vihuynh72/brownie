@@ -1,7 +1,5 @@
 package io.github.vihuynh72.brownie.api.mcp;
 
-import io.github.vihuynh72.brownie.core.artifact.Artifact;
-import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.mcp.ClaimedFormUpload;
 import io.github.vihuynh72.brownie.core.mcp.McpAuditRepository;
 import io.github.vihuynh72.brownie.core.mcp.McpFormUploadService;
@@ -42,26 +40,17 @@ class McpFormUploadController {
     private static final Logger log = LoggerFactory.getLogger(McpFormUploadController.class);
 
     private final McpFormUploadService uploadService;
-    private final ArtifactService artifactService;
-    private final TemplateService templateService;
-    private final io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService;
-    private final io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService;
+    private final McpFormIntakeService intakeService;
     private final McpToolCallRepository toolCallRepository;
     private final McpAuditRepository auditRepository;
 
     McpFormUploadController(
             McpFormUploadService uploadService,
-            ArtifactService artifactService,
-            TemplateService templateService,
-            io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
-            io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService,
+            McpFormIntakeService intakeService,
             McpToolCallRepository toolCallRepository,
             McpAuditRepository auditRepository) {
         this.uploadService = uploadService;
-        this.artifactService = artifactService;
-        this.templateService = templateService;
-        this.fillableFormService = fillableFormService;
-        this.fillSpotReviewService = fillSpotReviewService;
+        this.intakeService = intakeService;
         this.toolCallRepository = toolCallRepository;
         this.auditRepository = auditRepository;
     }
@@ -97,51 +86,9 @@ class McpFormUploadController {
             // malware scan, sniffing and conversion all live inside it.
             String name = filename != null && !filename.isBlank()
                     ? filename : claimed.fileName();
-            Artifact artifact = artifactService.initiateUpload(claimed.workspaceId(), claimed.userId(), name);
-            artifact = artifactService.receiveContent(
-                    claimed.workspaceId(), claimed.userId(), artifact.id(), request.getInputStream());
-            artifact = artifactService.finalizeUpload(claimed.workspaceId(), claimed.userId(), artifact.id());
-            // Then the same read the web's own upload-as-template step
-            // runs: FillableFormService.prepare finds and names the spots
-            // (AcroForm fields and Brownie-found boxes on a PDF; the
-            // deterministic candidates plus the one bounded naming call on
-            // a Word file, turned into tagged controls on a clean working
-            // copy). The draft pins the prepared source, the spots go in as
-            // FOUND_BY_BROWNIE just as a person's "Keep all" would leave
-            // them, and the draft activates -- so the link's answer is a
-            // template start_document can use now.
-            io.github.vihuynh72.brownie.core.prepare.FillableForm form =
-                    fillableFormService.prepare(claimed.workspaceId(), claimed.userId(), artifact.id());
-            Template template = templateService.createDraft(claimed.workspaceId(), claimed.userId(), name,
-                    form.templateSourceArtifactId(),
-                    form.kind() == io.github.vihuynh72.brownie.core.prepare.FillableForm.Kind.PDF
-                            ? form.notices() : null);
-            // Each prepared spot is already the field it becomes -- binding,
-            // name and all; the origin goes to FOUND_BY_BROWNIE the way a
-            // person's "Keep all" over the found spots would leave it.
-            java.util.List<io.github.vihuynh72.brownie.core.template.FieldDefinition> fields =
-                    form.spots().stream()
-                            .map(spot -> spot.field())
-                            .map(fd -> new io.github.vihuynh72.brownie.core.template.FieldDefinition(
-                                    fd.fieldId(), fd.type(), fd.cardinality(), fd.requiredness(),
-                                    fd.binding(), fd.label(),
-                                    io.github.vihuynh72.brownie.core.template.SpotOrigin.FOUND_BY_BROWNIE,
-                                    fd.docxControl(), fd.blankText()))
-                            .toList();
-            io.github.vihuynh72.brownie.core.template.TemplateVersion draft = templateService
-                    .findDraftVersion(claimed.workspaceId(), claimed.userId(), template.id())
-                    .orElseThrow(() -> new IllegalStateException("Fresh draft " + template.id() + " is gone."));
-            if (!fields.isEmpty()) {
-                draft = templateService.replaceDraftBindings(
-                        claimed.workspaceId(), claimed.userId(), template.id(), draft.versionNumber(), fields);
-            }
-            // A template with no places to fill is a failure worth saying
-            // back, not an empty template, so the person gets told.
-            io.github.vihuynh72.brownie.core.template.TemplateVersion active =
-                    templateService.activate(claimed.workspaceId(), claimed.userId(), template.id(),
-                            draft.versionNumber(), false);
-            fillSpotReviewService.keep(claimed.workspaceId(), claimed.userId(), template.id(),
-                    fields.stream().map(io.github.vihuynh72.brownie.core.template.FieldDefinition::fieldId).toList());
+            McpFormIntakeService.IntakeResult taken =
+                    intakeService.takeIn(claimed.workspaceId(), claimed.userId(), name, request.getInputStream());
+            Template template = taken.template();
             uploadService.finish(claimed.workspaceId(), claimed.uploadId(), "READY", template.id(), null);
             record(claimed, McpToolCallOutcome.OK, null);
             auditRepository.formUploaded(claimed.workspaceId(), claimed.userId(), claimed.uploadId(), "READY");
@@ -149,7 +96,7 @@ class McpFormUploadController {
             out.put("state", "READY");
             out.put("template_id", template.id());
             out.put("name", template.displayName());
-            out.put("spot_count", active.fieldDefinitions().size());
+            out.put("spot_count", taken.activeVersion().fieldDefinitions().size());
             return out;
         } catch (Exception failure) {
             String reason = reason(failure);

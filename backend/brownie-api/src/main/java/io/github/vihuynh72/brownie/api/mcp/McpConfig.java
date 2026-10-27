@@ -63,6 +63,39 @@ class McpConfig {
 
     @Bean
     @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    McpFormIntakeService mcpFormIntakeService(
+            io.github.vihuynh72.brownie.core.artifact.ArtifactService artifactService,
+            io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
+            io.github.vihuynh72.brownie.core.template.TemplateService templateService,
+            io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService) {
+        return new McpFormIntakeService(artifactService, fillableFormService, templateService, fillSpotReviewService);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    FormFileFetcher formFileFetcher() {
+        return new OaiFormFileFetcher();
+    }
+
+    // ChatGPT's attached-file way in, registered as a spec rather than an
+    // annotated tool: the annotation has no _meta slot, and
+    // openai/fileParams is what tells ChatGPT which argument a chat
+    // upload belongs in.
+    @Bean
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
+    java.util.List<io.modelcontextprotocol.server.McpStatelessServerFeatures.SyncToolSpecification> addFormFileSpecification(
+            McpToolExecutor executor,
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService uploadService,
+            McpFormIntakeService intakeService,
+            io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository,
+            io.github.vihuynh72.brownie.core.mcp.McpAuditRepository auditRepository,
+            FormFileFetcher fetcher) {
+        return java.util.List.of(McpFormFileTool.specification(
+                executor, uploadService, intakeService, toolCallRepository, auditRepository, fetcher));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
     McpCallerResolver personalTokenCallerResolver(McpGrantService grantService) {
         return new PersonalTokenCallerResolver(grantService);
     }
