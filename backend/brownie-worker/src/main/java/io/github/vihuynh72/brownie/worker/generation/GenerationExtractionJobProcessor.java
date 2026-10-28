@@ -211,7 +211,7 @@ class GenerationExtractionJobProcessor {
                 new ExtractionService(null, null, modelGateway, extractionResponseParser, TransportRetryPolicy.standard());
         // One budget for the whole attempt, extraction and composition
         // together, backed by the ledger that counts the whole run.
-        UsageBudget budget = budgetFor(leasedJob);
+        UsageBudget budget = budgetFor(leasedJob, fields, excerpts);
 
         ExtractionResult result;
         try {
@@ -422,12 +422,40 @@ class GenerationExtractionJobProcessor {
         log.info("Job {} released after cancellation: {}.", leasedJob.job().id(), released);
     }
 
-    private UsageBudget budgetFor(LeasedJob leasedJob) {
+    private UsageBudget budgetFor(LeasedJob leasedJob, List<io.github.vihuynh72.brownie.core.template.FieldDefinition> fields,
+            List<LabeledExcerpt> excerpts) {
+        UsageLimits limits = runLimitsFor(fields, excerpts);
         return new UsageBudget(
-                attemptLimits,
+                limits,
                 modelPricing,
                 new LeasedJobUsageLedger(
-                        usageRepository, leasedJob.leaseToken(), modelName, modelPricing, durableRunLimits, monthlyUsageLimits));
+                        usageRepository, leasedJob.leaseToken(), modelName, modelPricing, limits, monthlyUsageLimits));
+    }
+
+    /**
+     * The same ledger bounds a small form as always. A form big enough to
+     * need several extraction calls gets bounds sized to what this run will
+     * send: two times every call's output cap, two times the input one call
+     * costs, and a request allowance of a repair and a retry per call. The
+     * cost bound is not sized up -- the run's dollar cap is its own.
+     */
+    private UsageLimits runLimitsFor(List<io.github.vihuynh72.brownie.core.template.FieldDefinition> fields,
+            List<LabeledExcerpt> excerpts) {
+        List<List<io.github.vihuynh72.brownie.core.template.FieldDefinition>> batches = ExtractionService.batches(fields);
+        if (batches.size() <= 1) {
+            return durableRunLimits;
+        }
+        int calls = batches.size();
+        int outputCap = batches.stream().mapToInt(ExtractionService::outputTokenCap).sum();
+        int inputEstimate = UsageBudget.estimateInputTokens(
+                io.github.vihuynh72.brownie.core.generation.ExtractionPromptBuilder.build(
+                        batches.getFirst(), excerpts, ExtractionService.outputTokenCap(batches.getFirst())));
+        UsageLimits base = UsageLimits.defaultRunLimits();
+        return new UsageLimits(
+                Math.max(durableRunLimits.maxPhysicalRequests(), 2 * calls + 1),
+                Math.max(base.maxInputTokens(), 2 * calls * inputEstimate),
+                Math.max(base.maxOutputTokens(), 2 * outputCap),
+                durableRunLimits.maxReservedCostUsd());
     }
 
     /**

@@ -10,6 +10,7 @@ import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.job.Job;
 import io.github.vihuynh72.brownie.core.job.JobCommandRepository;
+import io.github.vihuynh72.brownie.core.job.JobEventRepository;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.core.job.JobState;
 import io.github.vihuynh72.brownie.core.mcp.McpAppliedRunRepository;
@@ -57,6 +58,7 @@ class McpFillOrchestration {
     private final GenerationOrchestrationService orchestrationService;
     private final GenerationRunRepository runRepository;
     private final JobCommandRepository jobRepository;
+    private final io.github.vihuynh72.brownie.core.job.JobEventRepository jobEventRepository;
     private final QuestionService questionService;
     private final PatchProposalRepository proposalRepository;
     private final McpAppliedRunRepository appliedRunRepository;
@@ -69,6 +71,7 @@ class McpFillOrchestration {
             GenerationOrchestrationService orchestrationService,
             GenerationRunRepository runRepository,
             JobCommandRepository jobRepository,
+            io.github.vihuynh72.brownie.core.job.JobEventRepository jobEventRepository,
             QuestionService questionService,
             PatchProposalRepository proposalRepository,
             McpAppliedRunRepository appliedRunRepository,
@@ -79,6 +82,7 @@ class McpFillOrchestration {
         this.orchestrationService = orchestrationService;
         this.runRepository = runRepository;
         this.jobRepository = jobRepository;
+        this.jobEventRepository = jobEventRepository;
         this.questionService = questionService;
         this.proposalRepository = proposalRepository;
         this.appliedRunRepository = appliedRunRepository;
@@ -198,6 +202,11 @@ class McpFillOrchestration {
                     failed.put("run_id", run.id());
                     failed.put("code", job.state().name());
                     failed.put("open_in_brownie", settings.documentUrl(documentId));
+                    // The job's own last words, when it left any, in the person's language.
+                    jobEventRepository.latestForJob(workspaceId, caller.userId(), job.id())
+                            .map(io.github.vihuynh72.brownie.core.job.JobEvent::safeMessage)
+                            .filter(message -> !message.isBlank())
+                            .ifPresent(message -> failed.put("reason", message));
                     return failed;
                 }
                 case WAITING_FOR_INPUT -> {
