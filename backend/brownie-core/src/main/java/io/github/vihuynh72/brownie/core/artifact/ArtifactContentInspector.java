@@ -42,6 +42,9 @@ import java.util.zip.ZipInputStream;
 public final class ArtifactContentInspector {
 
     private static final byte[] PDF_SIGNATURE = "%PDF-".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] JPEG_SIGNATURE = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF};
+    private static final byte[] PNG_SIGNATURE = {
+            (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
     private static final byte[] ZIP_SIGNATURE = {0x50, 0x4B, 0x03, 0x04}; // "PK\3\4"
     private static final byte[] COMPOUND_FILE_SIGNATURE =
             {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1};
@@ -122,6 +125,12 @@ public final class ArtifactContentInspector {
 
         if (startsWith(signature, read, 0, PDF_SIGNATURE)) {
             return ContentInspection.of(SupportedMediaType.PDF);
+        }
+        if (startsWith(signature, read, 0, JPEG_SIGNATURE)) {
+            return ContentInspection.of(SupportedMediaType.JPEG);
+        }
+        if (startsWith(signature, read, 0, PNG_SIGNATURE)) {
+            return ContentInspection.of(SupportedMediaType.PNG);
         }
         if (startsWith(signature, read, 0, ZIP_SIGNATURE)) {
             return inspectPackage(pushback, policy, maxUncompressedBytes, maxEntries);

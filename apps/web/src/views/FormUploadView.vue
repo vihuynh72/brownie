@@ -15,7 +15,7 @@ const doneMessage = ref('')
 const dragOver = ref(false)
 
 const ACCEPTED = FORM_FILE_ACCEPT
-const ACCEPTED_WORDS = 'a Word document, PDF, ODT or RTF form'
+const ACCEPTED_WORDS = 'a Word document, PDF, ODT or RTF form, or a photo of a paper form (JPG or PNG)'
 
 async function peek() {
   try {

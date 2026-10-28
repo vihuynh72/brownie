@@ -74,6 +74,7 @@ public class FillableFormService {
     private final FillableCopyVerifier verifier;
     private final ArtifactDerivationRepository derivations;
     private final PdfFormPreparer pdfFormPreparer;
+    private final ImageToPdf imageToPdf;
 
     public FillableFormService(
             ArtifactService artifactService,
@@ -86,7 +87,8 @@ public class FillableFormService {
             FillSpotEditor fillSpotEditor,
             FillableCopyVerifier verifier,
             ArtifactDerivationRepository derivations,
-            PdfFormPreparer pdfFormPreparer) {
+            PdfFormPreparer pdfFormPreparer,
+            ImageToPdf imageToPdf) {
         this.artifactService = artifactService;
         this.documentExtractionService = documentExtractionService;
         this.docxExtractor = docxExtractor;
@@ -98,6 +100,7 @@ public class FillableFormService {
         this.verifier = verifier;
         this.derivations = derivations;
         this.pdfFormPreparer = pdfFormPreparer;
+        this.imageToPdf = imageToPdf;
     }
 
     /** The recipe version stored with every copy this code makes. */
@@ -120,6 +123,10 @@ public class FillableFormService {
         SupportedMediaType mediaType = source.detectedMediaType();
         if (mediaType == SupportedMediaType.PDF) {
             return pdfFormPreparer.prepare(workspaceId, userId, artifactId);
+        }
+        if (mediaType == SupportedMediaType.JPEG || mediaType == SupportedMediaType.PNG) {
+            Artifact pdf = imageToPdf(workspaceId, userId, source);
+            return pdfFormPreparer.prepare(workspaceId, userId, pdf.id());
         }
         // A workbook is a thing a batch reads as a table, not a form to fill;
         // it is refused as a spreadsheet, like any upload that is one.
@@ -348,6 +355,30 @@ public class FillableFormService {
             throw new FillableFormFailedException(FillableFormFailedException.Reason.DAMAGED,
                     "The converter's output is not a Word document this server accepts.", e);
         }
+    }
+
+    /**
+     * The photographed or scanned form, turned into the one-page PDF the rest
+     * of the pipeline reads, stored as a derived artifact so the PDF route
+     * prepares it like any uploaded PDF.
+     */
+    private Artifact imageToPdf(long workspaceId, long userId, Artifact source) {
+        byte[] imageBytes;
+        try (ReadableArtifact readable = artifactService.openContent(workspaceId, userId, source.id())) {
+            imageBytes = readable.content().readAllBytes();
+        } catch (java.io.IOException e) {
+            throw new FillableFormFailedException(FillableFormFailedException.Reason.DAMAGED,
+                    "The picture could not be read back.", e);
+        }
+        byte[] pdfBytes;
+        try {
+            pdfBytes = imageToPdf.pdfOf(imageBytes);
+        } catch (java.io.IOException e) {
+            throw new FillableFormFailedException(FillableFormFailedException.Reason.DAMAGED,
+                    e.getMessage(), e);
+        }
+        return artifactService.storeGenerated(workspaceId, userId,
+                (source.displayFilename() == null ? "photo" : source.displayFilename()) + ".pdf", pdfBytes);
     }
 
     private PreparedCopy workingCopy(byte[] docx, PreparationMode mode) {

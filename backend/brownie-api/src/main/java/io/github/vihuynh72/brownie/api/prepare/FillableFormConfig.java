@@ -14,6 +14,7 @@ import io.github.vihuynh72.brownie.core.prepare.DocumentConverter;
 import io.github.vihuynh72.brownie.core.prepare.FillSpotEditor;
 import io.github.vihuynh72.brownie.core.prepare.FillableCopyVerifier;
 import io.github.vihuynh72.brownie.core.prepare.FillableFormService;
+import io.github.vihuynh72.brownie.core.prepare.ImageToPdf;
 import io.github.vihuynh72.brownie.core.prepare.PdfFillableForms;
 import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService;
 import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparer;
@@ -73,9 +74,15 @@ class FillableFormConfig {
             FillSpotEditor fillSpotEditor,
             FillableCopyVerifier fillableCopyVerifier,
             ArtifactDerivationRepository artifactDerivationRepository,
-            PdfFormPreparer pdfFormPreparer) {
+            PdfFormPreparer pdfFormPreparer,
+            ImageToPdf imageToPdf) {
         return new FillableFormService(
                 artifactService, documentExtractionService, docxStructuralExtractor, documentConverter, workingCopyPreparer, wordForms,
-                spotNamer, fillSpotEditor, fillableCopyVerifier, artifactDerivationRepository, pdfFormPreparer);
+                spotNamer, fillSpotEditor, fillableCopyVerifier, artifactDerivationRepository, pdfFormPreparer, imageToPdf);
+    }
+
+    @Bean
+    ImageToPdf imageToPdf() {
+        return new io.github.vihuynh72.brownie.api.document.pdf.PdfBoxImageToPdf();
     }
 }

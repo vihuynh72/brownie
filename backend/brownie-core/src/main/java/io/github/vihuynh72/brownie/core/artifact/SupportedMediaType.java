@@ -24,6 +24,8 @@ public enum SupportedMediaType {
     ODT("application/vnd.oasis.opendocument.text", "odt", WordRoute.CONVERT),
     PAGES("application/vnd.apple.pages", "pages", WordRoute.CONVERT),
     PDF("application/pdf", "pdf", WordRoute.NONE),
+    JPEG("image/jpeg", "jpg", WordRoute.NONE),
+    PNG("image/png", "png", WordRoute.NONE),
     PLAIN_TEXT("text/plain", "txt", WordRoute.NONE),
     XLSX("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx", WordRoute.NONE);
 
