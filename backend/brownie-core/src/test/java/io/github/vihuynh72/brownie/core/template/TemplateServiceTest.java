@@ -249,6 +249,83 @@ class TemplateServiceTest {
     }
 
     @Test
+    void anAutomaticActivationDropsOnlyThePlacesItsBaselineCannotWrite() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("legal.name"));
+        FakeTemplateBaselineRenderRepository baselineRenders = new FakeTemplateBaselineRenderRepository();
+        java.util.concurrent.atomic.AtomicInteger renders = new java.util.concurrent.atomic.AtomicInteger();
+        TemplateBaselineRenderer flakyRenderer = (workspaceId, userId, draftVersion) -> {
+            int call = renders.incrementAndGet();
+            return call == 1
+                    ? new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of("legal.name", "legal.name.2"))
+                    : new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of());
+        };
+        TemplateService service = new TemplateService(
+                new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), flakyRenderer,
+                baselineRenders, new FakeArtifactRepository(), new FakePdfFormExtractionVersionRepository(), FAKE_PDF_FORM_READER);
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "Hospital Registration", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(
+                        foundField("legal.name", "Legal name"),
+                        foundField("legal.name.2", "Legal name (second)"),
+                        foundField("date.of.birth", "Date of birth")));
+
+        TemplateService.ActivationWithDrops activated =
+                service.activateDroppingUnwritableFoundPlaces(WORKSPACE_ID, USER_ID, template.id(), 2);
+
+        assertEquals(2, renders.get());
+        assertEquals(List.of("Legal name", "Legal name (second)"), activated.droppedLabels());
+        assertEquals(1, activated.version().fieldDefinitions().size());
+        assertEquals("date.of.birth", activated.version().fieldDefinitions().get(0).fieldId());
+        Template reloaded = service.find(WORKSPACE_ID, USER_ID, template.id()).orElseThrow();
+        assertEquals(TemplateStatus.ACTIVE, reloaded.status());
+    }
+
+    @Test
+    void anAutomaticActivationStillRefusesAPlaceTheFormItselfCarries() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("legal.name"));
+        TemplateBaselineRenderer failingRenderer = (workspaceId, userId, draftVersion) ->
+                new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of("legal.name"));
+        TemplateService service = new TemplateService(
+                new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), failingRenderer,
+                new FakeTemplateBaselineRenderRepository(), new FakeArtifactRepository(), new FakePdfFormExtractionVersionRepository(), FAKE_PDF_FORM_READER);
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "AcroForm W-9", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(new FieldDefinition("legal.name", FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED,
+                        new FieldBindingTarget.ContentControlTag("legal.name"), "Legal name", io.github.vihuynh72.brownie.core.template.SpotOrigin.FORM, null, null)));
+
+        assertThrows(TemplateBaselineIntegrityException.class,
+                () -> service.activateDroppingUnwritableFoundPlaces(WORKSPACE_ID, USER_ID, template.id(), 2));
+    }
+
+    @Test
+    void anAutomaticActivationWithNothingLeftFailsLikeAFormWithNoPlaces() {
+        FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
+        extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("legal.name"));
+        TemplateBaselineRenderer failingRenderer = (workspaceId, userId, draftVersion) ->
+                new BaselineRenderResult(1L, 2L, "fake-renderer-v1", List.of("legal.name"));
+        TemplateService service = new TemplateService(
+                new FakeTemplateRepository(), extractions, new FakeDocxStructuralExtractor(), new FakeRuleRepository(), failingRenderer,
+                new FakeTemplateBaselineRenderRepository(), new FakeArtifactRepository(), new FakePdfFormExtractionVersionRepository(), FAKE_PDF_FORM_READER);
+        Template template = service.createDraft(WORKSPACE_ID, USER_ID, "One Bad Blank", SOURCE_ARTIFACT_ID);
+        service.replaceDraftBindings(
+                WORKSPACE_ID, USER_ID, template.id(), 1,
+                List.of(foundField("legal.name", "Legal name")));
+
+        assertThrows(TemplateBaselineIntegrityException.class,
+                () -> service.activateDroppingUnwritableFoundPlaces(WORKSPACE_ID, USER_ID, template.id(), 2));
+    }
+
+    private static FieldDefinition foundField(String fieldId, String label) {
+        return new FieldDefinition(fieldId, FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.REQUIRED,
+                new FieldBindingTarget.ContentControlTag("legal.name"), label,
+                io.github.vihuynh72.brownie.core.template.SpotOrigin.FOUND_BY_BROWNIE, null, null);
+    }
+
+    @Test
     void activateRefusesWhenTheBaselineRenderFailsItsOwnIntegrityCheck() {
         FakeExtractionVersionRepository extractions = new FakeExtractionVersionRepository();
         extractions.putComplete(SOURCE_ARTIFACT_ID, PARSER_VERSION, graphWithOneTag("meeting.title"));

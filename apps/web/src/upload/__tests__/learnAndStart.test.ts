@@ -13,6 +13,7 @@ import {
   uniqueName,
   type LearnStep,
   type StepDetail,
+  droppedNote,
 } from '@/upload/learnAndStart'
 
 vi.mock('@/api/client', async () => {
@@ -216,7 +217,7 @@ describe('learnFormAndStartDocument', () => {
     expect(getTemplateLayout).toHaveBeenCalledWith(7, 42, 42)
     expect(replaceDraftBindings).toHaveBeenCalledTimes(1)
     // Places were found, so the form activates as any other does.
-    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2, { dropUnwritablePlaces: true })
     expect(createDocument).toHaveBeenCalledWith(7, expect.any(String), {
       title: documentTitleFor('Club minutes'),
       templateId: 42,
@@ -357,7 +358,7 @@ describe('learnFormAndStartDocument', () => {
       },
     ])
     expect(getTemplateLayout).not.toHaveBeenCalled()
-    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2, { dropUnwritablePlaces: true })
   })
 
   /** Nothing found is no reason to stop: the document opens with no places, and the note says how to add one. */
@@ -610,7 +611,7 @@ describe('learnFormAndStartDocument', () => {
       expect.objectContaining({ fieldId: 'meeting.title' }),
       expect.objectContaining({ fieldId: 'action.item.due' }),
     ])
-    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 3)
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 3, { dropUnwritablePlaces: true })
     expect(outcome).toMatchObject({ ok: true })
     expect(outcome.ok && outcome.notes.at(-1)).toBe(
       'Brownie left out "Company name": it is outside the main text of the form, such as in a header or footer, and Brownie fills only the main text.',
@@ -753,7 +754,7 @@ describe('learnFormAsTemplate', () => {
     expect(outcome).toEqual({ ok: true, templateId: 42, versionId: 42, name: 'Club minutes', leftOutNote: null })
     expect(steps).toEqual(['uploading', 'checking', 'preparing-copy', 'learning', 'preparing'])
     expect(createTemplateDraft).toHaveBeenCalledWith(7, 'Club minutes', 6, wordForm().notices)
-    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2)
+    expect(activateTemplateVersion).toHaveBeenCalledWith(7, 42, 2, { dropUnwritablePlaces: true })
     expect(createDocument).not.toHaveBeenCalled()
     // My Templates shows it as soon as it is active.
     expect(useTemplatesStore().usable.map((template) => template.displayName)).toEqual(['Club minutes'])
@@ -927,5 +928,19 @@ describe('nameOf', () => {
     ['No extension', 'No extension'],
   ])('names %s as %s', (fileName, name) => {
     expect(nameOf(fileName)).toBe(name)
+  })
+})
+
+describe('droppedNote', () => {
+  it('is null when no places were dropped', () => {
+    expect(droppedNote([])).toBeNull()
+  })
+  it('says which places the baseline could not write', () => {
+    expect(droppedNote(['Legal name', 'Date of birth'])).toBe(
+      'Brownie left out 2 places it could not write into cleanly: "Legal name" and "Date of birth". You can add them by hand.',
+    )
+    expect(droppedNote(['Legal name'])).toBe(
+      'Brownie left out 1 place it could not write into cleanly: "Legal name". You can add them by hand.',
+    )
   })
 })

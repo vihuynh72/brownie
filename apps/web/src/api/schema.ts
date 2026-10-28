@@ -2322,6 +2322,8 @@ export interface components {
              * @description The version this one was made from by correcting a document's fill spots; null for one made from a file.
              */
             derivedFromVersionId?: number | null;
+            /** @description Labels of places Brownie found but its baseline could not write, left out of the activated version. Present on an automatic activation's answer. */
+            placesLeftOut?: string[];
             /** @description What the person was told when the template's file was made ready to fill: the upload step's notices (codes as in FillableFormResponse.notices), kept with the template version and carried on to every version made from it. Null for a version made before notices were kept, and absent from older servers. */
             preparationNotices?: components["schemas"]["PreparationNoticeResponse"][] | null;
         };
