@@ -131,11 +131,23 @@ class OpenAiModelGateway implements ModelGateway {
                 .build();
     }
 
+    private static Message userMessage(ModelMessage message) {
+        if (message.images().isEmpty()) {
+            return new UserMessage(message.content());
+        }
+        List<org.springframework.ai.content.Media> media = message.images().stream()
+                .map(image -> new org.springframework.ai.content.Media(
+                        org.springframework.util.MimeTypeUtils.parseMimeType(image.mediaType()),
+                        new org.springframework.core.io.ByteArrayResource(image.bytes())))
+                .toList();
+        return UserMessage.builder().text(message.content()).media(media).build();
+    }
+
     private static List<Message> toMessages(List<ModelMessage> messages) {
         return messages.stream()
                 .<Message>map(message -> switch (message.role()) {
                     case SYSTEM -> new SystemMessage(message.content());
-                    case USER -> new UserMessage(message.content());
+                    case USER -> userMessage(message);
                 })
                 .toList();
     }
