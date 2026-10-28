@@ -123,6 +123,7 @@ final class McpFormFileTool {
             out.put("template_id", taken.template().id());
             out.put("name", taken.template().displayName());
             out.put("spot_count", taken.activeVersion().fieldDefinitions().size());
+            out.put("places_left_out", taken.placesLeftOut());
             return new McpToolExecutor.ToolResult(out,
                     "Form \"" + name + "\" is template " + taken.template().id() + ", ready to fill.");
         } catch (Exception failure) {

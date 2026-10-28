@@ -4960,6 +4960,11 @@ components:
           format: int64
           nullable: true
           description: The version this one was made from by correcting a document's fill spots; null for one made from a file.
+        placesLeftOut:
+          type: array
+          items:
+            type: string
+          description: "Labels of places Brownie found but its baseline could not write, left out of the activated version. Present on an automatic activation's answer."
         preparationNotices:
           type: array
           nullable: true
