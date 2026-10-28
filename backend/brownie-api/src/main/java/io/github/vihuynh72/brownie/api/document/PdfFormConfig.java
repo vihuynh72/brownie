@@ -43,8 +43,9 @@ class PdfFormConfig {
             ArtifactService artifactService,
             PdfFormReader pdfFormReader,
             PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository,
-            SpotNamer spotNamer) {
-        return new PdfFormPreparationService(artifactService, pdfFormReader, pdfFormExtractionVersionRepository, spotNamer);
+            SpotNamer spotNamer,
+            io.github.vihuynh72.brownie.core.prepare.VisionSpotFinder visionSpotFinder) {
+        return new PdfFormPreparationService(artifactService, pdfFormReader, pdfFormExtractionVersionRepository, spotNamer, visionSpotFinder);
     }
 
     /** Filling and then checking a PDF template, the one way compiling, qualifying and validating one all do it. */

@@ -41,6 +41,7 @@ public record PreparationNotice(String code, int count, String detail) {
     public static final String BLANKS_OUTSIDE_BODY = "BLANKS_OUTSIDE_BODY";
     public static final String TABLE_ROWS_GROW = "TABLE_ROWS_GROW";
     public static final String SCANNED_PDF = "SCANNED_PDF";
+    public static final String READ_FROM_PICTURE = "READ_FROM_PICTURE";
     public static final String PDF_FIELDS_LEFT = "PDF_FIELDS_LEFT";
     /**
      * The naming step decided that some places the rules found are not

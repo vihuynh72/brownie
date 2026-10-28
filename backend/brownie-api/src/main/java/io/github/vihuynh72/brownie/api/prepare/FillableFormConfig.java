@@ -16,9 +16,13 @@ import io.github.vihuynh72.brownie.core.prepare.FillableCopyVerifier;
 import io.github.vihuynh72.brownie.core.prepare.FillableFormService;
 import io.github.vihuynh72.brownie.core.prepare.ImageToPdf;
 import io.github.vihuynh72.brownie.core.prepare.PdfFillableForms;
+import io.github.vihuynh72.brownie.api.document.render.PdfBoxPageRasterizer;
 import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService;
 import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparer;
+import io.github.vihuynh72.brownie.core.prepare.ScanPageRasterizer;
 import io.github.vihuynh72.brownie.core.prepare.SpotNamer;
+import io.github.vihuynh72.brownie.core.prepare.VisionPlacesParser;
+import io.github.vihuynh72.brownie.core.prepare.VisionSpotFinder;
 import io.github.vihuynh72.brownie.core.prepare.WordForms;
 import io.github.vihuynh72.brownie.core.prepare.WorkingCopyPreparer;
 import org.springframework.context.annotation.Bean;
@@ -52,6 +56,29 @@ class FillableFormConfig {
      * A PDF is made fillable as it is: its form reading is kept, its places
      * are found and named once, and that answer is kept, with no copy made.
      */
+    @Bean
+    VisionSpotFinder visionSpotFinder(
+            ScanPageRasterizer rasterizer,
+            VisionPlacesParser placesParser,
+            io.github.vihuynh72.brownie.core.model.ModelGateway modelGateway,
+            io.github.vihuynh72.brownie.core.generation.usage.MemberUsageRepository usageRepository,
+            io.github.vihuynh72.brownie.core.generation.usage.ModelPricing modelPricing,
+            io.github.vihuynh72.brownie.core.generation.usage.UsageLimits directRequestLimits,
+            io.github.vihuynh72.brownie.core.generation.usage.MonthlyUsageLimits monthlyUsageLimits,
+            @org.springframework.beans.factory.annotation.Value("${brownie.model.name:}") String modelName) {
+        return new VisionSpotFinder(rasterizer, placesParser, modelGateway, usageRepository, modelPricing, directRequestLimits, monthlyUsageLimits, modelName);
+    }
+
+    @Bean
+    ScanPageRasterizer scanPageRasterizer() {
+        return new PdfBoxPageRasterizer();
+    }
+
+    @Bean
+    VisionPlacesParser visionPlacesParser() {
+        return new JacksonVisionPlacesParser();
+    }
+
     @Bean
     PdfFormPreparer pdfFormPreparer(
             PdfFormPreparationService pdfFormPreparationService,

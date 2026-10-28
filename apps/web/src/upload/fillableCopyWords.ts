@@ -279,6 +279,8 @@ function noticeSentence(notice: { code: string; count: number; detail?: string |
     case 'SCANNED_PDF':
       // The page says this itself, over the scanned pages, for as long as the document is open.
       return null
+    case 'READ_FROM_PICTURE':
+      return 'Brownie read this scanned form with an AI vision model to find the places to fill; check that each one sits where it should.'
     case 'PDF_FIELDS_LEFT': {
       const filled = form.spots.filter((spot) => spot.binding.kind === 'ACROFORM_FIELD').length
       return filled > 0

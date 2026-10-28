@@ -101,13 +101,16 @@ public class PdfFormPreparationService {
     private final PdfFormReader reader;
     private final PdfFormExtractionVersionRepository readings;
     private final SpotNamer spotNamer;
+    private final VisionSpotFinder visionSpotFinder;
 
     public PdfFormPreparationService(
-            ArtifactService artifactService, PdfFormReader reader, PdfFormExtractionVersionRepository readings, SpotNamer spotNamer) {
+            ArtifactService artifactService, PdfFormReader reader, PdfFormExtractionVersionRepository readings, SpotNamer spotNamer,
+            VisionSpotFinder visionSpotFinder) {
         this.artifactService = artifactService;
         this.reader = reader;
         this.readings = readings;
         this.spotNamer = spotNamer;
+        this.visionSpotFinder = visionSpotFinder;
     }
 
     /**
@@ -137,8 +140,14 @@ public class PdfFormPreparationService {
         if (found.leftFields() > 0) {
             notices.add(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, found.leftFields(), null));
         }
+        boolean scanned = graph.pages().stream().noneMatch(PdfFormGraph.Page::hasText) && graph.acroForm().fields().isEmpty();
+        if (scanned && visionSpotFinder != null) {
+            PdfFormPreparation readByVision = readScan(workspaceId, userId, artifactId, reading, graph, notices);
+            if (readByVision != null) {
+                return readByVision;
+            }
+        }
         if (found.candidates().isEmpty()) {
-            boolean scanned = graph.pages().stream().noneMatch(PdfFormGraph.Page::hasText) && graph.acroForm().fields().isEmpty();
             notices.add(new PreparationNotice(scanned ? PreparationNotice.SCANNED_PDF : PreparationNotice.NO_SPOTS_FOUND, 0, null));
             return new PdfFormPreparation(artifactId, reading.id(), List.of(), notices, NamingSource.RULES, SpotNaming.NO_CANDIDATES);
         }
@@ -192,6 +201,73 @@ public class PdfFormPreparationService {
     }
 
     /** The kept reading of this file under the current reader, reading and keeping it first when there is none. */
+    /**
+     * A scan's places, found by the vision model reading each page: the boxes it
+     * names, snapped onto the line under them where there is one, as found
+     * PageBox spots. Null when the model could not read a page (the scanned
+     * notice path takes over).
+     */
+    private PdfFormPreparation readScan(long workspaceId, long userId, long artifactId,
+            PdfFormExtractionVersion reading, PdfFormGraph graph, List<PreparationNotice> notices) {
+        VisionSpotFinder.Result found;
+        try {
+            found = visionSpotFinder.find(workspaceId, userId, readPdf(workspaceId, userId, artifactId), graph);
+        } catch (java.io.IOException e) {
+            return null;
+        }
+        List<PreparedPdfSpot> spots = new ArrayList<>();
+        java.util.Set<String> takenIds = new java.util.HashSet<>();
+        for (VisionSpotFinder.FoundBox box : found.boxes()) {
+            PdfFormGraph.Page page = graph.pages().stream()
+                    .filter(p -> p.pageNumber() == box.pageNumber()).findFirst().orElse(null);
+            if (page == null || page.cropBox() == null) {
+                continue;
+            }
+            PdfRect rect = thousandthsToPageBox(box, page);
+            if (rect == null) {
+                continue;
+            }
+            FieldType type = "DATE".equals(box.type()) ? FieldType.DATE : FieldType.TEXT;
+            String fieldId = FieldIds.fromLabel(TableCellLabels.idWords(box.label()), takenIds);
+            takenIds.add(fieldId);
+            FieldDefinition definition = new FieldDefinition(
+                    fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                    new FieldBindingTarget.PageBox(box.pageNumber(), rect.x(), rect.y(), rect.width(), rect.height(),
+                            null, false, PdfOverflowPolicy.SHRINK_TO_FIT),
+                    box.label(), SpotOrigin.FOUND_BY_BROWNIE, null, null);
+            spots.add(new PreparedPdfSpot(definition, NamingSource.MODEL, false));
+        }
+        if (spots.isEmpty()) {
+            return null;
+        }
+        if (found.signatureCount() > 0) {
+            notices.add(new PreparationNotice(PreparationNotice.SIGNATURE_LINES_LEFT, found.signatureCount(), null));
+        }
+        if (found.checkboxCount() > 0) {
+            notices.add(new PreparationNotice(PreparationNotice.CHECKBOXES_LEFT, found.checkboxCount(), null));
+        }
+        notices.add(new PreparationNotice(PreparationNotice.READ_FROM_PICTURE, spots.size(), null));
+        return new PdfFormPreparation(artifactId, reading.id(), spots, notices, NamingSource.MODEL, null);
+    }
+
+    /** The model's thousandths of a page's width and height, as a box over it in PDF points, its bottom on the line under it where a drawn one is. */
+    private PdfRect thousandthsToPageBox(VisionSpotFinder.FoundBox box, PdfFormGraph.Page page) {
+        double width = page.cropBox().width();
+        double height = page.cropBox().height();
+        double left = page.cropBox().llx() + box.left() * width;
+        double right = page.cropBox().llx() + box.right() * width;
+        double top = page.cropBox().lly() + box.top() * height;
+        double bottom = page.cropBox().lly() + box.bottom() * height;
+        if (right <= left + 0.5 || bottom <= top + 0.5) {
+            return null;
+        }
+        PdfRect rect = new PdfRect(left, top, right - left, bottom - top);
+        if (rect.width() < 36.0 || rect.height() < 10.0) {
+            return null;
+        }
+        return rect;
+    }
+
     private PdfFormExtractionVersion readOnce(long workspaceId, long userId, long artifactId) {
         return readings.findByArtifact(workspaceId, userId, artifactId, reader.parserVersion()).orElseGet(() -> {
             byte[] pdf = readPdf(workspaceId, userId, artifactId);

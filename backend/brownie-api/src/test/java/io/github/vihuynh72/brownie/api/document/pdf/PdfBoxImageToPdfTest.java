@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.prepare;
+package io.github.vihuynh72.brownie.api.document.pdf;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
