@@ -145,6 +145,7 @@ class McpConfig {
             io.github.vihuynh72.brownie.core.generation.GenerationRunRepository runRepository,
             io.github.vihuynh72.brownie.core.job.JobCommandRepository jobRepository,
             io.github.vihuynh72.brownie.core.question.QuestionService questionService,
+            io.github.vihuynh72.brownie.core.job.JobEventRepository jobEventRepository,
             io.github.vihuynh72.brownie.core.revision.PatchProposalRepository proposalRepository,
             McpAppliedRunRepository appliedRunRepository,
             io.github.vihuynh72.brownie.core.revision.RevisionService revisionService,
@@ -152,7 +153,8 @@ class McpConfig {
             io.github.vihuynh72.brownie.core.source.DocumentSourceService documentSourceService,
             McpSettings settings) {
         return new McpFillOrchestration(
-                orchestrationService, runRepository, jobRepository, questionService, proposalRepository,
+                orchestrationService, runRepository, jobRepository, jobEventRepository, questionService,
+                proposalRepository,
                 appliedRunRepository, revisionService, templateService, documentSourceService, settings);
     }
 

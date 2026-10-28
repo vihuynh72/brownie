@@ -213,6 +213,11 @@ public class TemplateController {
             @RequestBody ActivateVersionRequest request) {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_TEMPLATES);
+        if (Boolean.TRUE.equals(request.dropUnwritablePlaces())) {
+            TemplateService.ActivationWithDrops activated = templateService.activateDroppingUnwritableFoundPlaces(
+                    workspaceId, userId, templateId, request.expectedVersionNumber());
+            return versionResponse(workspaceId, userId, activated.version()).withPlacesLeftOut(activated.droppedLabels());
+        }
         TemplateVersion activated = templateService.activate(
                 workspaceId, userId, templateId, request.expectedVersionNumber(), Boolean.TRUE.equals(request.allowNoPlaces()));
         return versionResponse(workspaceId, userId, activated);
@@ -304,7 +309,8 @@ public class TemplateController {
     }
 
     /** {@code allowNoPlaces} lets a draft with no fields activate, for a form opened with no places found; left out, it is false. */
-    record ActivateVersionRequest(int expectedVersionNumber, Boolean allowNoPlaces) {
+    /** {@code dropUnwritablePlaces} opts a run's activation into leaving out the places Brownie found that its baseline cannot write; left out, it is false. */
+    record ActivateVersionRequest(int expectedVersionNumber, Boolean allowNoPlaces, Boolean dropUnwritablePlaces) {
     }
 
     record FieldReviewRequest(String decision) {
@@ -524,7 +530,15 @@ public class TemplateController {
             OffsetDateTime activatedAt,
             List<String> acceptedFieldIds,
             Long derivedFromVersionId,
-            List<PreparationNoticeResponse> preparationNotices) {
+            List<PreparationNoticeResponse> preparationNotices,
+            List<String> placesLeftOut) {
+
+        /** The same response with the dropped places' labels on it, for the automatic path's answer. */
+        TemplateVersionResponse withPlacesLeftOut(List<String> labels) {
+            return new TemplateVersionResponse(id, templateId, versionNumber, sourceArtifactId, kind,
+                    extractionVersionId, pdfFormExtractionId, status, fields, createdAt, activatedAt,
+                    acceptedFieldIds, derivedFromVersionId, preparationNotices, labels);
+        }
         /** {@code acceptedFieldIds} is the template's kept spots, which the page no longer marks as found by Brownie. */
         public static TemplateVersionResponse from(TemplateVersion version, List<String> acceptedFieldIds) {
             return new TemplateVersionResponse(
@@ -543,7 +557,8 @@ public class TemplateController {
                     version.derivedFromVersionId(),
                     version.preparationNotices() == null
                             ? null
-                            : version.preparationNotices().stream().map(PreparationNoticeResponse::from).toList());
+                            : version.preparationNotices().stream().map(PreparationNoticeResponse::from).toList(),
+                    java.util.List.of());
         }
     }
 

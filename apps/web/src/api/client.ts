@@ -738,11 +738,11 @@ export function activateTemplateVersion(
   workspaceId: number,
   templateId: number,
   expectedVersionNumber: number,
-  options: { allowNoPlaces?: boolean } = {},
+  options: { allowNoPlaces?: boolean; dropUnwritablePlaces?: boolean } = {},
 ): Promise<TemplateVersionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions`, {
     method: 'POST',
-    body: options.allowNoPlaces ? { expectedVersionNumber, allowNoPlaces: true } : { expectedVersionNumber },
+    body: { expectedVersionNumber, ...options },
   })
 }
 

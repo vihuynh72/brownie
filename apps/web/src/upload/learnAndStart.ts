@@ -202,7 +202,8 @@ export async function learnFormAsTemplate(
 ): Promise<LearnTemplateOutcome> {
   try {
     const learned = await learnTemplate(workspaceId, file, onStep)
-    return { ok: true, templateId: learned.templateId, versionId: learned.versionId, name: learned.name, leftOutNote: leftOutNote(learned.leftOut) }
+    return { ok: true, templateId: learned.templateId, versionId: learned.versionId, name: learned.name,
+      leftOutNote: leftOutNote(learned.leftOut) ?? droppedNote(learned.droppedLabels) }
   } catch (error) {
     return { ok: false, message: refusalWords(error, file) }
   }
@@ -248,7 +249,7 @@ async function learnAndStart(
   file: File,
   onStep: (step: LearnStep, detail: StepDetail) => void,
 ): Promise<{ documentId: number; name: string; notes: string[] }> {
-  const { templateId, versionId, name, form, leftOut, mediaType } = await learnTemplate(workspaceId, file, onStep)
+  const { templateId, versionId, name, form, leftOut, droppedLabels, mediaType } = await learnTemplate(workspaceId, file, onStep)
 
   onStep('opening', { mediaType, waiting: false })
   const document = await attempt(
@@ -266,7 +267,7 @@ async function learnAndStart(
   )
   // The page says itself how many places Brownie found and how they are marked, so the notes do not say it again.
   const foundShownOnPage = form.spots.some((spot) => spot.origin === 'FOUND_BY_BROWNIE')
-  const notes = [...formNoteSentences(form, { foundShownOnPage }), leftOutNote(leftOut)].filter((note): note is string => note !== null)
+  const notes = [...formNoteSentences(form, { foundShownOnPage }), leftOutNote(leftOut), droppedNote(droppedLabels)].filter((note): note is string => note !== null)
   return { documentId: document.id, name, notes }
 }
 
@@ -278,6 +279,7 @@ interface LearnedTemplate {
   form: FillableFormResponse
   /** The names of the places the filler could never write into, which the template leaves out. */
   leftOut: string[]
+  droppedLabels: string[]
   /** What the file is, as the server found it in the bytes. */
   mediaType: string | null
 }
@@ -360,7 +362,7 @@ async function learnTemplate(
   const activated = await activate(workspaceId, templateId, bound, fields, fileName)
   // The template is complete now, so My Templates may show it; a failed refresh is the store's own quiet state.
   await useTemplatesStore().refresh(workspaceId)
-  return { templateId, versionId: activated.id, name, form, leftOut, mediaType }
+  return { templateId, versionId: activated.id, name, form, leftOut, droppedLabels: activated.placesLeftOut ?? [], mediaType }
 }
 
 /**
@@ -477,7 +479,8 @@ async function activate(
     return attempt(() => activateTemplateVersion(workspaceId, templateId, bound.versionNumber, { allowNoPlaces: true }), couldNotActivate)
   }
   try {
-    return await activateTemplateVersion(workspaceId, templateId, bound.versionNumber)
+    const activated = await activateTemplateVersion(workspaceId, templateId, bound.versionNumber, { dropUnwritablePlaces: true })
+    return activated
   } catch (error) {
     const repeatedRowRefused =
       error instanceof ApiRequestError &&
@@ -569,6 +572,12 @@ function learningRefusal(error: unknown, fileName: string, mediaType: string | n
 }
 
 /** Places the filler never writes into, such as those in a header or footer, are left out of the template. */
+export function droppedNote(labels: string[]): string | null {
+  if (labels.length === 0) return null
+  const quoted = listed(labels.map((label) => `"${label}"`))
+  return `Brownie left out ${labels.length} ${labels.length === 1 ? 'place' : 'places'} it could not write into cleanly: ${quoted}. You can add them by hand.`
+}
+
 function leftOutNote(labels: string[]): string | null {
   if (labels.length === 0) return null
   const quoted = listed(labels.map((label) => `"${label}"`))

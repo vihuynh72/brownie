@@ -8,6 +8,8 @@ import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
 import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.Connection;
@@ -40,6 +42,9 @@ class McpFormUploadIntegrationTest extends McpIntegrationTestSupport {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         datasourceProperties(registry, DB);
+        registry.add("brownie.render.image",
+                () -> java.util.Optional.ofNullable(System.getProperty("brownie.render.image", System.getenv("BROWNIE_RENDER_IMAGE")))
+                        .filter(image -> !image.isBlank()).orElse("brownie-spike-renderer:pinned"));
     }
 
     @Test
@@ -228,6 +233,65 @@ class McpFormUploadIntegrationTest extends McpIntegrationTestSupport {
     private static String call(String tool, String arguments) {
         return "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool
                 + "\",\"arguments\":{" + arguments + "}}}";
+    }
+
+    @Test
+    void aFormLargerThanThePlainBodyLimitStillFitsTheUploadLimit() throws Exception {
+        Browser browser = signIn("subject-mcp-upload-size", ISSUER);
+        String token = issueToken(browser, "sz", "[\"fill\",\"read\"]").token();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        String uploadToken = linkToken(mcpRaw(token, call("request_form_upload", "")));
+
+        // A Word file a person really uploads is bigger than the plain-body cap: it is the
+        // intake's own upload limit, not the API's, that the file answers to.
+        byte[] padding = new byte[2 * 1024 * 1024];
+        new java.util.Random(42).nextBytes(padding);
+        byte[] docx = io.github.vihuynh72.brownie.api.document.docx.RawDocx.builder()
+                .document("<w:p><w:r><w:t xml:space=\"preserve\">Name: </w:t></w:r>"
+                        + "<w:r><w:t>____________</w:t></w:r></w:p>")
+                .part("word/media/pad.bin", "application/octet-stream", padding)
+                .build();
+
+        HttpResponse<String> posted = postUpload(URI.create(url("/api/v1/mcp-uploads/" + uploadToken)),
+                "registration.docx", docx);
+        assertThat(posted.statusCode()).isEqualTo(200);
+        assertThat(readJson(posted).get("state").asText()).isEqualTo("READY");
+    }
+
+    @Test
+    void aFileOverTheUploadLimitEndsWithAReasonNotAHang() throws Exception {
+        Browser browser = signIn("subject-mcp-upload-huge", ISSUER);
+        String token = issueToken(browser, "huge", "[\"fill\"]").token();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        String uploadToken = linkToken(mcpRaw(token, call("request_form_upload", "")));
+
+        byte[] overLimit = new byte[11 * 1024 * 1024];
+        new java.util.Random(7).nextBytes(overLimit);
+        HttpResponse<String> posted = postUpload(URI.create(url("/api/v1/mcp-uploads/" + uploadToken)),
+                "huge.docx", overLimit);
+        assertThat(posted.statusCode()).isEqualTo(200);
+        JsonNode body = readJson(posted);
+        assertThat(body.get("state").asText()).isEqualTo("FAILED");
+        assertThat(body.get("reason").asText()).isNotBlank();
+    }
+
+    @Test
+    void aWordProcessorFileOtherThanDocxStillOpensAsATemplate() throws Exception {
+        Browser browser = signIn("subject-mcp-upload-odt", ISSUER);
+        String token = issueToken(browser, "odt", "[\"fill\",\"read\"]").token();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+        String uploadToken = linkToken(mcpRaw(token, call("request_form_upload", "")));
+
+        Path current = Path.of("").toAbsolutePath();
+        while (current != null && !Files.isDirectory(current.resolve("fixtures/public/forms"))) {
+            current = current.getParent();
+        }
+        byte[] odt = Files.readAllBytes(current.resolve("fixtures/public/forms/membership-application.odt"));
+
+        HttpResponse<String> posted = postUpload(URI.create(url("/api/v1/mcp-uploads/" + uploadToken)),
+                "membership-application.odt", odt);
+        assertThat(posted.statusCode()).isEqualTo(200);
+        assertThat(readJson(posted).get("state").asText()).isEqualTo("READY");
     }
 
     private static byte[] minimalDocx() throws Exception {
