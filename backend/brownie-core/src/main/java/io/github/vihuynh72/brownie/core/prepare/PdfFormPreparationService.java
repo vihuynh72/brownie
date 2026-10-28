@@ -94,7 +94,7 @@ public class PdfFormPreparationService {
     private static final int MAX_CONTEXT_CHARACTERS = 200;
     private static final Pattern DATE_WORD = Pattern.compile("(?i)\\b(date|dob)\\b");
     private static final Pattern SIGNATURE_WORD = Pattern.compile("(?i)\\b(signature|sign here|signed|initials)\\b");
-    private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?");
+        private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?|[a-z]{1,3}( ?\\d+)+");
     private static final Pattern NAME_PREFIX = Pattern.compile("^(txt|fld|tf|tb|text|field|str)(?=[A-Z_\\-\\d])");
 
     private final ArtifactService artifactService;
