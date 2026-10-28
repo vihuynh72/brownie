@@ -101,6 +101,7 @@ public final class PdfBoxFormReader implements PdfFormReader {
     private static final COSName JAVA_SCRIPT = COSName.getPDFName("JavaScript");
     private static final COSName LAUNCH = COSName.getPDFName("Launch");
     private static final COSName EMBEDDED_FILES = COSName.getPDFName("EmbeddedFiles");
+    private static final COSName FILESPEC = COSName.getPDFName("Filespec");
     private static final COSName FILE_ATTACHMENT = COSName.getPDFName("FileAttachment");
     private static final COSName ASSOCIATED_FILES = COSName.getPDFName("AF");
     private static final COSName COLLECTION = COSName.getPDFName("Collection");
@@ -188,9 +189,8 @@ public final class PdfBoxFormReader implements PdfFormReader {
         if (risks.launchActions()) {
             return refused(UnsupportedPdfFormReason.LAUNCH_ACTION, "Something in the PDF starts another program.");
         }
-        if (risks.embeddedFiles()) {
-            return refused(UnsupportedPdfFormReason.EMBEDDED_FILES, "The PDF carries other files inside it.");
-        }
+        // Files and scripts at document level are dropped from the copies Brownie writes; a script an
+        // annotation or a field would run by itself is still refused.
         if (risks.documentJavaScript()) {
             return refused(UnsupportedPdfFormReason.DOCUMENT_JAVASCRIPT, "The PDF runs a script when it is opened.");
         }
@@ -537,25 +537,36 @@ public final class PdfBoxFormReader implements PdfFormReader {
         private final Set<COSBase> seenRunningByItself = Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<COSBase> outlineItemsSeen = Collections.newSetFromMap(new IdentityHashMap<>());
         private boolean javaScript;
+        private boolean strippable;
         private boolean launch;
         private boolean embedded;
         private int followed;
 
         PdfFormGraph.Risks scan(COSDocument file, PDDocumentCatalog catalog, List<PDPage> pages) {
             COSDictionary root = catalog.getCOSObject();
+            // Everything at document or page level is dropped from the copies the filler writes, so a
+            // script there is removed rather than refused; a script on an annotation or a field stays.
+            boolean kept = javaScript;
+            javaScript = false;
             action(root.getDictionaryObject(COSName.OPEN_ACTION), true);
             additionalActions(root.getDictionaryObject(COSName.AA), true);
             COSDictionary names = root.getCOSDictionary(COSName.NAMES);
             if (names != null) {
-                javaScript |= nameTreeHasEntries(names.getDictionaryObject(JAVA_SCRIPT));
+                strippable |= nameTreeHasEntries(names.getDictionaryObject(JAVA_SCRIPT));
                 embedded |= nameTreeHasEntries(names.getDictionaryObject(EMBEDDED_FILES));
             }
+            strippable |= javaScript;
+            javaScript = kept;
             embedded |= root.getDictionaryObject(ASSOCIATED_FILES) != null || root.getDictionaryObject(COLLECTION) != null;
             embedded |= carriesAFile(file);
             outline(root.getCOSDictionary(COSName.OUTLINES));
             for (PDPage page : pages) {
                 COSDictionary pageDictionary = page.getCOSObject();
+                boolean keptPage = javaScript;
+                javaScript = false;
                 additionalActions(pageDictionary.getDictionaryObject(COSName.AA), true);
+                strippable |= javaScript;
+                javaScript = keptPage;
                 COSArray annotations = pageDictionary.getCOSArray(COSName.ANNOTS);
                 if (annotations == null) {
                     continue;
@@ -566,7 +577,7 @@ public final class PdfBoxFormReader implements PdfFormReader {
                     }
                 }
             }
-            return new PdfFormGraph.Risks(javaScript, launch, embedded);
+            return new PdfFormGraph.Risks(javaScript, launch, embedded, strippable);
         }
 
         private void annotation(COSDictionary annotation) {
@@ -619,7 +630,9 @@ public final class PdfBoxFormReader implements PdfFormReader {
             }
             if (value instanceof COSDictionary dictionary) {
                 if (dictionary.getItem(COSName.EF) != null
-                        || (value instanceof COSStream && COSName.EMBEDDED_FILE.equals(dictionary.getCOSName(COSName.TYPE)))) {
+                        && (COSName.FILESPEC.equals(dictionary.getCOSName(COSName.TYPE))
+                                || dictionary.getItem(COSName.F) != null
+                                || dictionary.getItem(COSName.UF) != null)) {
                     return true;
                 }
                 for (COSBase child : dictionary.getValues()) {

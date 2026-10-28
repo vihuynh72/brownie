@@ -20,6 +20,7 @@ import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentCatalog;
 import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
@@ -30,6 +31,8 @@ import org.apache.pdfbox.text.TextPosition;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.Normalizer;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -317,6 +320,25 @@ class PdfBoxFormFillerTest {
 
     static PdfFillRequest request(PdfFillItem... items) {
         return new PdfFillRequest(List.of(items));
+    }
+
+    @Test
+    void theW9sCopyCarriesNoXfaNoScriptsNoPermsAndItsFieldsFill() throws Exception {
+        byte[] w9 = Files.readAllBytes(Path.of("src/test/resources/w9.pdf"));
+        PdfFillRequest request = request(field("name", "topmostSubform[0].Page1[0].f1_01[0]", "Jordan Rivera"),
+                field("business", "topmostSubform[0].Page1[0].f1_02[0]", "River Corp"));
+        FilledPdf filled = filler.fill(w9, request);
+        try (PDDocument document = Loader.loadPDF(filled.bytes())) {
+            PDDocumentCatalog catalog = document.getDocumentCatalog();
+            PDAcroForm form = catalog.getAcroForm(null);
+            assertNull(form.getXFA());
+            COSDictionary names = catalog.getCOSObject().getCOSDictionary(COSName.NAMES);
+            assertTrue(names == null || names.getDictionaryObject(COSName.JAVA_SCRIPT) == null);
+            assertNull(catalog.getCOSObject().getCOSDictionary(COSName.PERMS));
+            assertNull(catalog.getCOSObject().getCOSDictionary(COSName.AA));
+            assertEquals("Jordan Rivera", form.getField("topmostSubform[0].Page1[0].f1_01[0]").getValueAsString());
+            assertEquals("River Corp", form.getField("topmostSubform[0].Page1[0].f1_02[0]").getValueAsString());
+        }
     }
 
     static PdfFillItem field(String fieldId, String fullName, String value) {

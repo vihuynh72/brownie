@@ -172,6 +172,8 @@ describe('the notes about a form Brownie made ready', () => {
     ['BLANKS_OUTSIDE_BODY', 1, null, 'Brownie left one blank outside the main text, such as in a header or footer, as it is; it fills only the main text.'],
     ['BLANKS_OUTSIDE_BODY', 2, null, 'Brownie left 2 blanks outside the main text, such as in a header or footer, as they are; it fills only the main text.'],
     ['TABLE_ROWS_GROW', 1, null, 'A table in this form gets a new row for each item you add.'],
+    ['ATTACHED_FILES_REMOVED', 1, null, "Brownie's copy leaves out the files this form carried inside it; the form itself is unchanged."],
+    ['SCRIPTS_REMOVED', 1, null, "Brownie's copy leaves out the scripts this form ran when it opened; its fields are unchanged."],
   ])('says %s (count %s, detail %s) in one plain sentence', (code, count, detail, sentence) => {
     expect(formNoteSentences(word([{ code, count, detail }]))).toEqual([sentence])
   })
