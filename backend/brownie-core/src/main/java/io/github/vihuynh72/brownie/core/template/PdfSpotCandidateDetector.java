@@ -758,7 +758,7 @@ public final class PdfSpotCandidateDetector {
         }
         return grid.stream().anyMatch(other -> other != cell
                 && other.x() >= cell.right() - SHARED_EDGE && other.x() < cell.right() + SHARED_EDGE * 8
-                && cell.overlapsVertically(other)
+                && other.y() < cell.bottom() - SHARED_EDGE && cell.y() < other.bottom() - SHARED_EDGE
                 && frame.textIn(other).isEmpty());
     }
 
