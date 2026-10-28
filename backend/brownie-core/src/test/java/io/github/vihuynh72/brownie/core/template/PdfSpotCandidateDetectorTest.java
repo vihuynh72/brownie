@@ -101,6 +101,42 @@ class PdfSpotCandidateDetectorTest {
 
 
 
+
+    /** A cell that spans two columns without a divider between them is still one place. */
+    @Test
+    void aCellSpanningTwoColumnsIsOnePlace() {
+        Page page = new Page()
+                .rule(50, 90, 400, 90)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(400, 30, 400, 90)
+                .rule(200, 50, 200, 90)
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 38, 11, SANS, "Notes");
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        // The top row is split at x=200 into two cells; the bottom row spans both columns.
+        assertEquals(2, candidates.size());
+    }
+
+    /** A page carrying thousands of border segments is skipped inside its budget. */
+    @Test
+    void aPageOfThousandsOfBorderSegmentsStillAnswersFast() {
+        Page page = new Page().line(50, 700, 11, SANS, "Text");
+        for (int index = 0; index < 1500; index++) {
+            page.rule(index % 600, index % 700, index % 600 + 20, index % 700);
+            page.rule(index % 600, index % 700, index % 600, index % 700 + 20);
+        }
+
+        long start = System.nanoTime();
+        PdfSpotCandidateDetector.detect(page.graph());
+        long millis = (System.nanoTime() - start) / 1_000_000;
+
+        assertTrue(millis < 1000, "detection took " + millis + "ms");
+    }
+
     /** A table whose walls are a drawn box around row strokes fills its empty cells by their neighbours' words. */
     @Test
     void aTableWithAFrameBoxAndRowStrokesFillsItsEmptyCellsByTheirNeighboursWords() {

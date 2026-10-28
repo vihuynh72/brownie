@@ -583,16 +583,16 @@ public final class PdfSpotCandidateDetector {
     private static void thinRectBorders(Frame frame, List<Segment> horizontal, List<Segment> vertical) {
         for (PdfRect rect : frame.rects) {
             if (rect.width() <= SHARED_EDGE && rect.height() > SHARED_EDGE) {
-                vertical.add(new Segment(rect.y(), rect.bottom(), rect.centerX()));
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.centerX(), false));
             } else if (rect.height() <= SHARED_EDGE && rect.width() > SHARED_EDGE) {
-                horizontal.add(new Segment(rect.x(), rect.right(), rect.centerY()));
-            } else if (!frame.horizontal.isEmpty() || !frame.vertical.isEmpty()) {
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.centerY(), false));
+            } else {
                 // A drawn frame's four edges are its borders — a table ruled
                 // with a box around row strokes keeps its walls in the box.
-                horizontal.add(new Segment(rect.x(), rect.right(), rect.y()));
-                horizontal.add(new Segment(rect.x(), rect.right(), rect.bottom()));
-                vertical.add(new Segment(rect.y(), rect.bottom(), rect.x()));
-                vertical.add(new Segment(rect.y(), rect.bottom(), rect.right()));
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.y(), true));
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.bottom(), true));
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.x(), true));
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.right(), true));
             }
         }
     }
@@ -610,6 +610,8 @@ public final class PdfSpotCandidateDetector {
     private static List<PdfRect> ruleCells(Frame frame) {
         List<Segment> horizontal = mergeCollinear(allBorders(frame, true));
         List<Segment> vertical = mergeCollinear(allBorders(frame, false));
+        List<Segment> ruledHorizontal = horizontal.stream().filter(seg -> !seg.frame()).toList();
+        List<Segment> ruledVertical = vertical.stream().filter(seg -> !seg.frame()).toList();
         List<Double> rows = positions(horizontal);
         List<Double> cols = positions(vertical);
         if (rows.size() > MAX_RULE_GRID_POSITIONS || cols.size() > MAX_RULE_GRID_POSITIONS) {
@@ -623,7 +625,9 @@ public final class PdfSpotCandidateDetector {
         // row's position reaching from the left column to the right.
         boolean[][] hCover = cover(rows, cols, horizontal, true);
         boolean[][] vCover = cover(rows, cols, vertical, false);
-        List<PdfRect> cells = maximalCells(rows, cols, hCover, vCover, frame);
+        boolean[][] hRuled = cover(rows, cols, ruledHorizontal, true);
+        boolean[][] vRuled = cover(rows, cols, ruledVertical, false);
+        List<PdfRect> cells = maximalCells(rows, cols, hCover, vCover, hRuled, vRuled, frame);
         cells.removeIf(outer -> cells.stream().anyMatch(
                 inner -> inner != outer && outer.encloses(inner, SHARED_EDGE)));
         return cells;
@@ -645,7 +649,7 @@ public final class PdfSpotCandidateDetector {
         for (Segment seg : sorted) {
             Segment last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
             if (last != null && seg.at() - last.at() <= SHARED_EDGE && seg.from() <= last.to() + SHARED_EDGE) {
-                merged.set(merged.size() - 1, new Segment(Math.min(last.from(), seg.from()), Math.max(last.to(), seg.to()), last.at()));
+                merged.set(merged.size() - 1, new Segment(Math.min(last.from(), seg.from()), Math.max(last.to(), seg.to()), last.at(), last.frame() && seg.frame()));
             } else {
                 merged.add(seg);
             }
@@ -688,7 +692,7 @@ public final class PdfSpotCandidateDetector {
     }
 
     /** Maximal covered rectangles: grow right across missing column borders, then down across missing row borders. */
-    private static List<PdfRect> maximalCells(List<Double> rows, List<Double> cols, boolean[][] hCover, boolean[][] vCover, Frame frame) {
+    private static List<PdfRect> maximalCells(List<Double> rows, List<Double> cols, boolean[][] hCover, boolean[][] vCover, boolean[][] hRuled, boolean[][] vRuled, Frame frame) {
         List<PdfRect> cells = new ArrayList<>();
         int rCount = rows.size(), cCount = cols.size();
         for (int r1 = 0; r1 + 1 < rCount; r1++) {
@@ -705,7 +709,9 @@ public final class PdfSpotCandidateDetector {
                         && horizontalEdge(r2 + 1, c1, c2, hCover)) {
                     r2++;
                 }
-                if (horizontalEdge(r1, c1, c2, hCover) && horizontalEdge(r2 + 1, c1, c2, hCover)
+                boolean ruled = horizontalEdge(r1, c1, c2, hRuled) || horizontalEdge(r2 + 1, c1, c2, hRuled)
+                        || verticalEdge(r1, r2, c1, vRuled) || verticalEdge(r1, r2, c2 + 1, vRuled);
+                if (ruled && horizontalEdge(r1, c1, c2, hCover) && horizontalEdge(r2 + 1, c1, c2, hCover)
                         && verticalEdge(r1, r2, c1, vCover) && verticalEdge(r1, r2, c2 + 1, vCover)) {
                     double w = cols.get(c2 + 1) - cols.get(c1);
                     double h = rows.get(r2 + 1) - rows.get(r1);
@@ -757,9 +763,9 @@ public final class PdfSpotCandidateDetector {
 
     private static void findRuleCells(Frame frame, List<Found> found) {
         List<PdfRect> cells = ruleCells(frame);
-        cells = cells.stream().filter(cell -> frame.rects.stream()
-                .noneMatch(rect -> rect.contains(cell.centerX(), cell.centerY()))).toList();
-        if (cells.isEmpty()) {
+        List<PdfRect> ruledCells = cells.stream().filter(cell -> frame.rects.stream()
+                .noneMatch(rect -> rect.overlapArea(cell) > 0.9 * rect.area())).toList();
+        if (ruledCells.isEmpty()) {
             return;
         }
         // A cell is named by its own words: at its left or on its top line,
@@ -767,11 +773,11 @@ public final class PdfSpotCandidateDetector {
         // beside a column of words is a table of key and value rows.
         // A fill band whose line is a cell's border is not a place of its own.
         found.removeIf(candidate -> candidate.kind == PdfSpotCandidate.Kind.RULE
-                && cells.stream().anyMatch(cell -> cell.x() - SHARED_EDGE <= candidate.box.x()
+                && ruledCells.stream().anyMatch(cell -> cell.x() - SHARED_EDGE <= candidate.box.x()
                         && candidate.box.right() <= cell.right() + SHARED_EDGE
                         && (Math.abs(candidate.box.bottom() - cell.y()) <= SHARED_EDGE
                                 || Math.abs(candidate.box.y() - cell.bottom()) <= SHARED_EDGE)));
-        for (List<PdfRect> grid : cellGrids(cells)) {
+        for (List<PdfRect> grid : cellGrids(ruledCells)) {
             boolean keyValue = isKeyValueGrid(frame, grid);
             List<PdfRect> headerCells = topRowOf(grid);
             boolean headerRow = headerCells.size() > 1 && headerCells.stream()
@@ -783,7 +789,7 @@ public final class PdfSpotCandidateDetector {
                     continue;
                 }
                 boolean alreadyTaken = found.stream().anyMatch(other -> other.cell != cell
-                        && cell.overlapArea(other.box) > 0);
+                        && cell.encloses(other.box, SHARED_EDGE));
                 if (words.isEmpty()) {
                     if (keyValue && !alreadyTaken) {
                         PdfRect box = cell.grownBy(-CELL_INSET);
@@ -1001,7 +1007,10 @@ public final class PdfSpotCandidateDetector {
     private record FrameWord(String text, PdfRect box, String fontName, double sizePt, int lineIndex, boolean reading) {
     }
 
-    private record Segment(double from, double to, double at) {
+    private record Segment(double from, double to, double at, boolean frame) {
+        Segment(double from, double to, double at) {
+            this(from, to, at, false);
+        }
 
         double length() {
             return to - from;
