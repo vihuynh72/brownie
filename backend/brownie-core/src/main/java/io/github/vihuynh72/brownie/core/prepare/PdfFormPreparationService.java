@@ -122,6 +122,14 @@ public class PdfFormPreparationService {
         PdfFormGraph graph = reading.graph();
         Found found = candidates(graph);
         List<PreparationNotice> notices = new ArrayList<>();
+        if (graph.risks().embeddedFiles()) {
+            notices.add(new PreparationNotice(PreparationNotice.ATTACHED_FILES_REMOVED, 1,
+                    "This form carried other files inside it, which Brownie removed from its copy; the form itself is unchanged."));
+        }
+        if (graph.risks().scriptsDroppedFromCopies()) {
+            notices.add(new PreparationNotice(PreparationNotice.SCRIPTS_REMOVED, 1,
+                    "This form carried scripts that run when it opens, which Brownie removed from its copy; its fields are unchanged."));
+        }
         if (graph.acroForm().xfa() == PdfFormGraph.XfaKind.STATIC) {
             notices.add(new PreparationNotice(PreparationNotice.XFA_LAYER_REMOVED, 1,
                     "This form also carried an XFA layer, which Brownie removed so the form can be filled in any PDF reader; its fields are unchanged."));

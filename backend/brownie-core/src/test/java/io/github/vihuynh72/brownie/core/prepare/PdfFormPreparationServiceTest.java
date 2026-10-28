@@ -80,6 +80,19 @@ class PdfFormPreparationServiceTest {
     }
 
     @Test
+    void aHybridXfaFormWhoseScriptsAndRightsAreStrippedGetsBothNotices() {
+        PdfFormGraph graph = graph(List.of(fillableForm().pages().get(0)), fillableForm().acroForm().fields(),
+                PdfFormGraph.XfaKind.STATIC, new PdfFormGraph.Risks(false, false, false, true));
+        Harness harness = new Harness(new PdfFormReading.Supported(graph));
+
+        PdfFormPreparation prepared = harness.service().prepare(WORKSPACE_ID, USER_ID, ARTIFACT_ID);
+
+        assertTrue(prepared.notices().stream().anyMatch(notice -> notice.code().equals(PreparationNotice.SCRIPTS_REMOVED)));
+        assertTrue(prepared.notices().stream().anyMatch(notice -> notice.code().equals(PreparationNotice.XFA_LAYER_REMOVED)));
+        assertTrue(prepared.notices().stream().noneMatch(notice -> notice.code().equals(PreparationNotice.ATTACHED_FILES_REMOVED)));
+    }
+
+    @Test
     void blanksOnAFlatPageBecomeBoxesInTheStyleBesideThemAndSignatureLinesAreLeft() {
         Harness harness = new Harness(new PdfFormReading.Supported(flatForm()));
 
@@ -475,10 +488,16 @@ class PdfFormPreparationServiceTest {
     }
 
     private static PdfFormGraph graph(List<PdfFormGraph.Page> pages, List<PdfFormGraph.Field> fields) {
+        return graph(pages, fields, PdfFormGraph.XfaKind.NONE, new PdfFormGraph.Risks(false, false, false));
+    }
+
+    private static PdfFormGraph graph(
+            List<PdfFormGraph.Page> pages, List<PdfFormGraph.Field> fields, PdfFormGraph.XfaKind xfa,
+            PdfFormGraph.Risks risks) {
         PdfFormGraph.AcroForm form = fields.isEmpty()
                 ? PdfFormGraph.AcroForm.absent()
-                : new PdfFormGraph.AcroForm(true, PdfFormGraph.XfaKind.NONE, false, fields, 0);
-        return new PdfFormGraph("test-form-v1", pages, form, new PdfFormGraph.Risks(false, false, false));
+                : new PdfFormGraph.AcroForm(true, xfa, false, fields, 0);
+        return new PdfFormGraph("test-form-v1", pages, form, risks);
     }
 
     private static PdfFormGraph.CropBox crop() {

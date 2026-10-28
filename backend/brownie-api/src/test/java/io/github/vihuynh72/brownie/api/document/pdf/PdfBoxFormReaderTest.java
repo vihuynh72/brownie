@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -238,9 +240,10 @@ class PdfBoxFormReaderTest {
     @Test
     void filesThatDoThingsOnTheirOwnAreRefused() throws IOException {
         assertRefused(UnsupportedPdfFormReason.LAUNCH_ACTION, PdfFormFixtures.launchActionDocument());
-        assertRefused(UnsupportedPdfFormReason.EMBEDDED_FILES, PdfFormFixtures.embeddedFileDocument());
-        assertRefused(UnsupportedPdfFormReason.DOCUMENT_JAVASCRIPT, PdfFormFixtures.documentJavaScript(false));
-        assertRefused(UnsupportedPdfFormReason.DOCUMENT_JAVASCRIPT, PdfFormFixtures.documentJavaScript(true));
+        // Files inside and scripts that run on open are stripped from the copy Brownie fills, not refused.
+        assertInstanceOf(PdfFormReading.Supported.class, reader.read(PdfFormFixtures.embeddedFileDocument()));
+        assertInstanceOf(PdfFormReading.Supported.class, reader.read(PdfFormFixtures.documentJavaScript(false)));
+        assertInstanceOf(PdfFormReading.Supported.class, reader.read(PdfFormFixtures.documentJavaScript(true)));
     }
 
     @Test
@@ -272,8 +275,21 @@ class PdfBoxFormReaderTest {
     }
 
     @Test
+    void theRealW9ReadsAsAHybridXfaFormWhoseDocumentsPiecesAreStripped() throws IOException {
+        PdfFormReading reading = reader.read(Files.readAllBytes(Path.of("src/test/resources/w9.pdf")));
+        assertInstanceOf(PdfFormReading.Supported.class, reading);
+        PdfFormGraph.AcroForm acroForm = ((PdfFormReading.Supported) reading).graph().acroForm();
+        assertEquals(PdfFormGraph.XfaKind.STATIC, acroForm.xfa());
+        assertFalse(acroForm.fields().isEmpty());
+        PdfFormGraph.Risks risks = ((PdfFormReading.Supported) reading).graph().risks();
+        assertTrue(risks.scriptsDroppedFromCopies());
+        assertFalse(risks.embeddedFiles());
+    }
+
+    @Test
     void aFileCarriedAnywhereInTheDocumentIsRefused() throws IOException {
-        assertRefused(UnsupportedPdfFormReason.EMBEDDED_FILES, PdfFormFixtures.pageCarryingAFile());
+        // A file carried anywhere is still a real attachment: kept off the fillable copy, not refused.
+        assertInstanceOf(PdfFormReading.Supported.class, reader.read(PdfFormFixtures.pageCarryingAFile()));
     }
 
     @Test

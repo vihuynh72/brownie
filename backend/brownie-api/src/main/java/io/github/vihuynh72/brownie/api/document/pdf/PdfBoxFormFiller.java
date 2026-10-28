@@ -17,6 +17,7 @@ import io.github.vihuynh72.brownie.core.document.UnsupportedPdfFormReason;
 import io.github.vihuynh72.brownie.core.template.PdfBoxGeometry;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDAppearanceContentStream;
@@ -150,6 +151,7 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
                 form.setNeedAppearances(false);
             }
             dropUsageRights(document.getDocumentCatalog());
+            dropAttachmentsAndScripts(document);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             document.save(out);
             return new FilledPdf(out.toByteArray(), findings);
@@ -217,6 +219,44 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
             permissions.removeItem(USAGE_RIGHTS);
             if (permissions.size() == 0) {
                 catalog.getCOSObject().removeItem(COSName.PERMS);
+            }
+        }
+    }
+
+    /**
+     * What the filled copy never carries: files attached to the form and the
+     * scripts that would run when it opens. A field's own format or
+     * calculate scripts stay -- they are part of the form, not of the file.
+     */
+    private static void dropAttachmentsAndScripts(PDDocument document) {
+        PDDocumentCatalog catalog = document.getDocumentCatalog();
+        COSDictionary root = catalog.getCOSObject();
+        COSDictionary names = root.getCOSDictionary(COSName.NAMES);
+        if (names != null) {
+            names.removeItem(COSName.EMBEDDED_FILES);
+            names.removeItem(COSName.JAVA_SCRIPT);
+        }
+        root.removeItem(COSName.AF);
+        root.removeItem(COSName.COLLECTION);
+        // A JavaScript open action goes; anything else the form does on open stays.
+        if (root.getDictionaryObject(COSName.OPEN_ACTION) instanceof COSDictionary open
+                && "JavaScript".equalsIgnoreCase(String.valueOf(open.getNameAsString(COSName.S)))) {
+            root.removeItem(COSName.OPEN_ACTION);
+        }
+        root.removeItem(COSName.AA);
+        for (PDPage page : document.getPages()) {
+            COSDictionary pageDictionary = page.getCOSObject();
+            pageDictionary.removeItem(COSName.AA);
+            pageDictionary.removeItem(COSName.AF);
+            COSArray annotations = pageDictionary.getCOSArray(COSName.ANNOTS);
+            if (annotations == null) {
+                continue;
+            }
+            for (int index = annotations.size() - 1; index >= 0; index--) {
+                if (annotations.getObject(index) instanceof COSDictionary annotation
+                        && "FileAttachment".equalsIgnoreCase(String.valueOf(annotation.getNameAsString(COSName.SUBTYPE)))) {
+                    annotations.remove(index);
+                }
             }
         }
     }
