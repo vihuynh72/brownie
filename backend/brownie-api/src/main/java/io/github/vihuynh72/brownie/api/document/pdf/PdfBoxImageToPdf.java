@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.prepare;
+package io.github.vihuynh72.brownie.api.document.pdf;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
