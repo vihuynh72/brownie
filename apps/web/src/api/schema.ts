@@ -2322,6 +2322,8 @@ export interface components {
              * @description The version this one was made from by correcting a document's fill spots; null for one made from a file.
              */
             derivedFromVersionId?: number | null;
+            /** @description Labels of places Brownie found but its baseline could not write, left out of the activated version. Present on an automatic activation's answer. */
+            placesLeftOut?: string[];
             /** @description What the person was told when the template's file was made ready to fill: the upload step's notices (codes as in FillableFormResponse.notices), kept with the template version and carried on to every version made from it. Null for a version made before notices were kept, and absent from older servers. */
             preparationNotices?: components["schemas"]["PreparationNoticeResponse"][] | null;
         };
@@ -2822,8 +2824,6 @@ export interface components {
             mcpEnabled: boolean;
             /** @description The MCP endpoint's absolute address when MCP is on; null when it is not. */
             mcpServerUrl?: string | null;
-            /** @description A microphone button in the chat composers, only when the deployment has a speech model to call. A server from before voice input leaves it out. */
-            voiceInput?: boolean;
         };
         McpGrantResponse: {
             /** Format: int64 */
@@ -2914,7 +2914,7 @@ export interface components {
         };
         AssistInterpretationResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             scope?: components["schemas"]["AssistScopeResponse"] | null;
             executable: boolean;
@@ -2925,7 +2925,7 @@ export interface components {
         };
         AssistExecutionResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             proposal?: components["schemas"]["PatchProposalResponse"] | null;
             explanation?: string | null;

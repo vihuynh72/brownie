@@ -572,7 +572,7 @@ function learningRefusal(error: unknown, fileName: string, mediaType: string | n
 }
 
 /** Places the filler never writes into, such as those in a header or footer, are left out of the template. */
-function droppedNote(labels: string[]): string | null {
+export function droppedNote(labels: string[]): string | null {
   if (labels.length === 0) return null
   const quoted = listed(labels.map((label) => `"${label}"`))
   return `Brownie left out ${labels.length} ${labels.length === 1 ? 'place' : 'places'} it could not write into cleanly: ${quoted}. You can add them by hand.`
