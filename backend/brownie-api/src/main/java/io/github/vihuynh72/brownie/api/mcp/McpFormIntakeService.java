@@ -68,11 +68,12 @@ class McpFormIntakeService {
         }
         // A template with no places to fill is a failure worth saying back,
         // not an empty template.
-        TemplateVersion active = templateService.activate(
-                workspaceId, userId, template.id(), draft.versionNumber(), false);
+        TemplateService.ActivationWithDrops activated = templateService.activateDroppingUnwritableFoundPlaces(
+                workspaceId, userId, template.id(), draft.versionNumber());
+        TemplateVersion active = activated.version();
         fillSpotReviewService.keep(workspaceId, userId, template.id(),
                 fields.stream().map(FieldDefinition::fieldId).toList());
-        return new IntakeResult(template, active);
+        return new IntakeResult(template, active, activated.droppedLabels());
     }
 
     private TemplateVersion requireDraft(long workspaceId, long userId, long templateId) {
@@ -80,5 +81,9 @@ class McpFormIntakeService {
                 .orElseThrow(() -> new IllegalStateException("Fresh draft " + templateId + " is gone."));
     }
 
-    record IntakeResult(Template template, TemplateVersion activeVersion) {}
+    record IntakeResult(Template template, TemplateVersion activeVersion, java.util.List<String> placesLeftOut) {
+        IntakeResult(Template template, TemplateVersion activeVersion) {
+            this(template, activeVersion, java.util.List.of());
+        }
+    }
 }
