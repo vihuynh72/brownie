@@ -106,7 +106,8 @@ final class McpConsentController {
                 <p><strong>%s</strong> (it sends you back to <code>%s</code>) asks to use Brownie in
                 your workspace with these permissions:</p>
                 <ul>%s</ul>
-                <p>Brownie never fills or exports a document without your confirmation in the chat.</p>
+                <p>Brownie acts only when %s asks it to. Whether %s checks with you before it fills or
+                exports a document is up to %s's own approval settings.</p>
                 <div class="actions">
                 <form method="post" action="%s">
                 <input type="hidden" name="client_id" value="%s">
@@ -126,6 +127,9 @@ final class McpConsentController {
                 escape(client.getClientName()),
                 escape(redirectHost(client)),
                 scopeRows,
+                escape(client.getClientName()),
+                escape(client.getClientName()),
+                escape(client.getClientName()),
                 escape(authorizationServerSettings.getAuthorizationEndpoint()),
                 escape(clientId),
                 escape(state),
@@ -167,7 +171,7 @@ final class McpConsentController {
     private static String scopeWords(String scope) {
         return switch (scope) {
             case "read" -> "see your templates and documents";
-            case "fill" -> "start documents, add text sources, and propose fills you confirm";
+            case "fill" -> "start documents, add text sources, and propose and accept fills";
             case "export" -> "export documents and hand you a one-time download link";
             default -> "a permission Brownie does not describe";
         };

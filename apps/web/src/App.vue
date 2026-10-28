@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
 import { useSessionStore } from '@/stores/session'
@@ -8,6 +8,7 @@ import { takeSignInIntent } from '@/auth/intent'
 
 const session = useSessionStore()
 const router = useRouter()
+const route = useRoute()
 
 /**
  * The width at which the sidebar stops floating over the page and becomes
@@ -32,6 +33,9 @@ const docked = ref(dockQuery ? dockQuery.matches : true)
  */
 const SIDEBAR_KEY = 'brownie.sidebarOpen'
 const sidebarOpen = ref(docked.value ? readDockedPreference() : false)
+
+/** A page reached through a link of its own stands alone: the sidebar and its bar are not for it. */
+const bare = computed(() => route.meta.bare === true)
 
 function readDockedPreference(): boolean {
   try {
@@ -143,13 +147,20 @@ onBeforeUnmount(() => {
 
   <div class="shell" :class="{ 'shell--drawer': !docked }">
     <!-- It asks to be opened when something the person started in it ends while it is closed, such as a refused file. -->
-    <AppSidebar ref="sidebarRef" :open="sidebarOpen" :docked="docked" @close="closeSidebar" @open="openSidebar" />
+    <AppSidebar
+      v-if="!bare"
+      ref="sidebarRef"
+      :open="sidebarOpen"
+      :docked="docked"
+      @close="closeSidebar"
+      @open="openSidebar"
+    />
 
     <!-- Only ever present while the drawer is: a tap anywhere on the dimmed page closes it. -->
-    <div v-if="!docked && sidebarOpen" class="shell__scrim" @click="closeSidebar" />
+    <div v-if="!bare && !docked && sidebarOpen" class="shell__scrim" @click="closeSidebar" />
 
     <div class="shell__body">
-      <header class="shell__bar" :class="{ 'shell__bar--tucked': docked && sidebarOpen, 'shell__bar--floating': docked }">
+      <header v-if="!bare" class="shell__bar" :class="{ 'shell__bar--tucked': docked && sidebarOpen, 'shell__bar--floating': docked }">
         <button
           ref="openButtonRef"
           type="button"
