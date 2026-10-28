@@ -64,7 +64,10 @@ class CapabilitiesController {
             FormFileTypeResponse.of("ott", "application/vnd.oasis.opendocument.text-template", SupportedMediaType.ODT),
             FormFileTypeResponse.of("pages", SupportedMediaType.PAGES),
             FormFileTypeResponse.of("pages", "application/x-iwork-pages-sffpages", SupportedMediaType.PAGES),
-            FormFileTypeResponse.of("pdf", SupportedMediaType.PDF));
+            FormFileTypeResponse.of("pdf", SupportedMediaType.PDF),
+            FormFileTypeResponse.of("jpg", SupportedMediaType.JPEG),
+            FormFileTypeResponse.of("jpeg", SupportedMediaType.JPEG),
+            FormFileTypeResponse.of("png", SupportedMediaType.PNG));
     /**
      * What a file chooser for a table to fill from may offer: a workbook as
      * itself, or comma-separated text. CSV is only ever read from a plain

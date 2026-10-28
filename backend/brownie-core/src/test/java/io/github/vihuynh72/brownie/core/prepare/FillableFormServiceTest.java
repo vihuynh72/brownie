@@ -57,7 +57,7 @@ class FillableFormServiceTest {
     private final PdfForms pdfForms = new PdfForms();
 
     private final FillableFormService service = new FillableFormService(artifacts, extractions, new Extractor(), converter, preparer,
-            forms, namer, editor, verifier, derivations, pdfForms);
+            forms, namer, editor, verifier, derivations, pdfForms, bytes -> bytes);
 
     @Test
     void aWordUploadIsMadeIntoAStoredCopyWithNamedSpotsAndRecorded() {

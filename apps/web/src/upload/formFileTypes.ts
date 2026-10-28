@@ -36,6 +36,9 @@ export const FALLBACK_FORM_FILE_TYPES: readonly FormFileType[] = [
   { extension: 'pages', mediaType: 'application/vnd.apple.pages', route: 'CONVERTED' },
   { extension: 'pages', mediaType: 'application/x-iwork-pages-sffpages', route: 'CONVERTED' },
   { extension: 'pdf', mediaType: 'application/pdf', route: 'PDF' },
+  { extension: 'jpg', mediaType: 'image/jpeg', route: 'PDF' },
+  { extension: 'jpeg', mediaType: 'image/jpeg', route: 'PDF' },
+  { extension: 'png', mediaType: 'image/png', route: 'PDF' },
 ]
 
 /** The chooser's `accept` value: every extension, then every media type, each once, in the list's order. */
