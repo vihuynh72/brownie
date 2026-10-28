@@ -501,6 +501,9 @@ public class GenerationOrchestrationService {
             case TEXT -> new FieldValue.TextValue(candidate.value());
             // Already validated parseable by the extraction response parser before this candidate ever existed.
             case DATE -> new FieldValue.DateValue(LocalDate.parse(candidate.value()));
+            case CHECKBOX -> io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(candidate.value())
+                    .<FieldValue>map(FieldValue.CheckboxValue::new)
+                    .orElseThrow(() -> new IllegalArgumentException("A checkbox wants yes or no, not: " + candidate.value()));
         };
     }
 
@@ -554,6 +557,7 @@ public class GenerationOrchestrationService {
             values.put(field.fieldId(), switch (field.type()) {
                 case TEXT -> new FieldValue.RepeatedTextValue(texts);
                 case DATE -> new FieldValue.RepeatedDateValue(texts.stream().map(LocalDate::parse).toList());
+                case CHECKBOX -> throw new IllegalArgumentException("A checkbox field is always a single checkbox.");
             });
             LinkedHashSet<Long> spanIds = evidenceByField.get(field.fieldId());
             if (!spanIds.isEmpty()) {

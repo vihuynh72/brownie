@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.ai.generation.json;
 
 import io.github.vihuynh72.brownie.core.generation.ExtractionResponseParseException;
+import io.github.vihuynh72.brownie.core.revision.CheckboxAnswers;
 import io.github.vihuynh72.brownie.core.generation.ExtractionResponseParser;
 import io.github.vihuynh72.brownie.core.generation.ExtractionResult;
 import io.github.vihuynh72.brownie.core.generation.FieldCandidate;
@@ -8,6 +9,8 @@ import io.github.vihuynh72.brownie.core.generation.RepeatedItemCandidate;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.FieldType;
 import tools.jackson.core.JacksonException;
+
+import java.util.Optional;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDate;
@@ -89,6 +92,16 @@ class JacksonExtractionResponseParser implements ExtractionResponseParser {
 
         if (!unresolved && field.type() == FieldType.DATE && value != null) {
             value = validatedIsoDate(value, field.fieldId());
+        }
+        if (!unresolved && field.type() == FieldType.CHECKBOX && value != null) {
+            Optional<Boolean> checked = CheckboxAnswers.parse(value);
+            if (checked.isEmpty()) {
+                unresolved = true;
+                ambiguityReason = "not a checkbox answer";
+                value = null;
+            } else {
+                value = checked.get() ? "checked" : "unchecked";
+            }
         }
 
         try {

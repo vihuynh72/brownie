@@ -143,7 +143,8 @@ class BrownieMcpTools {
         });
     }
     @McpTool(name = BrownieMcpToolScopes.START_DOCUMENT,
-            description = "Create a new document from a template's active version.")
+            description = "Create a new document from a template's active version."
+                    + " Start one document per form the person wants filled; reuse it for every later step.")
     McpSchema.CallToolResult startDocument(
             @McpToolParam(description = "The template id") long template_id,
             @McpToolParam(required = false, description = "The document's title; the template's name when left out") String title) {
@@ -285,8 +286,10 @@ class BrownieMcpTools {
     }
 
     @McpTool(name = BrownieMcpToolScopes.PROPOSE_FILL,
-            description = "Read a source and propose the document's field values. Answers the run's state: PROPOSED when the "
-                    + "model finished inside the call, RUNNING or QUESTIONS otherwise.")
+            description = "Read a source and propose the document's field values. Answers the run's state: PROPOSED "
+                    + "(show the person the summary, then call confirm_fill with proposal_id and payload_hash), "
+                    + "RUNNING (call get_fill_status with run_id until it changes; do not call propose_fill again), "
+                    + "or QUESTIONS (answer each with answer_question). Call it once per source.")
     McpSchema.CallToolResult proposeFill(
             @McpToolParam(description = "The document id") long document_id,
             @McpToolParam(description = "The source artifact id, from add_text_source") long source_artifact_id) {
@@ -436,11 +439,14 @@ class BrownieMcpTools {
                 default -> throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
                         "Format must be \"docx\", \"pdf\" or \"both\".");
             };
-            if (proposalRepository.findForDocument(caller.workspaceId(), caller.userId(), document_id).stream()
-                    .anyMatch(proposal -> proposal.status() == PatchProposalStatus.PROPOSED)) {
-                throw new McpToolRefusal(McpToolRefusal.PROPOSAL_PENDING,
-                        "A proposed fill is still waiting on document " + document_id + "; confirm it or leave it before exporting.");
-            }
+            proposalRepository.findForDocument(caller.workspaceId(), caller.userId(), document_id).stream()
+                    .filter(proposal -> proposal.status() == PatchProposalStatus.PROPOSED)
+                    .reduce((first, second) -> second)
+                    .ifPresent(proposal -> {
+                        throw new McpToolRefusal(McpToolRefusal.PROPOSAL_PENDING,
+                                "Proposal " + proposal.id() + " is still waiting on document " + document_id
+                                        + ". Confirm it with confirm_fill (its payload_hash is in get_fill_status), or ask the person, before exporting.");
+                    });
             DocumentRevision revision = revisionService
                     .findRevision(caller.workspaceId(), caller.userId(), document_id, document.currentRevisionId())
                     .orElseThrow(() -> new McpToolRefusal(McpToolRefusal.NOT_FOUND, "The document's current revision is gone."));
@@ -628,6 +634,7 @@ class BrownieMcpTools {
             case FieldValue.DateValue date -> date.value().toString();
             case FieldValue.RepeatedTextValue texts -> texts.values();
             case FieldValue.RepeatedDateValue dates -> dates.values().stream().map(Object::toString).toList();
+            case FieldValue.CheckboxValue checkbox -> checkbox.checked() ? "checked" : "unchecked";
         };
     }
 }

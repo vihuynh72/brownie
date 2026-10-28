@@ -266,6 +266,20 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
     private boolean fillField(PDDocument document, PDAcroForm form, PdfFonts.ForDocument fonts, PdfFillItem item,
             PdfFillTarget.Widget target, List<PdfFillFinding> findings) throws IOException {
         PDField found = form == null ? null : form.getField(target.fullName());
+        if (found instanceof org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox checkbox) {
+            io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(item.value()).ifPresent(checked -> {
+                try {
+                    if (checked) {
+                        checkbox.check();
+                    } else {
+                        checkbox.unCheck();
+                    }
+                } catch (IOException e) {
+                    throw new IllegalStateException("The checkbox " + target.fullName() + " could not be set.", e);
+                }
+            });
+            return true;
+        }
         if (!(found instanceof PDTextField field) || field.isReadOnly() || field.isPassword() || field.isFileSelect()) {
             findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_NOT_FILLABLE,
                     "The form has no text field named " + target.fullName() + " that can be filled."));

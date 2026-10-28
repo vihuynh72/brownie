@@ -288,6 +288,7 @@ public final class DocumentValidator {
             case FieldValue.DateValue ignored -> true;
             case FieldValue.RepeatedTextValue(List<String> values) -> !values.isEmpty();
             case FieldValue.RepeatedDateValue(List<java.time.LocalDate> values) -> !values.isEmpty();
+            case FieldValue.CheckboxValue ignored -> true;
         };
     }
 
