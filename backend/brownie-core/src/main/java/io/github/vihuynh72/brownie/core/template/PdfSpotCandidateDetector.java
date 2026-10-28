@@ -586,7 +586,7 @@ public final class PdfSpotCandidateDetector {
                 vertical.add(new Segment(rect.y(), rect.bottom(), rect.centerX()));
             } else if (rect.height() <= SHARED_EDGE && rect.width() > SHARED_EDGE) {
                 horizontal.add(new Segment(rect.x(), rect.right(), rect.centerY()));
-            } else {
+            } else if (!frame.horizontal.isEmpty() || !frame.vertical.isEmpty()) {
                 // A drawn frame's four edges are its borders — a table ruled
                 // with a box around row strokes keeps its walls in the box.
                 horizontal.add(new Segment(rect.x(), rect.right(), rect.y()));
@@ -603,48 +603,162 @@ public final class PdfSpotCandidateDetector {
      * kept when each of its four edges is covered by a border long enough to
      * reach it within the stroke's own thickness.
      */
+    /** The most borders a page's cell hunt will look at before it gives up. */
+    private static final int MAX_RULE_GRID_POSITIONS = 400;
+    private static final System.Logger LOG = System.getLogger(PdfSpotCandidateDetector.class.getName());
+
     private static List<PdfRect> ruleCells(Frame frame) {
-        List<Segment> horizontal = new ArrayList<>(frame.horizontal);
-        List<Segment> vertical = new ArrayList<>(frame.vertical);
-        thinRectBorders(frame, horizontal, vertical);
-        horizontal.sort(Comparator.comparingDouble(Segment::at));
-        vertical.sort(Comparator.comparingDouble(Segment::at));
-        if (horizontal.size() < 2 || vertical.size() < 2) {
+        List<Segment> horizontal = mergeCollinear(allBorders(frame, true));
+        List<Segment> vertical = mergeCollinear(allBorders(frame, false));
+        List<Double> rows = positions(horizontal);
+        List<Double> cols = positions(vertical);
+        if (rows.size() > MAX_RULE_GRID_POSITIONS || cols.size() > MAX_RULE_GRID_POSITIONS) {
+            LOG.log(System.Logger.Level.DEBUG, "rule-cell detection skipped: {0}x{1} border positions", rows.size(), cols.size());
             return List.of();
         }
-        List<PdfRect> cells = new ArrayList<>();
-        for (int t = 0; t < horizontal.size(); t++) {
-            for (int b = t + 1; b < horizontal.size(); b++) {
-                Segment top = horizontal.get(t);
-                Segment bottom = horizontal.get(b);
-                for (int l = 0; l < vertical.size(); l++) {
-                    for (int r = l + 1; r < vertical.size(); r++) {
-                        Segment left = vertical.get(l);
-                        Segment right = vertical.get(r);
-                        double x = left.at(), w = right.at() - x, y = top.at(), h = bottom.at() - y;
-                        if (w < MIN_BOX_WIDTH || h < MIN_BOX_HEIGHT || w > 0.95 * frame.width || h > 0.6 * frame.height) {
-                            continue;
-                        }
-                        boolean topEdge = top.from() <= x + SHARED_EDGE && top.to() >= right.at() - SHARED_EDGE;
-                        boolean bottomEdge = bottom.from() <= x + SHARED_EDGE && bottom.to() >= right.at() - SHARED_EDGE;
-                        boolean leftEdge = left.from() <= y + SHARED_EDGE && left.to() >= bottom.at() - SHARED_EDGE;
-                        boolean rightEdge = right.from() <= y + SHARED_EDGE && right.to() >= bottom.at() - SHARED_EDGE;
-                        if (topEdge && bottomEdge && leftEdge && rightEdge) {
-                            cells.add(new PdfRect(x, y, w, h));
-                        }
-                    }
-                }
-            }
+        if (rows.size() < 2 || cols.size() < 2) {
+            return List.of();
         }
-        // A cell crossed by another border is the table itself or a spanned
-        // region, not a place to fill; only the leaf cells count.
+        // Coverage maps: hCover[r][c] is a merged horizontal border at the
+        // row's position reaching from the left column to the right.
+        boolean[][] hCover = cover(rows, cols, horizontal, true);
+        boolean[][] vCover = cover(rows, cols, vertical, false);
+        List<PdfRect> cells = maximalCells(rows, cols, hCover, vCover, frame);
         cells.removeIf(outer -> cells.stream().anyMatch(
                 inner -> inner != outer && outer.encloses(inner, SHARED_EDGE)));
         return cells;
     }
 
+    /** The page's border segments of one direction: its rules plus its rectangles' edges. */
+    private static List<Segment> allBorders(Frame frame, boolean wantHorizontal) {
+        List<Segment> horizontal = new ArrayList<>(frame.horizontal);
+        List<Segment> vertical = new ArrayList<>(frame.vertical);
+        thinRectBorders(frame, horizontal, vertical);
+        return wantHorizontal ? horizontal : vertical;
+    }
+
+    /** Segments sharing a line and touching become one segment spanning them. */
+    private static List<Segment> mergeCollinear(List<Segment> segments) {
+        List<Segment> sorted = new ArrayList<>(segments);
+        sorted.sort(Comparator.comparingDouble(Segment::at));
+        List<Segment> merged = new ArrayList<>();
+        for (Segment seg : sorted) {
+            Segment last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
+            if (last != null && seg.at() - last.at() <= SHARED_EDGE && seg.from() <= last.to() + SHARED_EDGE) {
+                merged.set(merged.size() - 1, new Segment(Math.min(last.from(), seg.from()), Math.max(last.to(), seg.to()), last.at()));
+            } else {
+                merged.add(seg);
+            }
+        }
+        return merged;
+    }
+
+    /** The merged borders' distinct positions, sorted. */
+    private static List<Double> positions(List<Segment> segments) {
+        List<Double> positions = segments.stream().map(Segment::at).distinct().sorted().toList();
+        return new ArrayList<>(positions);
+    }
+
+    /** For each row/column pair of positions, whether a merged border covers the edge between neighbours. */
+    private static boolean[][] cover(List<Double> rows, List<Double> cols, List<Segment> merged, boolean horizontalEdges) {
+        int rCount = rows.size();
+        int cCount = cols.size();
+        if (horizontalEdges) {
+            boolean[][] covered = new boolean[rCount][Math.max(0, cCount - 1)];
+            for (int r = 0; r < rCount; r++) {
+                double at = rows.get(r);
+                List<Segment> onRow = merged.stream().filter(seg -> Math.abs(seg.at() - at) <= SHARED_EDGE).toList();
+                for (int c = 0; c + 1 < cCount; c++) {
+                    double x0 = cols.get(c), x1 = cols.get(c + 1);
+                    covered[r][c] = onRow.stream().anyMatch(seg -> seg.from() <= x0 + SHARED_EDGE && seg.to() >= x1 - SHARED_EDGE);
+                }
+            }
+            return covered;
+        }
+        boolean[][] covered = new boolean[Math.max(0, rCount - 1)][cCount];
+        for (int c = 0; c < cCount; c++) {
+            double at = cols.get(c);
+            List<Segment> onCol = merged.stream().filter(seg -> Math.abs(seg.at() - at) <= SHARED_EDGE).toList();
+            for (int r = 0; r + 1 < rCount; r++) {
+                double y0 = rows.get(r), y1 = rows.get(r + 1);
+                covered[r][c] = onCol.stream().anyMatch(seg -> seg.from() <= y0 + SHARED_EDGE && seg.to() >= y1 - SHARED_EDGE);
+            }
+        }
+        return covered;
+    }
+
+    /** Maximal covered rectangles: grow right across missing column borders, then down across missing row borders. */
+    private static List<PdfRect> maximalCells(List<Double> rows, List<Double> cols, boolean[][] hCover, boolean[][] vCover, Frame frame) {
+        List<PdfRect> cells = new ArrayList<>();
+        int rCount = rows.size(), cCount = cols.size();
+        for (int r1 = 0; r1 + 1 < rCount; r1++) {
+            for (int c1 = 0; c1 + 1 < cCount; c1++) {
+                int c2 = c1;
+                while (c2 + 1 < cCount - 1 && hCover[r1][c2 + 1] && !vCover[r1][c2 + 1]) {
+                    c2++;
+                }
+                int r2 = r1;
+                while (r2 + 1 < rCount - 1
+                        && horizontalBorderless(c1, c2, r2 + 1, hCover)
+                        && verticalEdge(r1, r2 + 1, c1, vCover)
+                        && verticalEdge(r1, r2 + 1, c2 + 1, vCover)
+                        && horizontalEdge(r2 + 1, c1, c2, hCover)) {
+                    r2++;
+                }
+                if (horizontalEdge(r1, c1, c2, hCover) && horizontalEdge(r2 + 1, c1, c2, hCover)
+                        && verticalEdge(r1, r2, c1, vCover) && verticalEdge(r1, r2, c2 + 1, vCover)) {
+                    double w = cols.get(c2 + 1) - cols.get(c1);
+                    double h = rows.get(r2 + 1) - rows.get(r1);
+                    if (w >= MIN_BOX_WIDTH && h >= MIN_BOX_HEIGHT && w <= 0.95 * frame.width && h <= 0.6 * frame.height) {
+                        cells.add(new PdfRect(cols.get(c1), rows.get(r1), w, h));
+                    }
+                }
+            }
+        }
+        return cells;
+    }
+
+    /** A merged horizontal border covers every elementary edge of the row's span across the columns. */
+    private static boolean horizontalEdge(int row, int c1, int c2, boolean[][] hCover) {
+        for (int c = c1; c <= c2; c++) {
+            if (c >= hCover[row].length || !hCover[row][c]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean verticalEdge(int r1, int r2, int col, boolean[][] vCover) {
+        for (int r = r1; r <= r2; r++) {
+            if (r >= vCover.length || col >= vCover[r].length || !vCover[r][col]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean verticalBorderless(int r1, int r2, int col, boolean[][] vCover) {
+        for (int r = r1; r <= r2; r++) {
+            if (r < vCover.length && col < vCover[r].length && vCover[r][col]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean horizontalBorderless(int c1, int c2, int row, boolean[][] hCover) {
+        for (int c = c1; c <= c2; c++) {
+            if (c < hCover[row].length && hCover[row][c]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static void findRuleCells(Frame frame, List<Found> found) {
         List<PdfRect> cells = ruleCells(frame);
+        cells = cells.stream().filter(cell -> frame.rects.stream()
+                .noneMatch(rect -> rect.contains(cell.centerX(), cell.centerY()))).toList();
         if (cells.isEmpty()) {
             return;
         }
@@ -717,6 +831,12 @@ public final class PdfSpotCandidateDetector {
             }
         }
         return best;
+    }
+
+    /** The grid's cells are drawn rectangles, so the drawn-empty-box path already owns them. */
+    private static boolean drawnGrid(Frame frame, List<PdfRect> grid) {
+        return grid.stream().allMatch(cell -> frame.rects.stream()
+                .anyMatch(rect -> rect.overlapArea(cell) > 0.5 * cell.area()));
     }
 
     /** The grid's uppermost cells: the ones nothing sits above. */
