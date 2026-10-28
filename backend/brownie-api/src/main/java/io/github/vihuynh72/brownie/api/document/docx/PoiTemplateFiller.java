@@ -10,9 +10,12 @@ import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
 import io.github.vihuynh72.brownie.core.template.FieldBindingTarget;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
+import io.github.vihuynh72.brownie.core.template.SpotOrigin;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.xmlbeans.XmlCursor;
+import org.apache.xmlbeans.XmlObject;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.apache.poi.xwpf.usermodel.XWPFTableRow;
@@ -81,6 +84,9 @@ import java.util.stream.Collectors;
 public final class PoiTemplateFiller implements TemplateFiller {
 
     private static final String EMPTY_REPEATED_GROUP_TEXT = "No action items recorded.";
+    private static final String BLANK_CURRENCY_SIGNS = "$\u20ac\u00a3\u00a5\u20b9";
+    private static final java.util.Set<String> BLANK_UNIT_WORDS = java.util.Set.of(
+            "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours", "dollar", "dollars");
     private static final String PLACEHOLDER_TEXT_STYLE = "PlaceholderText";
 
     /** Each built-in template's repeated field IDs: the groups that say {@link #EMPTY_REPEATED_GROUP_TEXT} when empty. */
@@ -103,12 +109,14 @@ public final class PoiTemplateFiller implements TemplateFiller {
             for (FieldDefinition field : scalarFields) {
                 String text = scalarText(content, field);
                 CTSdtRun control = controlTagged(document, tagOf(field));
+                String written = text;
                 if (text.isBlank() && field.blankText() != null) {
                     writeControlText(control, field.blankText());
                 } else {
-                    setContentControlText(control, text);
+                    written = dedupeAroundBlank(document, control, field, text);
+                    setContentControlText(control, written);
                 }
-                intendedText.put(field.fieldId(), text.isBlank() ? List.of() : List.of(text));
+                intendedText.put(field.fieldId(), written.isBlank() ? List.of() : List.of(written));
             }
 
             List<FieldDefinition> repeatedFields = fieldDefinitions.stream()
@@ -436,6 +444,91 @@ public final class PoiTemplateFiller implements TemplateFiller {
             throw new TemplateFillException(TemplateFillProblemReason.AMBIGUOUS_BINDING, "More than one content control is tagged \"" + tag + "\".");
         }
         return matches.getFirst();
+    }
+
+    /**
+     * A blank Brownie made the spot from sits inside the form's own words, so a
+     * value that repeats what those words already carry -- the currency sign
+     * the blank followed, or the "%" or unit word it led into -- writes only
+     * what the form did not already say. The stored value keeps the whole
+     * answer; this changes only the copy written into the control, which is
+     * also what {@link FilledDocument#intendedText()} records for the check.
+     */
+    private String dedupeAroundBlank(XWPFDocument document, CTSdtRun control, FieldDefinition field, String value) {
+        if (field.effectiveOrigin() != SpotOrigin.FOUND_BY_BROWNIE || value.isBlank()) {
+            return value;
+        }
+        for (XWPFParagraph paragraph : allParagraphs(document)) {
+            XmlCursor cursor = paragraph.getCTP().newCursor();
+            try {
+                if (!cursor.toFirstChild()) {
+                    continue;
+                }
+                StringBuilder before = new StringBuilder();
+                StringBuilder after = new StringBuilder();
+                StringBuilder into = before;
+                boolean seen = false;
+                do {
+                    XmlObject object = cursor.getObject();
+                    if (object == control) {
+                        seen = true;
+                        into = after;
+                        continue;
+                    }
+                    if (object instanceof CTR run) {
+                        for (CTText t : run.getTArray()) {
+                            into.append(t.getStringValue());
+                        }
+                    }
+                } while (cursor.toNextSibling());
+                if (seen) {
+                    return dedupeAroundBlank(value, before.toString(), after.toString());
+                }
+            } finally {
+                cursor.dispose();
+            }
+        }
+        return value;
+    }
+
+    static String dedupeAroundBlank(String value, String before, String after) {
+        String text = value.strip();
+        String lead = before.strip();
+        String tail = after.strip();
+        if (!lead.isEmpty() && !text.isEmpty()) {
+            char sign = lead.charAt(lead.length() - 1);
+            if (BLANK_CURRENCY_SIGNS.indexOf(sign) >= 0 && text.charAt(0) == sign) {
+                return text.substring(1).stripLeading();
+            }
+        }
+        if (tail.startsWith("%") && text.endsWith("%")) {
+            return text.substring(0, text.length() - 1).stripTrailing();
+        }
+        String unit = leadingWord(tail);
+        if (BLANK_UNIT_WORDS.contains(unit.toLowerCase()) && !text.isEmpty()) {
+            String last = trailingWord(text);
+            if (last.equalsIgnoreCase(unit)) {
+                return text.substring(0, text.length() - last.length()).stripTrailing();
+            }
+        }
+        return value;
+    }
+
+    private static String leadingWord(String text) {
+        StringBuilder word = new StringBuilder();
+        for (int i = 0; i < text.length() && Character.isLetter(text.charAt(i)); i++) {
+            word.append(text.charAt(i));
+        }
+        return word.toString();
+    }
+
+    private static String trailingWord(String text) {
+        int end = text.length();
+        int start = end;
+        while (start > 0 && Character.isLetter(text.charAt(start - 1))) {
+            start--;
+        }
+        return text.substring(start, end);
     }
 
     private void setContentControlText(CTSdtRun sdt, String text) {
