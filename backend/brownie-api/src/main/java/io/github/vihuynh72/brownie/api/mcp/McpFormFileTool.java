@@ -41,18 +41,16 @@ final class McpFormFileTool {
         McpSchema.Tool tool = McpSchema.Tool.builder(BrownieMcpToolScopes.ADD_FORM_FILE, Map.of(
                         "type", "object",
                         "properties", Map.of("form", Map.of(
+                                "type", "object",
                                 "description", "The file the person attached in chat",
-                                // A mobile client sends the attachment as a bare string; letting it
-                                // through schema validation means it gets the explained refusal, not a
-                                // raw validation error.
-                                "anyOf", java.util.List.of(java.util.Map.of("type","object"), java.util.Map.of("type","string")),
                                 "properties", Map.of(
-                                        "file_id", Map.of("type", "string"),
                                         "download_url", Map.of("type", "string"),
-                                        "name", Map.of("type", "string"),
+                                        "file_id", Map.of("type", "string"),
                                         "mime_type", Map.of("type", "string"),
-                                        "size", Map.of("type", "number")),
-                                "required", List.of("file_id", "download_url", "name")))))
+                                        "file_name", Map.of("type", "string")),
+                                "required", List.of("download_url", "file_id"),
+                                "additionalProperties", false)),
+                        "required", List.of("form")))
                 .description("ChatGPT only: takes the file object ChatGPT supplies when the person attaches a "
                         + "form in the chat (the \"form\" argument). Brownie fetches it, finds the places it can "
                         + "fill, and answers like get_form_upload does. No other chat app can hand Brownie a file "
@@ -94,7 +92,10 @@ final class McpFormFileTool {
                             + "call request_form_upload and give the person the link it returns.");
         }
         String url = stringField(file, "download_url");
-        String name = stringField(file, "name");
+        String name = stringField(file, "file_name");
+        if (name == null || name.isBlank()) {
+            name = stringField(file, "name");
+        }
         if (name == null || name.isBlank()) {
             name = "form";
         }
@@ -105,7 +106,8 @@ final class McpFormFileTool {
             bytes = fetcher.fetch(uri);
         } catch (Exception e) {
             throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
-                    "The file could not be fetched: " + e.getMessage());
+                    "The file could not be fetched: " + e.getMessage()
+                            + " Call request_form_upload and give the person the link it returns; they upload the form there.");
         }
 
         var issued = uploadService.create(caller, name);
@@ -168,8 +170,11 @@ final class McpFormFileTool {
                 && host.endsWith(".oaiusercontent.com")
                 && host.indexOf(':') < 0;
         if (!allowed) {
+            // The host only, never the path or query: enough to learn what hosts chat apps really send.
+            log.info("add_form_file refused a download_url on host {}", host == null ? "" : host);
             throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
-                    "Only files hosted by the chat app itself can be fetched.");
+                    "Brownie could not fetch that file from here. Call request_form_upload and give the person "
+                            + "the link it returns; they upload the form there.");
         }
         return uri;
     }
