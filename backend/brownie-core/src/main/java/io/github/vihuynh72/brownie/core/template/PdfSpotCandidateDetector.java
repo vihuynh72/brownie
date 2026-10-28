@@ -647,8 +647,10 @@ public final class PdfSpotCandidateDetector {
                     if (keyValue) {
                         PdfRect box = cell.grownBy(-CELL_INSET);
                         PdfRect left = leftNeighbor(cell, grid);
-                        PdfRect labelBand = left == null ? cell : left.union(cell.grownBy(-1));
-                        found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, labelBand, cell));
+                        String label = left == null ? null : labelText(frame.textIn(left));
+                        if (label != null) {
+                            found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell, label));
+                        }
                     }
                 } else if (!keyValue && (!headerRow || !headerCells.contains(cell))) {
                     addLabelCellPlace(frame, cell, words, found);
@@ -750,9 +752,12 @@ public final class PdfSpotCandidateDetector {
         }
         boolean leftWords = leftmost - cell.x() <= LEFT_LABEL_EMPTY / 2;
         if (leftWords && emptyRight >= LEFT_LABEL_EMPTY) {
-            PdfRect box = new PdfRect(rightmost + 1, cell.y() + CELL_INSET,
-                    emptyRight - CELL_INSET, cell.height() - 2 * CELL_INSET);
-            found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell));
+            String label = labelText(joined(words));
+            if (label != null) {
+                PdfRect box = new PdfRect(rightmost + 1, cell.y() + CELL_INSET,
+                        emptyRight - CELL_INSET, cell.height() - 2 * CELL_INSET);
+                found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell, label));
+            }
         }
     }
 
@@ -1393,6 +1398,7 @@ public final class PdfSpotCandidateDetector {
         final PdfRect box;
         final PdfRect labelBand;
         final PdfRect cell;
+        final String label;
         GridPlace grid;
 
         Found(Frame frame, PdfSpotCandidate.Kind kind, PdfRect box, PdfRect labelBand) {
@@ -1400,21 +1406,26 @@ public final class PdfSpotCandidateDetector {
         }
 
         Found(Frame frame, PdfSpotCandidate.Kind kind, PdfRect box, PdfRect labelBand, PdfRect cell) {
+            this(frame, kind, box, labelBand, cell, null);
+        }
+
+        Found(Frame frame, PdfSpotCandidate.Kind kind, PdfRect box, PdfRect labelBand, PdfRect cell, String label) {
             this.frame = frame;
             this.kind = kind;
             this.box = box;
             this.labelBand = labelBand;
             this.cell = cell;
+            this.label = label;
         }
 
         PdfSpotCandidate toCandidate(String id) {
             List<FrameWord> before = frame.wordsBefore(box, labelBand);
             String context = frame.contextOf(box);
-            String label;
-            if (grid != null && grid.header() != null) {
+            String label = this.label;
+            if (label == null && grid != null && grid.header() != null) {
                 label = TableCellLabels.label(grid.header(), grid.rowText(), grid.rowNumber(), grid.severalRows());
                 context = truncate(TableCellLabels.context(grid.header(), grid.rowText(), grid.rowNumber()), MAX_CONTEXT_CHARACTERS);
-            } else {
+            } else if (label == null) {
                 label = frame.labelFrom(before, box);
                 if (label == null) {
                     label = frame.nearestLabel(box, labelBand);
