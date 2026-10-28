@@ -4,6 +4,9 @@ import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactStatus;
 import io.github.vihuynh72.brownie.core.artifact.ReadableArtifact;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersion;
+import io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersionRepository;
+import io.github.vihuynh72.brownie.core.document.PdfFormGraph;
 import io.github.vihuynh72.brownie.core.revision.Document;
 import io.github.vihuynh72.brownie.core.revision.DocumentNotFoundException;
 import io.github.vihuynh72.brownie.core.revision.DocumentRevision;
@@ -44,6 +47,7 @@ public class CompilationService {
     private final DocumentRenderer documentRenderer;
     private final CompilationRepository compilationRepository;
     private final PdfTemplateFill pdfTemplateFill;
+    private final PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository;
 
     public CompilationService(
             RevisionService revisionService,
@@ -52,7 +56,8 @@ public class CompilationService {
             TemplateFiller templateFiller,
             DocumentRenderer documentRenderer,
             CompilationRepository compilationRepository,
-            PdfTemplateFill pdfTemplateFill) {
+            PdfTemplateFill pdfTemplateFill,
+            PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository) {
         this.revisionService = revisionService;
         this.templateRepository = templateRepository;
         this.artifactService = artifactService;
@@ -60,6 +65,7 @@ public class CompilationService {
         this.documentRenderer = documentRenderer;
         this.compilationRepository = compilationRepository;
         this.pdfTemplateFill = pdfTemplateFill;
+        this.pdfFormExtractionVersionRepository = pdfFormExtractionVersionRepository;
     }
 
     public CompilationManifest compile(long workspaceId, long userId, long documentId, long revisionId) {
@@ -77,7 +83,11 @@ public class CompilationService {
 
         byte[] templateBytes = readTemplateBytes(workspaceId, userId, templateVersion.sourceArtifactId());
         if (templateVersion.kind() == TemplateKind.PDF) {
-            PdfTemplateFill.Result result = pdfTemplateFill.fill(templateBytes, templateVersion.fieldDefinitions(), revision.content());
+            PdfFormGraph graph = pdfFormExtractionVersionRepository
+                    .findById(workspaceId, userId, templateVersion.pdfFormExtractionId())
+                    .map(PdfFormExtractionVersion::graph)
+                    .orElse(null);
+            PdfTemplateFill.Result result = pdfTemplateFill.fill(templateBytes, graph, templateVersion.fieldDefinitions(), revision.content());
             Artifact pdfArtifact = artifactService.storeGenerated(
                     workspaceId, userId, "form-" + documentId + "-r" + revision.revisionNumber() + ".pdf", result.filled().bytes());
             return compilationRepository.save(

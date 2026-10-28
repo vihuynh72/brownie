@@ -115,7 +115,7 @@ public class TemplateQualificationService implements TemplateBaselineRenderer {
                 .orElseThrow(() -> new IllegalStateException(
                         "PDF form reading " + draftVersion.pdfFormExtractionId() + " of template version " + draftVersion.id() + " no longer exists."));
         PdfTemplateFill.Result result = pdfTemplateFill.fill(
-                sourceBytes, draftVersion.fieldDefinitions(), pdfSampleContent(draftVersion.fieldDefinitions(), graph));
+                sourceBytes, graph, draftVersion.fieldDefinitions(), pdfSampleContent(draftVersion.fieldDefinitions(), graph));
         Artifact pdfArtifact = storeGenerated(
                 workspaceId, userId, "baseline-" + draftVersion.templateId() + "-v" + draftVersion.versionNumber() + ".pdf",
                 result.filled().bytes());
