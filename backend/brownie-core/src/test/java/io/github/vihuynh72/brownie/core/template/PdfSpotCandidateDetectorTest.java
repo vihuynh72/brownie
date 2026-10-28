@@ -46,6 +46,41 @@ class PdfSpotCandidateDetectorTest {
     }
 
     @Test
+    void twoRuleBandsCoveringEachOtherStayOnePlace() {
+        // A short rule drawn over a longer one is the same blank twice: only the longer band stays.
+        Page page = new Page()
+                .line(52, 40, 11, SANS, "Filled", "by:")
+                .rule(110, 44, 300, 44)
+                .rule(110, 46, 220, 46);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.stream().filter(c -> c.kind() == PdfSpotCandidate.Kind.RULE).count(),
+                () -> "candidates: " + candidates);
+        PdfSpotCandidate candidate = candidates.stream().filter(c -> c.kind() == PdfSpotCandidate.Kind.RULE).findFirst().orElseThrow();
+        org.junit.jupiter.api.Assertions.assertTrue(candidate.box().width() >= 180,
+                () -> "the longer band should be the place: " + candidate.box());
+    }
+
+    @Test
+    void aNarrowBoxBesideAWiderOneOnTheSameRowIsTheCellNotASecondPlace() {
+        // One label over a narrow box and a box three times wider: the row's one
+        // place is the wide box, named by the label, and the narrow box is not another.
+        Page page = new Page()
+                .line(38, 38, 9, SANS, "Middle", "Name")
+                .rect(new PdfRect(50, 30, 42, 15))
+                .rect(new PdfRect(94, 30, 126, 15));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        PdfSpotCandidate candidate = candidates.get(0);
+        assertEquals("Middle Name", candidate.labelGuess());
+        org.junit.jupiter.api.Assertions.assertTrue(candidate.box().x() >= 94,
+                () -> "the place should be the wide box, not the narrow one: " + candidate.box());
+    }
+
+    @Test
     void aLabelAtTheTopOfAThinRectCellLeavesTheRoomBelowToFill() {
         Page page = new Page()
                 .line(55, 78, 9, SANS, "Legal", "Name", "(Last,", "First,", "Middle)")
