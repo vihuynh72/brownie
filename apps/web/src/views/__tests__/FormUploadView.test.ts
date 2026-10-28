@@ -29,7 +29,8 @@ describe('FormUploadView', () => {
     const wrapper = mount(FormUploadView, { global: { plugins: [r] } })
     await flushPromises()
     expect(wrapper.text()).toContain('Claude asked you to share a form with Brownie')
-    expect(wrapper.text()).toContain('.docx')
+    expect(wrapper.find('input[type="file"]').attributes('accept')).toContain('.odt')
+    expect(wrapper.text()).toContain('a Word document, PDF, ODT or RTF form')
     expect(fetch).toHaveBeenCalledWith('/api/v1/mcp-uploads/brownie_up_test')
   })
 
@@ -61,8 +62,47 @@ describe('FormUploadView', () => {
     await wrapper.find('input[type="file"]').trigger('change')
     await flushPromises()
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(wrapper.text()).toContain('You can go back to ChatGPT')
+    expect(wrapper.text()).toContain('Go back to ChatGPT and tell it the form is uploaded.')
     expect(wrapper.text()).toContain('5 places')
+  })
+
+  it('while a file is being read it says what is happening and how long it takes', async () => {
+    let resolveSend: ((r: Response) => void) | undefined
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => ok({ state: 'PENDING', client_name: 'Claude', expires_at: 'x' }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSend = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    const r = router()
+    await r.push('/upload/brownie_up_slow')
+    const wrapper = mount(FormUploadView, { global: { plugins: [r] } })
+    await flushPromises()
+    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'form.pdf')] })
+    await wrapper.find('input[type="file"]').trigger('change')
+    await flushPromises()
+    const progress = wrapper.find('[role="status"]')
+    expect(progress.exists()).toBe(true)
+    expect(progress.text()).toContain('Brownie is reading your form and finding the places to fill')
+    expect(progress.text()).toContain('5 to 30 seconds')
+    resolveSend?.(new Response(JSON.stringify({ state: 'READY', template_id: 1, name: 'F', spot_count: 2 }), { status: 200 }))
+    await flushPromises()
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+  })
+
+  it('a file too big for Brownie is told so in its own words', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => ok({ state: 'PENDING', client_name: 'Claude', expires_at: 'x' }))
+      .mockImplementationOnce(() => Promise.resolve(new Response('', { status: 413 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const r = router()
+    await r.push('/upload/brownie_up_big')
+    const wrapper = mount(FormUploadView, { global: { plugins: [r] } })
+    await flushPromises()
+    const input = wrapper.find('input[type="file"]').element as HTMLInputElement
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'big.pdf')] })
+    await wrapper.find('input[type="file"]').trigger('change')
+    await flushPromises()
+    expect(wrapper.text()).toContain('This file is larger than Brownie takes (10 MB). Try a smaller copy.')
   })
 
   it('a failed intake shows the reason and the way out', async () => {

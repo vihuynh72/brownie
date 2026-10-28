@@ -11,6 +11,9 @@ public interface JobEventRepository {
 
     List<JobEvent> findAfter(long workspaceId, long actorUserId, long afterEventId, int limit);
 
+    /** The job's most recent event, so a caller can say what a terminal job said last. */
+    java.util.Optional<JobEvent> latestForJob(long workspaceId, long actorUserId, long jobId);
+
     /**
      * Returns whether this actor can still read the global event cursor within
      * the requested workspace. This distinguishes a missing reconnect cursor

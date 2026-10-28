@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { FORM_FILE_ACCEPT } from '@/upload/formFileTypes'
 
 const route = useRoute()
 const token = computed(() => String(route.params.token ?? ''))
@@ -13,8 +14,8 @@ const expiresAt = ref('')
 const doneMessage = ref('')
 const dragOver = ref(false)
 
-const ACCEPTED = '.docx,.pdf'
-const ACCEPTED_WORDS = 'a Word document (.docx) or a PDF form (.pdf)'
+const ACCEPTED = FORM_FILE_ACCEPT
+const ACCEPTED_WORDS = 'a Word document, PDF, ODT or RTF form'
 
 async function peek() {
   try {
@@ -43,6 +44,11 @@ async function send(file: File | undefined) {
     })
     if (response.status === 404) {
       phase.value = 'gone'
+      return
+    }
+    if (response.status === 413) {
+      doneMessage.value = 'This file is larger than Brownie takes (10 MB). Try a smaller copy.'
+      phase.value = 'failed'
       return
     }
     const data = await response.json()
@@ -99,8 +105,18 @@ onMounted(peek)
       <span class="form-upload__kinds">{{ ACCEPTED_WORDS }}</span>
     </label>
 
+    <p
+      v-if="phase === 'sending'"
+      class="form-upload__progress"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="form-upload__spinner" aria-hidden="true" />
+      Brownie is reading your form and finding the places to fill. This usually takes 5 to 30 seconds.
+    </p>
+
     <p v-else-if="phase === 'done'" class="form-upload__note">
-      {{ doneMessage }} You can go back to {{ clientName }}.
+      {{ doneMessage }} Go back to {{ clientName }} and tell it the form is uploaded.
     </p>
 
     <template v-else-if="phase === 'failed'">
@@ -151,5 +167,31 @@ onMounted(peek)
   margin-inline: auto;
   max-inline-size: 36rem;
   text-align: center;
+}
+
+.form-upload__progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-inline: auto;
+  max-inline-size: 36rem;
+  text-align: center;
+}
+
+.form-upload__spinner {
+  inline-size: 1.1rem;
+  block-size: 1.1rem;
+  flex: none;
+  border: 2px solid var(--color-border, #ccc);
+  border-top-color: var(--color-accent, #555);
+  border-radius: 50%;
+  animation: form-upload-spin 0.9s linear infinite;
+}
+
+@keyframes form-upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

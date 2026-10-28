@@ -60,7 +60,8 @@ class McpFillOrchestrationDedupeTest {
     private final QuestionService questionService = mock(QuestionService.class);
     private final RevisionService revisionService = mock(RevisionService.class);
     private final McpFillOrchestration fill = new McpFillOrchestration(
-            orchestration, runRepository, jobRepository, questionService,
+            orchestration, runRepository, jobRepository,
+            mock(io.github.vihuynh72.brownie.core.job.JobEventRepository.class), questionService,
             mock(PatchProposalRepository.class), mock(McpAppliedRunRepository.class),
             revisionService, mock(TemplateService.class), mock(DocumentSourceService.class),
             new McpSettings("http://localhost:8081"));

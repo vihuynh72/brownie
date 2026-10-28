@@ -18,6 +18,7 @@ import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,8 +45,15 @@ import java.util.Set;
 public class ExtractionService {
 
     /** The most one extraction request may produce; also the least a run's first request holds in the usage ledger. */
-    public static final int MAX_OUTPUT_TOKENS = 2000;
+    /** The largest output a single extraction call asks for. */
+    public static final int MAX_OUTPUT_TOKENS = 8000;
     private static final int MAX_ATTEMPTS = 2;
+    /** The reply's floor cost, plus what each scalar candidate object costs it. */
+    private static final int OUTPUT_BASE = 600;
+    private static final int OUTPUT_PER_FIELD = 50;
+    /** Past this many reply objects' worth of fields the fields go out in several calls, 140 scalars each. */
+    private static final int REPLY_FITS_ONE_CALL = 148;
+    private static final int SCALARS_PER_CALL = 140;
 
     private final DocumentExtractionService documentExtractionService;
     private final SourceService sourceService;
@@ -106,15 +114,41 @@ public class ExtractionService {
             List<FieldDefinition> fieldDefinitions, List<LabeledExcerpt> excerpts, UsageBudget budget, CancellationSignal cancellationSignal)
             throws ModelTransportException, ExtractionFailedException, ExtractionResponseParseException, BudgetExceededException,
                     ExtractionCancelledException {
-        List<FieldDefinition> scalarFields =
-                fieldDefinitions.stream().filter(f -> f.cardinality() == FieldCardinality.SCALAR).toList();
-        List<FieldDefinition> repeatedFields =
-                fieldDefinitions.stream().filter(f -> f.cardinality() == FieldCardinality.REPEATED).toList();
-
         Set<Long> allowedSpanIds = new HashSet<>();
         excerpts.forEach(excerpt -> allowedSpanIds.add(excerpt.spanId()));
 
-        ModelRequest request = ExtractionPromptBuilder.build(fieldDefinitions, excerpts, MAX_OUTPUT_TOKENS);
+        Map<String, FieldCandidate> scalarCandidates = new LinkedHashMap<>();
+        List<RepeatedItemCandidate> repeatedItems = new ArrayList<>();
+        boolean first = true;
+        for (List<FieldDefinition> batch : batches(fieldDefinitions)) {
+            if (!first && cancellationSignal.isCancellationRequested()) {
+                throw new ExtractionCancelledException();
+            }
+            ExtractionResult part = extractOneBatch(batch, excerpts, allowedSpanIds, budget, cancellationSignal);
+            scalarCandidates.putAll(part.scalarCandidates());
+            repeatedItems.addAll(part.repeatedItems());
+            first = false;
+        }
+        return new ExtractionResult(scalarCandidates, repeatedItems);
+    }
+
+    /**
+     * One request's worth of fields, answered by one call and its own repair
+     * attempts. The call's output cap is sized to the fields it carries, not a
+     * constant: each scalar candidate object costs the reply about fifty
+     * tokens and a repeated group about ten times that.
+     */
+    private ExtractionResult extractOneBatch(
+            List<FieldDefinition> batchFields, List<LabeledExcerpt> excerpts, Set<Long> allowedSpanIds,
+            UsageBudget budget, CancellationSignal cancellationSignal)
+            throws ModelTransportException, ExtractionFailedException, ExtractionResponseParseException, BudgetExceededException,
+                    ExtractionCancelledException {
+        List<FieldDefinition> scalarFields =
+                batchFields.stream().filter(f -> f.cardinality() == FieldCardinality.SCALAR).toList();
+        List<FieldDefinition> repeatedFields =
+                batchFields.stream().filter(f -> f.cardinality() == FieldCardinality.REPEATED).toList();
+
+        ModelRequest request = ExtractionPromptBuilder.build(batchFields, excerpts, outputTokenCap(batchFields));
         int estimatedInputTokens = UsageBudget.estimateInputTokens(request);
 
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -172,6 +206,42 @@ public class ExtractionService {
             }
         }
         throw new IllegalStateException("Unreachable: the loop above always returns or throws by its last attempt.");
+    }
+
+    /**
+     * The fields one request carries. A reply object per field costs the
+     * answer roughly fifty tokens and a repeated group ten times that, so a
+     * form whose fields would not fit one call's cap is split into as many
+     * calls of consecutive scalar fields as it needs, each getting the same
+     * excerpts and the same repair rule. Repeated fields ride with the
+     * first call: their items are one object each too, and the first call
+     * is the least crowded.
+     */
+    public static List<List<FieldDefinition>> batches(List<FieldDefinition> fieldDefinitions) {
+        List<FieldDefinition> scalars =
+                fieldDefinitions.stream().filter(f -> f.cardinality() == FieldCardinality.SCALAR).toList();
+        List<FieldDefinition> repeated =
+                fieldDefinitions.stream().filter(f -> f.cardinality() == FieldCardinality.REPEATED).toList();
+        int size = scalars.size() + 10 * repeated.size();
+        if (size <= REPLY_FITS_ONE_CALL) {
+            return List.of(fieldDefinitions);
+        }
+        List<List<FieldDefinition>> batches = new ArrayList<>();
+        for (int start = 0; start < scalars.size(); start += SCALARS_PER_CALL) {
+            List<FieldDefinition> batch = new ArrayList<>(scalars.subList(start, Math.min(start + SCALARS_PER_CALL, scalars.size())));
+            if (start == 0) {
+                batch.addAll(repeated);
+            }
+            batches.add(batch);
+        }
+        return batches;
+    }
+
+    public static int outputTokenCap(List<FieldDefinition> fields) {
+        int size = fields.stream()
+                .mapToInt(f -> f.cardinality() == FieldCardinality.REPEATED ? 10 : 1)
+                .sum();
+        return Math.min(MAX_OUTPUT_TOKENS, OUTPUT_BASE + OUTPUT_PER_FIELD * size);
     }
 
     /**
