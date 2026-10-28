@@ -637,8 +637,12 @@ public final class PdfSpotCandidateDetector {
         // A cell is named by its own words: at its left or on its top line,
         // leaving the rest of it to fill. A whole column of empty cells
         // beside a column of words is a table of key and value rows.
+        // A fill band whose line is a cell's border is not a place of its own.
         found.removeIf(candidate -> candidate.kind == PdfSpotCandidate.Kind.RULE
-                && cells.stream().anyMatch(cell -> cell.overlapArea(candidate.box) > 0));
+                && cells.stream().anyMatch(cell -> cell.x() - SHARED_EDGE <= candidate.box.x()
+                        && candidate.box.right() <= cell.right() + SHARED_EDGE
+                        && (Math.abs(candidate.box.bottom() - cell.y()) <= SHARED_EDGE
+                                || Math.abs(candidate.box.y() - cell.bottom()) <= SHARED_EDGE)));
         for (List<PdfRect> grid : cellGrids(cells)) {
             boolean keyValue = isKeyValueGrid(frame, grid);
             List<PdfRect> headerCells = topRowOf(grid);
@@ -749,9 +753,12 @@ public final class PdfSpotCandidateDetector {
         double emptyRight = cell.right() - rightmost;
         boolean topWords = cell.bottom() - highestWordTop <= 2 * lineHeightFor(words.get(0).sizePt);
         if (topWords && emptyBelow >= TOP_LABEL_EMPTY) {
-            PdfRect box = new PdfRect(cell.x() + CELL_INSET, cell.y() + CELL_INSET,
-                    cell.width() - 2 * CELL_INSET, emptyBelow - CELL_INSET);
-            found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell));
+            String label = labelText(joined(words));
+            if (label != null) {
+                PdfRect box = new PdfRect(cell.x() + CELL_INSET, cell.y() + CELL_INSET,
+                        cell.width() - 2 * CELL_INSET, emptyBelow - CELL_INSET);
+                found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell, label));
+            }
             return;
         }
         boolean leftWords = leftmost - cell.x() <= LEFT_LABEL_EMPTY / 2;
