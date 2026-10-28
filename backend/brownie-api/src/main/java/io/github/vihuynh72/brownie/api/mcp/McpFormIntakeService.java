@@ -71,8 +71,9 @@ class McpFormIntakeService {
         TemplateService.ActivationWithDrops activated = templateService.activateDroppingUnwritableFoundPlaces(
                 workspaceId, userId, template.id(), draft.versionNumber());
         TemplateVersion active = activated.version();
+        // Only the places that survived activation are kept: a place the baseline could not write was dropped from the version.
         fillSpotReviewService.keep(workspaceId, userId, template.id(),
-                fields.stream().map(FieldDefinition::fieldId).toList());
+                active.fieldDefinitions().stream().map(FieldDefinition::fieldId).toList());
         return new IntakeResult(template, active, activated.droppedLabels());
     }
 
