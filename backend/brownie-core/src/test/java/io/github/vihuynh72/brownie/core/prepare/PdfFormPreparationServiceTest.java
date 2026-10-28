@@ -542,7 +542,7 @@ class PdfFormPreparationServiceTest {
 
         PdfFormPreparationService service() {
             ArtifactService artifacts = new ArtifactService(new OneArtifact(this), new OneBlob(), null, 1_000_000, Duration.ofHours(1));
-            return new PdfFormPreparationService(artifacts, reader, readings, namer);
+            return new PdfFormPreparationService(artifacts, reader, readings, namer, null);
         }
 
         PdfFillableForms forms() {

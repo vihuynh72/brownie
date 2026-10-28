@@ -255,7 +255,7 @@ describe('the notes about a form Brownie made ready', () => {
   it('never uses the words people do not know', () => {
     const codes = ['TRACKED_CHANGES_AND_COMMENTS', 'MACROS_REMOVED', 'SIGNATURE_REMOVED', 'LINKED_CONTENT_REMOVED', 'FIELDS_FROZEN',
       'EMBEDDED_FILES_TO_PICTURES', 'EDITING_RESTRICTION_REMOVED', 'CONVERTED', 'NO_SPOTS_FOUND', 'SIGNATURE_LINES_LEFT', 'CHECKBOXES_LEFT',
-      'SOME_NAMED_BY_RULES', 'SPOTS_SKIPPED', 'PLACES_LEFT_OUT', 'BLANKS_OUTSIDE_BODY', 'TABLE_ROWS_GROW', 'PDF_FIELDS_LEFT', 'SPOTS_FOUND']
+      'SOME_NAMED_BY_RULES', 'SPOTS_SKIPPED', 'PLACES_LEFT_OUT', 'BLANKS_OUTSIDE_BODY', 'TABLE_ROWS_GROW', 'PDF_FIELDS_LEFT', 'READ_FROM_PICTURE', 'SPOTS_FOUND']
     const notes = formNoteSentences(word([
       ...codes.map((code) => ({ code, count: 2 })),
       ...['FLOATING_SHAPE', 'NESTED_TABLE', 'EMBEDDED_OBJECT', 'DYNAMIC_FIELD', 'TRACKED_FORMATTING_CHANGE'].map((detail) => ({ code: 'KEPT_AS_IS', count: 1, detail })),
