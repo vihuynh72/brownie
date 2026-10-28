@@ -97,6 +97,7 @@ class McpFormUploadController {
             out.put("template_id", template.id());
             out.put("name", template.displayName());
             out.put("spot_count", taken.activeVersion().fieldDefinitions().size());
+            out.put("places_left_out", taken.placesLeftOut());
             return out;
         } catch (Exception failure) {
             String reason = reason(failure);
