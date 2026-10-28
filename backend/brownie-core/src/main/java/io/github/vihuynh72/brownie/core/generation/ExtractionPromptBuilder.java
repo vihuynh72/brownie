@@ -145,6 +145,7 @@ public final class ExtractionPromptBuilder {
         return switch (type) {
             case TEXT -> "text";
             case DATE -> "date, formatted YYYY-MM-DD";
+            case CHECKBOX -> "checkbox, yes or no";
         };
     }
 

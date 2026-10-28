@@ -263,6 +263,8 @@ class GenerationController {
                         new ProposedFieldResponse("TEXT", "REPEATED", null, texts, evidenceSpanIds);
                 case FieldValue.RepeatedDateValue(List<java.time.LocalDate> dates) -> new ProposedFieldResponse(
                         "DATE", "REPEATED", null, dates.stream().map(java.time.LocalDate::toString).toList(), evidenceSpanIds);
+                case FieldValue.CheckboxValue(boolean checked) ->
+                        new ProposedFieldResponse("CHECKBOX", "SCALAR", checked ? "checked" : "unchecked", null, evidenceSpanIds);
             };
         }
     }
