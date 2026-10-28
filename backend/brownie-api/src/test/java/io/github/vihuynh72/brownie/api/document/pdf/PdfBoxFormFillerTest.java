@@ -59,6 +59,30 @@ class PdfBoxFormFillerTest {
     private final PdfBoxFillVerifier verifier = new PdfBoxFillVerifier();
 
     @Test
+    void aBoxTwoMinimumLinesTallWrapsAValueItCannotShrinkIntoOne() throws IOException {
+        byte[] flat = PdfFormFixtures.flatForm();
+        PdfRect twoMinLines = new PdfRect(140, 80, 130, 15);
+        String address = "1180 Harbor Way, Apt 4B, Oakland, CA 94607";
+
+        FilledPdf filled = filler.fill(flat, request(box("address", 1, twoMinLines, 12, address)));
+
+        assertEquals(List.of(new PdfFillFinding("address", PdfFillFindingCode.FIELD_TEXT_SHRUNK, "6")), filled.findings());
+        assertTrue(filled.wrote("address"));
+        assertEquals(List.of(), verifier.verify(flat, filled, request(box("address", 1, twoMinLines, 12, address))));
+    }
+
+    @Test
+    void aSingleLineBoxStillRefusesAValueThatCannotFit() throws IOException {
+        byte[] flat = PdfFormFixtures.flatForm();
+        PdfRect oneLine = new PdfRect(140, 80, 130, 10);
+        String impossible = "1180 Harbor Way, Apt 4B, Oakland, CA 94607".repeat(4);
+
+        FilledPdf filled = filler.fill(flat, request(box("address", 1, oneLine, 12, impossible)));
+
+        assertEquals(List.of(new PdfFillFinding("address", PdfFillFindingCode.FIXED_FIELD_OVERFLOW, null)), filled.findings());
+    }
+
+    @Test
     void vietnameseGivenComposedOrDecomposedIsWrittenWithTheFontsOwnLetters() throws IOException {
         String decomposed = Normalizer.normalize(VIETNAMESE_NAME, Normalizer.Form.NFD);
         assertNotEquals(VIETNAMESE_NAME, decomposed);
@@ -219,7 +243,7 @@ class PdfBoxFormFillerTest {
         String longer = "Jordan Alexander Lee-Nguyen";
 
         FilledPdf shrunk = filler.fill(flat, request(box("name", 1, narrow, 12, longer)));
-        FilledPdf tooLong = filler.fill(flat, request(box("name", 1, narrow, 12, longer.repeat(3))));
+        FilledPdf tooLong = filler.fill(flat, request(box("name", 1, narrow, 12, longer.repeat(6))));
         FilledPdf blocked = filler.fill(flat, new PdfFillRequest(List.of(new PdfFillItem("name",
                 new PdfFillTarget.Box(1, narrow, new PdfTextStyle(PdfFontFamily.SANS, false, 12), false), longer, PdfOverflowPolicy.BLOCK))));
 

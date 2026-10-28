@@ -446,8 +446,8 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         PdfFormGraph.CropBox cropBox = new PdfFormGraph.CropBox(crop.getLowerLeftX(), crop.getLowerLeftY(), crop.getWidth(), crop.getHeight());
         PdfBoxGeometry.UprightFrame frame = PdfBoxGeometry.uprightFrame(target.box(), cropBox, page.getRotation());
         double start = target.style().sizePt();
-        double lineAdvance = start * (metrics.ascent - metrics.descent + metrics.lineGap);
-        boolean wrap = target.multiline() || frame.height() >= 2 * lineAdvance;
+        double minLineAdvance = 6 * (metrics.ascent - metrics.descent + metrics.lineGap);
+        boolean wrap = target.multiline() || frame.height() >= 2 * minLineAdvance;
         PdfTextLayout.Result result = PdfTextLayout.layOut(new PdfTextLayout.Request(
                 wrap ? text : text.replace('\n', ' '), frame.width(), frame.height(), BOX_PADDING, wrap, true, 0, 0,
                 start, item.overflow() == PdfOverflowPolicy.SHRINK_TO_FIT, metrics.ascent, metrics.descent, metrics.lineGap),
