@@ -99,6 +99,56 @@ class PdfSpotCandidateDetectorTest {
         assertTrue(candidates.isEmpty() || candidates.stream().allMatch(c -> !"Name".equals(c.labelGuess())));
     }
 
+
+    /** A cell whose words decode as garbage gets no cell place. */
+    @Test
+    void aCellOfGarbageWordsLeavesNoPlace() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "�")
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(List.of(), candidates);
+    }
+
+    /** A cell place that cannot be named by anything sane is dropped. */
+    @Test
+    void aCellPlaceWhoseLabelIsOnlyPunctuationIsNotAPlace() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "-")
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertTrue(candidates.stream().noneMatch(c -> "-".equals(c.labelGuess())));
+    }
+
+    /** The exact shape in a cell beats the cell's own looser place. */
+    @Test
+    void aCellAlreadyHoldingAnExactBlankGetsOnlyThatPlace() {
+        Page page = new Page()
+                .line(55, 45, 11, SANS, "Home", "Phone")
+                .line(200, 45, 9, SANS, "___________")
+                .rule(50, 60, 400, 60)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 60)
+                .rule(400, 30, 400, 60);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        assertEquals(PdfSpotCandidate.Kind.UNDERSCORES, candidates.get(0).kind());
+    }
+
     /** A long line of ordinary text, so that the page has a right margin like a real one. */
     private static final String BODY = "Please complete every part of this form and return it to the front desk by Friday.";
 

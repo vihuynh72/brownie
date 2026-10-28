@@ -135,7 +135,14 @@ public final class PdfSpotCandidateDetector {
             if (candidates.size() == MAX_CANDIDATES) {
                 break;
             }
-            candidates.add(place.toCandidate("c" + (candidates.size() + 1)));
+            PdfSpotCandidate spot = place.toCandidate("c" + (candidates.size() + 1));
+            // A place a ruled cell produced must carry its cell's own words
+            // as a name; an unnamed cell place (labelBand == cell marks a
+            // rule-cell place, not a drawn empty box's) is not one.
+            if (place.cell != null && place.labelBand == place.cell && badLabel(spot.labelGuess())) {
+                continue;
+            }
+            candidates.add(spot);
         }
         return candidates;
     }
@@ -651,8 +658,13 @@ public final class PdfSpotCandidateDetector {
             for (PdfRect cell : grid) {
                 List<FrameWord> words = frame.readingWords.stream()
                         .filter(word -> cell.grownBy(-1).contains(word.box.centerX(), word.box.centerY())).toList();
+                if (!words.isEmpty() && mojibake(words)) {
+                    continue;
+                }
+                boolean alreadyTaken = found.stream().anyMatch(other -> other.cell != cell
+                        && cell.overlapArea(other.box) > 0);
                 if (words.isEmpty()) {
-                    if (keyValue) {
+                    if (keyValue && !alreadyTaken) {
                         PdfRect box = cell.grownBy(-CELL_INSET);
                         PdfRect left = leftNeighbor(cell, grid);
                         String label = left == null ? null : labelText(frame.textIn(left.grownBy(-CELL_INSET)));
@@ -660,7 +672,7 @@ public final class PdfSpotCandidateDetector {
                             found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell, label));
                         }
                     }
-                } else if (!keyValue && (!headerRow || !headerCells.contains(cell))) {
+                } else if (!keyValue && !alreadyTaken && (!headerRow || !headerCells.contains(cell))) {
                     addLabelCellPlace(frame, cell, words, found);
                 }
             }
@@ -701,6 +713,18 @@ public final class PdfSpotCandidateDetector {
     }
 
     /** The grid's uppermost cells: the ones nothing sits above. */
+    /** A label made only of punctuation is no name for a place. */
+    private static boolean badLabel(String label) {
+        return label == null || label.isBlank()
+                || label.codePoints().noneMatch(Character::isLetterOrDigit);
+    }
+
+    /** Words that decode as replacement or control characters cannot name anything. */
+    private static boolean mojibake(List<FrameWord> words) {
+        return words.stream().anyMatch(word -> word.text.codePoints().anyMatch(
+                c -> c == '�' || Character.getType(c) == Character.CONTROL));
+    }
+
     private static List<PdfRect> topRowOf(List<PdfRect> grid) {
         return grid.stream()
                 .filter(cell -> grid.stream().noneMatch(other -> other != cell
