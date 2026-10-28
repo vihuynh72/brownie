@@ -23,8 +23,8 @@ import java.util.regex.Pattern;
  * body is read whole before a controller sees it, so one request could ask
  * the server to hold whatever it likes.
  *
- * <p>It applies to every body except the one route that receives a file,
- * which has its own, larger limit enforced where the bytes are stored.
+ * <p>It applies to every body except the two routes that receive a file,
+ * which each have their own, larger limit enforced where the bytes are stored.
  * What kind of body the request says it carries is not asked: a body is
  * read into the same objects whether it is labelled JSON or anything else
  * a converter on the class path understands, and a limit that went by the
@@ -40,6 +40,7 @@ import java.util.regex.Pattern;
 public class RequestBodyLimitFilter extends OncePerRequestFilter {
 
     private static final Pattern FILE_UPLOAD = Pattern.compile("^/api/v1/workspaces/[^/]+/uploads/[^/]+/content$");
+    private static final Pattern ONE_TIME_FORM_UPLOAD = Pattern.compile("^/api/v1/mcp-uploads/[^/]+$");
     private static final UrlPathHelper PATHS = new UrlPathHelper();
 
     private final long maxBytes;
@@ -53,7 +54,10 @@ public class RequestBodyLimitFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return "PUT".equals(request.getMethod()) && FILE_UPLOAD.matcher(PATHS.getPathWithinApplication(request)).matches();
+        String path = PATHS.getPathWithinApplication(request);
+        // Both routes receive a file; each has its own, larger limit enforced where the bytes are stored.
+        return "PUT".equals(request.getMethod()) && FILE_UPLOAD.matcher(path).matches()
+                || "POST".equals(request.getMethod()) && ONE_TIME_FORM_UPLOAD.matcher(path).matches();
     }
 
     @Override

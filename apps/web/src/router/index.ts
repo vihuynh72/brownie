@@ -46,6 +46,8 @@ const router = createRouter({
       path: '/upload/:token',
       name: 'form-upload',
       component: () => import('@/views/FormUploadView.vue'),
+      // A link someone opens from a chat app stands alone: none of the app's chrome is for them.
+      meta: { bare: true },
     },
     {
       // Where Google sends a person back after its consent page, as well as the page itself.
