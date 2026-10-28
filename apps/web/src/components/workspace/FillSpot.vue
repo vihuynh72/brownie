@@ -24,7 +24,7 @@ const props = withDefaults(
   defineProps<{
     /** The repeated item this spot edits; null for a scalar field. */
     rowIndex: number | null
-    type: 'TEXT' | 'DATE'
+    type: 'TEXT' | 'DATE' | 'CHECKBOX'
     value: string
     label: string
     /** The template's own text inside the spot, shown while it is empty. */
@@ -186,6 +186,10 @@ function onPaste(event: ClipboardEvent): void {
 
 function onInput(event: Event): void {
   const control = event.target as HTMLTextAreaElement | HTMLInputElement
+  if (props.type === 'CHECKBOX') {
+    emit('update:value', (control as HTMLInputElement).checked ? 'checked' : 'unchecked')
+    return
+  }
   let value = control.value
   if (props.type === 'TEXT' && hasLineBreak(value)) {
     // A line break that arrived some other way (dropped text, a phone keyboard's return key) is
@@ -227,6 +231,23 @@ function onInput(event: Event): void {
         @focus="emit('focus')"
         @click="emit('focus')"
       ></textarea>
+      <input
+        v-else-if="type === 'CHECKBOX'"
+        :id="inputId"
+        type="checkbox"
+        class="fill-spot__control fill-spot__control--checkbox"
+        :checked="shownValue === 'checked'"
+        :aria-label="accessibleName"
+        :aria-describedby="describedBy"
+        :aria-checked="shownValue === 'checked' ? 'true' : 'false'"
+        :aria-readonly="readOnly ? 'true' : undefined"
+        :disabled="readOnly"
+        :style="controlStyle"
+        @input="onInput"
+        @keydown="onKeydown"
+        @focus="emit('focus')"
+        @click="emit('focus')"
+      />
       <template v-else>
         <input
           :id="inputId"

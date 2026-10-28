@@ -1832,7 +1832,7 @@ export interface components {
         };
         FieldValueRequest: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string;
@@ -1840,7 +1840,7 @@ export interface components {
         };
         FieldValueResponse: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string | null;
@@ -1934,7 +1934,7 @@ export interface components {
             fieldId?: string | null;
             label?: string | null;
             /** @enum {string|null} */
-            type?: "TEXT" | "DATE" | null;
+            type?: "TEXT" | "DATE" | "CHECKBOX" | null;
             anchor?: components["schemas"]["DocxAnchor"] | null;
             /** @description ADD_BOX only. */
             pageNumber?: number | null;
@@ -2256,7 +2256,7 @@ export interface components {
         FieldDefinitionResponse: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /** @enum {string} */
@@ -2541,7 +2541,7 @@ export interface components {
         FieldDefinitionRequest: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /** @enum {string} */
@@ -2631,7 +2631,7 @@ export interface components {
             /** @description Null for a control the form had already named with a usable id; its name is worked out from fieldId. */
             label?: string | null;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /**
@@ -2665,7 +2665,7 @@ export interface components {
         CandidateFieldBindingResponse: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             contentControlTag: string;
@@ -2914,7 +2914,7 @@ export interface components {
         };
         AssistInterpretationResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             scope?: components["schemas"]["AssistScopeResponse"] | null;
             executable: boolean;
@@ -2925,7 +2925,7 @@ export interface components {
         };
         AssistExecutionResponse: {
             /** @enum {string} */
-            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "ANSWERS" | "NONE";
+            kind: "DRAFT" | "CHANGE_FIELD" | "REWRITE_FIELD" | "EXPLAIN_FINDING" | "ADD_FILL_SPOT" | "RENAME_FILL_SPOT" | "REMOVE_FILL_SPOT" | "NONE";
             summary: string;
             proposal?: components["schemas"]["PatchProposalResponse"] | null;
             explanation?: string | null;
@@ -3009,7 +3009,7 @@ export interface components {
         /** @description Exactly one of value (SCALAR) or values (REPEATED) is set, the same shape FieldValueResponse uses for a stored field. */
         ProposedFieldResponse: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string | null;
