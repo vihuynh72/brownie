@@ -61,6 +61,18 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
         }
         assertThat(mine).isNotNull();
         assertThat(mine.get("_meta").get("openai/fileParams").get(0).asText()).isEqualTo("form");
+
+        // OpenAI's file-parameter shape: exactly these four keys, only two required, nothing else allowed.
+        JsonNode form = mine.get("inputSchema").get("properties").get("form");
+        assertThat(form.get("type").asText()).isEqualTo("object");
+        assertThat(form.get("required")).extracting(JsonNode::asText)
+                .containsExactlyInAnyOrder("download_url", "file_id");
+        assertThat(form.get("properties").fieldNames()).toIterable()
+                .containsExactlyInAnyOrder("download_url", "file_id", "mime_type", "file_name");
+        assertThat(form.get("additionalProperties").asBoolean()).isFalse();
+        assertThat(form.has("anyOf")).isFalse();
+        assertThat(mine.get("inputSchema").get("required")).extracting(JsonNode::asText)
+                .containsExactly("form");
     }
 
     @Test
@@ -73,7 +85,7 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
         JsonNode out = readJson(mcpRaw(token, call(Map.of(
                 "file_id", "file-1",
                 "download_url", "https://files.oaiusercontent.com/abc123",
-                "name", "application.docx",
+                "file_name", "application.docx",
                 "mime_type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))))
                 .get("result").get("structuredContent");
         assertThat(out.get("state").asText()).isEqualTo("READY");
@@ -87,6 +99,23 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
     }
 
     @Test
+    void aFileNameOnTheFileNamesTheTemplate() throws Exception {
+        Browser browser = signIn("subject-file-named", ISSUER);
+        String token = issueToken(browser, "named", "[\"fill\",\"read\"]").token();
+        assertThat(mcpRaw(token, initialize()).statusCode()).isEqualTo(200);
+        when(fetcher.fetch(any())).thenReturn(minimalDocx());
+
+        JsonNode out = readJson(mcpRaw(token, call(Map.of(
+                "file_id", "file-2",
+                "download_url", "https://files.oaiusercontent.com/xyz",
+                "file_name", "rental-application.docx",
+                "mime_type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))))
+                .get("result").get("structuredContent");
+        assertThat(out.get("state").asText()).isEqualTo("READY");
+        assertThat(out.get("name").asText()).contains("rental-application");
+    }
+
+    @Test
     void onlyTheChatAppsOwnHostIsEverAsked() throws Exception {
         Browser browser = signIn("subject-file-hosts", ISSUER);
         String token = issueToken(browser, "hosts", "[\"fill\"]").token();
@@ -95,11 +124,14 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
         for (String bad : new String[] {
             "https://localhost/x", "http://files.oaiusercontent.com/x",
             "https://127.0.0.1/x", "file:///etc/passwd", "https://evil.com/x",
-            "https://files.oaiusercontent.com.evil.com/x"
+            "https://files.oaiusercontent.com.evil.com/x",
+            "https://chatgpt.com/api/library/files/libfile_abc/download"
         }) {
             JsonNode answer = readJson(mcpRaw(token, call(Map.of(
-                    "file_id", "f", "download_url", bad, "name", "x.docx"))));
+                    "file_id", "f", "download_url", bad, "file_name", "x.docx"))));
             assertThat(answer.get("result").get("isError").asBoolean()).as(bad).isTrue();
+            assertThat(answer.get("result").get("content").toString()).as(bad)
+                    .contains("Call request_form_upload and give the person the link it returns");
         }
         verify(fetcher, never()).fetch(any());
     }
@@ -113,8 +145,10 @@ class McpFormFileIntegrationTest extends McpIntegrationTestSupport {
         JsonNode answer = readJson(mcpRaw(token,
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"add_form_file\","
                         + "\"arguments\":{\"form\":\"chat_upload:file-9\"}}}"));
+        // The schema turns a bare string down before the handler runs, with the MCP layer's own
+        // explained error rather than a crash.
         assertThat(answer.get("result").get("isError").asBoolean()).isTrue();
-        assertThat(answer.get("result").toString()).contains("request_form_upload");
+        assertThat(answer.get("result").toString()).contains("form");
     }
 
     private static String initialize() {
