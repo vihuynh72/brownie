@@ -280,8 +280,13 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         }
         int maxLen = field.getMaxLen();
         if (maxLen >= 0 && text.codePointCount(0, text.length()) > maxLen) {
-            findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.MAX_LENGTH_EXCEEDED, Integer.toString(maxLen)));
-            return false;
+            String fit = PdfFillText.fitFormatted(text, maxLen);
+            if (fit != null) {
+                text = fit;
+            } else {
+                findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.MAX_LENGTH_EXCEEDED, Integer.toString(maxLen)));
+                return false;
+            }
         }
         boolean comb = field.isComb() && maxLen > 0 && !field.isMultiline();
         boolean automatic = appearance.sizePt <= 0;

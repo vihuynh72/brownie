@@ -118,6 +118,60 @@ class PdfBoxFormFillerTest {
     }
 
     @Test
+    void aSocialSecurityNumberFitsItsShortField() throws IOException {
+        byte[] form = withMaxLen(9);
+        PdfFillRequest request = request(field("postcode", "zip", "123-45-6789"));
+
+        FilledPdf filled = filler.fill(form, request);
+
+        assertTrue(filled.findings().isEmpty(), () -> "findings: " + filled.findings());
+        assertEquals("123456789", valueOf(filled.bytes(), "zip"));
+        assertEquals(List.of(), verifier.verify(form, filled, request));
+    }
+
+    @Test
+    void aPhoneNumberFitsItsTenDigitField() throws IOException {
+        byte[] form = withMaxLen(10);
+        PdfFillRequest request = request(field("postcode", "zip", "(510) 555-0187"));
+
+        FilledPdf filled = filler.fill(form, request);
+
+        assertTrue(filled.findings().isEmpty(), () -> "findings: " + filled.findings());
+        assertEquals("5105550187", valueOf(filled.bytes(), "zip"));
+        assertEquals(List.of(), verifier.verify(form, filled, request));
+    }
+
+    @Test
+    void aNameTooLongForItsFieldIsStillAFinding() throws IOException {
+        FilledPdf filled = filler.fill(PdfFormFixtures.fillableForm(), request(field("postcode", "zip", "Oakland")));
+
+        assertEquals(List.of(new PdfFillFinding("postcode", PdfFillFindingCode.MAX_LENGTH_EXCEEDED, "5")), filled.findings());
+        assertNull(valueOf(filled.bytes(), "zip"));
+    }
+
+    @Test
+    void anUnlimitedFieldKeepsItsDashes() throws IOException {
+        byte[] form = PdfFormFixtures.fillableForm();
+        PdfFillRequest request = request(field("name", "fullName", "123-45-6789"));
+
+        FilledPdf filled = filler.fill(form, request);
+
+        assertTrue(filled.findings().isEmpty(), () -> "findings: " + filled.findings());
+        assertEquals("123-45-6789", valueOf(filled.bytes(), "fullName"));
+        assertEquals(List.of(), verifier.verify(form, filled, request));
+    }
+
+    /** The fixture's zip field with its five-character limit set to another size. */
+    private static byte[] withMaxLen(int maxLen) throws IOException {
+        try (PDDocument document = Loader.loadPDF(PdfFormFixtures.fillableForm());
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            ((PDTextField) document.getDocumentCatalog().getAcroForm().getField("zip")).setMaxLen(maxLen);
+            document.save(out);
+            return out.toByteArray();
+        }
+    }
+
+    @Test
     void textLongerThanTheFieldAllowsIsNeverCutShort() throws IOException {
         FilledPdf filled = filler.fill(PdfFormFixtures.fillableForm(), request(field("postcode", "zip", "902101")));
 

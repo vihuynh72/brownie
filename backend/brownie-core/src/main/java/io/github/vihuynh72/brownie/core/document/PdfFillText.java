@@ -32,6 +32,23 @@ public final class PdfFillText {
         return kept.toString();
     }
 
+    /**
+     * The value a field too short for it still holds: every character that is
+     * not a letter or digit removed, when only those kept it over the limit.
+     * "123-45-6789" fits a 9-character Social Security field as "123456789".
+     * Null when the stripped text does not fit either.
+     */
+    public static String fitFormatted(String text, int maxLen) {
+        if (maxLen < 0 || text.codePointCount(0, text.length()) <= maxLen) {
+            return null;
+        }
+        String stripped = text.codePoints()
+                .filter(Character::isLetterOrDigit)
+                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                .toString();
+        return !stripped.equals(text) && stripped.codePointCount(0, stripped.length()) <= maxLen ? stripped : null;
+    }
+
     /** The text with every run of whitespace made one space and the ends trimmed: what reading a page back can be compared with. */
     public static String collapsedWhitespace(String text) {
         return text.strip().replaceAll("\\s+", " ");

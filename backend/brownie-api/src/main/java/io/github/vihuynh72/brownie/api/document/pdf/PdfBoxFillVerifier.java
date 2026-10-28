@@ -83,10 +83,21 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
             PDAcroForm outputForm = output.getDocumentCatalog().getAcroForm(null);
             checkFields(sourceForm, outputForm, written, findings);
             List<Target> targets = targetsOf(output, outputForm, written);
+            // A value stripped to fit its field's limit is what the page should show: settled before flattening.
+            Map<PdfFillItem, String> expectedTexts = new HashMap<>();
+            for (PdfFillItem item : written) {
+                if (item.target() instanceof PdfFillTarget.Widget widget && outputForm != null
+                        && outputForm.getField(widget.fullName()) instanceof PDTextField field) {
+                    String fit = PdfFillText.fitFormatted(PdfFillText.intended(item.value(), field.isMultiline()), field.getMaxLen());
+                    if (fit != null) {
+                        expectedTexts.put(item, fit);
+                    }
+                }
+            }
             clearWrittenFields(sourceForm, written);
             flatten(sourceForm);
             flatten(outputForm);
-            checkPages(source, output, written, targets, findings);
+            checkPages(source, output, expectedTexts, written, targets, findings);
             return findings;
         } catch (IOException | RuntimeException e) {
             return List.of(new PdfFillFinding(null, PdfFillFindingCode.FIELD_NOT_VISIBLE_IN_OUTPUT,
@@ -137,7 +148,9 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
             return;
         }
         String intended = PdfFillText.intended(item.value(), field.isMultiline());
-        if (!intended.equals(field.getValueAsString())) {
+        String fit = PdfFillText.fitFormatted(intended, field.getMaxLen());
+        String expected = fit == null ? intended : fit;
+        if (!expected.equals(field.getValueAsString())) {
             findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_VALUE_NOT_STORED, field.getValueAsString()));
         }
         for (PDAnnotationWidget widget : field.getWidgets()) {
@@ -244,8 +257,8 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
         return targets;
     }
 
-    private static void checkPages(PDDocument source, PDDocument output, List<PdfFillItem> written, List<Target> targets,
-            List<PdfFillFinding> findings) throws IOException {
+    private static void checkPages(PDDocument source, PDDocument output, Map<PdfFillItem, String> expectedTexts,
+            List<PdfFillItem> written, List<Target> targets, List<PdfFillFinding> findings) throws IOException {
         PdfReadingBudget budget = PdfReadingBudget.standard();
         List<List<TextPosition>> drawn = new ArrayList<>();
         for (int index = 0; index < targets.size(); index++) {
@@ -295,7 +308,7 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
         for (int index = 0; index < targets.size(); index++) {
             PdfFillItem item = targets.get(index).item;
             String shown = textOf(drawn.get(index));
-            if (!sameText(shown, PdfFillText.intended(item.value(), true), drawn.get(index))) {
+            if (!sameText(shown, expectedTexts.getOrDefault(item, PdfFillText.intended(item.value(), true)), drawn.get(index))) {
                 notShown.putIfAbsent(item, shown);
             }
         }
