@@ -110,6 +110,6 @@ class FillableFormConfig {
 
     @Bean
     ImageToPdf imageToPdf() {
-        return new PdfBoxImageToPdf();
+        return new io.github.vihuynh72.brownie.api.document.pdf.PdfBoxImageToPdf();
     }
 }

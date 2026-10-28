@@ -161,7 +161,8 @@ class CapabilitiesController {
                 case NATIVE, NATIVE_VARIANT -> FormFileRoute.NATIVE;
                 case CONVERT -> FormFileRoute.CONVERTED;
                 case NONE -> {
-                    if (type != SupportedMediaType.PDF) {
+                    // A photo of a form becomes a PDF at intake, as the upload itself does.
+                    if (type != SupportedMediaType.PDF && type != SupportedMediaType.JPEG && type != SupportedMediaType.PNG) {
                         throw new IllegalArgumentException(type + " is not a form a person can fill.");
                     }
                     yield FormFileRoute.PDF;
