@@ -95,6 +95,14 @@ public final class PdfSpotCandidateDetector {
             "(?i)(please|kindly|enter|write|insert|provide|fill|complete)\\b.*");
     /** Two boxes whose edges are this close share the edge: they are cells of one table. */
     private static final double SHARED_EDGE = 2;
+    /** A ruled cell's words sit under its top edge by at least this much empty room before it counts as label-at-top. */
+    private static final double TOP_LABEL_EMPTY = 12;
+    /** The empty room a label-left cell leaves after its words before the space counts as the blank. */
+    private static final double LEFT_LABEL_EMPTY = 72;
+    /** A cell's place is inset this far inside its borders. */
+    private static final double CELL_INSET = 2;
+    /** The share of a cell's width its words may hold before the empty rest stops reading as one blank. */
+    private static final double TOP_LABEL_WIDTH_SHARE = 0.6;
     /** How many lines above a place a short line may be and still name it, when nothing closer does. */
     private static final double FARTHEST_LINE_ABOVE = 3;
 
@@ -113,6 +121,7 @@ public final class PdfSpotCandidateDetector {
             findLabelSpaces(frame, onPage);
             findRules(frame, onPage);
             findEmptyBoxes(frame, onPage);
+            findRuleCells(frame, onPage);
             List<Found> kept = keepDistinct(frame, onPage);
             placeInGrids(frame, kept);
             found.addAll(kept);
@@ -553,6 +562,198 @@ public final class PdfSpotCandidateDetector {
             case RULE -> 3;
             case LABEL_SPACE -> 4;
         };
+    }
+
+    // ---- cells drawn with ruled lines ----------------------------------------------------------------------------
+
+    /**
+     * The ruled borders a table is drawn with, whether strokes or thin
+     * filled rectangles: every page Rule is already a Frame segment, and
+     * every page rectangle whose smaller side is no thicker than a line is
+     * the segment it stands for. Larger boxes are cells in their own right,
+     * not borders.
+     */
+    private static void thinRectBorders(Frame frame, List<Segment> horizontal, List<Segment> vertical) {
+        for (PdfRect rect : frame.rects) {
+            if (rect.width() <= SHARED_EDGE && rect.height() > SHARED_EDGE) {
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.centerX()));
+            } else if (rect.height() <= SHARED_EDGE && rect.width() > SHARED_EDGE) {
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.centerY()));
+            }
+        }
+    }
+
+    /**
+     * The closed cells a page's ruled borders bound: every pair of horizontal
+     * borders with every pair of vertical borders makes a candidate cell,
+     * kept when each of its four edges is covered by a border long enough to
+     * reach it within the stroke's own thickness.
+     */
+    private static List<PdfRect> ruleCells(Frame frame) {
+        List<Segment> horizontal = new ArrayList<>(frame.horizontal);
+        List<Segment> vertical = new ArrayList<>(frame.vertical);
+        thinRectBorders(frame, horizontal, vertical);
+        horizontal.sort(Comparator.comparingDouble(Segment::at));
+        vertical.sort(Comparator.comparingDouble(Segment::at));
+        if (horizontal.size() < 2 || vertical.size() < 2) {
+            return List.of();
+        }
+        List<PdfRect> cells = new ArrayList<>();
+        for (int t = 0; t < horizontal.size(); t++) {
+            for (int b = t + 1; b < horizontal.size(); b++) {
+                Segment top = horizontal.get(t);
+                Segment bottom = horizontal.get(b);
+                for (int l = 0; l < vertical.size(); l++) {
+                    for (int r = l + 1; r < vertical.size(); r++) {
+                        Segment left = vertical.get(l);
+                        Segment right = vertical.get(r);
+                        double x = left.at(), w = right.at() - x, y = top.at(), h = bottom.at() - y;
+                        if (w < MIN_BOX_WIDTH || h < MIN_BOX_HEIGHT || w > 0.95 * frame.width || h > 0.6 * frame.height) {
+                            continue;
+                        }
+                        boolean topEdge = top.from() <= x + SHARED_EDGE && top.to() >= right.at() - SHARED_EDGE;
+                        boolean bottomEdge = bottom.from() <= x + SHARED_EDGE && bottom.to() >= right.at() - SHARED_EDGE;
+                        boolean leftEdge = left.from() <= y + SHARED_EDGE && left.to() >= bottom.at() - SHARED_EDGE;
+                        boolean rightEdge = right.from() <= y + SHARED_EDGE && right.to() >= bottom.at() - SHARED_EDGE;
+                        if (topEdge && bottomEdge && leftEdge && rightEdge) {
+                            cells.add(new PdfRect(x, y, w, h));
+                        }
+                    }
+                }
+            }
+        }
+        return cells;
+    }
+
+    private static void findRuleCells(Frame frame, List<Found> found) {
+        List<PdfRect> cells = ruleCells(frame);
+        if (cells.isEmpty()) {
+            return;
+        }
+        // A cell is named by its own words: at its left or on its top line,
+        // leaving the rest of it to fill. A whole column of empty cells
+        // beside a column of words is a table of key and value rows.
+        found.removeIf(candidate -> candidate.kind == PdfSpotCandidate.Kind.RULE
+                && cells.stream().anyMatch(cell -> cell.overlapArea(candidate.box) > 0));
+        for (List<PdfRect> grid : cellGrids(cells)) {
+            boolean keyValue = isKeyValueGrid(frame, grid);
+            List<PdfRect> headerCells = topRowOf(grid);
+            boolean headerRow = headerCells.size() > 1 && headerCells.stream()
+                    .allMatch(cell -> !frame.textIn(cell).isEmpty());
+            for (PdfRect cell : grid) {
+                List<FrameWord> words = frame.readingWords.stream()
+                        .filter(word -> cell.grownBy(-1).contains(word.box.centerX(), word.box.centerY())).toList();
+                if (words.isEmpty()) {
+                    if (keyValue) {
+                        PdfRect box = cell.grownBy(-CELL_INSET);
+                        PdfRect left = leftNeighbor(cell, grid);
+                        PdfRect labelBand = left == null ? cell : left.union(cell.grownBy(-1));
+                        found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, labelBand, cell));
+                    }
+                } else if (!keyValue && (!headerRow || !headerCells.contains(cell))) {
+                    addLabelCellPlace(frame, cell, words, found);
+                }
+            }
+        }
+    }
+
+    /** The grids a page's ruled cells make, cells sharing an edge belonging to the same grid. */
+    private static List<List<PdfRect>> cellGrids(List<PdfRect> cells) {
+        List<List<PdfRect>> grids = new ArrayList<>();
+        List<PdfRect> left = new ArrayList<>(cells);
+        while (!left.isEmpty()) {
+            List<PdfRect> grid = new ArrayList<>();
+            java.util.ArrayDeque<PdfRect> walk = new java.util.ArrayDeque<>();
+            walk.add(left.remove(0));
+            while (!walk.isEmpty()) {
+                PdfRect cell = walk.poll();
+                grid.add(cell);
+                left.removeIf(other -> other != cell && sharesEdge(cell, other) && walk.offer(other));
+            }
+            grids.add(grid);
+        }
+        return grids;
+    }
+
+    /** The cell sharing an edge with {@code cell} on its left, when one sits beside it. */
+    private static PdfRect leftNeighbor(PdfRect cell, List<PdfRect> grid) {
+        PdfRect best = null;
+        for (PdfRect other : grid) {
+            if (other == cell || Math.abs(other.right() - cell.x()) > SHARED_EDGE) {
+                continue;
+            }
+            if (other.y() < cell.bottom() - SHARED_EDGE && cell.y() < other.bottom() - SHARED_EDGE
+                    && (best == null || other.x() > best.x())) {
+                best = other;
+            }
+        }
+        return best;
+    }
+
+    /** The grid's uppermost cells: the ones nothing sits above. */
+    private static List<PdfRect> topRowOf(List<PdfRect> grid) {
+        return grid.stream()
+                .filter(cell -> grid.stream().noneMatch(other -> other != cell
+                        && other.y() > cell.bottom() - SHARED_EDGE && other.x() < cell.right() - SHARED_EDGE
+                        && cell.x() < other.right() - SHARED_EDGE))
+                .toList();
+    }
+
+    private static boolean sharesEdge(PdfRect a, PdfRect b) {
+        boolean verticalMeet = Math.abs(a.right() - b.x()) <= SHARED_EDGE || Math.abs(b.right() - a.x()) <= SHARED_EDGE;
+        boolean horizontalMeet = Math.abs(a.bottom() - b.y()) <= SHARED_EDGE || Math.abs(b.bottom() - a.y()) <= SHARED_EDGE;
+        boolean overlapY = a.y() < b.bottom() - SHARED_EDGE && b.y() < a.bottom() - SHARED_EDGE;
+        boolean overlapX = a.x() < b.right() - SHARED_EDGE && b.x() < a.right() - SHARED_EDGE;
+        return (verticalMeet && overlapY) || (horizontalMeet && overlapX);
+    }
+
+    /**
+     * A key-value grid reads its keys down the left and leaves the column
+     * beside them empty: every cell in the left-most column holds words and
+     * every cell in the rest of the grid is empty, and no row reads as a
+     * header (a grid with a header keeps the column-header naming).
+     */
+    private static boolean isKeyValueGrid(Frame frame, List<PdfRect> grid) {
+        List<Double> columns = clusters(grid.stream().map(PdfRect::x).toList());
+        if (columns.size() < 2) {
+            return false;
+        }
+        List<PdfRect> left = grid.stream().filter(cell -> indexOf(columns, cell.x()) == 0).toList();
+        List<PdfRect> right = grid.stream().filter(cell -> indexOf(columns, cell.x()) > 0).toList();
+        if (left.isEmpty() || right.isEmpty()) {
+            return false;
+        }
+        boolean leftAllWords = left.stream().allMatch(cell -> !frame.textIn(cell).isEmpty());
+        boolean rightAllEmpty = right.stream().allMatch(cell -> frame.textIn(cell).isEmpty());
+        List<PdfRect> top = grid.stream().filter(cell -> grid.stream().noneMatch(other -> other.bottom() <= cell.y() + SHARED_EDGE)).toList();
+        boolean headerRow = top.size() > 1 && top.stream().allMatch(cell -> !frame.textIn(cell).isEmpty());
+        return leftAllWords && rightAllEmpty && !headerRow;
+    }
+
+    /** The words a label-at-top or label-left cell already holds name the empty rest of it. */
+    private static void addLabelCellPlace(Frame frame, PdfRect cell, List<FrameWord> words, List<Found> found) {
+        // The cell's words are read top to bottom in displayed space: the
+        // highest y is the top edge. The empty room a label-at-top cell
+        // leaves is below its words, and a label-left cell's is to the right.
+        double lowestWordBottom = words.stream().mapToDouble(word -> word.box.y()).min().orElse(cell.bottom());
+        double highestWordTop = words.stream().mapToDouble(word -> word.box.bottom()).max().orElse(cell.y());
+        double leftmost = words.stream().mapToDouble(word -> word.box.x()).min().orElse(cell.x());
+        double rightmost = words.stream().mapToDouble(word -> word.box.right()).max().orElse(cell.x());
+        double emptyBelow = lowestWordBottom - cell.y();
+        double emptyRight = cell.right() - rightmost;
+        boolean topWords = cell.bottom() - highestWordTop <= 2 * lineHeightFor(words.get(0).sizePt);
+        if (topWords && emptyBelow >= TOP_LABEL_EMPTY) {
+            PdfRect box = new PdfRect(cell.x() + CELL_INSET, cell.y() + CELL_INSET,
+                    cell.width() - 2 * CELL_INSET, emptyBelow - CELL_INSET);
+            found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell));
+            return;
+        }
+        boolean leftWords = leftmost - cell.x() <= LEFT_LABEL_EMPTY / 2;
+        if (leftWords && emptyRight >= LEFT_LABEL_EMPTY) {
+            PdfRect box = new PdfRect(rightmost + 1, cell.y() + CELL_INSET,
+                    emptyRight - CELL_INSET, cell.height() - 2 * CELL_INSET);
+            found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell));
+        }
     }
 
     // ---- words and styles -----------------------------------------------------------------------------------------

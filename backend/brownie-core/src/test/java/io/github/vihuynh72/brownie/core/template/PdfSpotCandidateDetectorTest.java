@@ -25,6 +25,80 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PdfSpotCandidateDetectorTest {
 
     private static final String SANS = "Helvetica";
+    @Test
+    void aStrokedKeyValueTableFindsTheEmptyCellsBesideItsWords() {
+        Page page = new Page()
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 58, 11, SANS, "Date", "of", "Birth")
+                .line(52, 38, 11, SANS, "Telephone", "Number")
+                .rule(50, 90, 400, 90)
+                .rule(50, 70, 400, 70)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(200, 30, 200, 90)
+                .rule(400, 30, 400, 90);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(List.of("Telephone Number", "Date of Birth", "First Name"),
+                candidates.stream().map(PdfSpotCandidate::labelGuess).toList());
+    }
+
+    @Test
+    void aLabelAtTheTopOfAThinRectCellLeavesTheRoomBelowToFill() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "Legal", "Name", "(Last,", "First,", "Middle)")
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        PdfSpotCandidate candidate = candidates.get(0);
+        assertEquals("Legal Name (Last, First, Middle)", candidate.labelGuess());
+        org.junit.jupiter.api.Assertions.assertTrue(candidate.box().y() > 30 && candidate.box().height() >= 10);
+    }
+
+    @Test
+    void aLabelAtTheLeftOfACellLeavesTheSpaceAfterItToFill() {
+        Page page = new Page()
+                .line(52, 45, 11, SANS, "Home", "Phone")
+                .rule(50, 60, 400, 60)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 60)
+                .rule(400, 30, 400, 60);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        assertEquals("Home Phone", candidates.get(0).labelGuess());
+        org.junit.jupiter.api.Assertions.assertTrue(candidates.get(0).box().x() > 100);
+    }
+
+    @Test
+    void aTableWithAHeaderRowKeepsItsColumnHeaderNamesInsteadOfReadingKeyValue() {
+        Page page = new Page()
+                .line(52, 78, 11, SANS, "Name")
+                .line(202, 78, 11, SANS, "Value")
+                .line(52, 58, 11, SANS, "First", "Name")
+                .rule(50, 90, 400, 90)
+                .rule(50, 70, 400, 70)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(200, 30, 200, 90)
+                .rule(400, 30, 400, 90);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        // The header row's own cells are not places to fill, and nothing reads the grid's second row as key-value.
+        assertTrue(candidates.isEmpty() || candidates.stream().allMatch(c -> !"Name".equals(c.labelGuess())));
+    }
+
     /** A long line of ordinary text, so that the page has a right margin like a real one. */
     private static final String BODY = "Please complete every part of this form and return it to the front desk by Friday.";
 
