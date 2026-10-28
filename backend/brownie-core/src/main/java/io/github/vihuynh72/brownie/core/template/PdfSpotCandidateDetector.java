@@ -586,6 +586,13 @@ public final class PdfSpotCandidateDetector {
                 vertical.add(new Segment(rect.y(), rect.bottom(), rect.centerX()));
             } else if (rect.height() <= SHARED_EDGE && rect.width() > SHARED_EDGE) {
                 horizontal.add(new Segment(rect.x(), rect.right(), rect.centerY()));
+            } else {
+                // A drawn frame's four edges are its borders — a table ruled
+                // with a box around row strokes keeps its walls in the box.
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.y()));
+                horizontal.add(new Segment(rect.x(), rect.right(), rect.bottom()));
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.x()));
+                vertical.add(new Segment(rect.y(), rect.bottom(), rect.right()));
             }
         }
     }

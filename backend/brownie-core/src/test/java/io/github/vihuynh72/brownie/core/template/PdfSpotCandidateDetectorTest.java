@@ -100,6 +100,25 @@ class PdfSpotCandidateDetectorTest {
     }
 
 
+
+    /** A table whose walls are a drawn box around row strokes fills its empty cells by their neighbours' words. */
+    @Test
+    void aTableWithAFrameBoxAndRowStrokesFillsItsEmptyCellsByTheirNeighboursWords() {
+        Page page = new Page()
+                .rect(new PdfRect(50, 30, 300, 60))
+                .rule(50, 70, 350, 70)
+                .rule(50, 50, 350, 50)
+                .rule(200, 30, 200, 90)
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 58, 11, SANS, "Date", "of", "Birth")
+                .line(52, 38, 11, SANS, "Telephone", "Number");
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+        List<String> labels = candidates.stream().map(PdfSpotCandidate::labelGuess).toList();
+
+        assertEquals(List.of("Telephone Number", "Date of Birth", "First Name"), labels);
+    }
+
     /** A cell whose words decode as garbage gets no cell place. */
     @Test
     void aCellOfGarbageWordsLeavesNoPlace() {
