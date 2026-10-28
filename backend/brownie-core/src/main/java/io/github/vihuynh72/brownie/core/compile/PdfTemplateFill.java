@@ -96,11 +96,13 @@ public class PdfTemplateFill {
 
     /** A value as it is printed: text as typed, a date in the long form. */
     static String textOf(DocumentContent content, FieldDefinition field) {
-        if (field.type() == io.github.vihuynh72.brownie.core.template.FieldType.CHECKBOX
-                || content.fields().get(field.fieldId()) instanceof io.github.vihuynh72.brownie.core.revision.FieldValue.CheckboxValue) {
-            throw new UnsupportedOperationException("Checkbox filling is not available for this kind of place yet.");
-        }
         FieldValue value = content.fields().get(field.fieldId());
+        if (value instanceof FieldValue.CheckboxValue || field.type() == io.github.vihuynh72.brownie.core.template.FieldType.CHECKBOX) {
+            if (!(field.binding() instanceof FieldBindingTarget.AcroFormField)) {
+                throw new UnsupportedOperationException("Checkbox filling is not available for this kind of place yet.");
+            }
+            return value instanceof FieldValue.CheckboxValue checkbox ? checkbox.checked() ? "checked" : "unchecked" : "";
+        }
         if (value == null) {
             return "";
         }

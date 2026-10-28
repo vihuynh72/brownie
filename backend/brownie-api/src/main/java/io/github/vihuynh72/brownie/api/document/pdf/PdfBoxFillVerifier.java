@@ -132,6 +132,14 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
 
     private static void checkStoredValue(PDAcroForm form, PdfFillItem item, String fullName, List<PdfFillFinding> findings) {
         PDField found = form == null ? null : form.getField(fullName);
+        if (found instanceof org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox checkbox) {
+            boolean wanted = io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(item.value()).orElse(false);
+            if (checkbox.isChecked() != wanted) {
+                findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_VALUE_NOT_STORED,
+                        "The box reads " + (checkbox.isChecked() ? "checked" : "unchecked") + ", not " + item.value() + "."));
+            }
+            return;
+        }
         if (!(found instanceof PDTextField field)) {
             findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_VALUE_NOT_STORED, "The field is missing."));
             return;
