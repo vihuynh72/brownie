@@ -622,6 +622,10 @@ public final class PdfSpotCandidateDetector {
                 }
             }
         }
+        // A cell crossed by another border is the table itself or a spanned
+        // region, not a place to fill; only the leaf cells count.
+        cells.removeIf(outer -> cells.stream().anyMatch(
+                inner -> inner != outer && outer.encloses(inner, SHARED_EDGE)));
         return cells;
     }
 
@@ -647,7 +651,7 @@ public final class PdfSpotCandidateDetector {
                     if (keyValue) {
                         PdfRect box = cell.grownBy(-CELL_INSET);
                         PdfRect left = leftNeighbor(cell, grid);
-                        String label = left == null ? null : labelText(frame.textIn(left));
+                        String label = left == null ? null : labelText(frame.textIn(left.grownBy(-CELL_INSET)));
                         if (label != null) {
                             found.add(new Found(frame, PdfSpotCandidate.Kind.EMPTY_BOX, box, cell, cell, label));
                         }
