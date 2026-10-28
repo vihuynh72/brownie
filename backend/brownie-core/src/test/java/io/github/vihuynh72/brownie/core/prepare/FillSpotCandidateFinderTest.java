@@ -549,6 +549,43 @@ class FillSpotCandidateFinderTest {
 
     // ---------------------------------------------------------------- helpers
 
+
+    @Test
+    void aCellOfALabelThenBlankIsAPlaceAtTheBlankNamedByTheLabel() {
+        FoundSpots found = find(
+                cellPar("tbl0", 0, 0, 2, 0, "Patient Name"),
+                cellPar("tbl0", 0, 0, 2, 1, ""));
+        SpotCandidate only = only(found);
+        assertEquals("Patient Name", only.rulesLabel());
+        assertEquals(SpotCandidate.Kind.EMPTY_CELL, only.kind());
+    }
+
+    @Test
+    void aLabelOnlyCellIsAPlaceOnlyInAFormTable() {
+        FoundSpots formTable = find(
+                cellPar("tbl0", 0, 0, 3, 0, "Name"),
+                cellPar("tbl0", 0, 0, 3, 1, ""),
+                cellPar("tbl0", 1, 0, 3, 0, "Phone"),
+                cellPar("tbl0", 1, 0, 3, 1, ""),
+                cellPar("tbl0", 2, 0, 3, 0, "Email Address"));
+        assertEquals(List.of("Name", "Phone", "Email Address"), labels(formTable));
+
+        FoundSpots dataTable = find(
+                cellPar("tbl0", 0, 0, 2, 0, "First"),
+                cellPar("tbl0", 0, 1, 2, 0, "Last"),
+                cellPar("tbl0", 1, 0, 2, 0, "Ann"),
+                cellPar("tbl0", 1, 1, 2, 0, "Kim"));
+        assertTrue(dataTable.candidates().isEmpty(),
+                () -> "a data table's cells are not places: " + labels(dataTable));
+    }
+
+    @Test
+    void aCellOfOnlyACurrencySignIsAPlaceAfterIt() {
+        FoundSpots found = find(cellPar("tbl0", 0, 0, 1, 0, "$"));
+        SpotCandidate only = only(found);
+        assertEquals(SpotCandidate.Kind.EMPTY_CELL, only.kind());
+    }
+
     private static FoundSpots find(FormOutline.Paragraph... paragraphs) {
         return FillSpotCandidateFinder.find(new FormOutline(PARSER, List.of(paragraphs)));
     }
@@ -595,5 +632,14 @@ class FillSpotCandidateFinderTest {
         List<FormOutline.Atom> atoms = text.isEmpty() ? List.of() : List.of(run(0, text.length()));
         return new FormOutline.Paragraph("main#" + nodeId, DocumentPartKind.MAIN_DOCUMENT, FormOutline.Region.TOP_TABLE_CELL, nodeId, text,
                 null, false, new FormOutline.Cell(table, tableNodeId, rowNodeId, row, column, rows), atoms);
+    }
+
+    /** The pIndex-th paragraph of a table cell: cells whose label sits on its own line are several paragraphs. */
+    private static FormOutline.Paragraph cellPar(String tableNodeId, int row, int column, int rows, int pIndex, String text) {
+        String rowNodeId = tableNodeId + "/row" + row;
+        String nodeId = rowNodeId + "/cell" + column + "/p" + pIndex;
+        List<FormOutline.Atom> atoms = text.isEmpty() ? List.of() : List.of(run(0, text.length()));
+        return new FormOutline.Paragraph("main#" + nodeId, DocumentPartKind.MAIN_DOCUMENT, FormOutline.Region.TOP_TABLE_CELL, nodeId, text,
+                null, false, new FormOutline.Cell(1, tableNodeId, rowNodeId, row, column, rows), atoms);
     }
 }
