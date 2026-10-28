@@ -283,6 +283,29 @@ class JdbcJobRepository implements JobCommandRepository, JobEventRepository, Job
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Optional<JobEvent> latestForJob(long workspaceId, long actorUserId, long jobId) {
+        requireTenantIds(workspaceId, actorUserId);
+        TenantContext.setCurrentUser(jdbcTemplate, actorUserId);
+        return jdbcTemplate.query(
+                        """
+                        SELECT e.id, e.workspace_id, e.job_id, e.sequence, e.event_type, e.state, e.safe_message,
+                               e.progress_current, e.progress_total, e.created_at,
+                               j.resource_type, j.resource_id, j.resource_version, j.stage
+                        FROM job_event e
+                        JOIN job j ON j.workspace_id = e.workspace_id AND j.id = e.job_id
+                        WHERE e.workspace_id = ? AND e.job_id = ?
+                        ORDER BY e.sequence DESC
+                        LIMIT 1
+                        """,
+                        this::mapEvent,
+                        workspaceId,
+                        jobId)
+                .stream()
+                .findFirst();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public boolean exists(long workspaceId, long actorUserId, long eventId) {
         requireTenantIds(workspaceId, actorUserId);
         if (eventId <= 0) {
