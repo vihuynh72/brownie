@@ -3992,7 +3992,7 @@ components:
       properties:
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -4009,7 +4009,7 @@ components:
       properties:
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -4224,7 +4224,7 @@ components:
           nullable: true
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
           nullable: true
         anchor:
           allOf:
@@ -4840,7 +4840,7 @@ components:
           type: string
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -5444,7 +5444,7 @@ components:
           minLength: 1
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -5629,7 +5629,7 @@ components:
           description: Null for a control the form had already named with a usable id; its name is worked out from fieldId.
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -5689,7 +5689,7 @@ components:
           type: string
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]
@@ -6395,7 +6395,7 @@ components:
       properties:
         type:
           type: string
-          enum: [TEXT, DATE]
+          enum: [TEXT, DATE, CHECKBOX]
         cardinality:
           type: string
           enum: [SCALAR, REPEATED]

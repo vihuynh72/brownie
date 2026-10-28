@@ -562,6 +562,9 @@ class DocumentController {
                 case FieldValue.RepeatedDateValue(List<LocalDate> dates) -> new FieldValueResponse(
                         "DATE", "REPEATED", null, dates.stream().map(LocalDate::toString).toList(), evidenceSourceSpanIds,
                         null, itemStatesOf(fieldStates, fieldId, dates.size()));
+                case FieldValue.CheckboxValue(boolean checked) -> new FieldValueResponse(
+                        "CHECKBOX", "SCALAR", checked ? "checked" : "unchecked", null, evidenceSourceSpanIds,
+                        stateOf(fieldStates, FieldItemRef.scalar(fieldId)), null);
             };
         }
 

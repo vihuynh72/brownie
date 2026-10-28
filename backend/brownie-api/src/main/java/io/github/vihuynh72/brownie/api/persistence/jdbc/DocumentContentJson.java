@@ -54,6 +54,11 @@ final class DocumentContentJson {
                     field.put("cardinality", "REPEATED");
                     field.put("values", values.stream().map(LocalDate::toString).toList());
                 }
+                case FieldValue.CheckboxValue(boolean checked) -> {
+                    field.put("type", "CHECKBOX");
+                    field.put("cardinality", "SCALAR");
+                    field.put("value", checked);
+                }
             }
             encodedFields.add(field);
         });
@@ -111,6 +116,13 @@ final class DocumentContentJson {
                 requireKeys(field, Set.of("fieldId", "type", "cardinality", "values"), "DATE repeated field");
                 yield new FieldValue.RepeatedDateValue(
                         requiredStringList(field, "values", "DATE repeated field").stream().map(DocumentContentJson::parseDate).toList());
+            }
+            case "CHECKBOX:SCALAR" -> {
+                requireKeys(field, Set.of("fieldId", "type", "cardinality", "value"), "CHECKBOX scalar field");
+                if (!(field.get("value") instanceof Boolean checked)) {
+                    throw malformed("CHECKBOX scalar field's value must be true or false.");
+                }
+                yield new FieldValue.CheckboxValue(checked);
             }
             default -> throw malformed("Unsupported document field shape " + type + ":" + cardinality + ".");
         };

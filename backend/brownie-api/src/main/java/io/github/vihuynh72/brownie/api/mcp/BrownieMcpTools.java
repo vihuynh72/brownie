@@ -634,6 +634,7 @@ class BrownieMcpTools {
             case FieldValue.DateValue date -> date.value().toString();
             case FieldValue.RepeatedTextValue texts -> texts.values();
             case FieldValue.RepeatedDateValue dates -> dates.values().stream().map(Object::toString).toList();
+            case FieldValue.CheckboxValue checkbox -> checkbox.checked() ? "checked" : "unchecked";
         };
     }
 }

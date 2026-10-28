@@ -149,6 +149,8 @@ export interface PreviewCell {
   problem: 'FORMULA_WITHOUT_RESULT' | 'ERROR_VALUE' | null
   /** A DATE spot whose cell was not a date. */
   notADate: boolean
+  /** A CHECKBOX spot whose cell was not a yes or a no. */
+  notACheckbox: boolean
   /** Nothing fills this spot in this row. */
   blank: boolean
 }
@@ -160,6 +162,18 @@ export interface PreviewDocument {
 }
 
 const longDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'long' })
+
+/** A spreadsheet cell's yes or no: "yes" / "x" / "checked" mean checked, "no" / "false" / "unchecked" mean not. */
+function checkboxAnswer(text: string): boolean | null {
+  const normalized = text.trim().toLowerCase()
+  if (normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'x' || normalized === 'on' || normalized === '1' || normalized === 'checked') {
+    return true
+  }
+  if (normalized === 'no' || normalized === 'n' || normalized === 'false' || normalized === 'off' || normalized === '0' || normalized === 'unchecked') {
+    return false
+  }
+  return null
+}
 
 /**
  * The first five non-blank rows as the documents would read: VALUE
@@ -195,12 +209,15 @@ export function previewDocuments(
           display: notes ? `Brownie writes it from: “${notes}”` : 'Brownie writes it; the notes cell is empty',
           problem,
           notADate: false,
+          notACheckbox: false,
           blank: !notes,
         })
         continue
       }
       const text = cell?.display.trim() ?? ''
       const notADate = field.type === 'DATE' && text !== '' && cell?.date == null && problem == null
+      const checkbox = field.type === 'CHECKBOX' ? checkboxAnswer(text) : null
+      const notACheckbox = field.type === 'CHECKBOX' && text !== '' && checkbox == null && problem == null
       cells.push({
         fieldId: field.fieldId,
         display:
@@ -212,9 +229,14 @@ export function previewDocuments(
                 ? cell?.date != null
                   ? longDate.format(new Date(`${cell.date}T00:00:00`))
                   : 'Not a date'
-                : text,
+                : field.type === 'CHECKBOX'
+                  ? checkbox != null
+                    ? (checkbox ? 'Checked' : 'Not checked')
+                    : 'Not a yes or no'
+                  : text,
         problem,
         notADate,
+        notACheckbox,
         blank: text === '',
       })
     }

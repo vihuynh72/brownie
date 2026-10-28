@@ -25,7 +25,7 @@ const LABELS: Record<string, string> = {
 }
 const labelOf = (fieldId: string) => LABELS[fieldId] ?? fieldId
 
-const scalar = (value: string, evidenceSpanIds: number[] = [1], type: 'TEXT' | 'DATE' = 'TEXT'): Proposed => ({
+const scalar = (value: string, evidenceSpanIds: number[] = [1], type: 'TEXT' | 'DATE' | 'CHECKBOX' = 'TEXT'): Proposed => ({
   type,
   cardinality: 'SCALAR',
   value,
@@ -189,6 +189,12 @@ describe('the table of what a reading found', () => {
       ['Date', 'October 6, 2026', 'Source cited'],
       ['Decisions', 'Order the kit', 'Your answer'],
     ])
+  })
+
+  it('reads a checkbox answer as Checked or Not checked', () => {
+    const rows = proposalRows(proposalOf({ news: scalar('checked', [], 'CHECKBOX'), quiet: scalar('unchecked', [], 'CHECKBOX') }), labelOf, new Map())
+    expect(rows[0]!.value).toBe('Checked')
+    expect(rows[1]!.value).toBe('Not checked')
   })
 
   it('does not call a value the person’s answer when it is not the answer they gave', () => {

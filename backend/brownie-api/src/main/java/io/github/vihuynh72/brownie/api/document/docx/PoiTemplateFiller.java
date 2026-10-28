@@ -141,6 +141,8 @@ public final class PoiTemplateFiller implements TemplateFiller {
         return switch (value) {
             case FieldValue.TextValue(String text) -> text;
             case FieldValue.DateValue(LocalDate date) -> LONG_DATE.format(date);
+            case FieldValue.CheckboxValue ignored -> throw new UnsupportedOperationException(
+                    "Checkbox filling is not available for this kind of place yet.");
             default -> throw new TemplateFillException(
                     TemplateFillProblemReason.CARDINALITY_MISMATCH,
                     "Field " + field.fieldId() + " is declared SCALAR but its value is repeated.");

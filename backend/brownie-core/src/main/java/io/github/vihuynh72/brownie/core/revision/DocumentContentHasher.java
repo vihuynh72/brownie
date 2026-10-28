@@ -30,6 +30,11 @@ public final class DocumentContentHasher {
                         updateString(digest, "SCALAR");
                         updateString(digest, value.toString());
                     }
+                    case FieldValue.CheckboxValue(boolean checked) -> {
+                        updateString(digest, "CHECKBOX");
+                        updateString(digest, "SCALAR");
+                        updateString(digest, checked ? "checked" : "unchecked");
+                    }
                     case FieldValue.RepeatedTextValue(java.util.List<String> values) -> {
                         updateString(digest, "TEXT");
                         updateString(digest, "REPEATED");
