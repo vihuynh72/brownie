@@ -81,9 +81,10 @@ class CompilationConfig {
             TemplateFiller templateFiller,
             DocumentRenderer documentRenderer,
             CompilationRepository compilationRepository,
-            PdfTemplateFill pdfTemplateFill) {
+            PdfTemplateFill pdfTemplateFill,
+            io.github.vihuynh72.brownie.core.document.PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository) {
         return new CompilationService(
                 revisionService, templateRepository, artifactService, templateFiller, documentRenderer, compilationRepository,
-                pdfTemplateFill);
+                pdfTemplateFill, pdfFormExtractionVersionRepository);
     }
 }

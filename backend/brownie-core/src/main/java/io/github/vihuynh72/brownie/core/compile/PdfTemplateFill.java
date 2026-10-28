@@ -7,6 +7,7 @@ import io.github.vihuynh72.brownie.core.document.PdfFillItem;
 import io.github.vihuynh72.brownie.core.document.PdfFillRequest;
 import io.github.vihuynh72.brownie.core.document.PdfFillTarget;
 import io.github.vihuynh72.brownie.core.document.PdfFillText;
+import io.github.vihuynh72.brownie.core.document.PdfFormGraph;
 import io.github.vihuynh72.brownie.core.document.PdfFillVerifier;
 import io.github.vihuynh72.brownie.core.document.PdfFormFiller;
 import io.github.vihuynh72.brownie.core.document.PdfOverflowPolicy;
@@ -19,6 +20,8 @@ import io.github.vihuynh72.brownie.core.template.FieldDefinition;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -62,15 +65,15 @@ public class PdfTemplateFill {
      * @throws TemplateFillException when a field holds a list, is bound to a
      *         place in a Word file, or holds a value of the wrong shape
      */
-    public Result fill(byte[] sourcePdf, List<FieldDefinition> fields, DocumentContent content) {
-        PdfFillRequest request = request(fields, content);
+    public Result fill(byte[] sourcePdf, PdfFormGraph graph, List<FieldDefinition> fields, DocumentContent content) {
+        PdfFillRequest request = request(graph, fields, content);
         FilledPdf filled = filler.fill(sourcePdf, request);
         List<PdfFillFinding> checked = verifier.verify(sourcePdf, filled, request);
         return new Result(request, filled, checked);
     }
 
     /** One fill item per field, in the fields' order. */
-    static PdfFillRequest request(List<FieldDefinition> fields, DocumentContent content) {
+    static PdfFillRequest request(PdfFormGraph graph, List<FieldDefinition> fields, DocumentContent content) {
         List<PdfFillItem> items = new ArrayList<>();
         for (FieldDefinition field : fields) {
             if (field.cardinality() == FieldCardinality.REPEATED) {
@@ -91,7 +94,75 @@ public class PdfTemplateFill {
                 case FieldBindingTarget.StructuralNode ignored -> throw wordBinding(field);
             });
         }
+        splitDigitGroups(graph, fields, items);
         return new PdfFillRequest(items);
+    }
+
+    /**
+     * A run of two or more fields sharing one label, each bound to a form
+     * text field with a character limit (a W-9's Social Security number is
+     * three), takes a value whose letters and digits alone are exactly their
+     * limits summed, split across the run in order; anything else is left as
+     * one value per field.
+     */
+    private static void splitDigitGroups(PdfFormGraph graph, List<FieldDefinition> fields, List<PdfFillItem> items) {
+        if (graph == null || graph.acroForm() == null) {
+            return;
+        }
+        Map<String, PdfFormGraph.Field> acroFields = graph.acroForm().fields().stream()
+                .collect(java.util.stream.Collectors.toMap(PdfFormGraph.Field::fullName, field -> field, (a, b) -> a));
+        for (int index = 0; index < fields.size(); index++) {
+            FieldDefinition first = fields.get(index);
+            if (!(first.binding() instanceof FieldBindingTarget.AcroFormField) || first.label() == null) {
+                continue;
+            }
+            int end = index;
+            while (end + 1 < fields.size()
+                    && fields.get(end + 1).binding() instanceof FieldBindingTarget.AcroFormField
+                    && first.label().equals(fields.get(end + 1).label())) {
+                end++;
+            }
+            if (end == index) {
+                continue;
+            }
+            List<Integer> limits = new ArrayList<>();
+            boolean digitGroup = true;
+            for (int at = index; at <= end; at++) {
+                if (!(fields.get(at).binding() instanceof FieldBindingTarget.AcroFormField(String name))) {
+                    digitGroup = false;
+                    break;
+                }
+                PdfFormGraph.Field acroField = acroFields.get(name);
+                if (acroField == null || acroField.kind() != PdfFormGraph.FieldKind.TEXT || acroField.maxLen() == null) {
+                    digitGroup = false;
+                    break;
+                }
+                limits.add(acroField.maxLen());
+            }
+            if (digitGroup) {
+                int total = limits.stream().mapToInt(Integer::intValue).sum();
+                for (int at = index; at <= end; at++) {
+                    String lettersAndDigits = items.get(at).value().codePoints()
+                            .filter(Character::isLetterOrDigit)
+                            .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                            .toString();
+                    if (lettersAndDigits.codePointCount(0, lettersAndDigits.length()) == total) {
+                        int offset = 0;
+                        for (int part = index; part <= end; part++) {
+                            int limit = limits.get(part - index);
+                            String value = lettersAndDigits.substring(
+                                    lettersAndDigits.offsetByCodePoints(0, offset),
+                                    lettersAndDigits.offsetByCodePoints(0, offset + limit));
+                            items.set(part, new PdfFillItem(
+                                    items.get(part).fieldId(), items.get(part).target(), value, items.get(part).overflow()));
+                            offset += limit;
+                        }
+                        break;
+                    }
+                }
+            }
+            index = end;
+        }
     }
 
     /** A value as it is printed: text as typed, a date in the long form. */
