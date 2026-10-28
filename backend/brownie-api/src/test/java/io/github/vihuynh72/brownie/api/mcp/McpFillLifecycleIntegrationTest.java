@@ -194,6 +194,8 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
 
         JsonNode refused = toolResult(client, "export_document", Map.of("document_id", documentId, "format", "docx"));
         assertThat(refused.get("refused").asText()).isEqualTo("PROPOSAL_PENDING");
+        assertThat(refused.has("message") ? refused.get("message").asText() : refused.asText())
+                .contains("Proposal ").contains(String.valueOf(documentId));
     }
 
     @Test

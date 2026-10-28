@@ -52,9 +52,11 @@ final class McpFormFileTool {
                                 "additionalProperties", false)),
                         "required", List.of("form")))
                 .description("ChatGPT only: takes the file object ChatGPT supplies when the person attaches a "
+
                         + "form in the chat (the \"form\" argument). Brownie fetches it, finds the places it can "
                         + "fill, and answers like get_form_upload does. No other chat app can hand Brownie a file "
-                        + "this way, Claude included: call request_form_upload instead and give the person its link.")
+                        + "this way, Claude included: call request_form_upload instead and give the person its link. "
+                        + "Call it once per attached file.")
                 .annotations(new McpSchema.ToolAnnotations(null, false, false, false, null, null))
                 .meta(Map.of("openai/fileParams", List.of("form")))
                 .build();
