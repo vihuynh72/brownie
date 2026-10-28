@@ -25,6 +25,185 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PdfSpotCandidateDetectorTest {
 
     private static final String SANS = "Helvetica";
+    @Test
+    void aStrokedKeyValueTableFindsTheEmptyCellsBesideItsWords() {
+        Page page = new Page()
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 58, 11, SANS, "Date", "of", "Birth")
+                .line(52, 38, 11, SANS, "Telephone", "Number")
+                .rule(50, 90, 400, 90)
+                .rule(50, 70, 400, 70)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(200, 30, 200, 90)
+                .rule(400, 30, 400, 90);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(List.of("Telephone Number", "Date of Birth", "First Name"),
+                candidates.stream().map(PdfSpotCandidate::labelGuess).toList());
+    }
+
+    @Test
+    void aLabelAtTheTopOfAThinRectCellLeavesTheRoomBelowToFill() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "Legal", "Name", "(Last,", "First,", "Middle)")
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        PdfSpotCandidate candidate = candidates.get(0);
+        assertEquals("Legal Name (Last, First, Middle)", candidate.labelGuess());
+        org.junit.jupiter.api.Assertions.assertTrue(candidate.box().y() > 30 && candidate.box().height() >= 10);
+    }
+
+    @Test
+    void aLabelAtTheLeftOfACellLeavesTheSpaceAfterItToFill() {
+        Page page = new Page()
+                .line(52, 45, 11, SANS, "Home", "Phone")
+                .rule(50, 60, 400, 60)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 60)
+                .rule(400, 30, 400, 60);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        assertEquals("Home Phone", candidates.get(0).labelGuess());
+        org.junit.jupiter.api.Assertions.assertTrue(candidates.get(0).box().x() > 100);
+    }
+
+    @Test
+    void aTableWithAHeaderRowKeepsItsColumnHeaderNamesInsteadOfReadingKeyValue() {
+        Page page = new Page()
+                .line(52, 78, 11, SANS, "Name")
+                .line(202, 78, 11, SANS, "Value")
+                .line(52, 58, 11, SANS, "First", "Name")
+                .rule(50, 90, 400, 90)
+                .rule(50, 70, 400, 70)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(200, 30, 200, 90)
+                .rule(400, 30, 400, 90);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        // The header row's own cells are not places to fill, and nothing reads the grid's second row as key-value.
+        assertTrue(candidates.isEmpty() || candidates.stream().allMatch(c -> !"Name".equals(c.labelGuess())));
+    }
+
+
+
+
+    /** A cell that spans two columns without a divider between them is still one place. */
+    @Test
+    void aCellSpanningTwoColumnsIsOnePlace() {
+        Page page = new Page()
+                .rule(50, 90, 400, 90)
+                .rule(50, 50, 400, 50)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 90)
+                .rule(400, 30, 400, 90)
+                .rule(200, 50, 200, 90)
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 38, 11, SANS, "Notes");
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        // The top row is split at x=200 into two cells; the bottom row spans both columns.
+        assertEquals(2, candidates.size());
+    }
+
+    /** A page carrying thousands of border segments is skipped inside its budget. */
+    @Test
+    void aPageOfThousandsOfBorderSegmentsStillAnswersFast() {
+        Page page = new Page().line(50, 700, 11, SANS, "Text");
+        for (int index = 0; index < 1500; index++) {
+            page.rule(index % 600, index % 700, index % 600 + 20, index % 700);
+            page.rule(index % 600, index % 700, index % 600, index % 700 + 20);
+        }
+
+        long start = System.nanoTime();
+        PdfSpotCandidateDetector.detect(page.graph());
+        long millis = (System.nanoTime() - start) / 1_000_000;
+
+        assertTrue(millis < 1000, "detection took " + millis + "ms");
+    }
+
+    /** A table whose walls are a drawn box around row strokes fills its empty cells by their neighbours' words. */
+    @Test
+    void aTableWithAFrameBoxAndRowStrokesFillsItsEmptyCellsByTheirNeighboursWords() {
+        Page page = new Page()
+                .rect(new PdfRect(50, 30, 300, 60))
+                .rule(50, 70, 350, 70)
+                .rule(50, 50, 350, 50)
+                .rule(200, 30, 200, 90)
+                .line(52, 78, 11, SANS, "First", "Name")
+                .line(52, 58, 11, SANS, "Date", "of", "Birth")
+                .line(52, 38, 11, SANS, "Telephone", "Number");
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+        List<String> labels = candidates.stream().map(PdfSpotCandidate::labelGuess).toList();
+
+        assertEquals(List.of("Telephone Number", "Date of Birth", "First Name"), labels);
+    }
+
+    /** A cell whose words decode as garbage gets no cell place. */
+    @Test
+    void aCellOfGarbageWordsLeavesNoPlace() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "�")
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(List.of(), candidates);
+    }
+
+    /** A cell place that cannot be named by anything sane is dropped. */
+    @Test
+    void aCellPlaceWhoseLabelIsOnlyPunctuationIsNotAPlace() {
+        Page page = new Page()
+                .line(55, 78, 9, SANS, "-")
+                .rect(new PdfRect(50, 30, 1, 60))
+                .rect(new PdfRect(200, 30, 1, 60))
+                .rect(new PdfRect(300, 30, 1, 60))
+                .rect(new PdfRect(50, 90, 150, 1))
+                .rect(new PdfRect(50, 30, 150, 1));
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertTrue(candidates.stream().noneMatch(c -> "-".equals(c.labelGuess())));
+    }
+
+    /** The exact shape in a cell beats the cell's own looser place. */
+    @Test
+    void aCellAlreadyHoldingAnExactBlankGetsOnlyThatPlace() {
+        Page page = new Page()
+                .line(55, 45, 11, SANS, "Home", "Phone")
+                .line(200, 45, 9, SANS, "___________")
+                .rule(50, 60, 400, 60)
+                .rule(50, 30, 400, 30)
+                .rule(50, 30, 50, 60)
+                .rule(400, 30, 400, 60);
+
+        List<PdfSpotCandidate> candidates = PdfSpotCandidateDetector.detect(page.graph());
+
+        assertEquals(1, candidates.size());
+        assertEquals(PdfSpotCandidate.Kind.UNDERSCORES, candidates.get(0).kind());
+    }
+
     /** A long line of ordinary text, so that the page has a right margin like a real one. */
     private static final String BODY = "Please complete every part of this form and return it to the front desk by Friday.";
 
