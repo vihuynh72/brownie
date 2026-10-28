@@ -53,10 +53,10 @@ final class McpFormFileTool {
                                         "mime_type", Map.of("type", "string"),
                                         "size", Map.of("type", "number")),
                                 "required", List.of("file_id", "download_url", "name")))))
-                .description("Fill a form the person attached in this chat: "
-                        + "the file object the chat app supplies lands in \"form\". "
-                        + "Brownie fetches it, finds the places it can fill, and answers "
-                        + "like get_form_upload does -- poll that tool with the upload_id.")
+                .description("ChatGPT only: takes the file object ChatGPT supplies when the person attaches a "
+                        + "form in the chat (the \"form\" argument). Brownie fetches it, finds the places it can "
+                        + "fill, and answers like get_form_upload does. No other chat app can hand Brownie a file "
+                        + "this way, Claude included: call request_form_upload instead and give the person its link.")
                 .annotations(new McpSchema.ToolAnnotations(null, false, false, false, null, null))
                 .meta(Map.of("openai/fileParams", List.of("form")))
                 .build();
@@ -85,11 +85,13 @@ final class McpFormFileTool {
         if (form instanceof String) {
             // The mobile client sends the attachment as a bare string instead of the file object.
             throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
-                    "The attachment arrived as text, not a file; attach it in the desktop or web app instead.");
+                    "This chat app passed the attachment as text, so Brownie cannot open it. Call "
+                            + "request_form_upload and give the person the link it returns; they upload the form there.");
         }
         if (!(form instanceof Map<?, ?> file)) {
             throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
-                    "\"form\" must be the file object the chat app supplies.");
+                    "\"form\" must be the file object ChatGPT supplies for an attachment. In any other chat app, "
+                            + "call request_form_upload and give the person the link it returns.");
         }
         String url = stringField(file, "download_url");
         String name = stringField(file, "name");

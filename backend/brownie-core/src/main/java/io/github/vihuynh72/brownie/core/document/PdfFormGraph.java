@@ -167,11 +167,16 @@ public record PdfFormGraph(String parserVersion, List<Page> pages, AcroForm acro
      * What the file would do on its own, found by looking and never by
      * running anything: scripts the document runs when it opens or a page is
      * shown, actions that start another program, files carried inside it.
-     * A reading that returns a graph refused every file with any of these,
-     * so in a graph they are all false; they are kept so a stored reading
-     * says what was checked.
+     * {@code documentJavaScript} and {@code launchActions} refuse the file, so
+     * in a graph they are false; {@code embeddedFiles} and {@code
+     * scriptsDroppedFromCopies} do not refuse it: what they count is dropped
+     * from every copy Brownie writes instead.
      */
-    public record Risks(boolean documentJavaScript, boolean launchActions, boolean embeddedFiles) {
+    public record Risks(
+            boolean documentJavaScript, boolean launchActions, boolean embeddedFiles, boolean scriptsDroppedFromCopies) {
+        public Risks(boolean documentJavaScript, boolean launchActions, boolean embeddedFiles) {
+            this(documentJavaScript, launchActions, embeddedFiles, false);
+        }
 
         public boolean any() {
             return documentJavaScript || launchActions || embeddedFiles;
