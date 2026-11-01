@@ -154,6 +154,7 @@ public final class FillSpotCandidateFinder {
             }
         }
         findEmptyCells();
+        findLabelCells();
         found.removeIf(place -> place.kind() == SpotCandidate.Kind.LABEL_AT_END && rightCellBeginsWithAPlace(paragraphs.get(place.paragraph())));
         found.sort(Comparator.comparingInt(Found::paragraph).thenComparingInt(Found::start).thenComparingInt(Found::end));
         Map<String, List<FoundSpots.CollapsedRow>> collapsed = new LinkedHashMap<>();
@@ -480,6 +481,104 @@ public final class FillSpotCandidateFinder {
             }
         }
         return true;
+    }
+
+    /**
+     * A label paragraph inside a cell followed by a blank paragraph is a place
+     * at that blank, named by the label ("Patient Name", then a line). A label
+     * that is a cell's last paragraph is a place at its end, but only in a
+     * table where several cells carry the label-then-blank pattern -- a form
+     * table, not a data table. A cell holding only a currency sign is a place
+     * right after it.
+     */
+    private void findLabelCells() {
+        Map<Integer, Integer> formCellCounts = new HashMap<>();
+        for (Map.Entry<String, List<Integer>> entry : cellParagraphs.entrySet()) {
+            FormOutline.Paragraph first = paragraphs.get(entry.getValue().getFirst());
+            if (first.cell() != null && hasLabelThenBlank(entry.getValue())) {
+                formCellCounts.merge(first.cell().table(), 1, Integer::sum);
+            }
+        }
+        for (Map.Entry<String, List<Integer>> entry : cellParagraphs.entrySet()) {
+            List<Integer> cellIndexes = entry.getValue();
+            FormOutline.Paragraph first = paragraphs.get(cellIndexes.getFirst());
+            if (!fillable(first) || isTableOfContentsOrCaption(first) || continuesMerge(first) || first.cell() == null) {
+                continue;
+            }
+            if (isCurrencyCell(cellIndexes)) {
+                int end = first.anchorText().length();
+                found.add(new Found(cellIndexes.getFirst(), end, end, SpotCandidate.Kind.EMPTY_CELL, false, false,
+                        null, null, SpotCandidate.Tier.HIGH, null));
+                continue;
+            }
+            boolean formTable = formCellCounts.getOrDefault(first.cell().table(), 0) >= 2;
+            for (int i = 0; i < cellIndexes.size(); i++) {
+                FormOutline.Paragraph label = paragraphs.get(cellIndexes.get(i));
+                String name = cellLabel(visibleText(label).strip());
+                if (name == null || hasPlaceAt(cellIndexes.get(i))) {
+                    continue;
+                }
+                boolean last = i == cellIndexes.size() - 1;
+                if (!last && isBlank(paragraphs.get(cellIndexes.get(i + 1)).anchorText())) {
+                    FormOutline.Paragraph blank = paragraphs.get(cellIndexes.get(i + 1));
+                    found.add(new Found(cellIndexes.get(i + 1), 0, blank.anchorText().length(),
+                            SpotCandidate.Kind.EMPTY_CELL, false, false, null, null, SpotCandidate.Tier.HIGH, name));
+                } else if (last && (cellIndexes.size() == 1 ? formTable : true)) {
+                    // A trailing label is a place at its own end; a label-only cell only in a form table.
+                    found.add(new Found(cellIndexes.get(i), label.anchorText().length(), label.anchorText().length(),
+                            SpotCandidate.Kind.EMPTY_CELL, false, false, null, null, SpotCandidate.Tier.HIGH, name));
+                }
+            }
+        }
+    }
+
+    /** The paragraph already produced a place: it is a label with its own blank, not a bare label. */
+    private boolean hasPlaceAt(int paragraphIndex) {
+        return found.stream().anyMatch(place -> place.paragraph() == paragraphIndex);
+    }
+
+    /** The cell's first paragraph is a label and it is followed by at least one blank paragraph. */
+    private boolean hasLabelThenBlank(List<Integer> cellIndexes) {
+        for (int i = 0; i + 1 < cellIndexes.size(); i++) {
+            if (cellLabel(visibleText(paragraphs.get(cellIndexes.get(i))).strip()) != null
+                    && isBlank(paragraphs.get(cellIndexes.get(i + 1)).anchorText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The words a cell's label paragraph names a place by: the short labels
+     * {@link SpotLabels#clean} reads, or a longer label's first words trimmed
+     * to what a label may hold.
+     */
+    private String cellLabel(String text) {
+        String label = FieldIds.normalizeLabel(text);
+        if (label != null && words(label) <= SpotLabels.MAX_LABEL_WORDS) {
+            return label;
+        }
+        int paren = text.indexOf('(');
+        if (paren > 0) {
+            label = FieldIds.normalizeLabel(text.substring(0, paren).strip());
+            if (label != null && words(label) <= SpotLabels.MAX_LABEL_WORDS) {
+                return label;
+            }
+        }
+        return null;
+    }
+
+    private static int words(String text) {
+        return text.strip().isEmpty() ? 0 : text.strip().split("\\s+").length;
+    }
+
+    /** A cell holding only a currency sign -- the amount goes after it. */
+    private boolean isCurrencyCell(List<Integer> cellIndexes) {
+        if (cellIndexes.size() != 1) {
+            return false;
+        }
+        String text = visibleText(paragraphs.get(cellIndexes.getFirst())).strip();
+        return text.matches("^[$\u20AC\u00A3\u00A5\u00A2]$");
     }
 
     /** A cell's shown text; for a cell that continues a merge, the text of the merged cell it belongs to. */

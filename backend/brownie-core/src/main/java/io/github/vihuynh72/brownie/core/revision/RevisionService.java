@@ -621,6 +621,7 @@ public class RevisionService {
                 case FieldValue.DateValue ignored -> field.type() == FieldType.DATE && field.cardinality() == FieldCardinality.SCALAR;
                 case FieldValue.RepeatedTextValue ignored -> field.type() == FieldType.TEXT && field.cardinality() == FieldCardinality.REPEATED;
                 case FieldValue.RepeatedDateValue ignored -> field.type() == FieldType.DATE && field.cardinality() == FieldCardinality.REPEATED;
+                case FieldValue.CheckboxValue ignored -> field.type() == FieldType.CHECKBOX && field.cardinality() == FieldCardinality.SCALAR;
             };
         }
     }

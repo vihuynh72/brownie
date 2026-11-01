@@ -17,7 +17,7 @@ import type {
 /** One field the page can edit: from the template version's definitions, or from the revision when those are unavailable. */
 export interface EditableField {
   fieldId: string
-  type: 'TEXT' | 'DATE'
+  type: 'TEXT' | 'DATE' | 'CHECKBOX'
   cardinality: 'SCALAR' | 'REPEATED'
   requiredness: 'REQUIRED' | 'OPTIONAL' | null
   /** The name the form gives the field ("Date of birth"); null or absent means it is worked out from the id. */

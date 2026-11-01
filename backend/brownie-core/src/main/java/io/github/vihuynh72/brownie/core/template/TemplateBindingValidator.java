@@ -151,7 +151,7 @@ public final class TemplateBindingValidator {
             UnsupportedBindingReason reason = switch (field.binding()) {
                 case FieldBindingTarget.ContentControlTag ignored -> UnsupportedBindingReason.WRONG_FORMAT;
                 case FieldBindingTarget.StructuralNode ignored -> UnsupportedBindingReason.WRONG_FORMAT;
-                case FieldBindingTarget.AcroFormField(String name) -> formFieldProblem(graph, name, boundFormFields);
+                case FieldBindingTarget.AcroFormField(String name) -> formFieldProblem(graph, name, boundFormFields, field.type());
                 case FieldBindingTarget.PageBox box -> boxProblem(graph, box, placesSoFar);
             };
             if (reason != null) {
@@ -168,15 +168,24 @@ public final class TemplateBindingValidator {
 
     /** Whether a form field can take a value Brownie writes: a text field, not read-only, shown on at least one page. */
     public static boolean fillable(PdfFormGraph.Field field) {
-        return field.kind() == PdfFormGraph.FieldKind.TEXT && !field.readOnly() && !field.widgets().isEmpty();
+        return (field.kind() == PdfFormGraph.FieldKind.TEXT || field.kind() == PdfFormGraph.FieldKind.CHECKBOX)
+                && !field.readOnly() && !field.widgets().isEmpty();
     }
 
-    private static UnsupportedBindingReason formFieldProblem(PdfFormGraph graph, String name, Set<String> boundFormFields) {
+    /** The kind of place a field of this type asks its binding for: a checkbox field for a checkbox, a text field for text or a date. */
+    private static PdfFormGraph.FieldKind kindFor(FieldType type) {
+        return type == FieldType.CHECKBOX ? PdfFormGraph.FieldKind.CHECKBOX : PdfFormGraph.FieldKind.TEXT;
+    }
+
+    private static UnsupportedBindingReason formFieldProblem(PdfFormGraph graph, String name, Set<String> boundFormFields, FieldType type) {
         Optional<PdfFormGraph.Field> field = formField(graph, name);
         if (field.isEmpty()) {
             return UnsupportedBindingReason.NOT_FOUND;
         }
         if (!fillable(field.get())) {
+            return UnsupportedBindingReason.NOT_FILLABLE;
+        }
+        if (field.get().kind() != kindFor(type)) {
             return UnsupportedBindingReason.NOT_FILLABLE;
         }
         return boundFormFields.add(name) ? null : UnsupportedBindingReason.OVERLAPS;
