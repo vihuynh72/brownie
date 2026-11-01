@@ -46,7 +46,7 @@ class PdfTemplateFillTest {
                         new FieldBindingTarget.PageBox(2, 72, 90, 200, 14, SERIF_12, true, PdfOverflowPolicy.BLOCK)),
                 field("left.empty", FieldType.TEXT, FieldCardinality.SCALAR, new FieldBindingTarget.AcroFormField("other")));
 
-        new PdfTemplateFill(engine, engine).fill(new byte[] {1}, fields, content(Map.of(
+        new PdfTemplateFill(engine, engine).fill(new byte[] {1}, null, fields, content(Map.of(
                 "name", new FieldValue.TextValue("Nguy\u1ec5n V\u0103n A"),
                 "born", new FieldValue.DateValue(LocalDate.of(2026, 9, 28)))));
 
@@ -66,7 +66,7 @@ class PdfTemplateFillTest {
                 field("items", FieldType.TEXT, FieldCardinality.REPEATED, new FieldBindingTarget.AcroFormField("items")));
 
         TemplateFillException refused = assertThrows(TemplateFillException.class,
-                () -> new PdfTemplateFill(engine, engine).fill(new byte[] {1}, fields, content(Map.of())));
+                () -> new PdfTemplateFill(engine, engine).fill(new byte[] {1}, null, fields, content(Map.of())));
 
         assertEquals(TemplateFillProblemReason.REPEATED_FIELD_IN_PDF, refused.reason());
         assertTrue(engine.requests.isEmpty());
@@ -79,7 +79,7 @@ class PdfTemplateFillTest {
                 field("title", FieldType.TEXT, FieldCardinality.SCALAR, new FieldBindingTarget.ContentControlTag("title")));
 
         TemplateFillException refused = assertThrows(TemplateFillException.class,
-                () -> new PdfTemplateFill(engine, engine).fill(new byte[] {1}, fields, content(Map.of())));
+                () -> new PdfTemplateFill(engine, engine).fill(new byte[] {1}, null, fields, content(Map.of())));
 
         assertEquals(TemplateFillProblemReason.BINDING_NOT_FOUND, refused.reason());
     }
@@ -97,7 +97,7 @@ class PdfTemplateFillTest {
                         new FieldBindingTarget.PageBox(1, 72, 90, 50, 14, SERIF_12, false, PdfOverflowPolicy.SHRINK_TO_FIT)),
                 field("blank", FieldType.TEXT, FieldCardinality.SCALAR, new FieldBindingTarget.AcroFormField("blank")));
 
-        PdfTemplateFill.Result result = new PdfTemplateFill(engine, engine).fill(new byte[] {1}, fields, content(Map.of(
+        PdfTemplateFill.Result result = new PdfTemplateFill(engine, engine).fill(new byte[] {1}, null, fields, content(Map.of(
                 "name", new FieldValue.TextValue("Ana"),
                 "email", new FieldValue.TextValue("ana@example.org"),
                 "note", new FieldValue.TextValue("A very long note"))));

@@ -514,8 +514,39 @@ public final class PdfSpotCandidateDetector {
      * exactly its cell, a line is exactly its line, and space after a label
      * is only an estimate. A place over one of the form's own fields goes.
      */
+    /**
+     * Side-by-side and stacked neighbours that read as one place twice:
+     * a narrow empty box entirely left of a much wider empty box on the same
+     * row is a partial cell, not a second place to fill; and a rule band
+     * inside a longer rule band is one line under one label.
+     */
+    private static List<Found> dropShadows(List<Found> found) {
+        List<Found> kept = new ArrayList<>();
+        for (Found candidate : found) {
+            boolean shadowed = candidate.kind == PdfSpotCandidate.Kind.EMPTY_BOX && found.stream()
+                    .anyMatch(other -> other != candidate && other.kind == PdfSpotCandidate.Kind.EMPTY_BOX
+                            && sameRow(other.box, candidate.box)
+                            && candidate.box.right() <= other.box.x() + SHARED_EDGE
+                            && other.box.width() >= 2 * candidate.box.width());
+            boolean coveredRule = candidate.kind == PdfSpotCandidate.Kind.RULE && found.stream()
+                    .anyMatch(other -> other != candidate && other.kind == PdfSpotCandidate.Kind.RULE
+                            && other.box.width() > candidate.box.width()
+                            && other.box.overlapArea(candidate.box) > 0.5 * Math.min(other.box.area(), candidate.box.area()));
+            if (!shadowed && !coveredRule) {
+                kept.add(candidate);
+            }
+        }
+        return kept;
+    }
+
+    /** Two boxes on the same row: their vertical bands overlap by at least 70% of the shorter. */
+    private static boolean sameRow(PdfRect a, PdfRect b) {
+        double overlap = Math.min(a.bottom(), b.bottom()) - Math.max(a.y(), b.y());
+        return overlap > 0 && overlap >= 0.7 * Math.min(a.height(), b.height());
+    }
+
     private static List<Found> keepDistinct(Frame frame, List<Found> found) {
-        List<Found> ordered = new ArrayList<>(found);
+        List<Found> ordered = new ArrayList<>(dropShadows(found));
         ordered.sort(Comparator.comparingInt((Found f) -> precedence(f.kind))
                 .thenComparingDouble(f -> f.box.y())
                 .thenComparingDouble(f -> f.box.x()));

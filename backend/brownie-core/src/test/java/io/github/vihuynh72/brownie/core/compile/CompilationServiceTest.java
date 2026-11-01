@@ -51,7 +51,7 @@ class CompilationServiceTest {
         CompilationService service = new CompilationService(
                 new RevisionService(new EmptyDocumentRepository(), new UnreachableTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new UnreachableTemplateRepository(),
-                null, null, null, null, null);
+                null, null, null, null, null, null);
 
         assertThrows(DocumentNotFoundException.class, () -> service.compile(WORKSPACE_ID, USER_ID, DOCUMENT_ID, REVISION_ID));
     }
@@ -62,7 +62,7 @@ class CompilationServiceTest {
         CompilationService service = new CompilationService(
                 new RevisionService(documents, new DraftOnlyTemplateRepository(), new UnreachablePatchProposalRepository()),
                 new DraftOnlyTemplateRepository(),
-                null, null, null, null, null);
+                null, null, null, null, null, null);
 
         assertThrows(
                 DocumentTemplateVersionUnavailableException.class,

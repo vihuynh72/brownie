@@ -162,12 +162,12 @@ class PdfTemplateIntegrationTest {
                 byFormField.put(name, spot);
             }
         }
-        assertThat(byFormField).containsOnlyKeys("fullName", "address", "zip", "email", "birthDate", "applicant.phone");
+        assertThat(byFormField).containsOnlyKeys("fullName", "address", "zip", "email", "birthDate", "applicant.phone", "news");
         assertThat(byFormField.values()).allSatisfy(spot -> assertThat(spot.definition().effectiveOrigin()).isEqualTo(SpotOrigin.FORM));
         assertThat(byFormField.get("email").requiredHint()).isTrue();
         assertThat(byFormField.get("fullName").definition().label()).isEqualTo("Full name");
         assertThat(byFormField.get("birthDate").definition().type()).isEqualTo(FieldType.DATE);
-        assertThat(prepared.notices()).contains(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, 5, null));
+        assertThat(prepared.notices()).contains(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, 3, null));
 
         Template template = createTemplate(member, artifactId, "Membership application");
         assertThat(template.draft().get("kind").asText()).isEqualTo("PDF");
@@ -270,13 +270,13 @@ class PdfTemplateIntegrationTest {
             assertThat(spot.get("namedBy").asText()).isEqualTo("RULES");
             byFormField.put(binding.get("acroFormField").asText(), spot);
         }
-        assertThat(byFormField).containsOnlyKeys("fullName", "address", "zip", "email", "birthDate", "applicant.phone");
+        assertThat(byFormField).containsOnlyKeys("fullName", "address", "zip", "email", "birthDate", "applicant.phone", "news");
         assertThat(byFormField.get("fullName").get("label").asText()).isEqualTo("Full name");
         assertThat(byFormField.get("birthDate").get("type").asText()).isEqualTo("DATE");
         assertThat(byFormField.get("email").get("requiredHint").asBoolean()).isTrue();
         List<String> notices = new ArrayList<>();
         form.get("notices").forEach(notice -> notices.add(notice.get("code").asText() + " " + notice.get("count").asInt()));
-        assertThat(notices).contains("SPOTS_FOUND 6", "PDF_FIELDS_LEFT 5");
+        assertThat(notices).contains("SPOTS_FOUND 7", "PDF_FIELDS_LEFT 3");
         assertThat(form.get("spotNaming").asText()).isEqualTo("RULES");
 
         // Asking again reads nothing new: the same reading and the same places.
