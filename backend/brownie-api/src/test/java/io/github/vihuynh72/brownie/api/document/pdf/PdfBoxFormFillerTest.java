@@ -20,6 +20,7 @@ import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
 import org.apache.pdfbox.pdmodel.PDDocumentCatalog;
 import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.font.PDFont;
@@ -56,6 +57,30 @@ class PdfBoxFormFillerTest {
 
     private final PdfBoxFormFiller filler = new PdfBoxFormFiller();
     private final PdfBoxFillVerifier verifier = new PdfBoxFillVerifier();
+
+    @Test
+    void aBoxTwoMinimumLinesTallWrapsAValueItCannotShrinkIntoOne() throws IOException {
+        byte[] flat = PdfFormFixtures.flatForm();
+        PdfRect twoMinLines = new PdfRect(140, 80, 130, 15);
+        String address = "1180 Harbor Way, Apt 4B, Oakland, CA 94607";
+
+        FilledPdf filled = filler.fill(flat, request(box("address", 1, twoMinLines, 12, address)));
+
+        assertEquals(List.of(new PdfFillFinding("address", PdfFillFindingCode.FIELD_TEXT_SHRUNK, "6")), filled.findings());
+        assertTrue(filled.wrote("address"));
+        assertEquals(List.of(), verifier.verify(flat, filled, request(box("address", 1, twoMinLines, 12, address))));
+    }
+
+    @Test
+    void aSingleLineBoxStillRefusesAValueThatCannotFit() throws IOException {
+        byte[] flat = PdfFormFixtures.flatForm();
+        PdfRect oneLine = new PdfRect(140, 80, 130, 10);
+        String impossible = "1180 Harbor Way, Apt 4B, Oakland, CA 94607".repeat(4);
+
+        FilledPdf filled = filler.fill(flat, request(box("address", 1, oneLine, 12, impossible)));
+
+        assertEquals(List.of(new PdfFillFinding("address", PdfFillFindingCode.FIXED_FIELD_OVERFLOW, null)), filled.findings());
+    }
 
     @Test
     void vietnameseGivenComposedOrDecomposedIsWrittenWithTheFontsOwnLetters() throws IOException {
@@ -218,7 +243,7 @@ class PdfBoxFormFillerTest {
         String longer = "Jordan Alexander Lee-Nguyen";
 
         FilledPdf shrunk = filler.fill(flat, request(box("name", 1, narrow, 12, longer)));
-        FilledPdf tooLong = filler.fill(flat, request(box("name", 1, narrow, 12, longer.repeat(3))));
+        FilledPdf tooLong = filler.fill(flat, request(box("name", 1, narrow, 12, longer.repeat(6))));
         FilledPdf blocked = filler.fill(flat, new PdfFillRequest(List.of(new PdfFillItem("name",
                 new PdfFillTarget.Box(1, narrow, new PdfTextStyle(PdfFontFamily.SANS, false, 12), false), longer, PdfOverflowPolicy.BLOCK))));
 
@@ -320,6 +345,36 @@ class PdfBoxFormFillerTest {
 
     static PdfFillRequest request(PdfFillItem... items) {
         return new PdfFillRequest(List.of(items));
+    }
+
+
+    @Test
+    void aW9CheckboxCanBeCheckedAndLeftUnchecked() throws Exception {
+        byte[] w9 = Files.readAllBytes(Path.of("src/test/resources/w9.pdf"));
+        PdfFillRequest request = request(field("taxClass", "topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[0]", "checked"));
+        FilledPdf filled = filler.fill(w9, request);
+        try (PDDocument document = Loader.loadPDF(filled.bytes())) {
+            PDDocumentCatalog catalog = document.getDocumentCatalog();
+            PDAcroForm form = catalog.getAcroForm(null);
+            PDCheckBox checkedBox = (PDCheckBox) form.getField("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[0]");
+            assertTrue(checkedBox.isChecked(), "the Individual/sole proprietor box");
+            for (int index = 1; index <= 6; index++) {
+                PDCheckBox other = (PDCheckBox) form.getField("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[" + index + "]");
+                assertFalse(other.isChecked(), "box " + index + " is not the one filled");
+            }
+        }
+    }
+
+    @Test
+    void aW9CheckboxValueLeavesTheOtherBoxesAlone() throws Exception {
+        byte[] w9 = Files.readAllBytes(Path.of("src/test/resources/w9.pdf"));
+        PdfFillRequest request = request(field("taxClass", "topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[0]", "unchecked"));
+        FilledPdf filled = filler.fill(w9, request);
+        try (PDDocument document = Loader.loadPDF(filled.bytes())) {
+            PDCheckBox box = (PDCheckBox) document.getDocumentCatalog().getAcroForm(null)
+                    .getField("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[0]");
+            assertFalse(box.isChecked());
+        }
     }
 
     @Test

@@ -272,14 +272,14 @@ public class ValidationService {
             TemplateVersion templateVersion,
             byte[] sourceBytes,
             List<ValidationFinding> findings) {
-        PdfTemplateFill.Result result = pdfTemplateFill.fill(sourceBytes, templateVersion.fieldDefinitions(), revision.content());
-        findings.addAll(DocumentValidator.checkPdfFill(result.findings()));
         PdfFormGraph graph = pdfFormExtractionVersionRepository
                 .findById(workspaceId, userId, templateVersion.pdfFormExtractionId())
                 .map(PdfFormExtractionVersion::graph)
                 .orElseThrow(() -> new IllegalStateException(
                         "PDF form reading " + templateVersion.pdfFormExtractionId() + " of template version " + templateVersion.id()
                                 + " no longer exists."));
+        PdfTemplateFill.Result result = pdfTemplateFill.fill(sourceBytes, graph, templateVersion.fieldDefinitions(), revision.content());
+        findings.addAll(DocumentValidator.checkPdfFill(result.findings()));
         MaskedRasterComparison comparison = pageRasterDiffer.compareMasked(
                 sourceBytes, result.filled().bytes(), DocumentValidator.fillSpotMasks(templateVersion.fieldDefinitions(), graph));
         findings.addAll(DocumentValidator.checkMaskedRaster(comparison));

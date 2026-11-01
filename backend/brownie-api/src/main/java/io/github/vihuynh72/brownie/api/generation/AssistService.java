@@ -1002,6 +1002,8 @@ public class AssistService {
         return switch (field.type()) {
             case TEXT -> new FieldValue.TextValue(value);
             case DATE -> new FieldValue.DateValue(LocalDate.parse(value));
+            case CHECKBOX -> new FieldValue.CheckboxValue(io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(value).orElseThrow(
+                    () -> new IllegalArgumentException("A checkbox wants yes or no, not: " + value)));
         };
     }
 
@@ -1098,6 +1100,7 @@ public class AssistService {
                 case FieldValue.DateValue date -> date.value().toString();
                 case FieldValue.RepeatedTextValue texts -> String.join("; ", texts.values());
                 case FieldValue.RepeatedDateValue dates -> dates.values().stream().map(Objects::toString).reduce((a, b) -> a + "; " + b).orElse("");
+                case FieldValue.CheckboxValue checkbox -> checkbox.checked() ? "checked" : "unchecked";
             };
         }
 

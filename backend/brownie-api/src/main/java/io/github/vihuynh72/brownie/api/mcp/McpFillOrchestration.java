@@ -352,6 +352,8 @@ class McpFillOrchestration {
             case io.github.vihuynh72.brownie.core.revision.FieldValue.RepeatedTextValue texts -> texts.values();
             case io.github.vihuynh72.brownie.core.revision.FieldValue.RepeatedDateValue dates ->
                 dates.values().stream().map(Object::toString).toList();
+            case io.github.vihuynh72.brownie.core.revision.FieldValue.CheckboxValue checkbox ->
+                checkbox.checked() ? "checked" : "unchecked";
         };
     }
 }

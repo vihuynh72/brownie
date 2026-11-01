@@ -83,10 +83,13 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
             PDAcroForm outputForm = output.getDocumentCatalog().getAcroForm(null);
             checkFields(sourceForm, outputForm, written, findings);
             List<Target> targets = targetsOf(output, outputForm, written);
+            // Settled before flattening takes the fields away: a box's shown state is its check, not drawn text.
+            Set<PdfFillItem> checkboxItems = written.stream()
+                    .filter(item -> isCheckbox(outputForm, item)).collect(java.util.stream.Collectors.toSet());
             clearWrittenFields(sourceForm, written);
             flatten(sourceForm);
             flatten(outputForm);
-            checkPages(source, output, written, targets, findings);
+            checkPages(source, output, checkboxItems, written, targets, findings);
             return findings;
         } catch (IOException | RuntimeException e) {
             return List.of(new PdfFillFinding(null, PdfFillFindingCode.FIELD_NOT_VISIBLE_IN_OUTPUT,
@@ -132,6 +135,14 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
 
     private static void checkStoredValue(PDAcroForm form, PdfFillItem item, String fullName, List<PdfFillFinding> findings) {
         PDField found = form == null ? null : form.getField(fullName);
+        if (found instanceof org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox checkbox) {
+            boolean wanted = io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(item.value()).orElse(false);
+            if (checkbox.isChecked() != wanted) {
+                findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_VALUE_NOT_STORED,
+                        "The box reads " + (checkbox.isChecked() ? "checked" : "unchecked") + ", not " + item.value() + "."));
+            }
+            return;
+        }
         if (!(found instanceof PDTextField field)) {
             findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_VALUE_NOT_STORED, "The field is missing."));
             return;
@@ -151,6 +162,12 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
                 return;
             }
         }
+    }
+
+    /** The item's widget is a checkbox: its drawn state is a mark, not text. */
+    private static boolean isCheckbox(PDAcroForm form, PdfFillItem item) {
+        return item.target() instanceof PdfFillTarget.Widget widget && form != null
+                && form.getField(widget.fullName()) instanceof org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
     }
 
     /** Each field's stored value by full name ({@code null} when it has none); a group that only holds other fields is not a field. */
@@ -244,8 +261,8 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
         return targets;
     }
 
-    private static void checkPages(PDDocument source, PDDocument output, List<PdfFillItem> written, List<Target> targets,
-            List<PdfFillFinding> findings) throws IOException {
+    private static void checkPages(PDDocument source, PDDocument output, Set<PdfFillItem> checkboxItems,
+            List<PdfFillItem> written, List<Target> targets, List<PdfFillFinding> findings) throws IOException {
         PdfReadingBudget budget = PdfReadingBudget.standard();
         List<List<TextPosition>> drawn = new ArrayList<>();
         for (int index = 0; index < targets.size(); index++) {
@@ -294,6 +311,10 @@ public final class PdfBoxFillVerifier implements PdfFillVerifier {
         }
         for (int index = 0; index < targets.size(); index++) {
             PdfFillItem item = targets.get(index).item;
+            if (checkboxItems.contains(item)) {
+                // A box's shown state is its check appearance, not drawn text: checkStoredValue verifies it.
+                continue;
+            }
             String shown = textOf(drawn.get(index));
             if (!sameText(shown, PdfFillText.intended(item.value(), true), drawn.get(index))) {
                 notShown.putIfAbsent(item, shown);

@@ -250,7 +250,9 @@ public final class ModelSpotNamer implements SpotNamer {
                 label = null;
             }
             String suggestedType = FillSpotPromptBuilder.REPLY_TYPES.contains(spot.type()) ? spot.type() : candidate.rulesType().name();
-            FieldType type = FieldType.DATE.name().equals(suggestedType) ? FieldType.DATE : FieldType.TEXT;
+            // The naming step may rename a form's checkbox but never makes it a place to type in.
+            FieldType type = candidate.rulesType() == FieldType.CHECKBOX ? FieldType.CHECKBOX
+                    : FieldType.DATE.name().equals(suggestedType) ? FieldType.DATE : FieldType.TEXT;
             // A place the rules are sure of is not the model's to leave out; a place to sign never is the rules' to keep.
             boolean keep = spot.keep() || candidate.sure() && !candidate.signatureLike();
             decided.put(spot.id(), new NamedSpot(

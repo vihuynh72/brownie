@@ -79,6 +79,22 @@ class ModelSpotNamerTest {
     }
 
     @Test
+    void aFormsCheckboxRenamedByTheModelStaysACheckbox() {
+        NamingCandidate box = new NamingCandidate("f1", "FORM_CHECKBOX", "Individual", FieldType.CHECKBOX, null, false, null);
+        SpotNamingInput form = new SpotNamingInput(
+                DocumentKind.PDF,
+                List.of(new OutlineLine("P1", "[[f1]] Individual/sole proprietor")),
+                List.of(box),
+                List.of());
+        answer(new ModelUsage(300, 40), reply(null, spot("f1", true, "Individual/sole proprietor", "TEXT", false)));
+
+        SpotNaming naming = namer(1).name(WORKSPACE, USER, form);
+
+        assertEquals("Individual/sole proprietor", naming.spots().getFirst().label());
+        assertEquals(FieldType.CHECKBOX, naming.spots().getFirst().type());
+    }
+
+    @Test
     void anIdThatWasNotOfferedOrComesTwiceIsIgnoredAndOneLeftOutKeepsTheRulesDecision() {
         answer(new ModelUsage(900, 120), reply(null,
                 spot("c7", true, "Invented", "TEXT", true),

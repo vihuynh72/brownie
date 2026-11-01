@@ -372,3 +372,30 @@ describe('rowProblemSentence', () => {
     expect(sentence).toBe("Date awarded (column C) wasn't a date.")
   })
 })
+
+describe('checkbox columns', () => {
+  it('reads a yes-or-no cell as the checkbox answer and shows it plainly', () => {
+    const field = {
+      fieldId: 'news',
+      type: 'CHECKBOX' as const,
+      cardinality: 'SCALAR' as const,
+      requiredness: 'OPTIONAL' as const,
+      bindingKind: 'PAGE_BOX' as const,
+    }
+    const column = { index: 0, letter: 'A', header: 'News', nonEmpty: 2 }
+    const reading = {
+      columns: [column],
+      rowCount: 2,
+      previewRows: [
+        { rowNumber: 2, blank: false, cells: [{ display: 'yes', date: null, problem: null }] },
+        { rowNumber: 3, blank: false, cells: [{ display: 'maybe', date: null, problem: null }] },
+      ],
+    }
+    const choices = new Map([[field.fieldId, { column: 0, mode: 'VALUE' as const }]])
+    const docs = previewDocuments(reading as never, [field as never], choices as never, null, 'W-9')
+    expect(docs[0].cells[0].display).toBe('Checked')
+    expect(docs[0].cells[0].notACheckbox).toBe(false)
+    expect(docs[1].cells[0].display).toBe('Not a yes or no')
+    expect(docs[1].cells[0].notACheckbox).toBe(true)
+  })
+})

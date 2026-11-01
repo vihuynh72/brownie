@@ -94,7 +94,7 @@ public class PdfFormPreparationService {
     private static final int MAX_CONTEXT_CHARACTERS = 200;
     private static final Pattern DATE_WORD = Pattern.compile("(?i)\\b(date|dob)\\b");
     private static final Pattern SIGNATURE_WORD = Pattern.compile("(?i)\\b(signature|sign here|signed|initials)\\b");
-    private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?");
+        private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?|[a-z]{1,3}( ?\\d+)+");
     private static final Pattern NAME_PREFIX = Pattern.compile("^(txt|fld|tf|tb|text|field|str)(?=[A-Z_\\-\\d])");
 
     private final ArtifactService artifactService;
@@ -261,28 +261,37 @@ public class PdfFormPreparationService {
         List<Candidate> candidates = new ArrayList<>();
         int leftFields = 0;
         int fieldNumber = 0;
+        int typedFields = 0;
         for (PdfFormGraph.Field field : graph.acroForm().fields()) {
             if (!TemplateBindingValidator.fillable(field)) {
-                if (field.kind() != PdfFormGraph.FieldKind.BUTTON) {
+                if (field.kind() == PdfFormGraph.FieldKind.RADIO || field.kind() == PdfFormGraph.FieldKind.CHOICE
+                        || field.kind() == PdfFormGraph.FieldKind.SIGNATURE) {
                     leftFields++;
                 }
                 continue;
             }
             String id = "f" + (++fieldNumber);
+            if (field.kind() == PdfFormGraph.FieldKind.TEXT) {
+                typedFields++;
+            }
             PdfFormGraph.Widget widget = field.widgets().get(0);
             String nearby = nearbyLabel(graph, widget);
-            String label = formFieldLabel(field, nearby, fieldNumber);
-            FieldType type = (field.dateFormat() != null || DATE_WORD.matcher(label).find())
-                    && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH) ? FieldType.DATE : FieldType.TEXT;
+            String label = field.kind() == PdfFormGraph.FieldKind.CHECKBOX
+                    ? checkboxFieldLabel(field, rightOfLabel(graph, widget), nearby, fieldNumber)
+                    : formFieldLabel(field, nearby, fieldNumber);
+            FieldType type = field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? FieldType.CHECKBOX
+                    : (field.dateFormat() != null || DATE_WORD.matcher(label).find())
+                            && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH) ? FieldType.DATE : FieldType.TEXT;
             boolean signatureLike = SIGNATURE_WORD.matcher(label).find();
             // A field the form made is a place to fill, as a Word form's own controls are: the naming step names it but keeps it.
             NamingCandidate naming = new NamingCandidate(
-                    id, "FORM_FIELD", label, type, formFieldContext(field, nearby), signatureLike, null, true, null, List.of());
+                    id, field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? "FORM_CHECKBOX" : "FORM_FIELD", label, type,
+                    formFieldContext(field, nearby), signatureLike, null, true, null, List.of());
             candidates.add(new Candidate(naming, new Place(id, widget.pageNumber(), widget.box()), field.fullName(), field.required(), null));
         }
         int blankNumber = 0;
         // A form with fields to type in is filled through them; boxes guessed beside them would mostly be the same places twice.
-        if (fieldNumber == 0 && graph.pages().stream().anyMatch(PdfFormGraph.Page::hasText)) {
+        if (typedFields == 0 && graph.pages().stream().anyMatch(PdfFormGraph.Page::hasText)) {
             for (PdfSpotCandidate found : PdfSpotCandidateDetector.detect(graph)) {
                 String label = FieldIds.normalizeLabel(found.labelGuess());
                 if (label == null) {
@@ -320,6 +329,27 @@ public class PdfFormPreparationService {
      * came ("Text1"), then the words beside it, then the readable name
      * however plain, and last "Field" and its number.
      */
+    /** A checkbox's own words first (tooltip, a real name), then the caption beside it on its line, then "Checkbox N". */
+    static String checkboxFieldLabel(PdfFormGraph.Field field, String rightOf, String nearby, int number) {
+        String tooltip = FieldIds.normalizeLabel(field.tooltip());
+        if (tooltip != null) {
+            return tooltip;
+        }
+        String readable = FieldIds.normalizeLabel(readableName(field.fullName()));
+        if (readable != null && !GENERIC_NAME.matcher(readable).matches()) {
+            return readable;
+        }
+        String caption = FieldIds.normalizeLabel(rightOf);
+        if (caption != null) {
+            return caption;
+        }
+        String beside = FieldIds.normalizeLabel(nearby);
+        if (beside != null) {
+            return beside;
+        }
+        return "Checkbox " + number;
+    }
+
     static String formFieldLabel(PdfFormGraph.Field field, String nearby, int number) {
         String tooltip = FieldIds.normalizeLabel(field.tooltip());
         if (tooltip != null) {
@@ -367,6 +397,29 @@ public class PdfFormPreparationService {
         }
         return PdfSpotCandidateDetector.boxSuggestion(graph, widget.pageNumber(), new PdfPoint(widget.box().x() + 1, widget.box().centerY()))
                 .labelGuess();
+    }
+
+    /** The words a checkbox's caption sits at: on its line, beginning just past its box. */
+    static String rightOfLabel(PdfFormGraph graph, PdfFormGraph.Widget widget) {
+        PdfFormGraph.Page page = graph.pages().stream().filter(candidate -> candidate.pageNumber() == widget.pageNumber()).findFirst().orElse(null);
+        if (page == null || !page.hasText()) {
+            return null;
+        }
+        StringBuilder words = new StringBuilder();
+        for (PdfFormGraph.Line line : page.lines()) {
+            if (Math.abs(line.box().centerY() - widget.box().centerY()) > widget.box().height() * 0.8 + 2) {
+                continue;
+            }
+            for (PdfFormGraph.Word word : line.words()) {
+                if (word.box().x() >= widget.box().right() - 1 && word.box().x() <= widget.box().right() + 200) {
+                    if (words.length() > 0) {
+                        words.append(' ');
+                    }
+                    words.append(word.text());
+                }
+            }
+        }
+        return words.isEmpty() ? null : words.toString();
     }
 
     private static String formFieldContext(PdfFormGraph.Field field, String nearby) {
