@@ -38,13 +38,13 @@ beforeEach(() => {
 describe('the chooser', () => {
   it('offers every extension, then every media type, each once and in order', () => {
     expect(FORM_FILE_ACCEPT).toBe(
-      '.docx,.dotx,.docm,.dotm,.doc,.dot,.rtf,.odt,.ott,.pages,.pdf,' +
+      '.docx,.dotx,.docm,.dotm,.doc,.dot,.rtf,.odt,.ott,.pages,.pdf,.jpg,.jpeg,.png,' +
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
         'application/vnd.openxmlformats-officedocument.wordprocessingml.template,' +
         'application/vnd.ms-word.document.macroEnabled.12,application/vnd.ms-word.template.macroEnabled.12,' +
         'application/msword,application/rtf,text/rtf,application/vnd.oasis.opendocument.text,' +
         'application/vnd.oasis.opendocument.text-template,application/vnd.apple.pages,' +
-        'application/x-iwork-pages-sffpages,application/pdf',
+        'application/x-iwork-pages-sffpages,application/pdf,image/jpeg,image/png',
     )
   })
 
@@ -126,5 +126,21 @@ describe('what a chosen file looks like', () => {
     const pdfOnly: FormFileType[] = [{ extension: 'pdf', mediaType: 'application/pdf', route: 'PDF' }]
 
     expect(fileKind(file('Form.doc'), pdfOnly)).toBe('other')
+  })
+})
+
+describe('a photo of a paper form', () => {
+  it('is a form file the pipeline reads as a PDF', () => {
+    const photos = FALLBACK_FORM_FILE_TYPES.filter((type) => type.mediaType === 'image/jpeg' || type.mediaType === 'image/png')
+    expect(photos.map((type) => type.extension).sort()).toEqual(['jpeg', 'jpg', 'png'])
+    expect(photos.every((type) => type.route === 'PDF')).toBe(true)
+  })
+
+  it('the chooser offers it', () => {
+    expect(FORM_FILE_ACCEPT).toContain('.jpg')
+    expect(FORM_FILE_ACCEPT).toContain('.jpeg')
+    expect(FORM_FILE_ACCEPT).toContain('.png')
+    expect(FORM_FILE_ACCEPT).toContain('image/jpeg')
+    expect(FORM_FILE_ACCEPT).toContain('image/png')
   })
 })
