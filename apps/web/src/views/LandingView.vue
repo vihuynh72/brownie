@@ -35,12 +35,16 @@ const formQuery = ref('')
 const formResults = ref<FormEntry[]>([])
 const formLibraryFailed = ref(false)
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
+let formSearchSeq = 0
 
 async function runFormSearch(): Promise<void> {
+  const seq = ++formSearchSeq
   try {
     const found = await searchForms(formQuery.value.trim())
+    if (seq !== formSearchSeq) return
     formResults.value = found.slice(0, 8)
   } catch {
+    if (seq !== formSearchSeq) return
     formLibraryFailed.value = true
   }
 }
