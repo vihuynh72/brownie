@@ -242,6 +242,20 @@ export function logout(): Promise<LogoutResponse> {
   return request<LogoutResponse>('/logout', { method: 'POST', headers: { Accept: 'application/json' } })
 }
 
+export type FormEntry = components['schemas']['FormEntry']
+export type FormStartResponse = components['schemas']['FormStartResponse']
+
+/** The form library's search; a blank q is the popular-forms row. No session needed for this read. */
+export function searchForms(q: string): Promise<FormEntry[]> {
+  return request<{ forms: FormEntry[] }>('/api/v1/forms' + (q ? '?q=' + encodeURIComponent(q) : ''))
+    .then((response) => response.forms)
+}
+
+/** Starts a document from one catalog entry; the server fetches the form itself. */
+export function startForm(id: string): Promise<FormStartResponse> {
+  return request<FormStartResponse>(`/api/v1/forms/${encodeURIComponent(id)}/start`, { method: 'POST' })
+}
+
 export function listDocuments(workspaceId: number): Promise<DocumentSummaryResponse[]> {
   return request(`/api/v1/workspaces/${workspaceId}/documents`)
 }

@@ -12,6 +12,8 @@ vi.mock('@/api/client', async () => {
   return {
     ...actual,
     listDocuments: vi.fn(),
+  searchForms: vi.fn(),
+  startForm: vi.fn(),
     trashDocument: vi.fn(),
     getCapabilities: vi.fn(),
     getWelcome: vi.fn(),
@@ -29,6 +31,8 @@ import {
   getWelcome,
   listBatches,
   listDocuments,
+  searchForms,
+  startForm,
   trashDocument,
   type CapabilitiesResponse,
   type DeletionResponse,
@@ -104,6 +108,8 @@ describe('HomeView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(listDocuments).mockReset()
+    vi.mocked(searchForms).mockReset().mockResolvedValue([])
+    vi.mocked(startForm).mockReset()
     vi.mocked(trashDocument).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
@@ -191,6 +197,111 @@ describe('HomeView', () => {
     expect(alert.text()).not.toContain('not_invited')
     expect(alert.find('a').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** The form library opens with its popular row before the person types anything. */
+  it('shows the popular forms before any typing, six at most', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({
+        id: `f${i}`, title: `Form ${i}`, agency: 'Agency', category: 'Tax', description: `About form ${i}.`,
+      })),
+    )
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(searchForms).toHaveBeenCalledWith('')
+    expect(wrapper.find('.home__library-popular').text()).toBe('Popular forms')
+    const rows = wrapper.findAll('.home__library-row')
+    expect(rows).toHaveLength(6)
+    expect(rows[0].text()).toContain('Form 0')
+    expect(rows[0].text()).toContain('Agency')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** The search waits a quarter second, so a typed phrase is one request, not one per letter. */
+  it('debounces the library search', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+
+    const input = wrapper.get('.home__library-search')
+    await input.setValue('w-9')
+    await vi.advanceTimersByTimeAsync(249)
+    expect(searchForms).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(searchForms).toHaveBeenCalledTimes(2)
+    expect(searchForms).toHaveBeenLastCalledWith('w-9')
+    vi.useRealTimers()
+    await flushPromises()
+  })
+
+  /** Start brings the form in and the person lands on the document it became. */
+  it('starts a catalog form and opens the document it made', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([
+      { id: 'irs-w9', title: 'Form W-9', agency: 'Internal Revenue Service', category: 'Tax', description: 'Taxpayer id.' },
+    ])
+    vi.mocked(startForm).mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await wrapper.get('.home__library-start').trigger('click')
+    expect(wrapper.get('.home__library-start').text()).toBe('Getting the form…')
+    await flushPromises()
+
+    expect(startForm).toHaveBeenCalledWith('irs-w9')
+    expect(router.currentRoute.value.path).toBe('/documents/42')
+  })
+
+  /** The server's own words on a failure, where the person was looking. */
+  it("shows the server's message when a start fails", async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([
+      { id: 'irs-w9', title: 'Form W-9', agency: 'Internal Revenue Service', category: 'Tax', description: 'Taxpayer id.' },
+    ])
+    vi.mocked(startForm).mockRejectedValue(
+      new ApiRequestError(502, {
+        status: 502, title: 'Bad Gateway', code: 'FORM_FETCH_FAILED',
+        detail: "Brownie couldn't download this form from Internal Revenue Service right now. Try again, or upload your copy.",
+        correlationId: 'x', fields: [], recoveryActions: [],
+      }),
+    )
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text()).toContain("couldn't download this form from Internal Revenue Service")
+    expect(alert.text()).toContain('upload your copy')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** No answer for the query is the upload path underneath it, named plainly. */
+  it('points at the upload when nothing in the library matches', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([])
+    signedIn()
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+    await wrapper.get('.home__library-search').setValue('xylophone')
+    await vi.advanceTimersByTimeAsync(300)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(wrapper.find('.home__library-empty').text()).toBe('No match. Upload your own copy below.')
+    expect(wrapper.find('.home__library-row').exists()).toBe(false)
   })
 
   it('greets a signed-in person by their first name only', async () => {
@@ -587,6 +698,8 @@ describe('HomeView: uploading a form', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(listDocuments).mockReset().mockResolvedValue([])
+    vi.mocked(searchForms).mockReset().mockResolvedValue([])
+    vi.mocked(startForm).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
     resetCapabilitiesCache()

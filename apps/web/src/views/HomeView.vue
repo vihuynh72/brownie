@@ -10,8 +10,11 @@ import {
   ApiRequestError,
   listBatches,
   listDocuments,
+  searchForms,
+  startForm,
   trashDocument,
   type DocumentSummaryResponse,
+  type FormEntry,
 } from '@/api/client'
 import { documentHandoffState } from '@/router/handoff'
 import { formatBytes, loadCapabilities } from '@/capabilities'
@@ -34,6 +37,52 @@ const signInFailureReason = computed(() => (typeof route.query.reason === 'strin
 const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'not_invited')
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
+
+// The form library, above the upload button: a debounced search whose first six
+// matches (or the six most popular forms on an empty query) each offer a Start.
+const formQuery = ref('')
+const formResults = ref<FormEntry[]>([])
+const formSearchFailed = ref('')
+const formBusyId = ref<string | null>(null)
+let formSearchTimer: ReturnType<typeof setTimeout> | undefined
+
+async function runFormSearch(): Promise<void> {
+  try {
+    const found = await searchForms(formQuery.value.trim())
+    formResults.value = found.slice(0, 6)
+    formSearchFailed.value = ''
+  } catch (error) {
+    formResults.value = []
+    formSearchFailed.value =
+      error instanceof ApiRequestError && error.problem?.detail
+        ? error.problem.detail
+        : 'Brownie could not reach the form library. Try again, or upload your copy below.'
+  }
+}
+
+watch(formQuery, () => {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  formSearchTimer = setTimeout(() => void runFormSearch(), 250)
+})
+
+async function startLibraryForm(entry: FormEntry): Promise<void> {
+  if (formBusyId.value) return
+  formBusyId.value = entry.id
+  formSearchFailed.value = ''
+  try {
+    const started = await startForm(entry.id)
+    await router.push(`/documents/${started.documentId}`)
+  } catch (error) {
+    formSearchFailed.value =
+      error instanceof ApiRequestError && error.problem?.detail
+        ? error.problem.detail
+        : 'Brownie could not start this form. Try again, or upload your copy below.'
+  } finally {
+    formBusyId.value = null
+  }
+}
+
+onMounted(() => void runFormSearch())
 
 // A batch page that deleted itself sends the person here with what it was called; the notice says what stays.
 const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string' ? route.query.batchDeleted : null))
@@ -622,6 +671,39 @@ const showHowItWorks = computed(
     <h1 class="page-title home__greeting">
       {{ authenticated ? greeting : 'Welcome to Brownie!' }}
     </h1>
+
+    <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
+      <h2 id="home-library-heading" class="home__library-heading">Find an official form</h2>
+      <input
+        v-model="formQuery"
+        class="home__library-search"
+        type="search"
+        placeholder="W-9, I-9, passport, VA…"
+        aria-label="Find an official form"
+      />
+      <p v-if="!formQuery.trim()" class="home__library-popular">Popular forms</p>
+      <p v-if="formSearchFailed" class="card home__signin-error" role="alert">{{ formSearchFailed }}</p>
+      <ul v-if="formResults.length" class="home__library-list">
+        <li v-for="entry in formResults" :key="entry.id" class="home__library-row">
+          <div class="home__library-text">
+            <p class="home__library-title">{{ entry.title }}</p>
+            <p class="home__library-agency">{{ entry.agency }}</p>
+            <p class="home__library-description">{{ entry.description }}</p>
+          </div>
+          <button
+            type="button"
+            class="button button--small home__library-start"
+            :aria-disabled="formBusyId === entry.id ? 'true' : undefined"
+            @click="startLibraryForm(entry)"
+          >
+            {{ formBusyId === entry.id ? 'Getting the form…' : 'Start' }}
+          </button>
+        </li>
+      </ul>
+      <p v-else-if="formQuery.trim() && !formSearchFailed" class="home__library-empty">
+        No match. Upload your own copy below.
+      </p>
+    </section>
 
     <div class="home__upload-area">
       <!--
