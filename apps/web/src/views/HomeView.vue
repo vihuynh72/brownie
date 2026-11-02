@@ -45,13 +45,17 @@ const formResults = ref<FormEntry[]>([])
 const formSearchFailed = ref('')
 const formBusyId = ref<string | null>(null)
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
+let formSearchSeq = 0
 
 async function runFormSearch(): Promise<void> {
+  const seq = ++formSearchSeq
   try {
     const found = await searchForms(formQuery.value.trim())
+    if (seq !== formSearchSeq) return
     formResults.value = found.slice(0, 6)
     formSearchFailed.value = ''
   } catch (error) {
+    if (seq !== formSearchSeq) return
     formResults.value = []
     formSearchFailed.value =
       error instanceof ApiRequestError && error.problem?.detail
@@ -71,7 +75,10 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
   formSearchFailed.value = ''
   try {
     const started = await startForm(entry.id)
-    await router.push(`/documents/${started.documentId}`)
+    // The download can outlast the visit: only open the document when Home is still the page.
+    if (router.currentRoute.value.name === 'home') {
+      await router.push(`/documents/${started.documentId}`)
+    }
   } catch (error) {
     formSearchFailed.value =
       error instanceof ApiRequestError && error.problem?.detail
