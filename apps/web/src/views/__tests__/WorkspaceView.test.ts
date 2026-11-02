@@ -855,8 +855,7 @@ describe('WorkspaceView: the page', () => {
     expect(page.get('#assistant-heading').text()).toBe('Chat with Brownie')
     expect(rulesCard(page).get('h3').text()).toBe('Rules')
     expect(norm(chatLog(page).text())).toContain(
-      'I can fill this document from your notes, a transcript or a conversation. Add one with Add a source (+), then ask ' +
-        'me to fill it in. You can also type straight into the highlighted spots, and change anything I fill in.',
+      'Tell me your details, typed or said, and I\'ll fill this form. Or add a document that has them with +. You can also type straight into the highlighted spots, and change anything I fill in.',
     )
     expect(page.get('label[for="assist-composer"]').text()).toBe('How may I help you?')
     expect(page.get('.assistant-disclaimer').text()).toBe('Brownie can make mistakes. Check each filled value before you export.')
@@ -1022,7 +1021,7 @@ describe('WorkspaceView: the page', () => {
 
     expect(page.find('.empty-hint').exists()).toBe(false)
     expect(page.get('.empty-state').text()).toContain('Nothing filled in yet.')
-    await press(page, 'Add notes or a transcript')
+    await press(page, 'Add a document')
     expect(document.activeElement?.id).toBe('attach-source')
   })
 
@@ -3448,8 +3447,8 @@ describe('WorkspaceView: the chat', () => {
     const starters = () => chatLog(page).findAll('ul[aria-label="Ways to begin"] button').map((button) => norm(button.text()))
 
     // A page with no line to put a new fill spot on offers only notes; the fill spot is tested with the pages that have lines.
-    expect(starters()).toEqual(['Add notes or a transcript'])
-    await press(page, 'Add notes or a transcript', 'ul[aria-label="Ways to begin"]')
+    expect(starters()).toEqual(['Type my details', 'Add a document'])
+    await press(page, 'Add a document', 'ul[aria-label="Ways to begin"]')
     expect(page.find('#add-source-panel').exists()).toBe(true)
     expect(document.activeElement?.id).toBe('attach-source')
     expect(await axe(page.element)).toHaveNoViolations()
@@ -3458,7 +3457,7 @@ describe('WorkspaceView: the chat', () => {
     await attachUpload(page)
     expect(starters()).toEqual([])
     // Under way, its first words keep to the point.
-    expect(norm(chatLog(page).text())).toContain('then ask me to fill it in.')
+    expect(norm(chatLog(page).text())).toContain("I'll fill this form")
     expect(norm(chatLog(page).text())).not.toContain('You can also type straight into the highlighted spots')
   })
 
@@ -3556,7 +3555,7 @@ describe('WorkspaceView: the chat', () => {
     )
     await press(page, 'I approve, make the change', '.proposal')
 
-    expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 33, 1, expect.any(String))
+    expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 33, 1, expect.any(String), true)
     expect(norm(chatLog(page).text())).toContain('Filled in 1 fill spot. Check each one before you export.')
     expect(proposal(page).exists()).toBe(false)
     expect(valueOf(page, 'edit-meeting.title')).toBe('Spring Planning')
@@ -3872,7 +3871,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     expect(proposalRowOf(page, 'Meeting title')).toBe('Meeting title Executive Committee Sync Your answer')
     // The answer the person gave stays said, in one line over what was found.
     expect(norm(runStatus(page).text())).toBe('You answered 1 question: Meeting title.')
-    expect(liveRegion(page).text()).toBe('Brownie found values for this document. Check them, then approve them to fill them in.')
+    expect(liveRegion(page).text()).toBe('Brownie filled 1 place. Look them over, then approve.')
 
     vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
     vi.mocked(getDocument).mockResolvedValue(
@@ -3880,7 +3879,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     )
     await press(page, 'I approve, fill it in', '.proposal')
 
-    expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 501, 1, expect.any(String))
+    expect(acceptPatchProposal).toHaveBeenCalledWith(7, 1, 501, 1, expect.any(String), true)
     expect(norm(chatLog(page).text())).toContain('Filled in 1 fill spot. Check each one before you export.')
     expect(valueOf(page, 'edit-meeting.title')).toBe('Executive Committee Sync')
   })
@@ -4525,19 +4524,19 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
   const reviewRows = (page: Page) =>
     reviewCard(page)
       .findAll('.proposal-review__row')
-      .map((row) => Array.from(row.element.querySelectorAll('.proposal-review__name, .tag, button')).map((part) => norm(part.textContent ?? '')).join(' '))
+      .map((row) => Array.from(row.element.querySelectorAll('.proposal-review__name, .tag, .proposal-review__by-you, button')).map((part) => norm(part.textContent ?? '')).join(' '))
 
   it('lists each fill spot it filled in, in the order of the page, with a table once, and where each value came from', async () => {
     const page = await acceptWhatWasFound()
 
     // What was found is a table too, in the same order: the fill spots first as the page draws them, the table last.
     expect(norm(chatLog(page).text())).toContain('Filled in 3 fill spots. Check each one before you export.')
-    expect(norm(reviewCard(page).get('.proposal-review__title').text())).toBe('To review')
+    expect(norm(reviewCard(page).get('.proposal-review__title').text())).toBe('Check my work')
     expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 3 accepted')
     expect(reviewRows(page)).toEqual([
-      'Meeting title Source cited Not reviewed Go to Meeting title',
-      'Meeting date Your answer Not reviewed Go to Meeting date',
-      'Table, 2 rows Source cited Not reviewed Go to Table, 2 rows',
+      "Meeting date Brownie's guess, nothing you gave said this Your answer Not reviewed Go to Meeting date",
+      "Table, 2 rows Brownie's guess, nothing you gave said this Source cited Not reviewed Go to Table, 2 rows",
+      "Meeting title Source cited Not reviewed Go to Meeting title",
     ])
     expect(reviewCard(page).classes()).toContain('msg-card')
     expect((await axe(page.element)).violations).toEqual([])
@@ -4568,8 +4567,10 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
     await press(page, 'Save now')
 
     expect(reviewCard(page).get('.proposal-review__count').text()).toBe('2 of 3 accepted')
-    expect(reviewRows(page)[0]).toBe('Meeting title Source cited Accepted Go to Meeting title')
-    expect(reviewRows(page)[2]).toBe('Table, 2 rows Source cited Accepted Go to Table, 2 rows')
+    // The guesses come first -- an accepted one keeps its place and says "Accepted by you" -- then the ones from what you said.
+    expect(reviewRows(page)[0]).toBe("Meeting date Brownie's guess, nothing you gave said this Your answer Not reviewed Go to Meeting date")
+    expect(reviewRows(page)[1]).toBe("Table, 2 rows Brownie's guess, nothing you gave said this Source cited Accepted Accepted by you Go to Table, 2 rows")
+    expect(reviewRows(page)[2]).toBe('Meeting title Source cited Accepted Go to Meeting title')
   })
 
   it('takes the person to the fill spot, and says the one that is open is open', async () => {
@@ -4580,14 +4581,15 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
     await press(page, 'Go to Meeting title', '.proposal-review')
 
     expect(document.activeElement?.id).toBe('edit-meeting.title')
-    expect(rows()[0]!.classes()).toContain('proposal-review__row--open')
-    expect(accessibleName(rows()[0]!.get('button').element)).toBe('Open Meeting title')
-    expect(accessibleName(rows()[1]!.get('button').element)).toBe('Go to Meeting date')
+    expect(rows()[2]!.classes()).toContain('proposal-review__row--open')
+    expect(accessibleName(rows()[2]!.get('button').element)).toBe('Open Meeting title')
+    expect(accessibleName(rows()[0]!.get('button').element)).toBe('Go to Meeting date')
+    expect(accessibleName(rows()[1]!.get('button').element)).toBe('Go to Table, 2 rows')
 
     // A table is gone to by its first column, wherever the person was.
     await press(page, 'Go to Table, 2 rows', '.proposal-review')
     expect(document.activeElement?.id).toBe('edit-action.item.task-0')
-    expect(rows()[2]!.classes()).toContain('proposal-review__row--open')
+    expect(rows()[1]!.classes()).toContain('proposal-review__row--open')
   })
 
   it('leaves no list when nothing was filled in, and keeps only the latest one', async () => {

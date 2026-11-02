@@ -437,7 +437,8 @@ describe('WorkspaceView: adding a fill spot', () => {
     expect(buttonNamed(page, 'Add a fill spot')).toBeUndefined()
     // Nor from Brownie's first words, which still offer what does not depend on the page.
     expect(buttonNamed(page, 'Add a fill spot to this form', 'ul[aria-label="Ways to begin"]')).toBeUndefined()
-    expect(buttonNamed(page, 'Add notes or a transcript', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+    expect(buttonNamed(page, 'Add a document', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+    expect(buttonNamed(page, 'Type my details', 'ul[aria-label="Ways to begin"]')).toBeDefined()
   })
 
   it('offers the same way in from Brownie’s first words, until something has been said', async () => {
