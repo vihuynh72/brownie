@@ -64,6 +64,21 @@ class JdbcUserIdentityRepositoryTest {
     }
 
     @Test
+    void recordingANameWritesThePartsAndTheConfirmedStamp() {
+        UserIdentity created = repository.recordLogin("https://issuer-n", "subject-name", "n@example.com", "Provider Name");
+
+        UserIdentity named = repository.recordName(created.id(), "Daniel", "Ortiz");
+
+        assertThat(named.givenName()).isEqualTo("Daniel");
+        assertThat(named.familyName()).isEqualTo("Ortiz");
+        assertThat(named.nameConfirmedAt()).isNotNull();
+        assertThat(repository.findByIssuerAndSubject("https://issuer-n", "subject-name"))
+                .get()
+                .extracting(UserIdentity::givenName, UserIdentity::familyName)
+                .containsExactly("Daniel", "Ortiz");
+    }
+
+    @Test
     void laterLoginsUpdateContactFieldsWithoutCreatingADuplicateRow() {
         UserIdentity first = repository.recordLogin("https://issuer-b", "subject-2", "old@example.com", "Old Name");
         UserIdentity second = repository.recordLogin("https://issuer-b", "subject-2", "new@example.com", "New Name");
