@@ -240,6 +240,22 @@ async function press(name: string, within = ''): Promise<void> {
   await settle()
 }
 
+/** The bar's "More" menu, opened for a press on one of its items. */
+async function openMore(): Promise<void> {
+  const more = button('More', 'section.selection-bar')
+  if (more.getAttribute('aria-expanded') === 'true') return
+  more.click()
+  await settle()
+}
+
+/** A press on a control the bar gathered under "More". */
+async function pressMore(name: string): Promise<void> {
+  if (![...document.querySelectorAll('.selection-more-menu button')].some((candidate) => (candidate.textContent ?? '').replace(/\s+/g, '') === name.replace(/\s+/g, ''))) {
+    await openMore()
+  }
+  await press(name, '.selection-more-menu')
+}
+
 async function focusSpot(id: string): Promise<void> {
   document.getElementById(id)!.focus()
   await settle()
@@ -326,13 +342,13 @@ describe('WorkspaceView with a PDF form', () => {
     name.dispatchEvent(new Event('input'))
     await settle()
 
-    await press('Add a fill spot')
+    await press('Add a place')
     const lines = document.querySelector<HTMLSelectElement>('dialog select[size]')!
     lines.value = '0'
     lines.dispatchEvent(new Event('change'))
     await press('Next', 'dialog')
     expect(suggestBox).toHaveBeenCalledWith(7, 4, 12, { pageNumber: 1, lineIndex: 0 })
-    await press('Add the fill spot', 'dialog')
+    await press('Add the place', 'dialog')
 
     expect(vi.mocked(patchDocumentContent).mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(changeFillSpots).mock.invocationCallOrder[0]!)
     expect(changeFillSpots).toHaveBeenCalledWith(
@@ -355,15 +371,15 @@ describe('WorkspaceView with a PDF form', () => {
     )
     expect(document.querySelector('dialog form')).toBeNull()
     expect(document.activeElement?.id).toBe('edit-company')
-    expect(chatLines()).toContain('Added a fill spot for Company. New documents from this form will have it too.')
+    expect(chatLines()).toContain('Added a place for Company. New documents from this form will have it too.')
 
     vi.mocked(restoreRevision).mockImplementation(async () => {
       server = { versionId: 12, revision: revision(4, server.revision.fields, 12) }
       return { revision: server.revision, keptLockedFieldIds: [], droppedFieldIds: [] }
     })
     await press('Undo adding Company', '.chat-line')
-    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 2, 3, expect.any(String), 'Undid a fill spot change.')
-    expect(chatLines()).toContain('Undone: Company is no longer a fill spot.')
+    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 2, 3, expect.any(String), 'Undid a place change.')
+    expect(chatLines()).toContain('Undone: Company is no longer a place.')
     expect(document.getElementById('edit-company')).toBeNull()
   })
 
@@ -372,12 +388,12 @@ describe('WorkspaceView with a PDF form', () => {
     vi.mocked(suggestBox).mockResolvedValue({ box: COMPANY.box, style: COMPANY.style!, labelGuess: 'Company' })
     await mountPage()
 
-    await press('Add a fill spot')
+    await press('Add a place')
     const lines = document.querySelector<HTMLSelectElement>('dialog select[size]')!
     lines.value = '0'
     lines.dispatchEvent(new Event('change'))
     await press('Next', 'dialog')
-    await press('Add the fill spot', 'dialog')
+    await press('Add the place', 'dialog')
 
     expect(document.querySelector('dialog [role="alert"]')?.textContent).toBe('That box is off the page.')
     expect(chatLines().some((line) => line.startsWith('Added'))).toBe(false)
@@ -482,20 +498,24 @@ describe('WorkspaceView with a PDF form', () => {
     const bar = document.querySelector('section.selection-bar')!
     // The pages keep their zoom at the same foot of the view, so the card rests above it.
     expect(bar.classList.contains('selection-bar--above-zoom')).toBe(true)
-    expect([...bar.querySelectorAll('[aria-labelledby="selection-bar-spot-label"] button')].map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim())).toEqual([
+    await openMore()
+    /* The "More" menu teleports to the body: its items live outside the bar's own scroll. */
+    expect([...document.body.querySelectorAll('.selection-more-menu [role="menuitem"]')].map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim())).toEqual([
       'Rename… Company',
       'Text size… for Company',
       'Remove… Company',
+      'Text style and rules',
     ])
     expect((await axe(document.body)).violations).toEqual([])
 
-    await press('Text size… for Company', 'section.selection-bar')
+    await pressMore('Text size… for Company')
     expect(document.querySelector('dialog h2')?.textContent).toBe('Text size and overflow for Company')
     await press('Cancel', 'dialog')
 
     await focusSpot('edit-full.name')
     expect(document.querySelector('section.selection-bar')!.textContent).toContain('This box belongs to the PDF’s own form')
-    expect(() => button('Text size… for Full name', 'section.selection-bar')).toThrow()
+    await openMore()
+    expect(() => button('Text size… for Full name', '.selection-more-menu')).toThrow()
     // The Rules card says how each box's text looks: the box's own style, or that the form sets it.
     const rules = () => document.querySelector('section[aria-labelledby="rules-heading"]')!
     expect(rules().textContent).toContain('The PDF’s own form sets how this box’s text looks.')
@@ -522,14 +542,15 @@ describe('WorkspaceView with a PDF form', () => {
     await mountPage()
 
     await focusSpot('edit-company')
-    await press('Remove… Company', 'section.selection-bar')
+    await openMore()
+    await press('Remove… Company', '.selection-more-menu')
     expect(document.querySelector('dialog')?.textContent).toContain('Its value stays in the version history.')
     await press('Remove', 'dialog')
 
     expect(changeFillSpots).toHaveBeenCalledWith(7, 1, 1, 12, [{ kind: 'REMOVE', fieldId: 'company' }], expect.any(String))
     expect(document.querySelector('section.selection-bar')).toBeNull()
     expect(document.activeElement?.id).toBe('document-pane')
-    expect(chatLines()).toContain('Removed the fill spot Company. Its value stays in the version history.')
+    expect(chatLines()).toContain('Removed the place Company. Its value stays in the version history.')
   })
 
   it('keeps a box Brownie found once the person renames it, so its mark goes', async () => {
@@ -558,7 +579,7 @@ describe('WorkspaceView with a PDF form', () => {
     expect(document.querySelector('.form-strip__text')?.textContent).toBe('Brownie found 1 more place to fill in. Check the one with a dashed outline, then keep it.')
 
     await focusSpot('edit-company')
-    await press('Rename… Company', 'section.selection-bar')
+    await pressMore('Rename… Company')
     const input = document.querySelector<HTMLInputElement>('dialog input[type="text"]')!
     input.value = 'Company name'
     input.dispatchEvent(new Event('input'))
@@ -577,7 +598,7 @@ describe('WorkspaceView with a PDF form', () => {
     const loads = vi.mocked(getDocument).mock.calls.length
 
     await focusSpot('edit-company')
-    await press('Rename… Company', 'section.selection-bar')
+    await pressMore('Rename… Company')
     const input = document.querySelector<HTMLInputElement>('dialog input[type="text"]')!
     input.value = 'Company name'
     input.dispatchEvent(new Event('input'))
@@ -592,7 +613,7 @@ describe('WorkspaceView with a PDF form', () => {
   it('sends the point picked on a page as the chat’s "here", and shows the spot the chat added with Undo', async () => {
     vi.mocked(interpretAssist).mockResolvedValue({
       kind: 'ADD_FILL_SPOT',
-      summary: 'Add a fill spot for Company here.',
+      summary: 'Add a place for Company here.',
       scope: null,
       executable: true,
       usesModel: false,
@@ -604,7 +625,7 @@ describe('WorkspaceView with a PDF form', () => {
       server = { versionId: 13, revision: revision(2, {}, 13) }
       return {
         kind: 'ADD_FILL_SPOT',
-        summary: 'Added a fill spot for Company on page 1. Forms you start from this template will have it too.',
+        summary: 'Added a place for Company on page 1. Forms you start from this template will have it too.',
         explanation: null,
         help: [],
         spotChange: { fieldId: 'company', label: 'Company', lineText: null, previousRevisionId: 1, templateVersionId: 13 },
@@ -631,7 +652,7 @@ describe('WorkspaceView with a PDF form', () => {
     expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'fill in here for Company', anchor)
     expect(executeAssist).toHaveBeenCalledWith(7, 1, 'fill in here for Company', 1, anchor)
     // The server's own words say what the chat did, as they do on a Word form.
-    expect(chatLines()).toContain('Added a fill spot for Company on page 1. Forms you start from this template will have it too.')
+    expect(chatLines()).toContain('Added a place for Company on page 1. Forms you start from this template will have it too.')
     // What "here" meant stays under the person's line once the box's hint is gone.
     expect(document.querySelector('.chat-line__here')?.textContent).toBe('"Here" is the place you picked on page 1.')
     expect(document.getElementById('edit-company')).not.toBeNull()
@@ -662,7 +683,7 @@ describe('WorkspaceView with a PDF form', () => {
     await mountPage()
 
     await focusSpot('edit-company')
-    await press('Text size… for Company', 'section.selection-bar')
+    await pressMore('Text size… for Company')
     const size = document.querySelector<HTMLInputElement>('dialog input[type="number"]')!
     size.value = '9'
     size.dispatchEvent(new Event('input'))
@@ -672,7 +693,7 @@ describe('WorkspaceView with a PDF form', () => {
     expect(changeFillSpots).toHaveBeenCalledWith(7, 1, 1, 12, [{ kind: 'RESTYLE_BOX', fieldId: 'company', sizePt: 9, overflow: 'SHRINK_TO_FIT' }], expect.any(String))
     expect(chatLines()).toContain('Changed how the text fits in Company. New documents from this form will have the change too.')
     await press('Undo the change to Company', '.chat-line')
-    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 1, 2, expect.any(String), 'Undid a fill spot change.')
+    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 1, 2, expect.any(String), 'Undid a place change.')
     expect(chatLines()).toContain('Undone: the change to Company is taken back.')
   })
 
@@ -684,10 +705,10 @@ describe('WorkspaceView with a PDF form', () => {
     await mountPage()
 
     await focusSpot('edit-company')
-    await press('Rename… Company', 'section.selection-bar')
+    await pressMore('Rename… Company')
 
     expect(document.querySelector('dialog form')).toBeNull()
-    expect(document.body.textContent).toContain('This document is on an older version of its form. Move it to the newest version first, then change its fill spots.')
+    expect(document.body.textContent).toContain('This document is on an older version of its form. Move it to the newest version first, then change its places.')
     expect((document.activeElement?.textContent ?? '').trim()).toBe('Move this document to it')
     expect(changeFillSpots).not.toHaveBeenCalled()
   })
@@ -700,15 +721,15 @@ describe('WorkspaceView with a PDF form', () => {
     await press('Not now')
     expect(document.querySelector('.version-banner')).toBeNull()
 
-    await press('Add a fill spot')
+    await press('Add a place')
     const lines = document.querySelector<HTMLSelectElement>('dialog select[size]')!
     lines.value = '0'
     lines.dispatchEvent(new Event('change'))
     await press('Next', 'dialog')
-    await press('Add the fill spot', 'dialog')
+    await press('Add the place', 'dialog')
 
     expect(document.querySelector('dialog [role="alert"]')?.textContent).toBe(
-      'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.',
+      'This document is on an older version of its form. Move it to the newest version first, then change its places.',
     )
     expect(changeFillSpots).not.toHaveBeenCalled()
     expect(button('Move this document to it')).toBeDefined()
@@ -723,12 +744,12 @@ describe('WorkspaceView with a PDF form', () => {
     })
     await mountPage()
 
-    await press('Add a fill spot')
+    await press('Add a place')
     const lines = document.querySelector<HTMLSelectElement>('dialog select[size]')!
     lines.value = '0'
     lines.dispatchEvent(new Event('change'))
     await press('Next', 'dialog')
-    await press('Add the fill spot', 'dialog')
+    await press('Add the place', 'dialog')
 
     expect(document.querySelector('dialog [role="alert"]')?.textContent).toBe(
       'This document is on an older version of its form. Move it to the newest version first, then try again.',

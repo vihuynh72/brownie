@@ -179,7 +179,7 @@ function spotsWhere(page: VueWrapper, test: (spot: SpotWrapper) => boolean): str
 }
 
 describe('DocumentPage', () => {
-  it('draws the template as a page: header, styled text, fill spots in place, the table and the footer', () => {
+  it('draws the template as a page: header, styled text, places in place, the table and the footer', () => {
     const page = mountPage()
 
     expect(page.get('h2').text()).toBe('Document')
@@ -352,7 +352,7 @@ describe('DocumentPage', () => {
     expect(page.emitted('update-scalar')).toBeUndefined()
   })
 
-  it('lists fields the drawing has no place for under "Other fill spots"', () => {
+  it('lists fields the drawing has no place for under "Other places"', () => {
     const layout: TemplateLayoutResponse = {
       ...MINUTES_WITH_TABLE,
       parts: MINUTES_WITH_TABLE.parts.map((part) =>
@@ -366,7 +366,7 @@ describe('DocumentPage', () => {
     const page = mountPage({ layout, fields })
 
     const others = page.get('.document-page__list--others')
-    expect(others.get('h3').text()).toBe('Other fill spots')
+    expect(others.get('h3').text()).toBe('Other places')
     const lines = others.findAll('p.document-page__paragraph')
     expect(lines.map((line) => line.get('.document-page__field-label').text())).toEqual(['Meeting location:', 'Meeting next steps:'])
     expect(control(page, 'edit-meeting.location').attributes('aria-label')).toBe('Meeting location')
@@ -399,7 +399,7 @@ describe('DocumentPage', () => {
 
     await page.setProps({ layoutState: 'unavailable' })
     expect(page.get('[role="status"]').text()).toBe(
-      "Brownie could not draw this template's layout, so its fill spots are listed instead.",
+      "Brownie could not draw this template's layout, so its places are listed instead.",
     )
 
     await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
@@ -431,14 +431,14 @@ describe('DocumentPage', () => {
 
   it('says there is nothing to fill in when there are no fields and no layout', () => {
     const page = mountPage({ layout: null, fields: [], drafts: {} })
-    expect(page.text()).toContain('This document has no fill spots.')
+    expect(page.text()).toContain('This document has no places.')
     expect(page.find('.document-page__status').exists()).toBe(false)
   })
 
-  it('says the page is loading, not that it has no fill spots, while what it holds is still on its way', () => {
+  it('says the page is loading, not that it has no places, while what it holds is still on its way', () => {
     const page = mountPage({ layout: null, layoutState: 'loading', fields: [], drafts: {} })
     expect(page.get('[role="status"]').text()).toBe('Loading the page…')
-    expect(page.text()).not.toContain('This document has no fill spots.')
+    expect(page.text()).not.toContain('This document has no places.')
   })
 
   it('marks required spots on screen and says what the marks mean', () => {
@@ -607,9 +607,9 @@ describe('DocumentPage', () => {
 
   it('moves to the next empty spot after the last focused, wrapping, until none is left', async () => {
     const page = mountPage()
-    expect(page.get('.document-page__summary').text()).toBe('3 of 7 fill spots filled')
+    expect(page.get('.document-page__summary').text()).toBe('3 of 7 places filled')
 
-    const next = page.findAll('button').find((button) => button.text() === 'Next empty spot')!
+    const next = page.findAll('button').find((button) => button.text() === 'Next empty place')!
     await next.trigger('click')
     expect(document.activeElement?.id).toBe('edit-meeting.organization')
 
@@ -629,13 +629,13 @@ describe('DocumentPage', () => {
         'action.item.owner': ['Ana', 'Ben'],
       }),
     })
-    expect(page.get('.document-page__summary').text()).toBe('7 of 7 fill spots filled')
-    expect(page.findAll('button').some((button) => button.text() === 'Next empty spot')).toBe(false)
+    expect(page.get('.document-page__summary').text()).toBe('7 of 7 places filled')
+    expect(page.findAll('button').some((button) => button.text() === 'Next empty place')).toBe(false)
   })
 
   it('passes over a locked empty spot when moving to the next empty one', async () => {
     const page = mountPage({ lockedFieldIds: new Set(['meeting.organization']) })
-    await page.findAll('button').find((button) => button.text() === 'Next empty spot')!.trigger('click')
+    await page.findAll('button').find((button) => button.text() === 'Next empty place')!.trigger('click')
     expect(document.activeElement?.id).toBe('edit-meeting.location')
   })
 
@@ -684,25 +684,25 @@ describe('DocumentPage: the status line', () => {
 
   it('counts the table of rows once, however many columns and rows it has', () => {
     // Six fields with one value each and one table: seven places, three of them filled.
-    expect(summaryOf(mountPage())).toBe('3 of 7 fill spots filled')
+    expect(summaryOf(mountPage())).toBe('3 of 7 places filled')
   })
 
-  it('says "fill spot" for a single place', () => {
+  it('says "place" for a single place', () => {
     const page = mountPage({ layout: null, fields: [FIELDS[0]!], drafts: { 'meeting.title': '' } })
-    expect(summaryOf(page)).toBe('0 of 1 fill spot filled')
+    expect(summaryOf(page)).toBe('0 of 1 place filled')
   })
 
   it('counts a table as filled only once it has rows and none of them holds a blank, and as a place while it has none', async () => {
     const page = mountPage({ drafts: drafts({ 'action.item.owner': ['Ana', 'Ben'] }) })
-    expect(summaryOf(page)).toBe('4 of 7 fill spots filled')
+    expect(summaryOf(page)).toBe('4 of 7 places filled')
 
     await page.setProps({ drafts: drafts({ 'action.item.task': [], 'action.item.owner': [], 'action.item.due': [] }) })
-    expect(summaryOf(page)).toBe('3 of 7 fill spots filled')
+    expect(summaryOf(page)).toBe('3 of 7 places filled')
   })
 
   it('says how many of Brownie\'s values wait for a look and how many are accepted, only when there are some', async () => {
     const page = mountPage()
-    expect(summaryOf(page)).toBe('3 of 7 fill spots filled')
+    expect(summaryOf(page)).toBe('3 of 7 places filled')
     expect(page.find('.document-page__summary [aria-hidden="true"]').exists()).toBe(false)
 
     const columns = (review: FieldStateResponse['review']) => ({
@@ -719,9 +719,9 @@ describe('DocumentPage: the status line', () => {
         ...columns('UNREVIEWED'),
       },
     })
-    expect(seen(page)).toBe('3 of 7 fill spots filled · 2 to review · 1 accepted')
+    expect(seen(page)).toBe('3 of 7 places filled · 2 to review · 1 accepted')
     // The dots are for the eye; assistive technology reads the counts as sentences.
-    expect(spoken(page)).toBe('3 of 7 fill spots filled. 2 to review. 1 accepted')
+    expect(spoken(page)).toBe('3 of 7 places filled. 2 to review. 1 accepted')
 
     await page.setProps({
       revisionFields: {
@@ -730,7 +730,7 @@ describe('DocumentPage: the status line', () => {
         ...columns('ACCEPTED'),
       },
     })
-    expect(seen(page)).toBe('3 of 7 fill spots filled · 3 accepted')
+    expect(seen(page)).toBe('3 of 7 places filled · 3 accepted')
   })
 
   it('puts the count first, then what the red mark means, then the ways to the next gap and a new spot', () => {
@@ -738,7 +738,7 @@ describe('DocumentPage: the status line', () => {
     const status = page.get('.document-page__status').element
     expect([...status.children].map((child) => child.className)).toEqual(['document-page__status-text', 'document-page__status-actions'])
     expect([...status.firstElementChild!.children].map((child) => child.className)).toEqual(['document-page__summary', 'document-page__legend'])
-    expect(page.findAll('.document-page__status-actions button').map((button) => button.text())).toEqual(['Add a fill spot', 'Next empty spot'])
+    expect(page.findAll('.document-page__status-actions button').map((button) => button.text())).toEqual(['Add a place', 'Next empty place'])
   })
 
   it('draws what the screen puts in the banner slot between the status line and the sheet', () => {
@@ -801,7 +801,7 @@ describe('DocumentPage: the rail', () => {
     expect(rail.find('button, a, input, [tabindex]').exists()).toBe(false)
   })
 
-  it('has a tick for every fill spot, the table once, coloured by what is left to do', async () => {
+  it('has a tick for every place, the table once, coloured by what is left to do', async () => {
     const page = await mountRail({ drafts: drafts({ 'action.item.due': ['2026-10-01', '2026-10-03'] }) })
     // Title, organization, date, location, attendees, decisions, then the table (its owner column has a blank).
     expect(tonesOf(page)).toEqual(['filled', 'open', 'filled', 'open', 'filled', 'open', 'open'])
@@ -964,7 +964,7 @@ describe('DocumentPage: the rail', () => {
     }
   })
 
-  it('has no ticks on a page with no fill spots', async () => {
+  it('has no ticks on a page with no places', async () => {
     const page = await mountRail({ layout: null, fields: [], drafts: {} })
     expect(ticksOf(page)).toHaveLength(0)
   })
@@ -1016,7 +1016,7 @@ describe('DocumentPage: a preview of what Brownie proposes', () => {
 
   it('still counts a gap that holds a proposal as a gap, so the next empty spot walks through the proposals too', async () => {
     const page = mountPage({ previewDrafts: { 'meeting.organization': 'Harborview Robotics Club' } })
-    await page.findAll('button').find((button) => button.text() === 'Next empty spot')!.trigger('click')
+    await page.findAll('button').find((button) => button.text() === 'Next empty place')!.trigger('click')
     expect(document.activeElement?.id).toBe('edit-meeting.organization')
   })
 
@@ -1047,7 +1047,7 @@ describe('DocumentPage: a preview of what Brownie proposes', () => {
       drafts: drafts(empty),
       previewDrafts: { 'meeting.location': 'Room 204', 'action.item.task': ['One'], 'action.item.owner': ['A'], 'action.item.due': ['2026-10-01'] },
     })
-    expect(page.get('.document-page__summary').text()).toBe('3 of 7 fill spots filled')
+    expect(page.get('.document-page__summary').text()).toBe('3 of 7 places filled')
     const due = page.findAllComponents(FillSpot).find((spot) => spot.props('inputId') === 'edit-action.item.due-0')!
     expect(due.props('attention')).toBe(false)
     await nextTick()

@@ -209,7 +209,7 @@ describe('ChatView', () => {
         'Tell Brownie what you need filled. It suggests a template, shows its plan, and starts only when you agree.',
       )
       expect(words(wrapper.get('.chat__start'))).toContain(
-        'Tell me what you need filled in. Attach notes or a transcript with +, and I will show you a plan before I start anything.',
+        'Tell me what you need filled in. Attach notes or a document with +, and I will show you a plan before I start anything.',
       )
       expect(wrapper.get('.chat__disclaimer').text()).toBe(
         'Brownie can make mistakes. It never fills, sends or saves anything without your approval.',
@@ -254,7 +254,7 @@ describe('ChatView', () => {
       expect(wrapper.get('[role="log"]').attributes('aria-label')).toBe('Conversation with Brownie')
       expect(wrapper.get('label[for="chat-composer"]').text()).toBe('How may I help you?')
       expect(wrapper.get('#chat-composer').attributes('placeholder')).toBe('How may I help you?')
-      expect(wrapper.get('.chat__attach').text()).toBe('Attach notes or a transcript')
+      expect(wrapper.get('.chat__attach').text()).toBe('Attach notes or a document')
       expect(wrapper.get('input[type="file"]').attributes('accept')).toBe('.txt,text/plain')
       expect(buttonNamed('Send').attributes('aria-disabled')).toBe('true')
     })
@@ -306,7 +306,7 @@ describe('ChatView', () => {
       const plan = lastPlan()
       expect(plan.template).toBe('Club equipment request')
       expect(plan.reads).toBe('No source yet: you can add one in the document')
-      expect(plan.steps[0]).toBe('I start the document. You can add notes or a transcript there, and I read them.')
+      expect(plan.steps[0]).toBe('I start the document. You can add notes or a document there, and I read them.')
     })
 
     it('does not guess aloud when a name matches the request more closely than any other', async () => {

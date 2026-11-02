@@ -27,7 +27,7 @@ async function flush(): Promise<void> {
 
 function withOpener(): HTMLButtonElement {
   opener = document.createElement('button')
-  opener.textContent = 'Add a fill spot'
+  opener.textContent = 'Add a place'
   document.body.append(opener)
   opener.focus()
   return opener
@@ -66,7 +66,7 @@ function mountPlace(send: (request: PlaceSpotRequest) => Promise<PlaceSpotRefusa
   return { wrapper, exposed: wrapper.vm as unknown as PlaceExposed }
 }
 
-describe('adding a fill spot from the keyboard', () => {
+describe('adding a place from the keyboard', () => {
   it('goes paragraph, place, name, with focus on each step and the keys a list takes', async () => {
     withOpener()
     const send = vi.fn(async () => null)
@@ -74,7 +74,7 @@ describe('adding a fill spot from the keyboard', () => {
     exposed.openAtLines()
     await flush()
 
-    expect(caption(wrapper)).toContain('Add a fill spot')
+    expect(caption(wrapper)).toContain('Add a place')
     expect(caption(wrapper)).toContain('Step 1 of 3')
     expect(wrapper.get('h2').text()).toBe('Which paragraph?')
     expect(bars(wrapper)).toEqual({ total: 3, reached: 1 })
@@ -154,7 +154,7 @@ describe('adding a fill spot from the keyboard', () => {
     const second = mountPlace(vi.fn(async () => null), [])
     second.exposed.openAtLines()
     await flush()
-    expect(second.wrapper.get('.field-hint[role="status"]').text()).toBe('This form has no paragraph a fill spot can go in.')
+    expect(second.wrapper.get('.field-hint[role="status"]').text()).toBe('This form has no paragraph a place can go in.')
   })
 
   it('offers a date for a name about a date, and names an empty line in a table by the cell beside it', async () => {
@@ -197,7 +197,7 @@ describe('adding a fill spot from the keyboard', () => {
     expect(send).not.toHaveBeenCalled()
     expect(name.attributes('aria-invalid')).toBe('true')
     // Focus was on the name already, so moving it there says nothing: the error is an alert of its own.
-    expect(wrapper.get('[role="alert"]').text()).toBe('Give the fill spot a name.')
+    expect(wrapper.get('[role="alert"]').text()).toBe('Give the place a name.')
     expect(active()).toBe(name.element)
     expect(name.attributes('aria-describedby')).toContain(wrapper.get('.field-error').attributes('id'))
   })
@@ -211,7 +211,7 @@ describe('adding a fill spot from the keyboard', () => {
     await wrapper.get('form').trigger('submit')
     await flush()
 
-    expect(wrapper.get('[role="status"]').text()).toBe('Adding the fill spot\u2026 Brownie is checking the form still prints correctly.')
+    expect(wrapper.get('[role="status"]').text()).toBe('Adding the place\u2026 Brownie is checking the form still prints correctly.')
     expect(buttonNamed(wrapper, 'Adding\u2026').attributes('aria-disabled')).toBe('true')
     // A turning ring beside the words shows it is still going; it is not read out, the words are.
     expect(wrapper.get('[role="status"] .activity-indicator').attributes('aria-hidden')).toBe('true')
@@ -219,9 +219,9 @@ describe('adding a fill spot from the keyboard', () => {
     await key(wrapper.get('dialog').element, 'Escape')
     expect(wrapper.find('dialog').attributes('open')).toBeDefined()
 
-    finish({ message: 'Brownie cannot put a fill spot inside a link. Choose a place next to it.', choosePlaceAgain: false })
+    finish({ message: 'Brownie cannot put a place inside a link. Choose a place next to it.', choosePlaceAgain: false })
     await flush()
-    expect(wrapper.get('[role="alert"]').text()).toBe('Brownie cannot put a fill spot inside a link. Choose a place next to it.')
+    expect(wrapper.get('[role="alert"]').text()).toBe('Brownie cannot put a place inside a link. Choose a place next to it.')
     expect(wrapper.get('[role="status"]').text()).toBe('')
     expect(wrapper.find('[role="status"] .activity-indicator').exists()).toBe(false)
     expect(wrapper.find('dialog').attributes('open')).toBeDefined()
@@ -241,7 +241,7 @@ describe('adding a fill spot from the keyboard', () => {
   })
 })
 
-describe('adding a fill spot at a place chosen on the page', () => {
+describe('adding a place at a place chosen on the page', () => {
   it('opens at the name, shows the paragraph with the place marked, and can choose another place in it', async () => {
     const returnTo = withOpener()
     const send = vi.fn(async () => null)
@@ -253,8 +253,8 @@ describe('adding a fill spot at a place chosen on the page', () => {
     // The person chose the paragraph and the place on the page, which stand for the first two steps.
     expect(caption(wrapper)).toContain('Step 3 of 3')
     expect(active()).toBe(wrapper.get('input[type="text"]').element)
-    expect(wrapper.get('.place-spot__marker').text()).toBe('[Fill spot]')
-    expect(wrapper.get('.place-spot__preview-line').text()).toBe('Reference [Fill spot] here')
+    expect(wrapper.get('.place-spot__marker').text()).toBe('[Place]')
+    expect(wrapper.get('.place-spot__preview-line').text()).toBe('Reference [Place] here')
     expect(wrapper.get('.place-spot__preview').attributes('aria-hidden')).toBe('true')
     expect(wrapper.get('.place-spot__where-words').text()).toContain('Replace \u201cN/A\u201d after \u201cReference\u201d')
     // The preview is not read out, so a screen reader is told the words around the place instead.
@@ -323,21 +323,21 @@ describe('the words around a place in a long paragraph', () => {
     expect(wrapper.get('.place-spot__where-words').text()).toContain('Replace \u201c____\u201d after \u201cthe request today:\u201d')
   })
 
-  it('keeps Cancel and "Add the fill spot" together at the end of the foot, apart from the way back at its start', async () => {
+  it('keeps Cancel and "Add the place" together at the end of the foot, apart from the way back at its start', async () => {
     const { wrapper, exposed } = mountPlace(vi.fn(async () => null), [LONG])
     exposed.openAtPlace(LONG, placeForCaret(LONG, 5), withOpener())
     await flush()
 
     const foot = wrapper.get('.dialog__foot')
-    expect(foot.findAll('button').map((button) => button.text())).toEqual(['Back', 'Cancel', 'Add the fill spot'])
+    expect(foot.findAll('button').map((button) => button.text())).toEqual(['Back', 'Cancel', 'Add the place'])
     // The way back is the one button pushed to the start; the other two are one block, so a narrow foot never splits them.
     expect(foot.element.firstElementChild?.textContent?.trim()).toBe('Back')
     expect(foot.get('.place-spot__back').text()).toBe('Back')
-    expect(wrapper.get('.place-spot__finish').findAll('button').map((button) => button.text())).toEqual(['Cancel', 'Add the fill spot'])
+    expect(wrapper.get('.place-spot__finish').findAll('button').map((button) => button.text())).toEqual(['Cancel', 'Add the place'])
   })
 })
 
-describe('renaming a fill spot', () => {
+describe('renaming a place', () => {
   type Exposed = { open: (label: string, returnTo?: HTMLElement | null) => void }
 
   it('starts from the current name, refuses the same name, and gives focus back once renamed', async () => {
@@ -349,7 +349,7 @@ describe('renaming a fill spot', () => {
     await flush()
 
     expect(wrapper.get('h2').text()).toBe('Rename Company')
-    expect(caption(wrapper)).toBe('Rename a fill spot')
+    expect(caption(wrapper)).toBe('Rename a place')
     // One step: one bar, filled; and the heading alone names the dialog, since the caption adds nothing to it.
     expect(bars(wrapper)).toEqual({ total: 1, reached: 1 })
     expect(wrapper.get('dialog').attributes('aria-labelledby')).toBe(wrapper.get('h2').attributes('id'))
@@ -391,7 +391,7 @@ describe('renaming a fill spot', () => {
   })
 })
 
-describe('removing a fill spot', () => {
+describe('removing a place', () => {
   type Exposed = { open: (label: string, hasValue: boolean, fromTheForm: boolean, returnTo?: HTMLElement | null) => void }
 
   it('asks first, with the safe answer focused, and says the form keeps its own box', async () => {
@@ -403,17 +403,17 @@ describe('removing a fill spot', () => {
     await flush()
 
     expect(wrapper.get('h2').text()).toBe('Remove Company?')
-    expect(caption(wrapper)).toBe('Remove a fill spot')
+    expect(caption(wrapper)).toBe('Remove a place')
     // Taking something away is red from the line under the heading to the button that does it.
     expect(wrapper.get('.spot-dialog__progress').classes()).toContain('spot-dialog__progress--danger')
-    expect(buttonNamed(wrapper, 'Remove the fill spot').classes()).toContain('button--danger')
+    expect(buttonNamed(wrapper, 'Remove the place').classes()).toContain('button--danger')
     const question = wrapper.findAll('.spot-remove__line').map((line) => line.text())
-    expect(question).toEqual(['Remove the fill spot Company? Its value stays in the version history.', 'The form keeps its own box; Brownie just stops filling it.'])
+    expect(question).toEqual(['Remove the place Company? Its value stays in the version history.', 'The form keeps its own box; Brownie just stops filling it.'])
     expect(wrapper.get('dialog').attributes('aria-describedby')).toBe(wrapper.get('.spot-remove__line').element.parentElement!.id)
     expect(active()).toBe(buttonNamed(wrapper, 'Cancel').element)
     expect(await axe(wrapper.element)).toHaveNoViolations()
 
-    await buttonNamed(wrapper, 'Remove the fill spot').trigger('click')
+    await buttonNamed(wrapper, 'Remove the place').trigger('click')
     await flush()
     expect(send).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('removed')).toHaveLength(1)
@@ -422,13 +422,13 @@ describe('removing a fill spot', () => {
   })
 
   it('says why the spot was not removed', async () => {
-    const send = vi.fn(async () => 'Brownie could not remove the fill spot, because the form would not print correctly without it. Nothing was changed.')
+    const send = vi.fn(async () => 'Brownie could not remove the place, because the form would not print correctly without it. Nothing was changed.')
     const wrapper = mount(RemoveSpotDialog, { props: { send }, attachTo: document.body })
     mounted.push(wrapper)
     ;(wrapper.vm as unknown as Exposed).open('Fax', false, false)
     await flush()
-    expect(wrapper.findAll('.spot-remove__line').map((line) => line.text())).toEqual(['Remove the fill spot Fax?'])
-    await buttonNamed(wrapper, 'Remove the fill spot').trigger('click')
+    expect(wrapper.findAll('.spot-remove__line').map((line) => line.text())).toEqual(['Remove the place Fax?'])
+    await buttonNamed(wrapper, 'Remove the place').trigger('click')
     await flush()
     expect(wrapper.get('[role="alert"]').text()).toContain('Nothing was changed.')
     expect(wrapper.emitted('removed')).toBeUndefined()
@@ -489,7 +489,7 @@ describe('the frame the three dialogs share', () => {
   })
 })
 
-describe('the last step of adding a fill spot', () => {
+describe('the last step of adding a place', () => {
   it('says where the spot goes beside a way to choose another place, and Back and that way both lead to the places', async () => {
     const { wrapper, exposed } = mountPlace(vi.fn(async () => null))
     exposed.openAtLines()
@@ -563,7 +563,7 @@ describe('the last step of adding a fill spot', () => {
     exposed.openAtPlace(LINES[1]!, placeForCaret(LINES[1]!, 12))
     await flush()
 
-    const add = buttonNamed(wrapper, 'Add the fill spot')
+    const add = buttonNamed(wrapper, 'Add the place')
     expect(add.attributes('type')).toBe('submit')
     expect(add.attributes('form')).toBe(wrapper.get('form').attributes('id'))
     expect(wrapper.get('form').element.contains(add.element)).toBe(false)
