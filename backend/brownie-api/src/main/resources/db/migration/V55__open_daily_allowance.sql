@@ -4,7 +4,10 @@
 
 ALTER TABLE workspace ADD COLUMN open_allowance BOOLEAN NOT NULL DEFAULT false;
 COMMENT ON COLUMN workspace.open_allowance IS
-        'Whether this workspace shares the open daily/monthly allowance strangers get, instead of the invited people''s budget.';
+    'Whether this workspace shares the open daily/monthly allowance strangers get, instead of the invited people''s budget.';
+ALTER TABLE model_usage ADD COLUMN open_allowance BOOLEAN NOT NULL DEFAULT false;
+COMMENT ON COLUMN model_usage.open_allowance IS
+    'True when this row was reserved on an open workspace -- the shared free monthly pool counts it even if the workspace''s own flag is later cleared.';
 
 -- Set by the application at every sign-in, from the invitation list. It
 -- only touches the signed-in person's own personal workspace, so a request
@@ -64,6 +67,7 @@ DECLARE
     v_workspace_day_cost NUMERIC;
     v_open_month_cost NUMERIC;
     v_global_cost NUMERIC;
+    v_open BOOLEAN;
 BEGIN
     IF p_input_tokens IS NULL OR p_input_tokens < 0 OR p_output_tokens IS NULL OR p_output_tokens < 0
             OR p_cost_usd IS NULL OR p_cost_usd < 0 THEN
@@ -89,6 +93,12 @@ BEGIN
     v_now := clock_timestamp();
     v_month_start := date_trunc('month', v_now AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
     v_day_start := date_trunc('day', v_now AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+    -- The workspace's own flag, read once under the lock and written on the
+    -- row itself: clearing the flag later never takes this spend out of the
+    -- shared pool below.
+    SELECT COALESCE(w.open_allowance, false) INTO v_open
+    FROM public.workspace w
+    WHERE w.id = p_workspace_id;
 
     IF p_job_id IS NULL THEN
         v_run_requests := 0;
@@ -130,9 +140,7 @@ BEGIN
 
     -- The open allowance, on top of the global cap: a day's own spend, then
     -- the month's shared spend across every workspace that is open.
-    IF p_open_day_limit_usd IS NOT NULL AND EXISTS (
-        SELECT 1 FROM public.workspace w WHERE w.id = p_workspace_id AND w.open_allowance
-    ) THEN
+    IF p_open_day_limit_usd IS NOT NULL AND v_open THEN
         SELECT COALESCE(sum(public.model_usage_counted_cost(u.state, u.reserved_cost_usd, u.actual_cost_usd)), 0)
         INTO v_workspace_day_cost
         FROM public.model_usage u
@@ -147,8 +155,7 @@ BEGIN
         SELECT COALESCE(sum(public.model_usage_counted_cost(u.state, u.reserved_cost_usd, u.actual_cost_usd)), 0)
         INTO v_open_month_cost
         FROM public.model_usage u
-        WHERE u.created_at >= v_month_start
-              AND EXISTS (SELECT 1 FROM public.workspace w WHERE w.id = u.workspace_id AND w.open_allowance);
+        WHERE u.created_at >= v_month_start AND u.open_allowance;
         IF v_open_month_cost + p_cost_usd > p_open_month_limit_usd THEN
             outcome := 'OPEN_MONTH_LIMIT';
             usage_id := NULL;
@@ -159,10 +166,10 @@ BEGIN
 
     INSERT INTO public.model_usage (
         workspace_id, requested_by_user_id, purpose, job_id, run_epoch, model_name, prompt_version, rate_card,
-        reserved_input_tokens, reserved_output_tokens, reserved_cost_usd, created_at)
+        reserved_input_tokens, reserved_output_tokens, reserved_cost_usd, open_allowance, created_at)
     VALUES (
         p_workspace_id, p_user_id, p_purpose, p_job_id, p_run_epoch, p_model_name, p_prompt_version, p_rate_card,
-        p_input_tokens, p_output_tokens, p_cost_usd, v_now)
+        p_input_tokens, p_output_tokens, p_cost_usd, v_open, v_now)
     RETURNING id INTO usage_id;
     outcome := 'RESERVED';
     RETURN NEXT;
