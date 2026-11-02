@@ -6,6 +6,7 @@ import io.github.vihuynh72.brownie.core.detail.SavedDetailRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.util.List;
@@ -42,12 +43,14 @@ class JdbcSavedDetailRepository implements SavedDetailRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<SavedDetail> list(long ownerUserId) {
         TenantContext.setCurrentUser(jdbcTemplate, ownerUserId);
         return jdbcTemplate.query("SELECT " + COLUMNS + " FROM saved_detail WHERE owner_user_id = ? ORDER BY \"key\"", ROW, ownerUserId);
     }
 
     @Override
+    @Transactional
     public SavedDetail upsert(
             long ownerUserId,
             long workspaceId,
@@ -97,12 +100,14 @@ class JdbcSavedDetailRepository implements SavedDetailRepository {
     }
 
     @Override
+    @Transactional
     public void delete(long ownerUserId, String key) {
         TenantContext.setCurrentUser(jdbcTemplate, ownerUserId);
         jdbcTemplate.update("DELETE FROM saved_detail WHERE owner_user_id = ? AND \"key\" = ?", ownerUserId, key);
     }
 
     @Override
+    @Transactional
     public void deleteAll(long ownerUserId) {
         TenantContext.setCurrentUser(jdbcTemplate, ownerUserId);
         jdbcTemplate.update("DELETE FROM saved_detail WHERE owner_user_id = ?", ownerUserId);
