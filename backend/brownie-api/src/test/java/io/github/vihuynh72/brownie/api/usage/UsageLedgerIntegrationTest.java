@@ -448,11 +448,31 @@ class UsageLedgerIntegrationTest {
         setOpenAllowance(first.workspaceId(), true);
         setOpenAllowance(second.workspaceId(), true);
         // Two open workspaces under their own days, but together over the pool.
-        seedSettled(first.workspaceId(), first.userId(), "0.001000", "now()");
-        seedSettled(second.workspaceId(), second.userId(), "0.001000", "now()");
-        seedSettled(second.workspaceId(), second.userId(), "0.005000", "now()");
+        seedSettled(first.workspaceId(), first.userId(), "0.001000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.001000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.005000", "now()", true);
 
         executeShorten(first, firstDocument)
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.limit").value("OPEN_MONTH"));
+    }
+
+    @Test
+    void aWorkspaceThatLeavesTheOpenAllowanceKeepsItsSpendInTheSharedPool() throws Exception {
+        clearLedger();
+        Member first = signIn("subject-usage-open-left-one");
+        Member second = signIn("subject-usage-open-left-two");
+        long secondDocument = createTitledDocument(second);
+        setOpenAllowance(first.workspaceId(), true);
+        setOpenAllowance(second.workspaceId(), true);
+        // Both open: together they pass the shared month pool.
+        seedSettled(first.workspaceId(), first.userId(), "0.005000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.001000", "now()", true);
+        // Then the first workspace leaves the open allowance -- its own flag clears,
+        // and only its already-reserved row's flag can keep its spend in the pool.
+        setOpenAllowance(first.workspaceId(), false);
+
+        executeShorten(second, secondDocument)
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.limit").value("OPEN_MONTH"));
     }
@@ -673,16 +693,21 @@ class UsageLedgerIntegrationTest {
     }
 
     private static void seedSettled(long workspaceId, long userId, String costUsd, String createdAtSql) throws SQLException {
+        seedSettled(workspaceId, userId, costUsd, createdAtSql, false);
+    }
+
+    private static void seedSettled(long workspaceId, long userId, String costUsd, String createdAtSql, boolean open) throws SQLException {
         try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO model_usage (workspace_id, requested_by_user_id, purpose, model_name, prompt_version, rate_card, state,
                                          reserved_input_tokens, reserved_output_tokens, reserved_cost_usd,
-                                         actual_input_tokens, actual_output_tokens, actual_cost_usd, created_at, closed_at)
-                VALUES (?, ?, 'ASSIST', 'seeded-model', 'seeded-prompt', 'seeded rates', 'SETTLED', 1, 1, 0.100000, 1, 1, ?::numeric,
+                                         actual_input_tokens, actual_output_tokens, actual_cost_usd, open_allowance, created_at, closed_at)
+                VALUES (?, ?, 'ASSIST', 'seeded-model', 'seeded-prompt', 'seeded rates', 'SETTLED', 1, 1, 0.100000, 1, 1, ?::numeric, ?,
                         %s, now())
                 """.formatted(createdAtSql))) {
             statement.setLong(1, workspaceId);
             statement.setLong(2, userId);
             statement.setString(3, costUsd);
+            statement.setBoolean(4, open);
             statement.executeUpdate();
         }
     }
