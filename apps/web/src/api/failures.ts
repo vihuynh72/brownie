@@ -40,6 +40,15 @@ export function describeCommonFailure(error: unknown, what: string): string | nu
   return null
 }
 
+/** True when a refusal is the free daily or shared open allowance, so the page can offer the ask for an invitation. */
+export function isOpenLimitRefusal(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status === 429 &&
+    (error.problem?.limit === 'OPEN_DAY' || error.problem?.limit === 'OPEN_MONTH')
+  )
+}
+
 /**
  * Brownie itself said that what was asked for is not there: a 404 from a
  * route it has, with its own explanation. Only then may a page act on it

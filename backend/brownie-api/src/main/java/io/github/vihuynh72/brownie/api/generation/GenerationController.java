@@ -3,6 +3,10 @@ package io.github.vihuynh72.brownie.api.generation;
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.api.job.JobResponse;
+import io.github.vihuynh72.brownie.core.job.Job;
+import io.github.vihuynh72.brownie.core.job.JobEvent;
+import io.github.vihuynh72.brownie.core.job.JobEventRepository;
+import io.github.vihuynh72.brownie.core.job.JobState;
 import io.github.vihuynh72.brownie.api.workspace.WorkspaceAuthorizationService;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.generation.GenerationRun;
@@ -45,16 +49,19 @@ import java.util.Map;
 class GenerationController {
 
     private final GenerationOrchestrationService generationOrchestrationService;
+    private final JobEventRepository jobEventRepository;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     GenerationController(
             GenerationOrchestrationService generationOrchestrationService,
+            JobEventRepository jobEventRepository,
             CanonicalRequestHasher canonicalRequestHasher,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.generationOrchestrationService = generationOrchestrationService;
+        this.jobEventRepository = jobEventRepository;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -93,7 +100,7 @@ class GenerationController {
         long userId = currentUserId(principal);
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
         return generationOrchestrationService.listRuns(workspaceId, userId, documentId).stream()
-                .map(GenerationRunResponse::from)
+                .map(view -> GenerationRunResponse.from(view, latestEvent(workspaceId, userId, view.job())))
                 .toList();
     }
 
@@ -194,6 +201,17 @@ class GenerationController {
     record StartExtractionRequest(long sourceArtifactId) {
     }
 
+    /**
+     * The same latest safe reason {@code JobController} shows: only a FAILED
+     * or DEAD job has one, and {@code job_event.safe_message} never carries a
+     * stack trace or internals.
+     */
+    private JobEvent latestEvent(long workspaceId, long userId, Job job) {
+        return job.state() == JobState.FAILED || job.state() == JobState.DEAD
+                ? jobEventRepository.latestForJob(workspaceId, userId, job.id()).orElse(null)
+                : null;
+    }
+
     record ExtractionResultResponse(long artifactId) {
     }
 
@@ -209,7 +227,7 @@ class GenerationController {
             OffsetDateTime createdAt,
             JobResponse job,
             Long resultArtifactId) {
-        static GenerationRunResponse from(GenerationOrchestrationService.GenerationRunView view) {
+        static GenerationRunResponse from(GenerationOrchestrationService.GenerationRunView view, JobEvent latestEvent) {
             GenerationRun run = view.run();
             return new GenerationRunResponse(
                     run.id(),
@@ -221,7 +239,7 @@ class GenerationController {
                     run.modelName(),
                     run.promptVersion(),
                     run.createdAt(),
-                    JobResponse.from(view.job()),
+                    JobResponse.from(view.job(), latestEvent),
                     view.resultArtifactId());
         }
     }

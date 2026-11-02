@@ -353,6 +353,7 @@ function jobResponse(state: string, overrides: Partial<JobResponse> = {}): JobRe
     deadlineAt: '2026-03-01T01:00:00Z',
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
+    failureMessage: null,
     ...overrides,
   }
 }
@@ -1101,6 +1102,51 @@ describe('WorkspaceView: editing by hand', () => {
 
     await selectSpot(page, 'edit-meeting.title')
     expect(chipsOf(page)).toContain('Typed by you')
+  })
+
+  it('offers an invitation under a chat error when the free allowance runs out', async () => {
+    useSessionStore().identity!.allowance = 'FREE_DAILY'
+    vi.mocked(interpretAssist).mockRejectedValue(
+      new ApiRequestError(429, {
+        status: 429,
+        title: 'Refused',
+        code: 'USAGE_LIMIT',
+        limit: 'OPEN_DAY',
+        detail: "Today's free allowance is used up. Ask for an invitation to keep going.",
+        correlationId: 'c',
+        fields: [],
+        recoveryActions: [],
+      }),
+    )
+    const page = await mountPage()
+
+    await send(page, 'fill it in')
+
+    expect(chatLog(page).text()).toContain("Today's free allowance is used up. Ask for an invitation to keep going.")
+    expect(chatLog(page).findAll('button').map((b) => b.text())).toContain('Ask for an invitation')
+  })
+
+  it('says "Invitation requested" under a chat error once the request was sent', async () => {
+    useSessionStore().identity!.allowance = 'FREE_DAILY'
+    useSessionStore().identity!.invitationRequested = true
+    vi.mocked(interpretAssist).mockRejectedValue(
+      new ApiRequestError(429, {
+        status: 429,
+        title: 'Refused',
+        code: 'USAGE_LIMIT',
+        limit: 'OPEN_MONTH',
+        detail: "This month's free allowance is used up.",
+        correlationId: 'c',
+        fields: [],
+        recoveryActions: [],
+      }),
+    )
+    const page = await mountPage()
+
+    await send(page, 'fill it in')
+
+    expect(chatLog(page).text()).toContain('Invitation requested')
+    expect(chatLog(page).findAll('button').map((b) => b.text())).not.toContain('Ask for an invitation')
   })
 
   it('says Saving while a save is on its way, and ignores a second press of Save now', async () => {
@@ -3998,6 +4044,23 @@ describe('WorkspaceView: Brownie reading a source', () => {
 
     expect(runStatus(page).text()).toContain('I stopped reading. Nothing on the document changed.')
     expect(hasButton(page, 'Try this reading again')).toBe(false)
+  })
+
+  it('says why a dead run ended when the server has words for it', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([
+      generationRun('DEAD', {
+        job: jobResponse('DEAD', {
+          failureMessage: "Today's free allowance is used up. It starts again at midnight UTC, or ask for an invitation to keep going.",
+        }),
+      }),
+    ])
+    const page = await mountPage()
+
+    expect(runStatus(page).get('[role="alert"]').text()).toBe(
+      "Today's free allowance is used up. It starts again at midnight UTC, or ask for an invitation to keep going.",
+    )
+    expect(page.text()).not.toContain('DEAD')
   })
 
   it('starts a run that gave up again as the same run, and turns what it found into a proposal by itself', async () => {
