@@ -116,7 +116,7 @@ class BrownieOidcUserServiceTest {
         OidcUser fakeOidcUser = oidcUserWith("https://issuer-z", "subject-z", "third@example.com", "Third Name");
         long[] recordedWorkspaceId = {-1L};
         long[] recordedUserId = {-1L};
-        BuiltInTemplateProvisioningService recordingProvisioning = new BuiltInTemplateProvisioningService(null, null, null, null, null) {
+        BuiltInTemplateProvisioningService recordingProvisioning = new BuiltInTemplateProvisioningService(null, null, null, null, null, null) {
             @Override
             public void ensureBuiltInTemplates(long workspaceId, long userId) {
                 recordedWorkspaceId[0] = workspaceId;
@@ -135,7 +135,7 @@ class BrownieOidcUserServiceTest {
     @Test
     void aFailureProvisioningBuiltInTemplatesDoesNotFailTheLoginItself() {
         OidcUser fakeOidcUser = oidcUserWith("https://issuer-w", "subject-w", "fourth@example.com", "Fourth Name");
-        BuiltInTemplateProvisioningService throwingProvisioning = new BuiltInTemplateProvisioningService(null, null, null, null, null) {
+        BuiltInTemplateProvisioningService throwingProvisioning = new BuiltInTemplateProvisioningService(null, null, null, null, null, null) {
             @Override
             public void ensureBuiltInTemplates(long workspaceId, long userId) {
                 throw new IllegalStateException("the isolated renderer is unavailable right now");
@@ -214,7 +214,7 @@ class BrownieOidcUserServiceTest {
     }
 
     private static BuiltInTemplateProvisioningService noOpProvisioning() {
-        return new BuiltInTemplateProvisioningService(null, null, null, null, null) {
+        return new BuiltInTemplateProvisioningService(null, null, null, null, null, null) {
             @Override
             public void ensureBuiltInTemplates(long workspaceId, long userId) {
                 // Nothing to record; most tests here only care about identity/workspace behavior.

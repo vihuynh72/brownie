@@ -2714,6 +2714,36 @@ describe('WorkspaceView: previewing what Brownie proposes', () => {
     return page
   }
 
+  it('keeps the proposal action at the top of the document pane in single-pane mode', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountWithFindings()
+
+    const strip = page.find('.single-pane-strip')
+    expect(strip.exists()).toBe(true)
+    expect(strip.text()).toContain('Brownie filled')
+    expect(strip.find('button').text()).toBe('I approve, fill it in')
+    expect(strip.text()).toContain('See details')
+  })
+
+  it('the strip action approves the proposal it names', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    const page = await mountWithFindings()
+
+    await page.find('.single-pane-strip__action').trigger('click')
+
+    expect(acceptPatchProposal).toHaveBeenCalledTimes(1)
+  })
+
+  it('the strip "See details" switches to the Brownie pane', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountWithFindings()
+
+    await page.find('.single-pane-strip__details').trigger('click')
+
+    expect(page.find('.workspace--showing-assistant').exists()).toBe(true)
+  })
+
   it('hands what a reading found to the page as values not in the document yet, and says so over the page', async () => {
     vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountWithFindings()
