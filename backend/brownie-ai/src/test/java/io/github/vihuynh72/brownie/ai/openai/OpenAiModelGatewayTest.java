@@ -329,6 +329,30 @@ class OpenAiModelGatewayTest {
                 """.formatted(messageJson, finishReason);
     }
 
+    /** A page image rides a user message to the model as an image input part. */
+    @Test
+    void aUserMessagesImageGoesAsAnImageInputPart() throws Exception {
+        stubSuccessfulReply();
+
+        gateway.complete(new ModelRequest(
+                "image-v1",
+                List.of(new ModelMessage(ModelMessageRole.USER, "Read this page.",
+                        List.of(new io.github.vihuynh72.brownie.core.model.ModelImage(
+                                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}, io.github.vihuynh72.brownie.core.model.ModelImage.MEDIA_TYPE_PNG)))),
+                new JsonSchema("{}"),
+                64));
+
+        JsonNode body = onlyRequestBody();
+        JsonNode userContent = body.path("messages").get(body.path("messages").size() - 1).path("content");
+        boolean imagePart = false;
+        for (JsonNode part : userContent.isArray() ? userContent : com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode().add(userContent)) {
+            if (part.path("type").asText().equals("image_url") || part.has("image_url")) {
+                imagePart = true;
+            }
+        }
+        assertThat(imagePart).as("an image input part rides the user message").isTrue();
+    }
+
     private static ModelRequest request() {
         return new ModelRequest(
                 "test-prompt-v1",
