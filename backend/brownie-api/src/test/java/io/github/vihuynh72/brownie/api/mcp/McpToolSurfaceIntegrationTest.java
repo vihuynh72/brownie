@@ -52,6 +52,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void everyToolIsListedAndTheReadOnesAnswer() throws Exception {
         Browser browser = signIn("subject-mcp-surface", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
 
         McpSyncClient client = mcpClient(token.token());
@@ -63,7 +64,13 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
 
         JsonNode templates = toolResult(client, "list_templates", Map.of());
         assertThat(templates.get("templates")).isNotEmpty();
-        JsonNode first = templates.get("templates").get(0);
+        JsonNode first = null;
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                first = each;
+            }
+        }
+        assertThat(first).as("the minutes template the round-trip expects").isNotNull();
         assertThat(first.get("template_id").asLong()).isPositive();
         assertThat(first.get("name").asText()).isNotBlank();
         // A field with no stored label shows the name worked out from
@@ -75,6 +82,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void startDocumentThenGetDocumentRoundTripWithLabels() throws Exception {
         Browser browser = signIn("subject-mcp-start", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
 
@@ -97,6 +105,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void addTextSourceStoresTheTextAsAPlainTextSource() throws Exception {
         Browser browser = signIn("subject-mcp-source", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());
@@ -124,7 +133,9 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         Browser owner = signIn("subject-mcp-xw-owner", ISSUER);
         Browser intruder = signIn("subject-mcp-xw-intruder", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(owner.workspaceId(), owner.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(owner.workspaceId(), owner.userId());
         builtInTemplateProvisioningService.ensureBuiltInTemplates(intruder.workspaceId(), intruder.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(intruder.workspaceId(), intruder.userId());
 
         IssuedToken ownerToken = issueToken(owner, "owner", "[\"read\",\"fill\",\"export\"]");
         IssuedToken intruderToken = issueToken(intruder, "intruder", "[\"read\",\"fill\",\"export\"]");
@@ -177,6 +188,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void aSourceThatNamesToolsStaysInertData() throws Exception {
         Browser browser = signIn("subject-mcp-injection", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());
@@ -200,6 +212,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void refusalsAndCallsAreRecordedInTheDocumentsHistory() throws Exception {
         Browser browser = signIn("subject-mcp-history", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());
@@ -227,12 +240,23 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
 
     private long firstTemplateId(McpSyncClient client) throws Exception {
         JsonNode templates = toolResult(client, "list_templates", Map.of());
-        return templates.get("templates").get(0).get("template_id").asLong();
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                return each.get("template_id").asLong();
+            }
+        }
+        throw new AssertionError("Flowing meeting minutes template was not provisioned: " + templates);
     }
 
     private long startDocument(McpSyncClient client, long workspaceId) throws Exception {
         JsonNode templates = toolResult(client, "list_templates", Map.of());
-        long templateId = templates.get("templates").get(0).get("template_id").asLong();
+        long templateId = -1;
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                templateId = each.get("template_id").asLong();
+            }
+        }
+        assertThat(templateId).as("the minutes template the round-trip expects").isPositive();
         JsonNode started = toolResult(client, "start_document", Map.of("template_id", templateId));
         return started.get("document_id").asLong();
     }

@@ -253,6 +253,7 @@ class DeletionConcurrencyIntegrationTest {
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         return new Owner(session, workspaceId, userId);
     }
 

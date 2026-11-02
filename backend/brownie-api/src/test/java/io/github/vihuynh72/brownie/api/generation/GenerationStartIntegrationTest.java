@@ -114,6 +114,7 @@ class GenerationStartIntegrationTest {
         long workspaceId = ensureWorkspace("subject-generation-start").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-start").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
         JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                 .andExpect(status().isOk())
@@ -176,6 +177,7 @@ class GenerationStartIntegrationTest {
         long workspaceId = ensureWorkspace("subject-generation-idempotent").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-idempotent").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                 .andExpect(status().isOk())
                 .andReturn());
@@ -215,6 +217,7 @@ class GenerationStartIntegrationTest {
         long workspaceId = ensureWorkspace("subject-generation-run").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-run").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                 .andExpect(status().isOk())
                 .andReturn());
@@ -295,6 +298,7 @@ class GenerationStartIntegrationTest {
         long workspaceId = ensureWorkspace("subject-generation-attempts").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-attempts").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                 .andExpect(status().isOk())
                 .andReturn());
