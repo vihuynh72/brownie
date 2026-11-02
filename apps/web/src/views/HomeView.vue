@@ -26,8 +26,28 @@ const documents = ref<DocumentSummaryResponse[]>([])
 
 // A sign-in that the identity provider refused comes back here as /?signin=failed&reason=<code>
 // (see the API's own sign-in failure handling). The code is rendered as text only.
-const signInFailed = computed(() => route.query.signin === 'failed')
+const signInFailed = computed(() => route.query.signin === 'failed' && session.status !== 'authenticated')
 const signInFailureReason = computed(() => (typeof route.query.reason === 'string' ? route.query.reason : null))
+// A callback revisited after sign-in already succeeded, or one a second tab finished first: the API
+// answers it with an authorization_request_not_found, and for a signed-out visitor that is an expired
+// or doubled sign-in to start over -- not a provider refusal to report.
+const signInExpiredOrRestarted = computed(() => signInFailureReason.value === 'authorization_request_not_found')
+
+/* A signed-in person never sees a sign-in failure: the alert is for a visitor whose sign-in failed,
+   and an old callback URL riding a good session says nothing about it. The code leaves the address bar
+   the same quiet way the API leaves it off the redirect for a session it can already see is signed in. */
+watch(
+  () => session.status,
+  (status) => {
+    if (status === 'authenticated' && route.query.signin !== undefined) {
+      const query = { ...route.query }
+      delete query.signin
+      delete query.reason
+      void router.replace({ query })
+    }
+  },
+  { immediate: true },
+)
 // One refusal is not worth trying again for: this Brownie is open to invited
 // people only, and nothing the person does at the sign-in page changes that.
 // Telling them to try again would be false, and would send them round a loop.
@@ -584,6 +604,10 @@ const showHowItWorks = computed(
       <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
         This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think
         it should be, ask whoever invited you; signing in again with the same account will not change it.
+      </p>
+      <p v-else-if="signInExpiredOrRestarted" class="card home__signin-error" role="alert">
+        That sign-in had expired or was started twice. Sign in again.
+        <a href="/oauth2/authorization/entra">Sign in again</a>
       </p>
       <p v-else class="card home__signin-error" role="alert">
         Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again;

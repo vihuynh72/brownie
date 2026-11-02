@@ -4,7 +4,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.web.DefaultRedirectStrategy;
@@ -56,6 +59,18 @@ final class SignInFailureHandler implements AuthenticationFailureHandler {
             }
         }
         log.warn("Sign-in failed: code={} description={}", code, description);
+        /* A stale callback against a session that already signed in -- a second tab finishing first,
+           or an old callback URL revisited -- is not a failure worth naming on the page. */
+        if ("authorization_request_not_found".equals(code) && alreadySignedIn()) {
+            redirectStrategy.sendRedirect(request, response, webOrigin + "/");
+            return;
+        }
         redirectStrategy.sendRedirect(request, response, webOrigin + "/?signin=failed&reason=" + code);
+    }
+
+    /** Whether this request already rides a signed-in session, as a replayed callback's would. */
+    private static boolean alreadySignedIn() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication instanceof OAuth2AuthenticationToken && authentication.isAuthenticated();
     }
 }
