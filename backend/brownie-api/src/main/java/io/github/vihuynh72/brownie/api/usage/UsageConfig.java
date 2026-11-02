@@ -24,8 +24,15 @@ class UsageConfig {
     @Bean
     MonthlyUsageLimits monthlyUsageLimits(
             @Value("${brownie.usage.workspace-monthly-limit-usd:2.00}") BigDecimal workspaceMonthlyLimitUsd,
-            @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd) {
-        return new MonthlyUsageLimits(workspaceMonthlyLimitUsd, globalMonthlyLimitUsd);
+            @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd,
+            @Value("${brownie.usage.open-daily-limit-usd:}") String openDailyLimitUsd,
+            @Value("${brownie.usage.open-monthly-limit-usd:}") String openMonthlyLimitUsd) {
+        return new MonthlyUsageLimits(workspaceMonthlyLimitUsd, globalMonthlyLimitUsd,
+                blankIsNull(openDailyLimitUsd), blankIsNull(openMonthlyLimitUsd));
+    }
+
+    private static BigDecimal blankIsNull(String value) {
+        return value == null || value.isBlank() ? null : new BigDecimal(value);
     }
 
     /** What one request made on a person's own request thread may reserve: a single request, under the same dollar bound a run has. */

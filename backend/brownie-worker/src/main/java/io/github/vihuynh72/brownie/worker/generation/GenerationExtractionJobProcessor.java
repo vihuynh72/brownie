@@ -115,6 +115,10 @@ class GenerationExtractionJobProcessor {
     private final UsageLimits attemptLimits;
     private final MonthlyUsageLimits monthlyUsageLimits;
 
+    private static BigDecimal blankIsNull(String value) {
+        return value == null || value.isBlank() ? null : new BigDecimal(value);
+    }
+
     GenerationExtractionJobProcessor(
             BlobStore blobStore,
             ModelGateway modelGateway,
@@ -129,7 +133,9 @@ class GenerationExtractionJobProcessor {
             @Value("${brownie.usage.run-max-requests:6}") int runMaxRequests,
             @Value("${brownie.usage.run-limit-usd:0.10}") BigDecimal runLimitUsd,
             @Value("${brownie.usage.workspace-monthly-limit-usd:2.00}") BigDecimal workspaceMonthlyLimitUsd,
-            @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd) {
+            @Value("${brownie.usage.global-monthly-limit-usd:15.00}") BigDecimal globalMonthlyLimitUsd,
+            @Value("${brownie.usage.open-daily-limit-usd:}") String openDailyLimitUsd,
+            @Value("${brownie.usage.open-monthly-limit-usd:}") String openMonthlyLimitUsd) {
         this.usageRepository = usageRepository;
         this.modelPricing = modelPricing;
         this.modelName = modelName;
@@ -146,7 +152,8 @@ class GenerationExtractionJobProcessor {
         // configured figures, so raising the run's bound raises both; the
         // token bounds are per attempt and are not configuration.
         this.attemptLimits = this.durableRunLimits;
-        this.monthlyUsageLimits = new MonthlyUsageLimits(workspaceMonthlyLimitUsd, globalMonthlyLimitUsd);
+        this.monthlyUsageLimits = new MonthlyUsageLimits(workspaceMonthlyLimitUsd, globalMonthlyLimitUsd,
+                blankIsNull(openDailyLimitUsd), blankIsNull(openMonthlyLimitUsd));
         this.blobStore = blobStore;
         this.modelGateway = modelGateway;
         this.extractionResponseParser = extractionResponseParser;
@@ -468,6 +475,8 @@ class GenerationExtractionJobProcessor {
             case RUN -> "USAGE_RUN_LIMIT_REACHED";
             case WORKSPACE_MONTH -> "USAGE_WORKSPACE_MONTH_LIMIT_REACHED";
             case GLOBAL_MONTH -> "USAGE_GLOBAL_MONTH_LIMIT_REACHED";
+            case OPEN_DAY -> "USAGE_OPEN_DAY_LIMIT_REACHED";
+            case OPEN_MONTH -> "USAGE_OPEN_MONTH_LIMIT_REACHED";
             case LEASE_LOST -> "GENERATION_LEASE_NOT_LIVE";
         };
         return new JobFailure(JobFailureKind.DETERMINISTIC, code, safeMessage(refused.getMessage()), null);

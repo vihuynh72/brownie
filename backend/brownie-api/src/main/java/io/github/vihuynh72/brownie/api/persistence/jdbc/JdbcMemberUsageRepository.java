@@ -43,7 +43,7 @@ class JdbcMemberUsageRepository implements MemberUsageRepository {
             String purpose) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.queryForObject(
-                "SELECT outcome, usage_id FROM reserve_member_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "SELECT outcome, usage_id FROM reserve_member_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rs, rowNum) -> new UsageReservationOutcome(rs.getString("outcome"), (Long) rs.getObject("usage_id")),
                 workspaceId,
                 modelName,
@@ -55,7 +55,9 @@ class JdbcMemberUsageRepository implements MemberUsageRepository {
                 runLimitUsd,
                 monthlyLimits.workspaceUsd(),
                 monthlyLimits.globalUsd(),
-                purpose);
+                purpose,
+                monthlyLimits.openDayUsd(),
+                monthlyLimits.openMonthUsd());
     }
 
     @Override
