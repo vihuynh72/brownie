@@ -8,6 +8,9 @@ import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.job.Job;
 import io.github.vihuynh72.brownie.core.job.JobCommandRepository;
+import io.github.vihuynh72.brownie.core.job.JobEvent;
+import io.github.vihuynh72.brownie.core.job.JobEventRepository;
+import io.github.vihuynh72.brownie.core.job.JobState;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.core.job.ResumeJobCommand;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceCapability;
@@ -30,16 +33,19 @@ import java.time.OffsetDateTime;
 class JobController {
 
     private final JobCommandRepository jobCommandRepository;
+    private final JobEventRepository jobEventRepository;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final WorkspaceAuthorizationService workspaceAuthorizationService;
     private final UserIdentityRepository userIdentityRepository;
 
     JobController(
             JobCommandRepository jobCommandRepository,
+            JobEventRepository jobEventRepository,
             CanonicalRequestHasher canonicalRequestHasher,
             WorkspaceAuthorizationService workspaceAuthorizationService,
             UserIdentityRepository userIdentityRepository) {
         this.jobCommandRepository = jobCommandRepository;
+        this.jobEventRepository = jobEventRepository;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.workspaceAuthorizationService = workspaceAuthorizationService;
         this.userIdentityRepository = userIdentityRepository;
@@ -57,7 +63,10 @@ class JobController {
         workspaceAuthorizationService.requireCapability(userId, workspaceId, WorkspaceCapability.MANAGE_WORKSPACE);
         Job job = jobCommandRepository.find(workspaceId, userId, jobId)
                 .orElseThrow(() -> new JobNotFoundException(jobId));
-        return JobResponse.from(job);
+        JobEvent latestEvent = job.state() == JobState.FAILED || job.state() == JobState.DEAD
+                ? jobEventRepository.latestForJob(workspaceId, userId, jobId).orElse(null)
+                : null;
+        return JobResponse.from(job, latestEvent);
     }
 
     @PostMapping("/{jobId}/cancel")
