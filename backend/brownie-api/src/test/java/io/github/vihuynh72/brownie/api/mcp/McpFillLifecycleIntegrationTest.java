@@ -75,6 +75,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void theWholeTextToDownloadedDocxPathWithExactlyOneConfirmation() throws Exception {
         Browser browser = signIn("subject-mcp-happy", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "happy", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
 
@@ -139,6 +140,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void aReplayedConfirmIsRefused() throws Exception {
         Browser browser = signIn("subject-mcp-replay", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "replay", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
@@ -160,6 +162,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void aProposalChangedAfterItsHashWasShownIsRefused() throws Exception {
         Browser browser = signIn("subject-mcp-tamper", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "tamper", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
@@ -187,6 +190,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void exportIsRefusedWhileAProposalWaitsForConfirmation() throws Exception {
         Browser browser = signIn("subject-mcp-unconfirmed", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "unconfirmed", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
@@ -223,6 +227,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void anExpiredDownloadLinkAnswers404() throws Exception {
         Browser browser = signIn("subject-mcp-expired", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "expired", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
@@ -250,6 +255,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void aReusedDownloadLinkAnswers404() throws Exception {
         Browser browser = signIn("subject-mcp-reused", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "reused", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
@@ -270,6 +276,7 @@ class McpFillLifecycleIntegrationTest extends McpIntegrationTestSupport {
     void answeringAnOpenQuestionHandsTheRunBack() throws Exception {
         Browser browser = signIn("subject-mcp-question", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         McpSyncClient client = mcpClient(issueToken(browser, "question", "[\"read\",\"fill\",\"export\"]").token());
         long documentId = startDocumentOnMeetingMinutes(client);
         long artifactId = addSource(client, documentId);
