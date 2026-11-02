@@ -4619,7 +4619,7 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
   const reviewRows = (page: Page) =>
     reviewCard(page)
       .findAll('.proposal-review__row')
-      .map((row) => Array.from(row.element.querySelectorAll('.proposal-review__name, .tag, button')).map((part) => norm(part.textContent ?? '')).join(' '))
+      .map((row) => Array.from(row.element.querySelectorAll('.proposal-review__name, .tag, .proposal-review__by-you, button')).map((part) => norm(part.textContent ?? '')).join(' '))
 
   it('lists each place it filled in, in the order of the page, with a table once, and where each value came from', async () => {
     const page = await acceptWhatWasFound()
@@ -4629,9 +4629,9 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
     expect(norm(reviewCard(page).get('.proposal-review__title').text())).toBe('Check my work')
     expect(reviewCard(page).get('.proposal-review__count').text()).toBe('0 of 3 accepted')
     expect(reviewRows(page)).toEqual([
-      "Meeting title Brownie's guess, nothing you gave said this Source cited Not reviewed Go to Meeting title",
       "Meeting date Brownie's guess, nothing you gave said this Your answer Not reviewed Go to Meeting date",
       "Table, 2 rows Brownie's guess, nothing you gave said this Source cited Not reviewed Go to Table, 2 rows",
+      "Meeting title Source cited Not reviewed Go to Meeting title",
     ])
     expect(reviewCard(page).classes()).toContain('msg-card')
     expect((await axe(page.element)).violations).toEqual([])
@@ -4662,10 +4662,10 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
     await press(page, 'Save now')
 
     expect(reviewCard(page).get('.proposal-review__count').text()).toBe('2 of 3 accepted')
-    // The guesses come first, then the accepted ones under their own line.
+    // The guesses come first -- an accepted one keeps its place and says "Accepted by you" -- then the ones from what you said.
     expect(reviewRows(page)[0]).toBe("Meeting date Brownie's guess, nothing you gave said this Your answer Not reviewed Go to Meeting date")
-    expect(reviewRows(page)[1]).toBe('Meeting title Source cited Accepted Go to Meeting title')
-    expect(reviewRows(page)[2]).toBe('Table, 2 rows Source cited Accepted Go to Table, 2 rows')
+    expect(reviewRows(page)[1]).toBe("Table, 2 rows Brownie's guess, nothing you gave said this Source cited Accepted Accepted by you Go to Table, 2 rows")
+    expect(reviewRows(page)[2]).toBe('Meeting title Source cited Accepted Go to Meeting title')
   })
 
   it('takes the person to the place, and says the one that is open is open', async () => {
@@ -4676,14 +4676,15 @@ describe('WorkspaceView: what an accepted proposal leaves to review', () => {
     await press(page, 'Go to Meeting title', '.proposal-review')
 
     expect(document.activeElement?.id).toBe('edit-meeting.title')
-    expect(rows()[0]!.classes()).toContain('proposal-review__row--open')
-    expect(accessibleName(rows()[0]!.get('button').element)).toBe('Open Meeting title')
-    expect(accessibleName(rows()[1]!.get('button').element)).toBe('Go to Meeting date')
+    expect(rows()[2]!.classes()).toContain('proposal-review__row--open')
+    expect(accessibleName(rows()[2]!.get('button').element)).toBe('Open Meeting title')
+    expect(accessibleName(rows()[0]!.get('button').element)).toBe('Go to Meeting date')
+    expect(accessibleName(rows()[1]!.get('button').element)).toBe('Go to Table, 2 rows')
 
     // A table is gone to by its first column, wherever the person was.
     await press(page, 'Go to Table, 2 rows', '.proposal-review')
     expect(document.activeElement?.id).toBe('edit-action.item.task-0')
-    expect(rows()[2]!.classes()).toContain('proposal-review__row--open')
+    expect(rows()[1]!.classes()).toContain('proposal-review__row--open')
   })
 
   it('leaves no list when nothing was filled in, and keeps only the latest one', async () => {

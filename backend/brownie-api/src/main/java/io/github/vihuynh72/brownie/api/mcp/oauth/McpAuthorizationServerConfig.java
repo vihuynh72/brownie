@@ -38,6 +38,7 @@ import org.springframework.security.oauth2.server.authorization.token.Delegating
 import org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenGenerator;
 import org.springframework.security.oauth2.core.OAuth2Token;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
@@ -136,7 +137,26 @@ class McpAuthorizationServerConfig {
                                         // Spring's own checks run first (PKCE S256, redirect URI,
                                         // scope); the resource check is added to them, not instead.
                                         code.setAuthenticationValidator(context -> {
-                                            new OAuth2AuthorizationCodeRequestAuthenticationValidator().accept(context);
+                                            try {
+                                                new OAuth2AuthorizationCodeRequestAuthenticationValidator().accept(context);
+                                            } catch (OAuth2AuthenticationException refused) {
+                                                // A localhost client on a new ephemeral port fails the
+                                                // default exact-port check; the loopback rule accepts
+                                                // it and everything else about the refusal stands.
+                                                if ("invalid_request".equals(refused.getError().getErrorCode())
+                                                        && refused.getError().getDescription() != null
+                                                        && refused.getError().getDescription().contains("redirect_uri")
+                                                        && LoopbackRedirectUris.matches(context)) {
+                                                    // Spring stops at its first refusal, so the scope check it
+                                                    // never reached is run here before anything else.
+                                                    OAuth2AuthorizationCodeRequestAuthenticationValidator.DEFAULT_SCOPE_VALIDATOR
+                                                            .accept(context);
+                                                    resourceEnforcement.validateAuthorizeRequest(context);
+                                                    McpScopeRequirement.validate(context);
+                                                    return;
+                                                }
+                                                throw refused;
+                                            }
                                             resourceEnforcement.validateAuthorizeRequest(context);
                                             McpScopeRequirement.validate(context);
                                         });
