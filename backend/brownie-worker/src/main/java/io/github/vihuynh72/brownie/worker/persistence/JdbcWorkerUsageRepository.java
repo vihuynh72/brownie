@@ -38,7 +38,7 @@ public class JdbcWorkerUsageRepository {
             UsageLimits runLimits,
             MonthlyUsageLimits monthlyLimits) {
         return jdbc().queryForObject(
-                "SELECT outcome, usage_id FROM public.worker_reserve_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "SELECT outcome, usage_id FROM public.worker_reserve_model_usage(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rs, rowNum) -> new UsageReservationOutcome(rs.getString("outcome"), (Long) rs.getObject("usage_id")),
                 lease.jobId(),
                 lease.workerId(),
@@ -52,7 +52,9 @@ public class JdbcWorkerUsageRepository {
                 runLimits.maxPhysicalRequests(),
                 runLimits.maxReservedCostUsd(),
                 monthlyLimits.workspaceUsd(),
-                monthlyLimits.globalUsd());
+                monthlyLimits.globalUsd(),
+                monthlyLimits.openDayUsd(),
+                monthlyLimits.openMonthUsd());
     }
 
     @Transactional

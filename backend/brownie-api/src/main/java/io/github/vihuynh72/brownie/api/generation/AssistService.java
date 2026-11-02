@@ -953,7 +953,8 @@ public class AssistService {
             budget.reserveForCall(UsageBudget.estimateInputTokens(request), request.maxOutputTokens(), request.promptVersion());
             completion = modelGateway.complete(request);
         } catch (BudgetExceededException e) {
-            if (e.kind() == UsageLimitKind.WORKSPACE_MONTH || e.kind() == UsageLimitKind.GLOBAL_MONTH) {
+            if (e.kind() == UsageLimitKind.WORKSPACE_MONTH || e.kind() == UsageLimitKind.GLOBAL_MONTH
+                    || e.kind() == UsageLimitKind.OPEN_DAY || e.kind() == UsageLimitKind.OPEN_MONTH) {
                 throw new UsageLimitReachedException(e.kind(), e.getMessage());
             }
             throw new AssistModelException("This request is over the per-request model budget.");

@@ -28,6 +28,10 @@ public record UsageReservationOutcome(String outcome, Long usageId) {
                     workspaceMonthUsedUp(monthlyLimits));
             case "GLOBAL_MONTH_LIMIT" -> throw new BudgetExceededException(UsageLimitKind.GLOBAL_MONTH,
                     "The model allowance everyone shares is used up for this month.");
+            case "OPEN_DAY_LIMIT" -> throw new BudgetExceededException(UsageLimitKind.OPEN_DAY,
+                    "Today's free allowance is used up. It starts again at midnight UTC, or ask for an invitation to keep going.");
+            case "OPEN_MONTH_LIMIT" -> throw new BudgetExceededException(UsageLimitKind.OPEN_MONTH,
+                    "The free allowance everyone shares is used up for this month. Ask for an invitation to keep going.");
             case "LOST_LEASE", "NOT_PERMITTED" -> throw new BudgetExceededException(UsageLimitKind.LEASE_LOST,
                     "The request could not be recorded for its spender, so it was not sent.");
             default -> throw new IllegalStateException("Unknown usage reservation outcome: " + outcome);

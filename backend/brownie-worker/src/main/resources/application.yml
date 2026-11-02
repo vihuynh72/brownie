@@ -89,6 +89,9 @@ brownie:
     run-limit-usd: ${BROWNIE_MODEL_RUN_USD_LIMIT:0.10}
     workspace-monthly-limit-usd: ${BROWNIE_MODEL_WORKSPACE_MONTHLY_USD_LIMIT:2.00}
     global-monthly-limit-usd: ${BROWNIE_MODEL_MONTHLY_USD_LIMIT:15.00}
+    # The open allowance a workspace anyone may join gets: its own each UTC day, and the monthly pool every open one shares. Blank is off.
+    open-daily-limit-usd: ${BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT:}
+    open-monthly-limit-usd: ${BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT:}
   ai:
     openai:
       # As in brownie-api, and it must be the same value there: both call

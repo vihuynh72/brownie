@@ -12,6 +12,7 @@ import io.github.vihuynh72.brownie.core.model.ModelGateway;
 import io.github.vihuynh72.brownie.core.model.ModelUsage;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +45,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -334,9 +336,9 @@ class UsageLedgerIntegrationTest {
                             + " reserved_input_tokens, reserved_output_tokens, reserved_cost_usd) VALUES ("
                             + member.workspaceId() + ", " + member.userId() + ", 'ASSIST', 'm', 'p', 'r', 1, 1, 0)",
                     "SELECT * FROM model_usage_reserve(" + member.workspaceId() + ", " + member.userId()
-                            + ", 'ASSIST', NULL, 0, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1)",
+                            + ", 'ASSIST', NULL, 0, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1, NULL, NULL)",
                     "SELECT model_usage_close(1, " + member.workspaceId() + ", 'RETAINED', NULL, NULL, NULL)",
-                    "SELECT * FROM worker_reserve_model_usage(1, 'w', 1, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1)",
+                    "SELECT * FROM worker_reserve_model_usage(1, 'w', 1, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1, NULL, NULL)",
                     "SELECT worker_retain_stale_model_usage(3600000, 10)")) {
                 try (PreparedStatement forbidden = connection.prepareStatement(statement)) {
                     assertThatThrownBy(forbidden::execute)
@@ -392,6 +394,188 @@ class UsageLedgerIntegrationTest {
                         VALUES (1, 1, 'ASSIST', 'm', 'p', 'r', 'SETTLED', 1, 1, 0.01, now())
                         """)) {
             assertThatThrownBy(statement::execute).isInstanceOf(SQLException.class).hasMessageContaining("model_usage_state_shape");
+        }
+    }
+
+    /** The open allowance an uninvited person's workspace gets. Its own context, because its limits are settings. */
+    @Nested
+    @TestPropertySource(properties = {
+            "spring.autoconfigure.exclude=",
+            "brownie.ai.openai.model=gpt-6-luna",
+            "brownie.usage.workspace-monthly-limit-usd=0.05",
+            "brownie.usage.global-monthly-limit-usd=0.08",
+            "brownie.usage.open-daily-limit-usd=0.002",
+            "brownie.usage.open-monthly-limit-usd=0.006"})
+    class OpenAllowance {
+
+    @Test
+    void anOpenWorkspacesOwnDayIsUsedUpWhenItsSpendWouldPassTheDay() throws Exception {
+        clearLedger();
+        Member openMember = signIn("subject-usage-open-day");
+        Member regular = signIn("subject-usage-open-day-regular");
+        long openDocument = createTitledDocument(openMember);
+        long regularDocument = createTitledDocument(regular);
+        setOpenAllowance(openMember.workspaceId(), true);
+        seedSettled(openMember.workspaceId(), openMember.userId(), "0.001900", "now()");
+        seedSettled(regular.workspaceId(), regular.userId(), "0.001900", "now()");
+
+        executeShorten(openMember, openDocument)
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.limit").value("OPEN_DAY"));
+        executeShorten(regular, regularDocument).andExpect(status().isOk());
+    }
+
+    @Test
+    void anOpenWorkspacesOwnDayDoesNotCountYesterday() throws Exception {
+        clearLedger();
+        Member member = signIn("subject-usage-open-day-not-yesterday");
+        long documentId = createTitledDocument(member);
+        setOpenAllowance(member.workspaceId(), true);
+        // Yesterday's spend, still inside this calendar month, is not today's.
+        org.junit.jupiter.api.Assumptions.assumeFalse(java.time.LocalDate.now(java.time.ZoneOffset.UTC).getDayOfMonth() == 1,
+                "today is the first of the month: yesterday is last month, not earlier this month");
+        seedSettled(member.workspaceId(), member.userId(), "0.001900", "now() - interval '1 day'");
+
+        executeShorten(member, documentId).andExpect(status().isOk());
+    }
+
+    @Test
+    void theOpenAllowanceEveryoneSharesStopsAnOpenWorkspace() throws Exception {
+        clearLedger();
+        Member first = signIn("subject-usage-open-month-one");
+        Member second = signIn("subject-usage-open-month-two");
+        long firstDocument = createTitledDocument(first);
+        setOpenAllowance(first.workspaceId(), true);
+        setOpenAllowance(second.workspaceId(), true);
+        // Two open workspaces under their own days, but together over the pool.
+        seedSettled(first.workspaceId(), first.userId(), "0.001000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.001000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.005000", "now()", true);
+
+        executeShorten(first, firstDocument)
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.limit").value("OPEN_MONTH"));
+    }
+
+    @Test
+    void aWorkspaceThatLeavesTheOpenAllowanceKeepsItsSpendInTheSharedPool() throws Exception {
+        clearLedger();
+        Member first = signIn("subject-usage-open-left-one");
+        Member second = signIn("subject-usage-open-left-two");
+        long secondDocument = createTitledDocument(second);
+        setOpenAllowance(first.workspaceId(), true);
+        setOpenAllowance(second.workspaceId(), true);
+        // Both open: together they pass the shared month pool.
+        seedSettled(first.workspaceId(), first.userId(), "0.005000", "now()", true);
+        seedSettled(second.workspaceId(), second.userId(), "0.001000", "now()", true);
+        // Then the first workspace leaves the open allowance -- its own flag clears,
+        // and only its already-reserved row's flag can keep its spend in the pool.
+        setOpenAllowance(first.workspaceId(), false);
+
+        executeShorten(second, secondDocument)
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.limit").value("OPEN_MONTH"));
+    }
+
+    @Test
+    void anOpenWorkspaceStillKeepsItsOwnMonthlyAllowance() throws Exception {
+        clearLedger();
+        Member member = signIn("subject-usage-open-off");
+        long documentId = createTitledDocument(member);
+        // open_allowance with the open limits set but spend under them: the new checks pass it through.
+        setOpenAllowance(member.workspaceId(), true);
+
+        executeShorten(member, documentId).andExpect(status().isOk());
+    }
+
+    @Test
+    void onlyTheOwnerOfTheirOwnPersonalWorkspaceMaySetItsOpenAllowance() throws Exception {
+        clearLedger();
+        Member member = signIn("subject-usage-open-owner");
+        Member other = signIn("subject-usage-open-owner-other");
+        long teamWorkspaceId;
+        try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO workspace (owner_user_id, is_personal) VALUES (?, false) RETURNING id")) {
+            statement.setLong(1, member.userId());
+            try (ResultSet rs = statement.executeQuery()) {
+                rs.next();
+                teamWorkspaceId = rs.getLong(1);
+            }
+        }
+
+        // current_workspace_user_id() only answers for the API login, so the call goes through it.
+        try (Connection connection = apiConnection(); PreparedStatement set = connection.prepareStatement(
+                "SELECT set_config('app.current_user_id', ?, false)");
+                PreparedStatement call = connection.prepareStatement("SELECT set_workspace_open_allowance(?, ?)")) {
+            set.setString(1, String.valueOf(other.userId()));
+            set.executeQuery();
+            call.setLong(1, member.workspaceId());
+            call.setBoolean(2, true);
+            try (ResultSet rs = call.executeQuery()) {
+                rs.next();
+                assertThat(rs.getBoolean(1)).as("someone else's workspace").isFalse();
+            }
+
+            set.setString(1, String.valueOf(member.userId()));
+            set.executeQuery();
+            call.setLong(1, teamWorkspaceId);
+            call.setBoolean(2, true);
+            try (ResultSet rs = call.executeQuery()) {
+                rs.next();
+                assertThat(rs.getBoolean(1)).as("a workspace that is not personal").isFalse();
+            }
+
+            call.setLong(1, member.workspaceId());
+            call.setBoolean(2, true);
+            try (ResultSet rs = call.executeQuery()) {
+                rs.next();
+                assertThat(rs.getBoolean(1)).as("the owner on their own personal workspace").isTrue();
+            }
+        }
+        try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement(
+                "SELECT open_allowance FROM workspace WHERE id = ?")) {
+            statement.setLong(1, member.workspaceId());
+            try (ResultSet rs = statement.executeQuery()) {
+                rs.next();
+                assertThat(rs.getBoolean(1)).isTrue();
+            }
+        }
+    }
+
+    private static void setOpenAllowance(long workspaceId, boolean open) throws SQLException {
+        try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement(
+                "UPDATE workspace SET open_allowance = ? WHERE id = ?")) {
+            statement.setBoolean(1, open);
+            statement.setLong(2, workspaceId);
+            statement.executeUpdate();
+        }
+    }
+
+
+    }
+
+    /** An open workspace when the free allowance is off: exactly the same as before. */
+    @Nested
+    class OpenAllowanceOff {
+
+        @Test
+        void anOpenWorkspaceWithNoLimitsBehavesExactlyAsBefore() throws Exception {
+            clearLedger();
+            Member member = signIn("subject-usage-open-off");
+            long documentId = createTitledDocument(member);
+            setOpenAllowance(member.workspaceId(), true);
+
+            executeShorten(member, documentId).andExpect(status().isOk());
+        }
+    }
+
+
+    private static void setOpenAllowance(long workspaceId, boolean open) throws SQLException {
+        try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement(
+                "UPDATE workspace SET open_allowance = ? WHERE id = ?")) {
+            statement.setBoolean(1, open);
+            statement.setLong(2, workspaceId);
+            statement.executeUpdate();
         }
     }
 
@@ -497,6 +681,10 @@ class UsageLedgerIntegrationTest {
         return DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
     }
 
+    private static Connection apiConnection() throws SQLException {
+        return DriverManager.getConnection(DB.jdbcUrl(), "brownie_api", API_PASSWORD);
+    }
+
     /** The shared allowance is one figure for the whole database, so each test starts from an empty month. */
     private static void clearLedger() throws SQLException {
         try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement("DELETE FROM model_usage")) {
@@ -505,16 +693,21 @@ class UsageLedgerIntegrationTest {
     }
 
     private static void seedSettled(long workspaceId, long userId, String costUsd, String createdAtSql) throws SQLException {
+        seedSettled(workspaceId, userId, costUsd, createdAtSql, false);
+    }
+
+    private static void seedSettled(long workspaceId, long userId, String costUsd, String createdAtSql, boolean open) throws SQLException {
         try (Connection connection = ownerConnection(); PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO model_usage (workspace_id, requested_by_user_id, purpose, model_name, prompt_version, rate_card, state,
                                          reserved_input_tokens, reserved_output_tokens, reserved_cost_usd,
-                                         actual_input_tokens, actual_output_tokens, actual_cost_usd, created_at, closed_at)
-                VALUES (?, ?, 'ASSIST', 'seeded-model', 'seeded-prompt', 'seeded rates', 'SETTLED', 1, 1, 0.100000, 1, 1, ?::numeric,
+                                         actual_input_tokens, actual_output_tokens, actual_cost_usd, open_allowance, created_at, closed_at)
+                VALUES (?, ?, 'ASSIST', 'seeded-model', 'seeded-prompt', 'seeded rates', 'SETTLED', 1, 1, 0.100000, 1, 1, ?::numeric, ?,
                         %s, now())
                 """.formatted(createdAtSql))) {
             statement.setLong(1, workspaceId);
             statement.setLong(2, userId);
             statement.setString(3, costUsd);
+            statement.setBoolean(4, open);
             statement.executeUpdate();
         }
     }

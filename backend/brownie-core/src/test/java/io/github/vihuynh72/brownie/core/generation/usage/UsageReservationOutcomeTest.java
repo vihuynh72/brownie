@@ -31,6 +31,24 @@ class UsageReservationOutcomeTest {
     }
 
     @Test
+    void anOpenDayLimitSaysItStartsAgainAtMidnightUtc() {
+        BudgetExceededException refused = refusal("OPEN_DAY_LIMIT", UsageLimits.defaultRunLimits(), MONTHLY);
+
+        assertEquals(UsageLimitKind.OPEN_DAY, refused.kind());
+        assertEquals("Today's free allowance is used up. It starts again at midnight UTC, or ask for an invitation to keep going.",
+                refused.getMessage());
+    }
+
+    @Test
+    void anOpenMonthLimitSaysTheSharedFreeAllowanceIsUsedUp() {
+        BudgetExceededException refused = refusal("OPEN_MONTH_LIMIT", UsageLimits.defaultRunLimits(), MONTHLY);
+
+        assertEquals(UsageLimitKind.OPEN_MONTH, refused.kind());
+        assertEquals("The free allowance everyone shares is used up for this month. Ask for an invitation to keep going.",
+                refused.getMessage());
+    }
+
+    @Test
     void aWorkspaceLimitReadsInDollarsAndCents() {
         BudgetExceededException refused = refusal("WORKSPACE_MONTH_LIMIT", UsageLimits.defaultRunLimits(), MONTHLY);
 
