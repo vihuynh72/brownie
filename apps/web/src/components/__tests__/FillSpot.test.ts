@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import FillSpot from '@/components/workspace/FillSpot.vue'
@@ -42,6 +42,28 @@ function iconIn(spot: VueWrapper, selector: string): IconName | undefined {
 
 const markOf = (spot: VueWrapper) => iconIn(spot, '.fill-spot__mark svg')
 const lockOf = (spot: VueWrapper) => iconIn(spot, 'svg.fill-spot__lock')
+
+describe('FillSpot: a placeholder too small to read', () => {
+  it('drops the placeholder when the control draws its text under 10px, and keeps the box', async () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      () => ({ fontSize: '8px' }) as CSSStyleDeclaration,
+    )
+    const spot = spotWith({ placeholder: 'Full name' })
+    await spot.vm.$nextTick()
+    expect(spot.get('textarea').attributes('placeholder')).toBe('')
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the placeholder while the control draws its text at 10px or more', async () => {
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      () => ({ fontSize: '12px' }) as CSSStyleDeclaration,
+    )
+    const spot = spotWith({ placeholder: 'Full name' })
+    await spot.vm.$nextTick()
+    expect(spot.get('textarea').attributes('placeholder')).toBe('[Full name]')
+    vi.restoreAllMocks()
+  })
+})
 
 describe('FillSpot: what each state looks like', () => {
   it('draws an empty spot as a gap with nothing at its start, and a typed value plainly', () => {

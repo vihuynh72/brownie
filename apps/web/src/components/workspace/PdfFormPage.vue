@@ -1904,6 +1904,15 @@ function goToPlace(fieldId: string): void {
   padding-inline: 0.25rem;
 }
 
+/* On a touch screen the zoom controls reach a finger's target. */
+@media (pointer: coarse) {
+  .pdf-form-page__zoom-fit,
+  .pdf-form-page__zoom-step {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+}
+
 /* Fitting the width is the resting state; once a size has been chosen, the button that goes back to it is quieter. */
 .pdf-form-page__zoom-fit[aria-pressed='false'] {
   color: var(--color-text-muted);

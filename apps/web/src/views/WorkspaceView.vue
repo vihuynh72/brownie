@@ -3144,6 +3144,41 @@ const proposalChangeCard = computed(() =>
 const proposalLeftOut = computed(() => (patchProposal.value ? leftOutWords(patchProposal.value.skippedRepeatedItems, labelOf) : null))
 /** Every question has its answer, so nothing is left to wait for but carrying on. */
 const allQuestionsAnswered = computed(() => openQuestions.value.length > 0 && openQuestions.value.every((question) => question.status === 'ANSWERED'))
+
+/**
+ * In single-pane mode, the strip at the top of the document pane when a card is up in Brownie's: its
+ * title, its one-line status, its main action, and the way to the card itself. Which card it is follows
+ * the same signals the pane's own cards do.
+ */
+const singlePaneStrip = computed<{ title: string; status: string; action: string; run: () => void } | null>(() => {
+  if (patchProposal.value !== null) {
+    const filled = Object.keys(patchProposal.value.proposedValues ?? {}).length
+    return {
+      title: 'A proposal',
+      status: `Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}`,
+      action: 'I approve, fill it in',
+      run: () => void acceptProposal(),
+    }
+  }
+  if (openQuestions.value.some((question) => question.status !== 'ANSWERED')) {
+    const open = openQuestions.value.filter((question) => question.status !== 'ANSWERED').length
+    return {
+      title: 'Questions',
+      status: `${open === 1 ? '1 question' : `${open} questions`} to answer`,
+      action: `Answer ${open === 1 ? '1 question' : `${open} questions`}`,
+      run: () => showAssistant(false),
+    }
+  }
+  if (reviewSlotId.value !== null) {
+    return {
+      title: 'Check my work',
+      status: 'Brownie filled places to look over',
+      action: 'Check my work',
+      run: () => showAssistant(false),
+    }
+  }
+  return null
+})
 /** How a label is drawn: in the tone it carries, or as the plain tag. */
 function stateTagClass(tag: StateTag): string | undefined {
   return tag.tone === 'neutral' ? undefined : `tag--${tag.tone}`
@@ -3982,6 +4017,22 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         @focusin="onDocumentFocusIn"
         @input="onDocumentInput"
       >
+        <!--
+          In single-pane mode, the card that's up in Brownie's pane keeps its action here so the person
+          does not flip to approve. With both panes out, this hides with the switch.
+        -->
+        <div v-if="singlePaneStrip && narrowView === 'document'" class="single-pane-strip">
+          <div class="single-pane-strip__text">
+            <strong class="single-pane-strip__title">{{ singlePaneStrip.title }}</strong>
+            <span class="single-pane-strip__status">{{ singlePaneStrip.status }}</span>
+          </div>
+          <button type="button" class="button single-pane-strip__action" @click="singlePaneStrip.run()">
+            {{ singlePaneStrip.action }}
+          </button>
+          <button type="button" class="link-button single-pane-strip__details" @click="showAssistant(false)">
+            See details
+          </button>
+        </div>
         <!--
           Before anything is filled in, how the page gets filled: one quiet line once the page has fill spots, so
           the first of them stays in view, and a note of its own over a page that has none yet.
@@ -5353,14 +5404,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 }
 
 /*
- * The two-pane threshold sits a little under 50rem (800px) on purpose: this container is measured on its
- * content box, inside the region's own side padding (32px each side at this width), so a window exactly
- * 50rem of *content* wide needs 64px more of actual room than that. With the sidebar docked open at its
- * own width, a window the width the keyboard tests call "a laptop" was landing a single pixel short of
- * 50rem of content and falling back to the narrow, one-pane-at-a-time layout it should not have needed.
- * The threshold now keeps the margin that width was always meant to have.
+ * The two-pane threshold sits at 40rem (640px) of content on purpose: this container is measured on its
+ * content box inside the region's own side padding, so a 768px tablet with the sidebar as a drawer still
+ * shows the document and Brownie side by side. Below it, one pane at a time with the switch.
  */
-@container main (min-width: 49.5rem) {
+@container main (min-width: 40rem) {
   /*
    * The page's column is the sheet, 600px wide at its fullest and never more than 55% of the room, so it keeps
    * its full width for as long as Brownie's panel can give way for it. The panel takes what is left (671px
@@ -5371,7 +5419,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
    */
   .workspace-panes {
     --panes-room: clamp(3.125rem, 5.2cqi, 4.6875rem);
-    grid-template-columns: minmax(0, min(37.5rem, 55%)) minmax(18rem, 1fr);
+    grid-template-columns: minmax(0, min(37.5rem, 55%)) minmax(15rem, 1fr);
     column-gap: clamp(var(--space-4), 4.6cqi, 4.0625rem);
     inline-size: 100%;
     max-inline-size: 92.5rem;
@@ -5540,7 +5588,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   font-weight: var(--font-weight-medium);
 }
 
-@container main (min-width: 49.5rem) {
+@container main (min-width: 40rem) {
   .empty-hint {
     display: none;
   }
@@ -5572,6 +5620,38 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .empty-state .field-hint {
   color: var(--color-text-muted);
+}
+
+/* In single-pane mode, the card that's up in Brownie's pane keeps its action at the top of the document's. */
+.single-pane-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-block-end: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.single-pane-strip__text {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+.single-pane-strip__title {
+  font-weight: var(--font-weight-medium);
+}
+.single-pane-strip__status {
+  color: var(--color-text-quiet);
+  font-size: var(--font-size-small);
+}
+.single-pane-strip__action {
+  margin-inline-start: auto;
+}
+@container main (min-width: 40rem) {
+  .single-pane-strip {
+    display: none;
+  }
 }
 
 /* The page as it exports, as wide as the sheet is and in the same place. */
@@ -5659,10 +5739,39 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin: 0;
 }
 
-/* On a touch screen there is no key to press. */
+/* On a touch screen there is no key to press, and the card may not eat the page: it caps out and scrolls inside. */
 @media (pointer: coarse) {
   .selection-bar__keys {
     display: none;
+  }
+
+  .selection-bar {
+    max-block-size: min(45dvh, calc(100dvh - 13rem));
+    overflow-y: auto;
+  }
+
+  /* The small buttons, the view switches and the links the workspace bar carries reach 44px on a finger. */
+  .workspace-bar :is(button, a, .link-button) {
+    min-block-size: 44px;
+    padding-block: calc((44px - 1.25em) / 2);
+  }
+  .workspace-switch__button {
+    min-block-size: 44px;
+  }
+  .workspace-bar .link-button {
+    min-block-size: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* A PDF spot's checkbox keeps its drawn size; an invisible box around it takes the tap. */
+  .pdf-form-page__spot :deep(.fill-spot__control--checkbox) {
+    position: relative;
+  }
+  .pdf-form-page__spot :deep(.fill-spot__control--checkbox)::before {
+    content: "";
+    position: absolute;
+    inset: calc((44px - 100%) / -2);
   }
 }
 
@@ -5671,7 +5780,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
 }
 
-@container main (min-width: 49.5rem) {
+@container main (min-width: 40rem) {
   .selection-bar__rules {
     display: none;
   }
