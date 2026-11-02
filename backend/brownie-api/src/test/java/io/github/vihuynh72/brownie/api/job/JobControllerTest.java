@@ -227,7 +227,7 @@ class JobControllerTest {
             public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
                 throw new UnsupportedOperationException("not needed by this test");
             }
-        
+
             @Override
             public java.util.Optional<Boolean> findOpenAllowance(long userId) {
                 throw new UnsupportedOperationException("not needed by this test");
