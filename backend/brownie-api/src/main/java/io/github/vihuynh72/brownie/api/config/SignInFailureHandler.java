@@ -6,7 +6,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
@@ -61,16 +60,30 @@ final class SignInFailureHandler implements AuthenticationFailureHandler {
         log.warn("Sign-in failed: code={} description={}", code, description);
         /* A stale callback against a session that already signed in -- a second tab finishing first,
            or an old callback URL revisited -- is not a failure worth naming on the page. */
-        if ("authorization_request_not_found".equals(code) && alreadySignedIn()) {
+        if ("authorization_request_not_found".equals(code) && alreadySignedIn(request)) {
             redirectStrategy.sendRedirect(request, response, webOrigin + "/");
             return;
         }
         redirectStrategy.sendRedirect(request, response, webOrigin + "/?signin=failed&reason=" + code);
     }
 
-    /** Whether this request already rides a signed-in session, as a replayed callback's would. */
-    private static boolean alreadySignedIn() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+    /**
+     * Whether this request already rides a signed-in session, as a replayed callback's would. The
+     * authentication has to come from the session the callback carries: by the time a failure
+     * reaches this handler the thread's own context is already cleared.
+     */
+    private static boolean alreadySignedIn(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session == null) {
+            return false;
+        }
+        Object stored = session.getAttribute(
+                org.springframework.security.web.context.HttpSessionSecurityContextRepository
+                        .SPRING_SECURITY_CONTEXT_KEY);
+        if (!(stored instanceof org.springframework.security.core.context.SecurityContext context)) {
+            return false;
+        }
+        Authentication authentication = context.getAuthentication();
         return authentication instanceof OAuth2AuthenticationToken && authentication.isAuthenticated();
     }
 }

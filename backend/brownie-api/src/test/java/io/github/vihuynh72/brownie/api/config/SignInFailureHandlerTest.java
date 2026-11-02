@@ -55,14 +55,21 @@ class SignInFailureHandlerTest {
 
     @Test
     void aStaleCallbackOnASignedInSessionLandsQuietlyOnHome() throws Exception {
+        // The real order: the earlier sign-in finished, its authentication was saved into the
+        // session, and the thread's own context is already clear when the replayed callback arrives.
         DefaultOAuth2User user = new DefaultOAuth2User(
                 List.of(new SimpleGrantedAuthority("ROLE_USER")), Map.of("sub", "subject-1"), "sub");
-        SecurityContextHolder.getContext().setAuthentication(
-                new OAuth2AuthenticationToken(user, user.getAuthorities(), "entra"));
+        var context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new OAuth2AuthenticationToken(user, user.getAuthorities(), "entra"));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.getSession(true).setAttribute(
+                org.springframework.security.web.context.HttpSessionSecurityContextRepository
+                        .SPRING_SECURITY_CONTEXT_KEY,
+                context);
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         handler.onAuthenticationFailure(
-                new MockHttpServletRequest(), response,
+                request, response,
                 new OAuth2AuthenticationException(new OAuth2Error("authorization_request_not_found", null, null)));
 
         assertThat(response.getRedirectedUrl()).isEqualTo("http://localhost:5173/");
