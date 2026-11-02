@@ -37,7 +37,7 @@ class MeControllerTest {
         StubUserIdentityRepository identityRepository = new StubUserIdentityRepository(identity);
         StubWorkspaceRepository workspaceRepository = new StubWorkspaceRepository(
                 List.of(new WorkspaceMember(42L, 7L, WorkspaceRole.OWNER, WorkspaceMemberState.ACTIVE, null)));
-        MeController controller = new MeController(identityRepository, workspaceRepository);
+        MeController controller = new MeController(identityRepository, workspaceRepository, new StubSavedDetailRepository());
 
         MeController.MeResponse response = controller.me(oidcUserWith("https://issuer-z", "subject-z"));
 
@@ -53,7 +53,7 @@ class MeControllerTest {
                 new UserIdentity(8L, "https://issuer-o", "subject-o", "o@example.com", "O Name", null, null, null);
         MeController controller = new MeController(
                 new StubUserIdentityRepository(identity, true),
-                new StubWorkspaceRepository(List.of(), true));
+                new StubWorkspaceRepository(List.of(), true), new StubSavedDetailRepository());
 
         MeController.MeResponse response = controller.me(oidcUserWith("https://issuer-o", "subject-o"));
 
@@ -66,7 +66,8 @@ class MeControllerTest {
         UserIdentity identity =
                 new UserIdentity(9L, "https://issuer-n", "subject-n", "n@example.com", "N Name", null, null, null);
         MeController controller = new MeController(
-                new StubUserIdentityRepository(identity), new StubWorkspaceRepository(List.of()));
+                new StubUserIdentityRepository(identity), new StubWorkspaceRepository(List.of()),
+                new StubSavedDetailRepository());
 
         assertThatThrownBy(() -> controller.invitationRequest(
                         oidcUserWith("https://issuer-n", "subject-n"),
@@ -139,6 +140,31 @@ class MeControllerTest {
         @Override
         public Optional<Boolean> findOpenAllowance(long userId) {
             return Optional.of(openAllowance);
+        }
+    }
+
+    /** No details in these tests: the response just carries an empty list. */
+    private static final class StubSavedDetailRepository
+            implements io.github.vihuynh72.brownie.core.detail.SavedDetailRepository {
+        @Override
+        public java.util.List<io.github.vihuynh72.brownie.core.detail.SavedDetail> list(long ownerUserId) {
+            return java.util.List.of();
+        }
+
+        @Override
+        public io.github.vihuynh72.brownie.core.detail.SavedDetail upsert(
+                long ownerUserId, long workspaceId, String key, String label, String valueText, byte[] valueSealed,
+                String valueHint, boolean sensitive, io.github.vihuynh72.brownie.core.detail.DetailOrigin origin,
+                Long sourceDocumentId, String sourceLabel, String sourceTitle) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void delete(long ownerUserId, String key) {
+        }
+
+        @Override
+        public void deleteAll(long ownerUserId) {
         }
     }
 }
