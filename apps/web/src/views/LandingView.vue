@@ -203,7 +203,7 @@ const TESTED_FORMS = [
               ><span class="install__part" :class="{ 'install__part--address': index > 0 || active.copies === 'address' }">{{
                 part
               }}</span
-              ><wbr v-if="index < active.lineParts.length - 1" /><span v-if="index < active.lineParts.length - 1"> </span></template
+              >{{ index < active.lineParts.length - 1 ? ' ' : '' }}</template
             >
           </code>
           <button type="button" class="button install__copy" @click="copyLine">
