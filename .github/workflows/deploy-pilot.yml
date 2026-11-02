@@ -87,6 +87,9 @@ jobs:
           OIDC_CLIENT_ID: ${{ vars.BROWNIE_OIDC_CLIENT_ID }}
           SUPPORT_CONTACT: ${{ vars.BROWNIE_SUPPORT_CONTACT }}
           INVITED_ADDRESSES: ${{ vars.BROWNIE_INVITED_ADDRESSES }}
+          OPEN_SIGN_UP: ${{ vars.BROWNIE_OPEN_SIGN_UP }}
+          OPEN_DAILY_USD_LIMIT: ${{ vars.BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT }}
+          OPEN_MONTHLY_USD_LIMIT: ${{ vars.BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT }}
           CERTIFICATE_CONTACT: ${{ vars.BROWNIE_CERTIFICATE_CONTACT }}
           GOOGLE_CLIENT_ID: ${{ vars.BROWNIE_GOOGLE_CLIENT_ID }}
           GOOGLE_DRIVE_OFFERED: ${{ vars.BROWNIE_GOOGLE_DRIVE_OFFERED }}
@@ -123,6 +126,10 @@ jobs:
             printf 'export BROWNIE_OIDC_CLIENT_ID=%q\n' "$OIDC_CLIENT_ID"
             printf 'export BROWNIE_SUPPORT_CONTACT=%q\n' "$SUPPORT_CONTACT"
             printf 'export BROWNIE_INVITED_ADDRESSES=%q\n' "$INVITED_ADDRESSES"
+            # Unset variables arrive empty; deploy.sh supplies the defaults.
+            if [ -n "$OPEN_SIGN_UP" ]; then printf 'export BROWNIE_OPEN_SIGN_UP=%q\n' "$OPEN_SIGN_UP"; fi
+            if [ -n "$OPEN_DAILY_USD_LIMIT" ]; then printf 'export BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT=%q\n' "$OPEN_DAILY_USD_LIMIT"; fi
+            if [ -n "$OPEN_MONTHLY_USD_LIMIT" ]; then printf 'export BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT=%q\n' "$OPEN_MONTHLY_USD_LIMIT"; fi
             printf 'export BROWNIE_CERTIFICATE_CONTACT=%q\n' "$CERTIFICATE_CONTACT"
             printf 'export BROWNIE_GOOGLE_CLIENT_ID=%q\n' "$GOOGLE_CLIENT_ID"
             printf 'export BROWNIE_GOOGLE_DRIVE_OFFERED=%q\n' "$GOOGLE_DRIVE_OFFERED"

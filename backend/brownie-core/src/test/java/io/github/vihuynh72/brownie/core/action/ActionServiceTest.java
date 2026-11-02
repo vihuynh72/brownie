@@ -562,6 +562,16 @@ class ActionServiceTest {
         public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
             return role;
         }
+
+        @Override
+        public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+            throw new AssertionError("not used here");
+        }
+
+        @Override
+        public Optional<Boolean> findOpenAllowance(long userId) {
+            throw new AssertionError("not used here");
+        }
     }
 
     private static final class CountingProvider implements ConnectorOAuthClient {

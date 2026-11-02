@@ -214,6 +214,9 @@ brownie:
     # quiet and permanent.
     required: ${BROWNIE_INVITATIONS_REQUIRED:false}
     addresses: ${BROWNIE_INVITED_ADDRESSES:}
+    # Whether people who are not on the list may still sign in on the free
+    # daily allowance; off means only invited people get in at all.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
   support:
     # Who people are told to ask about their data: an address, a name, a
     # link. Shown as written. Left empty, the page says nobody has been named.
@@ -228,6 +231,9 @@ brownie:
     run-limit-usd: ${BROWNIE_MODEL_RUN_USD_LIMIT:0.10}
     workspace-monthly-limit-usd: ${BROWNIE_MODEL_WORKSPACE_MONTHLY_USD_LIMIT:2.00}
     global-monthly-limit-usd: ${BROWNIE_MODEL_MONTHLY_USD_LIMIT:15.00}
+    # The open allowance a workspace anyone may join gets: its own each UTC day, and the monthly pool every open one shares. Blank is off.
+    open-daily-limit-usd: ${BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT:}
+    open-monthly-limit-usd: ${BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT:}
   security:
     clamav:
       host: ${BROWNIE_CLAMAV_HOST}
@@ -473,6 +479,9 @@ brownie:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.
     required: ${BROWNIE_INVITATIONS_REQUIRED:true}
+    # Whether strangers sign in on the free allowance; off keeps the
+    # hosted default invited-only too.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
 logging:
   level:
     io.github.vihuynh72.brownie: INFO
@@ -512,6 +521,9 @@ brownie:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.
     required: ${BROWNIE_INVITATIONS_REQUIRED:true}
+    # Whether strangers sign in on the free allowance; off keeps the
+    # hosted default invited-only too.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
 logging:
   level:
     io.github.vihuynh72.brownie: WARN

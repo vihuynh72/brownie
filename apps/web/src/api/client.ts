@@ -1,6 +1,7 @@
 import type { components } from './schema'
 
 export type MeResponse = components['schemas']['MeResponse']
+export type WelcomeResponse = components['schemas']['WelcomeResponse']
 export type DocumentSummaryResponse = components['schemas']['DocumentSummaryResponse']
 export type DocumentResponse = components['schemas']['DocumentResponse']
 export type CreateDocumentRequest = components['schemas']['CreateDocumentRequest']
@@ -218,6 +219,16 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export function getCurrentIdentity(): Promise<MeResponse> {
   return request<MeResponse>('/api/v1/me')
+}
+
+/** What the landing page may say before anyone signs in: the sign-up mode and the chat-app address. No session needed. */
+export function getWelcome(): Promise<WelcomeResponse> {
+  return request<WelcomeResponse>('/api/v1/welcome')
+}
+
+/** Asks for an invitation on the free-allowance workspace's behalf; the note is optional and at most 500 characters. */
+export function requestInvitation(note?: string): Promise<void> {
+  return request<void>('/api/v1/me/invitation-request', { method: 'POST', body: { note } })
 }
 
 /**
@@ -635,10 +646,11 @@ export function acceptPatchProposal(
   proposalId: number,
   expectedRevisionId: number,
   idempotencyKey: string,
+  acceptEvidencedValues = false,
 ): Promise<PatchAcceptResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/patch-proposals/${proposalId}/accept`, {
     method: 'POST',
-    body: { expectedRevisionId },
+    body: { expectedRevisionId, acceptEvidencedValues },
     headers: { 'Idempotency-Key': idempotencyKey },
   })
 }

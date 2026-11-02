@@ -196,6 +196,16 @@ class JobEventControllerTest {
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
             return Optional.of(identity);
         }
+
+        @Override
+        public void recordInvitationRequest(long userId, String note) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public boolean hasInvitationRequest(long userId) {
+            return false;
+        }
     }
 
     private record FixedWorkspaceRepository(boolean hasWorkspaceAccess) implements WorkspaceRepository {
@@ -213,6 +223,16 @@ class JobEventControllerTest {
         @Override
         public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
             return hasWorkspaceAccess ? Optional.of(WorkspaceRole.OWNER) : Optional.empty();
+        }
+
+        @Override
+        public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public Optional<Boolean> findOpenAllowance(long userId) {
+            throw new UnsupportedOperationException("not needed by this test");
         }
     }
 }

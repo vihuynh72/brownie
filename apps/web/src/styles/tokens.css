@@ -211,6 +211,8 @@
   --font-size-display: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
   /* Labels, buttons and headings are medium weight; reading text is regular. */
   --font-weight-medium: 500;
+  /* Commands and addresses a person copies, and nothing else: the system's own monospace, so no font is downloaded. */
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
   --control-height: 2.5rem;
   --control-height-small: 2rem;

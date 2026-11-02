@@ -29,6 +29,7 @@ function makeRouter(): Router {
       { path: '/trash', name: 'trash', component: { template: '<div data-test="trash">trash</div>' } },
       { path: '/your-data', name: 'your-data', component: stub },
       { path: '/connections', name: 'connections', component: stub },
+      { path: '/upload/:token', name: 'form-upload', component: stub, meta: { bare: true } },
     ],
   })
 }
@@ -79,6 +80,8 @@ const IDENTITY = {
   issuer: 'https://issuer',
   subject: 'subject',
   displayName: 'Vi',
+  allowance: 'FULL' as const,
+  invitationRequested: false,
   memberships: [{ workspaceId: 7, role: 'OWNER' }],
 }
 
@@ -316,6 +319,44 @@ describe('App shell', () => {
       expect(wrapper.find('#app-sidebar').attributes('inert')).toBeDefined()
       expect(button(wrapper, 'Open menu')).toBeDefined()
     })
+  })
+
+  it('dresses the anonymous home as the bare landing page, with no bar and no sidebar', async () => {
+    vi.mocked(getCurrentIdentity).mockRejectedValue(new ApiRequestError(401, undefined))
+    const { wrapper } = await mountApp('/')
+
+    expect(useSessionStore().status).toBe('anonymous')
+    expect(wrapper.find('#app-sidebar').exists()).toBe(false)
+    expect(wrapper.find('.shell__bar').exists()).toBe(false)
+    const main = wrapper.get('main')
+    expect(main.classes()).toContain('shell__main--landing')
+    expect(main.classes()).not.toContain('shell__main--under-bar')
+    expect(main.classes()).not.toContain('shell__main--after-bar')
+    wrapper.unmount()
+  })
+
+  it('keeps its chrome on the home page once someone is signed in', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue(IDENTITY)
+    vi.mocked(listTemplates).mockResolvedValue([])
+    const { wrapper } = await mountApp('/')
+
+    expect(wrapper.find('#app-sidebar').exists()).toBe(true)
+    expect(wrapper.find('.shell__bar').exists()).toBe(true)
+    expect(wrapper.get('main').classes()).not.toContain('shell__main--landing')
+    wrapper.unmount()
+  })
+
+  it('dresses a bare upload link without the shell chrome or the bar classes', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue(IDENTITY)
+    const { wrapper } = await mountApp('/upload/one-time-token')
+
+    expect(wrapper.find('#app-sidebar').exists()).toBe(false)
+    expect(wrapper.find('.shell__bar').exists()).toBe(false)
+    const main = wrapper.get('main')
+    expect(main.classes()).not.toContain('shell__main--under-bar')
+    expect(main.classes()).not.toContain('shell__main--after-bar')
+    expect(main.classes()).not.toContain('shell__main--landing')
+    wrapper.unmount()
   })
 
   it('draws the failure to confirm a sign-in as the shared card, with the shared primary button to try again', async () => {

@@ -242,7 +242,7 @@ describe('PdfFormPage', () => {
     ])
   })
 
-  it('lays each fill spot over its box, and the keyboard meets them page by page, top to bottom, left to right', async () => {
+  it('lays each place over its box, and the keyboard meets them page by page, top to bottom, left to right', async () => {
     mountPage()
     await flushPromises()
 
@@ -264,7 +264,7 @@ describe('PdfFormPage', () => {
     expect(wrapper!.get('.pdf-form-page__legend').text()).toContain('Dashed outline: found by Brownie, check it')
     const described = (control.attributes('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '')
     expect(described.join(' ')).toContain('Found by Brownie; check that this is the right place.')
-    expect(wrapper!.text()).toContain('1 of 4 fill spots filled')
+    expect(wrapper!.text()).toContain('1 of 4 places filled')
   })
 
   it('repeats each page’s text below it, and passes an accessibility scan', async () => {
@@ -294,7 +294,7 @@ describe('PdfFormPage', () => {
     mountPage({ layout: layout({ spots: [] }) })
     await flushPromises()
 
-    expect(wrapper!.text()).toContain('Other fill spots')
+    expect(wrapper!.text()).toContain('Other places')
     expect(inputIds()).toEqual(['edit-full.name', 'edit-company', 'edit-member.id', 'edit-signed.on'])
   })
 
@@ -328,7 +328,7 @@ describe('PdfFormPage', () => {
 
     expect(suggestBox).toHaveBeenCalledWith(7, 4, 12, { pageNumber: 1, point: { x: 140, y: 188 } })
     expect(wrapper!.get('button[aria-pressed]').attributes('aria-pressed')).toBe('false')
-    expect(wrapper!.get('dialog h2').text()).toBe('Name the fill spot')
+    expect(wrapper!.get('dialog h2').text()).toBe('Name the place')
     expect(wrapper!.get<HTMLInputElement>('dialog input[type="text"]').element.value).toBe('Company')
 
     await wrapper!.get('dialog form').trigger('submit')
@@ -426,7 +426,7 @@ describe('PdfFormPage', () => {
   })
 
   it('keeps the moves when they are refused, and says why', async () => {
-    mountPage({ send: async () => ({ ok: false, message: 'That box covers another fill spot; move it a little.' }) })
+    mountPage({ send: async () => ({ ok: false, message: 'That box covers another place; move it a little.' }) })
     await flushPromises()
     await wrapper!.findAll('button').find((button) => button.text() === 'Edit boxes')!.trigger('click')
     await flushPromises()
@@ -434,7 +434,7 @@ describe('PdfFormPage', () => {
     await wrapper!.findAll('button').find((button) => button.text() === 'Done')!.trigger('click')
     await flushPromises()
 
-    expect(wrapper!.get('[role="alert"]').text()).toBe('That box covers another fill spot; move it a little.')
+    expect(wrapper!.get('[role="alert"]').text()).toBe('That box covers another place; move it a little.')
     expect(wrapper!.findAll('.pdf-form-page__handle')).toHaveLength(3)
   })
 
@@ -463,9 +463,9 @@ describe('PdfFormPage', () => {
     const { send } = mountPage()
     await flushPromises()
 
-    await wrapper!.findAll('button').find((button) => button.text() === 'Add a fill spot')!.trigger('click')
+    await wrapper!.findAll('button').find((button) => button.text() === 'Add a place')!.trigger('click')
     await flushPromises()
-    expect(wrapper!.get('dialog h2').text()).toBe('Add a fill spot')
+    expect(wrapper!.get('dialog h2').text()).toBe('Add a place')
     await wrapper!.get('dialog select[size]').setValue('1')
     await wrapper!.get('dialog form').trigger('submit')
     await flushPromises()
@@ -489,7 +489,7 @@ describe('PdfFormPage', () => {
     expect(anchor.point.x).toBeCloseTo(135.88, 1)
     expect(anchor.point.y).toBeCloseTo(792 - 112.59, 1)
     expect(wrapper!.find('.pdf-form-page__picked').exists()).toBe(true)
-    expect(wrapper!.get('[role="status"]').text()).toBe('The place on page 1 of 1 is picked. Send your message to add the fill spot there.')
+    expect(wrapper!.get('[role="status"]').text()).toBe('The place on page 1 of 1 is picked. Send your message to add the place there.')
   })
 
   it('opens the questions the bar asks about a spot: rename, text size, remove', async () => {
@@ -846,7 +846,7 @@ describe('PdfFormPage', () => {
     mountPage()
     await flushPromises()
     const line = wrapper!.get('.pdf-form-page__progress')
-    expect(line.text()).toContain('1 of 4 fill spots filled')
+    expect(line.text()).toContain('1 of 4 places filled')
     expect(line.text()).toContain('Required before export')
     // The mark itself is only a picture of what the words say.
     expect(line.get('[aria-hidden="true"]').text()).toBe('*')
@@ -854,15 +854,15 @@ describe('PdfFormPage', () => {
     wrapper!.unmount()
     mountPage({ required: [] })
     await flushPromises()
-    expect(wrapper!.get('.pdf-form-page__progress').text()).toBe('1 of 4 fill spots filled')
+    expect(wrapper!.get('.pdf-form-page__progress').text()).toBe('1 of 4 places filled')
   })
 
-  it('has the four tools in a row over the page, each with a picture and its name, and Next empty spot only while a place is empty', async () => {
+  it('has the four tools in a row over the page, each with a picture and its name, and Next empty place only while a place is empty', async () => {
     mountPage()
     await flushPromises()
 
     const tools = wrapper!.get('.pdf-form-page__tools')
-    expect(tools.findAll('button').map((button) => button.text())).toEqual(['Next empty spot', 'Add a fill spot', 'Draw a box', 'Edit boxes'])
+    expect(tools.findAll('button').map((button) => button.text())).toEqual(['Next empty place', 'Add a place', 'Draw a box', 'Edit boxes'])
     for (const button of tools.findAll('button')) {
       expect(button.find('svg[aria-hidden="true"]').exists(), button.text()).toBe(true)
       expect(button.classes()).toEqual(expect.arrayContaining(['button', 'button--secondary', 'button--small']))
@@ -872,13 +872,13 @@ describe('PdfFormPage', () => {
 
     // With every place filled there is no next empty one to go to.
     await wrapper!.setProps({ drafts: { 'full.name': 'A', company: 'B', 'member.id': 'C', 'signed.on': '2026-10-01' } })
-    expect(wrapper!.get('.pdf-form-page__tools').findAll('button').map((button) => button.text())).toEqual(['Add a fill spot', 'Draw a box', 'Edit boxes'])
+    expect(wrapper!.get('.pdf-form-page__tools').findAll('button').map((button) => button.text())).toEqual(['Add a place', 'Draw a box', 'Edit boxes'])
   })
 
   it('goes to the next empty place in the order the keyboard meets them, and round to the first again', async () => {
     mountPage()
     await flushPromises()
-    const next = () => wrapper!.findAll('button').find((button) => button.text() === 'Next empty spot')!
+    const next = () => wrapper!.findAll('button').find((button) => button.text() === 'Next empty place')!
 
     const visited: (string | null)[] = []
     for (let press = 0; press < 4; press++) {
@@ -939,7 +939,7 @@ describe('PdfFormPage', () => {
     expect(wrapper!.get<HTMLTextAreaElement>('#edit-member\\.id').element.readOnly).toBe(false)
     expect(wrapper!.get('#edit-signed\\.on').element.closest('.fill-spot')!.classList.contains('fill-spot--preview')).toBe(false)
     // Not in the document: it is still empty, so the count says so.
-    expect(wrapper!.text()).toContain('1 of 4 fill spots filled')
+    expect(wrapper!.text()).toContain('1 of 4 places filled')
 
     await wrapper!.setProps({ previewDrafts: null })
     expect(wrapper!.get<HTMLTextAreaElement>('#edit-company').element.value).toBe('')
@@ -1070,7 +1070,7 @@ describe('PdfFormPage', () => {
   })
 
   it('puts the box back and says why when the new size is refused, and when the pointer is taken away', async () => {
-    mountPage({ send: async () => ({ ok: false, message: 'That box covers another fill spot; move it a little.' }) })
+    mountPage({ send: async () => ({ ok: false, message: 'That box covers another place; move it a little.' }) })
     await flushPromises()
     await wrapper!.setProps({ selected: { fieldId: 'company', rowIndex: null } })
     const southEast = wrapper!.findAll('.pdf-form-page__corner')[3]!
@@ -1079,7 +1079,7 @@ describe('PdfFormPage', () => {
     await pointer(southEast, 'pointermove', { pointerId: 4, clientX: 500, clientY: 130 })
     await pointer(southEast, 'pointerup', { pointerId: 4, clientX: 500, clientY: 130 })
     await flushPromises()
-    expect(wrapper!.get('[role="alert"]').text()).toBe('That box covers another fill spot; move it a little.')
+    expect(wrapper!.get('[role="alert"]').text()).toBe('That box covers another place; move it a little.')
     expect(placedBox('company', 612, 792).width).toBeCloseTo(153, 1)
 
     await pointer(southEast, 'pointerdown', { pointerId: 5, clientX: 459, clientY: 114 })

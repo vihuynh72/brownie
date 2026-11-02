@@ -5,7 +5,8 @@ import AppIcon from '@/components/AppIcon.vue'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { useSessionStore } from '@/stores/session'
 import { useTemplatesStore } from '@/stores/templates'
-import { describeCommonFailure } from '@/api/failures'
+import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
+import { describeCommonFailure, isOpenLimitRefusal } from '@/api/failures'
 import {
   allocateUpload,
   ApiRequestError,
@@ -65,6 +66,9 @@ const heading = ref<HTMLElement | null>(null)
 /** choose → reading the file → mapping → creating+fill loop. */
 const stage = ref<'choose' | 'reading' | 'mapping' | 'creating'>('choose')
 const error = ref<string | null>(null)
+const openLimitError = ref(false)
+const invitationDialog = ref<InstanceType<typeof InvitationRequestDialog> | null>(null)
+const invitationSent = ref(false)
 /** A file Brownie would not take: the reason in the same two parts Home gives a refused form. */
 const fileRefusal = ref<{ name: string; message: string } | null>(null)
 const statusLine = ref('')
@@ -458,6 +462,7 @@ async function makeDocuments(): Promise<void> {
           await pause(BUSY_WAIT_MS)
           continue
         }
+        openLimitError.value = isOpenLimitRefusal(stepError)
         error.value =
           batchBusy(stepError)
             ? 'Another step for you is still running and did not leave room in time. Try again in a moment.'
@@ -468,6 +473,7 @@ async function makeDocuments(): Promise<void> {
       }
     }
   } catch (createError) {
+    openLimitError.value = isOpenLimitRefusal(createError)
     error.value =
       batchStepSentence(createError) ??
       describeCommonFailure(createError, 'making the batch') ??
@@ -514,6 +520,17 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
 
     <template v-else>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+      <template v-if="openLimitError">
+        <button
+          v-if="!session.invitationRequested && !invitationSent"
+          type="button"
+          class="button"
+          @click="invitationDialog?.open()"
+        >
+          Ask for an invitation
+        </button>
+        <p v-else class="field-hint">Invitation requested</p>
+      </template>
       <p v-if="statusLine" class="field-hint">{{ statusLine }}</p>
       <p v-if="waitingBusy" class="field-hint">
         Brownie is doing something else for you just now; it will try again in a moment.
@@ -734,6 +751,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
           Try again
         </button>
       </div>
+      <InvitationRequestDialog ref="invitationDialog" @sent="invitationSent = true" />
     </template>
   </section>
 </template>

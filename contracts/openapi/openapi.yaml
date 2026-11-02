@@ -77,6 +77,122 @@ paths:
         "401":
           description: Not logged in.
 
+  /api/v1/me/invitation-request:
+    post:
+      operationId: requestInvitation
+      summary: >
+        Records the signed-in person's request for an invitation, or
+        changes its note. The first requested_at is kept when they ask
+        again. The X-XSRF-TOKEN header is required like every other
+        mutation.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationRequestBody"
+      responses:
+        "204":
+          description: Recorded.
+        "400":
+          description: The note is longer than 500 characters.
+        "401":
+          description: Not logged in.
+
+  /api/v1/me/details:
+    get:
+      operationId: listSavedDetails
+      summary: >
+        The signed-in person's saved details ("Your details"), ordered by
+        group then by declaration order. A sensitive row's value is null
+        and it carries only its four-character hint.
+      responses:
+        "200":
+          description: The details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetailsResponse"
+        "401":
+          description: Not logged in.
+    delete:
+      operationId: deleteSavedDetails
+      summary: >
+        Deletes every saved detail the person has ("Delete all saved
+        details"). The X-XSRF-TOKEN header is required like every other
+        mutation.
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          description: Not logged in.
+
+  /api/v1/me/details/{key}:
+    put:
+      operationId: saveDetail
+      summary: >
+        A manual save of one detail. Sensitive values are sealed before
+        they are stored and the response carries only the hint. The
+        X-XSRF-TOKEN header is required like every other mutation.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveDetailRequest"
+      responses:
+        "200":
+          description: The saved row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedDetailResponse"
+        "400":
+          description: The value is blank or past the length the key allows.
+        "401":
+          description: Not logged in.
+        "404":
+          description: The key is not a canonical saved-detail key.
+        "503":
+          description: This Brownie has no sealing key, so a sensitive detail cannot be saved.
+    delete:
+      operationId: deleteSavedDetail
+      summary: >
+        Deletes one saved detail; 204 whether or not a row existed. The
+        X-XSRF-TOKEN header is required like every other mutation.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          description: Not logged in.
+
+  /api/v1/welcome:
+    get:
+      operationId: getWelcome
+      summary: >
+        What the landing page can say before anyone signs in: which
+        sign-up mode this deployment is in, and where a chat app would
+        point. Answered without a session.
+      responses:
+        "200":
+          description: Always.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WelcomeResponse"
+
   /logout:
     post:
       operationId: logout
@@ -3856,7 +3972,7 @@ components:
   schemas:
     MeResponse:
       type: object
-      required: [userId, issuer, subject, memberships]
+      required: [userId, issuer, subject, allowance, invitationRequested, memberships]
       properties:
         userId:
           type: integer
@@ -3869,10 +3985,108 @@ components:
           type: string
         displayName:
           type: string
+        allowance:
+          type: string
+          enum: [FULL, FREE_DAILY]
+        invitationRequested:
+          type: boolean
         memberships:
           type: array
           items:
             $ref: "#/components/schemas/MembershipResponse"
+        savedDetails:
+          description: >
+            The person's saved details, masked: a non-sensitive value is
+            its plain text; a sensitive row carries only its
+            four-character hint.
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedDetailResponse"
+
+    DetailsResponse:
+      type: object
+      required: [details, sealingAvailable]
+      properties:
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedDetailResponse"
+        sealingAvailable:
+          type: boolean
+          description: Whether this Brownie can seal sensitive details.
+
+    SaveDetailRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+          maxLength: 2000
+
+    DetailSource:
+      type: object
+      properties:
+        documentId:
+          type: integer
+          format: int64
+          nullable: true
+        label:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+
+    SavedDetailResponse:
+      type: object
+      required: [key, label, group, sensitive, origin, savedAt, confirmedAt]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        group:
+          type: string
+          enum: [IDENTITY, CONTACT, ADDRESS, WORK, INCOME, EDUCATION, HOUSEHOLD, EMERGENCY, SENSITIVE]
+        sensitive:
+          type: boolean
+        value:
+          type: string
+          nullable: true
+          description: Null for a sensitive row.
+        hint:
+          type: string
+          nullable: true
+          description: The last four characters, only for a sensitive row.
+        origin:
+          type: string
+          enum: [AUTO, MANUAL]
+        source:
+          $ref: "#/components/schemas/DetailSource"
+        savedAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+
+    InvitationRequestBody:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+
+    WelcomeResponse:
+      type: object
+      required: [signUp]
+      properties:
+        signUp:
+          type: string
+          enum: [OPEN, OPEN_WITH_DAILY_ALLOWANCE, INVITATION_ONLY]
+        mcpServerUrl:
+          type: string
+          nullable: true
 
     MembershipResponse:
       type: object
@@ -4359,7 +4573,7 @@ components:
 
     JobResponse:
       type: object
-      required: [id, type, resourceType, resourceId, resourceVersion, stage, state, attemptCount, availableAt, deadlineAt, createdAt, updatedAt]
+      required: [id, type, resourceType, resourceId, resourceVersion, stage, state, attemptCount, availableAt, deadlineAt, createdAt, updatedAt, failureMessage]
       properties:
         id:
           type: integer
@@ -4397,6 +4611,12 @@ components:
         updatedAt:
           type: string
           format: date-time
+        failureMessage:
+          type: string
+          nullable: true
+          description: >
+            The person-facing reason a FAILED or DEAD job ended, from the latest
+            safe job event. Null in every other state.
 
     EventResponse:
       type: object
@@ -4647,12 +4867,15 @@ components:
             type: string
         limit:
           type: string
-          enum: [WORKSPACE_MONTH, GLOBAL_MONTH]
+          enum: [WORKSPACE_MONTH, GLOBAL_MONTH, OPEN_DAY, OPEN_MONTH]
           description: >
             Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH
             is this workspace's own monthly allowance, which starts again
             next calendar month; GLOBAL_MONTH is the allowance every
-            workspace shares, which only whoever runs the service can raise.
+            workspace shares, which only whoever runs the service can raise;
+            OPEN_DAY is the free allowance a not-yet-invited workspace has
+            each day, which starts again at midnight UTC; OPEN_MONTH is the
+            free allowance every such workspace shares this month.
         reason:
           type: string
           description: >
@@ -6483,6 +6706,11 @@ components:
           type: string
           nullable: true
           description: Defaults to a fixed reason when blank or omitted.
+        acceptEvidencedValues:
+          type: boolean
+          description: >-
+            When true, every applied field Brownie backed with evidence comes out accepted in the same revision;
+            a field with no evidence stays unreviewed. Defaults to false.
 
     PatchAcceptResponse:
       type: object

@@ -18,4 +18,13 @@ public interface UserIdentityRepository {
     UserIdentity recordLogin(String issuer, String subject, String email, String displayName);
 
     Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject);
+
+    /**
+     * Records the user's request for an invitation, or changes its note:
+     * the first {@code requested_at} is kept so the queue stays fair.
+     */
+    void recordInvitationRequest(long userId, String note);
+
+    /** True when the user has asked for an invitation. */
+    boolean hasInvitationRequest(long userId);
 }

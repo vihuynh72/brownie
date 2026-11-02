@@ -343,7 +343,7 @@ class RetentionSweepIntegrationTest {
                     "SELECT count(*) FROM model_usage",
                     "SELECT count(*) FROM audit_event",
                     "SELECT * FROM reserve_member_model_usage(1, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1)",
-                    "SELECT * FROM model_usage_reserve(1, 1, 'ASSIST', NULL, 0, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1)",
+                    "SELECT * FROM model_usage_reserve(1, 1, 'ASSIST', NULL, 0, 'm', 'p', 'r', 1, 1, 0.01, 1, 1, 1, 1, NULL, NULL)",
                     "SELECT audit_append(1, 1, 'DOCUMENT_TRASHED', 'document', 1, '{}'::jsonb)",
                     "SELECT trash_document(1, 1, 30)",
                     "SELECT purge_trashed_document(1, 1)",

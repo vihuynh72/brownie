@@ -551,6 +551,55 @@ class RevisionServiceTest {
     }
 
     @Test
+    void acceptPatchWithEvidencedValuesAcceptsTheBackedFieldsAndLeavesTheGuesses() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        Document document = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-evidenced"), hash("create-for-evidenced"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .document();
+        long baseRevisionId = document.currentRevisionId();
+        PatchProposal proposal = service.proposePatch(
+                WORKSPACE_ID, USER_ID, document.id(), baseRevisionId,
+                Map.of(
+                        "meeting.title", new FieldValue.TextValue("Concise title"),
+                        "meeting.date", new FieldValue.DateValue(LocalDate.of(2026, 10, 15))),
+                Map.of("meeting.title", List.of(701L)));
+
+        PatchAcceptanceResult result = service.acceptPatch(
+                WORKSPACE_ID, USER_ID, key("accept-evidenced"), hash("accept-evidenced"), document.id(), proposal.id(),
+                baseRevisionId, "accepted with the proposal", true);
+
+        DocumentRevision accepted = result.mutation().orElseThrow().revision();
+        // The field Brownie backed with evidence the person gave is accepted with the
+        // proposal; the field it guessed stays for the person to look at.
+        assertEquals(ReviewState.ACCEPTED, accepted.fieldStates().get(FieldItemRef.scalar("meeting.title")).review());
+        assertEquals(ReviewState.UNREVIEWED, accepted.fieldStates().get(FieldItemRef.scalar("meeting.date")).review());
+    }
+
+    @Test
+    void acceptPatchWithoutTheFlagLeavesEveryAppliedFieldUnreviewed() {
+        FakeDocumentRepository documents = new FakeDocumentRepository();
+        RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());
+        Document document = service.createDocument(
+                        WORKSPACE_ID, USER_ID, key("create-for-default"), hash("create-for-default"), "Minutes",
+                        TEMPLATE_ID, TEMPLATE_VERSION_ID, initialContent(), Map.of(), "initial draft")
+                .document();
+        long baseRevisionId = document.currentRevisionId();
+        PatchProposal proposal = service.proposePatch(
+                WORKSPACE_ID, USER_ID, document.id(), baseRevisionId,
+                Map.of("meeting.title", new FieldValue.TextValue("Concise title")),
+                Map.of("meeting.title", List.of(701L)));
+
+        PatchAcceptanceResult result = service.acceptPatch(
+                WORKSPACE_ID, USER_ID, key("accept-default"), hash("accept-default"), document.id(), proposal.id(),
+                baseRevisionId, "accepted composed title");
+
+        DocumentRevision accepted = result.mutation().orElseThrow().revision();
+        assertEquals(ReviewState.UNREVIEWED, accepted.fieldStates().get(FieldItemRef.scalar("meeting.title")).review());
+    }
+
+    @Test
     void acceptPatchLeavesAConflictingFieldUntouchedWhileApplyingACleanOneAlongsideIt() {
         FakeDocumentRepository documents = new FakeDocumentRepository();
         RevisionService service = new RevisionService(documents, new ActiveTemplateRepository(), new FakePatchProposalRepository());

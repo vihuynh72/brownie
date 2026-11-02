@@ -16,18 +16,14 @@ async function expectNoSidewaysScroll(page: Page): Promise<void> {
   expect(overflow, 'page must not be wider than the viewport').toBeLessThanOrEqual(0)
 }
 
-test('a signed-out visitor reaching for an upload is sent to sign in, and lands back on what they were doing', async ({
+test('a signed-out visitor sees the landing page, signs in through the provider, and lands back home', async ({
   browser,
 }) => {
   const context = await browser.newContext({ storageState: undefined })
   const page = await context.newPage()
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Welcome to Brownie!' })).toBeVisible()
-
-  await page.getByRole('link', { name: 'Upload your documents' }).click()
-  await expect(page).toHaveURL(/\/signin\?next=(%2F|\/)$/)
-  await expect(page.getByText('to upload your documents')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Brownie fills your forms from what you tell it' })).toBeVisible()
 
   // A real session against the same backend the app talks to, so what follows is the
   // application's own behaviour and not a mocked identity.
@@ -38,27 +34,35 @@ test('a signed-out visitor reaching for an upload is sent to sign in, and lands 
   expect(seeded.ok()).toBe(true)
 
   // Stands in for the provider round trip, which really does end at this app's home
-  // address: the destination the click parked has to survive that and be followed.
+  // address: the landing page's sign-in goes straight to the provider and comes back.
   await page.route('**/oauth2/authorization/entra', (route) =>
     route.fulfill({ status: 302, headers: { location: '/' }, body: '' }),
   )
-  await page.getByRole('link', { name: 'Sign in or sign up' }).click()
+  await page.locator('a[href="/oauth2/authorization/entra"]').first().click()
 
   await page.waitForURL(/\/$/)
   await expect(page.getByRole('button', { name: 'Upload your documents' })).toBeVisible({ timeout: 15_000 })
   await context.close()
 })
 
-test('a signed-out visitor following Trash Bin is sent to sign in, carrying that destination', async ({ browser }) => {
+test('the landing page shows a signed-out visitor no app navigation, and sign-in goes to the provider', async ({
+  browser,
+}) => {
   const context = await browser.newContext({ storageState: undefined })
   const page = await context.newPage()
 
   await page.goto('/')
-  await page.getByRole('link', { name: 'Trash Bin' }).click()
+  await expect(page.getByRole('heading', { name: 'Brownie fills your forms from what you tell it' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Trash Bin' })).toHaveCount(0)
 
-  await expect(page).toHaveURL(/\/signin\?next=(%2F|\/)trash$/)
-  await expect(page.getByText('to open your trash bin')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Sign in or sign up' })).toBeVisible()
+  // The landing page's sign-in goes straight to the identity provider, which sends the person back home.
+  await page.route('**/oauth2/authorization/entra', (route) =>
+    route.fulfill({ status: 302, headers: { location: '/' }, body: '' }),
+  )
+  await page.locator('a[href="/oauth2/authorization/entra"]').first().click()
+
+  await page.waitForURL(/\/$/)
+  await expect(page.getByRole('heading', { name: 'Brownie fills your forms from what you tell it' })).toBeVisible()
   await context.close()
 })
 
@@ -135,5 +139,5 @@ test('Chat sends you to where a document is started', async ({ page }) => {
   // The sidebar has its own "Home" link, so what proves this page loaded is something only the
   // Chat page itself renders: its message box is there whether or not this workspace already has
   // templates or documents, unlike the "Upload a form on Home" link that only appears without one.
-  await expect(page.getByRole('textbox', { name: 'How may I help you?' })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Tell me what to fill' })).toBeVisible()
 })
