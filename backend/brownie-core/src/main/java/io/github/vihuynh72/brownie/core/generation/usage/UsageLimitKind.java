@@ -13,6 +13,10 @@ public enum UsageLimitKind {
     WORKSPACE_MONTH,
     /** Everyone's shared allowance for the current calendar month. */
     GLOBAL_MONTH,
+    /** The open workspace's own allowance for the current UTC day. */
+    OPEN_DAY,
+    /** The shared monthly allowance every open workspace draws on. */
+    OPEN_MONTH,
     /** The ledger would not take the reservation because the caller no longer holds the job it is spending for. */
     LEASE_LOST
 }
