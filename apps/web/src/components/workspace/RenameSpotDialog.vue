@@ -72,7 +72,7 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <SpotDialogShell ref="shell" caption="Rename a fill spot" :title="`Rename ${current}`" :busy="busy" :status="status" :error="error">
+  <SpotDialogShell ref="shell" caption="Rename a place" :title="`Rename ${current}`" :busy="busy" :status="status" :error="error">
     <form :id="formId" class="spot-rename" novalidate @submit.prevent="submit">
       <label class="field-label" :for="`${ids}-label`">New name</label>
       <input

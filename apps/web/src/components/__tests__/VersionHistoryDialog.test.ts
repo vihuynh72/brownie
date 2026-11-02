@@ -355,16 +355,16 @@ describe('VersionHistoryDialog', () => {
     expect(mounted.get('h3').text()).toBe('Version 1 compared with now (version 3)')
     expect(mounted.get('.compare__counts').text()).toBe('2 changed · 1 the same')
 
-    // The fill spots that differ come first, each tagged; the one that is the same is not listed until asked for.
+    // The places that differ come first, each tagged; the one that is the same is not listed until asked for.
     const table = mounted.get('[role="table"]')
     expect(table.attributes('aria-labelledby')).toBe(mounted.get('h3').attributes('id'))
-    expect(table.findAll('[role="columnheader"]').map((heading) => heading.text())).toEqual(['Fill spot', 'Version 1', 'Now (version 3)', 'Status'])
+    expect(table.findAll('[role="columnheader"]').map((heading) => heading.text())).toEqual(['Place', 'Version 1', 'Now (version 3)', 'Status'])
     expect(comparisonRows(mounted).map((candidate) => candidate.get('[role="rowheader"]').text())).toEqual(['Meeting location', 'Meeting notes'])
 
     const location = rowNamed(mounted, 'Meeting location')!
     expect(cellsOf(location)).toEqual(['Room A', 'Room C', 'Changed'])
     expect(location.get('.tag').classes()).toContain('tag--honey')
-    // A fill spot the older version never held reads as empty, not as a dash a screen reader would spell out.
+    // A place the older version never held reads as empty, not as a dash a screen reader would spell out.
     const notes = rowNamed(mounted, 'Meeting notes')!
     expect(notes.get('.compare-cell__empty').text()).toBe('Empty')
     expect(cellsOf(notes)).toEqual(['Empty', 'Bring the budget.', 'Changed'])
@@ -372,7 +372,7 @@ describe('VersionHistoryDialog', () => {
     expect(mounted.find('[aria-live="polite"]').text()).toBe('Showing version 1 compared with now. 2 changed, 1 the same.')
   })
 
-  it('lists the unchanged fill spots too, after the changed ones, when asked', async () => {
+  it('lists the unchanged places too, after the changed ones, when asked', async () => {
     const mounted = await openDialog()
     await compareVersion(mounted, 1, REVISION_1)
 
@@ -411,13 +411,13 @@ describe('VersionHistoryDialog', () => {
 
     expect(mounted.get('.compare__counts').text()).toBe('0 changed · 3 the same')
     expect(mounted.find('[role="table"]').exists()).toBe(false)
-    expect(mounted.get('.version-history__detail').text()).toContain('Nothing is different: every fill spot is the same as now.')
+    expect(mounted.get('.version-history__detail').text()).toContain('Nothing is different: every place is the same as now.')
     // The unchanged ones are still there to be listed.
     await buttonNamed(mounted, 'Show the same too').trigger('click')
     expect(comparisonRows(mounted)).toHaveLength(3)
   })
 
-  it('reads dates the way the export prints them, each item of a repeated fill spot on its own line, and compares what is stored', async () => {
+  it('reads dates the way the export prints them, each item of a repeated place on its own line, and compares what is stored', async () => {
     const dated = (value: string): DocumentRevisionResponse['fields'][string] => ({ type: 'DATE', cardinality: 'SCALAR', value, evidenceSourceSpanIds: [] })
     const owners = (values: string[]): DocumentRevisionResponse['fields'][string] => ({ type: 'TEXT', cardinality: 'REPEATED', values, evidenceSourceSpanIds: [] })
     const mounted = await openDialog({
@@ -437,7 +437,7 @@ describe('VersionHistoryDialog', () => {
     expect(rowNamed(mounted, 'Meeting title')).toBeUndefined()
   })
 
-  it('says once, under the table, which of the changed fill spots a restore would leave alone because they are locked', async () => {
+  it('says once, under the table, which of the changed places a restore would leave alone because they are locked', async () => {
     const locked: DocumentRevisionResponse = {
       ...LOCATION_LOCKED,
       fields: {
@@ -456,7 +456,7 @@ describe('VersionHistoryDialog', () => {
     )
   })
 
-  it('names a single locked fill spot in the singular', async () => {
+  it('names a single locked place in the singular', async () => {
     const mounted = await openDialog({ currentRevision: LOCATION_LOCKED })
 
     await compareVersion(mounted, 1, REVISION_1)
@@ -464,7 +464,7 @@ describe('VersionHistoryDialog', () => {
     expect(mounted.get('.compare__note').text()).toBe('Meeting location is locked, so a restore keeps its current value.')
   })
 
-  it('says nothing of a locked fill spot that holds the same words in both versions, since a restore has nothing to leave alone there', async () => {
+  it('says nothing of a locked place that holds the same words in both versions, since a restore has nothing to leave alone there', async () => {
     const titleLocked: DocumentRevisionResponse = {
       ...REVISION_3,
       fields: { ...REVISION_3.fields, 'meeting.title': { ...REVISION_3.fields['meeting.title'], fieldState: LOCKED } },
@@ -607,15 +607,15 @@ describe('VersionHistoryDialog', () => {
     expect(mounted.emitted('closed')).toBeUndefined()
   })
 
-  it('says that locked fill spots keep their values when the question is asked before any comparison names them', async () => {
+  it('says that locked places keep their values when the question is asked before any comparison names them', async () => {
     const mounted = await openDialog({ currentRevision: LOCATION_LOCKED })
 
     await askToRestoreVersion1(mounted)
-    expect(mounted.get('.restore-card').text()).toContain('Locked fill spots keep their current values.')
+    expect(mounted.get('.restore-card').text()).toContain('Locked places keep their current values.')
 
     // Compare is not offered while that question is open, so seeing the comparison first means keeping the
     // current version, comparing, then asking to restore again; with the comparison open, the note under its
-    // table already names the locked fill spots, so the question does not say it twice.
+    // table already names the locked places, so the question does not say it twice.
     await buttonNamed(mounted, 'Keep the current version').trigger('click')
     await flushPromises()
     vi.mocked(getDocumentRevision).mockResolvedValue(REVISION_1)
@@ -623,7 +623,7 @@ describe('VersionHistoryDialog', () => {
     await flushPromises()
     await askToRestoreVersion1(mounted)
     expect(mounted.get('.compare__note').text()).toContain('Meeting location is locked')
-    expect(mounted.get('.restore-card').text()).not.toContain('Locked fill spots keep')
+    expect(mounted.get('.restore-card').text()).not.toContain('Locked places keep')
   })
 
   it('does not mention locks in the question when nothing is locked', async () => {

@@ -93,7 +93,7 @@ export function useFillSpotChanges(host: FillSpotChangeHost) {
     if (unsaved !== null) return unsaved
     const current = host.document.value
     try {
-      await restoreRevision(workspaceId, host.documentId(), change.previousRevisionId, current.currentRevision.id, crypto.randomUUID(), 'Undid a fill spot change.')
+      await restoreRevision(workspaceId, host.documentId(), change.previousRevisionId, current.currentRevision.id, crypto.randomUUID(), 'Undid a place change.')
       await host.reload()
       return null
     } catch (error) {

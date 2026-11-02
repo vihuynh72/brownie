@@ -20,10 +20,10 @@ function refusal(status: number, code: string, extra: Record<string, unknown> = 
 
 const labelOf = (fieldId: string) => ({ company: 'Company', fax: 'Fax' })[fieldId] ?? fieldId
 
-describe('a fill spot name', () => {
+describe('a place name', () => {
   it('is one line of 1 to 60 characters with a letter or a number', () => {
     expect(spotLabelProblem('Company')).toBeNull()
-    expect(spotLabelProblem('   ')).toBe('Give the fill spot a name.')
+    expect(spotLabelProblem('   ')).toBe('Give the place a name.')
     expect(spotLabelProblem('a'.repeat(61))).toBe('Keep the name to 60 characters or fewer.')
     expect(spotLabelProblem(`${String.fromCodePoint(0x1f600).repeat(60)}x`)).toBe('Keep the name to 60 characters or fewer.')
     expect(spotLabelProblem('---')).toBe('Use at least one letter or number in the name.')
@@ -39,38 +39,38 @@ describe('a fill spot name', () => {
 
 describe('what the page says while and after a change', () => {
   it('says the form is being checked while a spot is added or removed', () => {
-    expect(workingWords('add')).toBe('Adding the fill spot… Brownie is checking the form still prints correctly.')
-    expect(workingWords('remove')).toBe('Removing the fill spot… Brownie is checking the form still prints correctly.')
-    expect(workingWords('rename')).toBe('Renaming the fill spot…')
-    expect(workingWords('change')).toBe('Changing the fill spot… Brownie is checking the form still prints correctly.')
+    expect(workingWords('add')).toBe('Adding the place… Brownie is checking the form still prints correctly.')
+    expect(workingWords('remove')).toBe('Removing the place… Brownie is checking the form still prints correctly.')
+    expect(workingWords('rename')).toBe('Renaming the place…')
+    expect(workingWords('change')).toBe('Changing the place… Brownie is checking the form still prints correctly.')
   })
 
   it('says what Undo took back, a moved or resized box as a change to its spot', () => {
-    expect(undoneWords('add', 'Company')).toBe('Undone: Company is no longer a fill spot.')
-    expect(undoneWords('remove', 'Company')).toBe('Undone: the fill spot Company is back.')
+    expect(undoneWords('add', 'Company')).toBe('Undone: Company is no longer a place.')
+    expect(undoneWords('remove', 'Company')).toBe('Undone: the place Company is back.')
     expect(undoneWords('change', 'Company')).toBe('Undone: the change to Company is taken back.')
   })
 
   it('says what was done, and that new documents follow', () => {
-    expect(addedWords('Company', 'after "Company:"')).toBe('Added a fill spot for Company after "Company:". New documents from this form will have it too.')
+    expect(addedWords('Company', 'after "Company:"')).toBe('Added a place for Company after "Company:". New documents from this form will have it too.')
     expect(addedWords('Company', 'after "Company:"', 2)).toContain('2 other documents from this form keep the earlier version until you move them.')
     expect(renamedWords('Company', 'Employer', 1)).toBe(
-      'Renamed the fill spot Company to Employer. New documents from this form will use the new name too. One other document from this form keeps the earlier version until you move it.',
+      'Renamed the place Company to Employer. New documents from this form will use the new name too. One other document from this form keeps the earlier version until you move it.',
     )
-    expect(removedWords('Fax')).toBe('Removed the fill spot Fax. Its value stays in the version history. New documents from this form will not have it.')
+    expect(removedWords('Fax')).toBe('Removed the place Fax. Its value stays in the version history. New documents from this form will not have it.')
   })
 
   it('asks before a spot is removed, and says the form keeps its own box', () => {
-    expect(removeQuestion('Company', true, false)).toEqual(['Remove the fill spot Company? Its value stays in the version history.'])
-    expect(removeQuestion('Company', false, true)).toEqual(['Remove the fill spot Company?', 'The form keeps its own box; Brownie just stops filling it.'])
+    expect(removeQuestion('Company', true, false)).toEqual(['Remove the place Company? Its value stays in the version history.'])
+    expect(removeQuestion('Company', false, true)).toEqual(['Remove the place Company?', 'The form keeps its own box; Brownie just stops filling it.'])
   })
 
   it('names the values a move to the newest version dropped', () => {
     expect(movedWords([])).toBe('Moved this document to the newest version of its form.')
     expect(movedWords(['Fax'])).toBe(
-      'Moved this document to the newest version of its form. Fax has no fill spot in it, so its value was dropped. It stays in the version history.',
+      'Moved this document to the newest version of its form. Fax has no place in it, so its value was dropped. It stays in the version history.',
     )
-    expect(movedWords(['Fax', 'Pager', 'Telex'])).toContain('Fax, Pager and Telex have no fill spot in it, so their values were dropped.')
+    expect(movedWords(['Fax', 'Pager', 'Telex'])).toContain('Fax, Pager and Telex have no place in it, so their values were dropped.')
   })
 })
 
@@ -85,10 +85,10 @@ describe('why a change was refused', () => {
   it('says why the place cannot take a spot, reason by reason', () => {
     const place = (reason: string) => words(refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason })).message
     expect(place('HEADER_FOOTER')).toBe('Brownie fills only the body of the form, not its header or footer.')
-    expect(place('REPEATING_REGION')).toBe('This part of the form repeats for each row, so a single fill spot cannot go here.')
-    expect(place('INSIDE_LINK')).toBe('Brownie cannot put a fill spot inside a link. Choose a place next to it.')
-    expect(place('INSIDE_FIELD_CODE')).toBe('Brownie cannot put a fill spot inside a page number or another Word field.')
-    expect(place('PROTECTED')).toBe('That part of the form is kept as it is, so a fill spot cannot go there. Choose a place next to it.')
+    expect(place('REPEATING_REGION')).toBe('This part of the form repeats for each row, so a single place cannot go here.')
+    expect(place('INSIDE_LINK')).toBe('Brownie cannot put a place inside a link. Choose a place next to it.')
+    expect(place('INSIDE_FIELD_CODE')).toBe('Brownie cannot put a place inside a page number or another Word field.')
+    expect(place('PROTECTED')).toBe('That part of the form is kept as it is, so a place cannot go there. Choose a place next to it.')
     expect(place('SOMETHING_NEW')).toBe('The server says why.')
   })
 
@@ -111,10 +111,10 @@ describe('why a change was refused', () => {
 
   it('says nothing changed when the form would not print correctly', () => {
     expect(words(refusal(422, 'FILL_SPOT_WOULD_NOT_PRINT')).message).toBe(
-      'Brownie could not add the fill spot, because the form would not print correctly with it. Nothing was changed.',
+      'Brownie could not add the place, because the form would not print correctly with it. Nothing was changed.',
     )
     expect(words(refusal(422, 'FILL_SPOT_WOULD_NOT_PRINT'), 'remove').message).toBe(
-      'Brownie could not remove the fill spot, because the form would not print correctly without it. Nothing was changed.',
+      'Brownie could not remove the place, because the form would not print correctly without it. Nothing was changed.',
     )
   })
 
@@ -132,9 +132,9 @@ describe('how a newer version of the form differs', () => {
   const current = [{ fieldId: 'name' }, { fieldId: 'fax', label: 'Fax' }, { fieldId: 'phone', label: 'Phone' }]
 
   it('names the spots it adds, takes away and renames, by field', () => {
-    expect(versionDifferenceWords(current, [...current, { fieldId: 'company', label: 'Company' }])).toBe('It adds the fill spot "Company".')
+    expect(versionDifferenceWords(current, [...current, { fieldId: 'company', label: 'Company' }])).toBe('It adds the place "Company".')
     expect(versionDifferenceWords(current, [{ fieldId: 'name' }, { fieldId: 'phone', label: 'Mobile' }, { fieldId: 'a', label: 'A' }, { fieldId: 'b', label: 'B' }])).toBe(
-      'It adds the fill spots "A" and "B", takes away "Fax" and renames "Phone" to "Mobile".',
+      'It adds the places "A" and "B", takes away "Fax" and renames "Phone" to "Mobile".',
     )
   })
 

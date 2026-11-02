@@ -42,7 +42,7 @@ function mountDialog(send = vi.fn(async (): Promise<PdfSpotResult> => ({ ok: tru
   document.body.appendChild(opener)
   opener.focus()
   wrapper = mount(PdfSpotDialog, { props: { pages, suggest, send }, attachTo: document.body })
-  const dialog = wrapper.vm as unknown as { open: (mode: unknown, beside?: HTMLElement | null) => void; close: (focusId?: string | null) => void }
+  const dialog = wrapper.vm as unknown as { open: (mode: unknown, beside?: HTMLElement | null, returnTo?: HTMLElement | null) => void; close: (focusId?: string | null) => void }
   return { wrapper, dialog, send, suggest, opener }
 }
 
@@ -56,7 +56,7 @@ describe('PdfSpotDialog', () => {
     dialog.open({ kind: 'add', pageNumber: 1, box: { x: 72, y: 300, width: 150, height: 16 }, style: null, labelGuess: 'Tên công ty' })
     await flushPromises()
 
-    expect(wrapper.find('h2').text()).toBe('Name the fill spot')
+    expect(wrapper.find('h2').text()).toBe('Name the place')
     const name = wrapper.get<HTMLInputElement>('input[type="text"]')
     expect(name.element.value).toBe('Tên công ty')
     expect(document.activeElement).toBe(name.element)
@@ -93,14 +93,14 @@ describe('PdfSpotDialog', () => {
     dialog.open({ kind: 'add', pageNumber: null, box: null, style: null, labelGuess: null })
     await flushPromises()
 
-    expect(wrapper.find('h2').text()).toBe('Add a fill spot')
+    expect(wrapper.find('h2').text()).toBe('Add a place')
     const pageSelect = wrapper.get<HTMLSelectElement>('select:not([size])')
     expect(document.activeElement).toBe(pageSelect.element)
     expect(pageSelect.findAll('option').map((option) => option.text())).toEqual(['Page 1 of 2', 'Page 2 of 2'])
 
     // Nothing chosen yet: it says what is missing rather than guessing.
     await wrapper.get('form').trigger('submit')
-    expect(wrapper.get('[role="alert"]').text()).toBe('Choose the line the fill spot goes next to.')
+    expect(wrapper.get('[role="alert"]').text()).toBe('Choose the line the place goes next to.')
 
     await wrapper.get('input[type="search"]').setValue('company')
     expect(wrapper.findAll('select[size] option').map((option) => option.text())).toEqual(['Company:'])
@@ -109,7 +109,7 @@ describe('PdfSpotDialog', () => {
     await flushPromises()
 
     expect(suggest).toHaveBeenCalledWith(1, { lineIndex: 1 })
-    expect(wrapper.find('h2').text()).toBe('Name the fill spot')
+    expect(wrapper.find('h2').text()).toBe('Name the place')
     expect(wrapper.text()).toContain('next to “Company:”')
     expect(wrapper.get<HTMLInputElement>('input[type="text"]').element.value).toBe('Company')
     expect(wrapper.get<HTMLInputElement>('input[type="number"]').element.value).toBe('10')
@@ -141,14 +141,14 @@ describe('PdfSpotDialog', () => {
   })
 
   it('refuses a name that is not one, and keeps the dialog open with the reason a change was refused', async () => {
-    const send = vi.fn(async (): Promise<PdfSpotResult> => ({ ok: false, message: 'That box covers another fill spot; move it a little.' }))
+    const send = vi.fn(async (): Promise<PdfSpotResult> => ({ ok: false, message: 'That box covers another place; move it a little.' }))
     const { wrapper, dialog } = mountDialog(send)
     dialog.open({ kind: 'add', pageNumber: 1, box: { x: 72, y: 300, width: 150, height: 16 }, style: null, labelGuess: null })
     await flushPromises()
 
     await wrapper.get('input[type="text"]').setValue('  ')
     await wrapper.get('form').trigger('submit')
-    expect(wrapper.get('[role="alert"]').text()).toBe('Give the fill spot a name of 1 to 60 characters, with at least one letter or number.')
+    expect(wrapper.get('[role="alert"]').text()).toBe('Give the place a name of 1 to 60 characters, with at least one letter or number.')
     expect(send).not.toHaveBeenCalled()
 
     await wrapper.get('input[type="text"]').setValue('Signature date')
@@ -159,7 +159,7 @@ describe('PdfSpotDialog', () => {
     await wrapper.get('input[type="number"]').setValue('11')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toBe('That box covers another fill spot; move it a little.')
+    expect(wrapper.get('[role="alert"]').text()).toBe('That box covers another place; move it a little.')
     expect(wrapper.find('form').exists()).toBe(true)
   })
 
@@ -175,7 +175,7 @@ describe('PdfSpotDialog', () => {
 
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    expect(wrapper.get('[role="status"]').text()).toBe('Adding the fill spot… Brownie is checking the form still prints correctly.')
+    expect(wrapper.get('[role="status"]').text()).toBe('Adding the place… Brownie is checking the form still prints correctly.')
 
     finish({ ok: true, focusId: 'edit-company' })
     await flushPromises()
@@ -376,7 +376,7 @@ describe('PdfSpotDialog', () => {
     dialog.open({ kind: 'remove', fieldId: 'company', label: 'Company', fromForm: true })
     await flushPromises()
 
-    expect(wrapper.find('h2').text()).toBe('Remove the fill spot Company?')
+    expect(wrapper.find('h2').text()).toBe('Remove the place Company?')
     expect(document.activeElement).toBe(wrapper.find('h2').element)
     expect(wrapper.text()).toContain('Its value stays in the version history.')
     expect(wrapper.text()).toContain('The form keeps its own box; Brownie just stops filling it.')
@@ -398,5 +398,18 @@ describe('PdfSpotDialog', () => {
     expect(wrapper.find('form').exists()).toBe(false)
     expect(document.activeElement).toBe(opener)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('hands focus on close to a named element instead of the opener when one is given', async () => {
+    const returnTo = document.createElement('button')
+    document.body.appendChild(returnTo)
+    const { wrapper, dialog } = mountDialog()
+    dialog.open({ kind: 'rename', fieldId: 'company', label: 'Company' }, null, returnTo)
+    await flushPromises()
+
+    await wrapper.get('dialog').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.activeElement).toBe(returnTo)
+    returnTo.remove()
   })
 })
