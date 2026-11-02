@@ -117,6 +117,12 @@ class SecurityConfig {
                     // credential and it is single-use on top.
                     csrf.ignoringRequestMatchers("/api/v1/mcp-uploads", "/api/v1/mcp-uploads/**");
                 })
+                // Only a real browser navigation is kept as the "where were
+                // they" note for after sign-in. A fetch the SPA makes -- a
+                // session probe like /api/v1/me above all -- must never win
+                // that slot, or the person lands on raw JSON instead of the
+                // app. Deep links and the MCP authorize resume still save.
+                .requestCache(cache -> cache.requestCache(new NavigationsOnlyRequestCache()))
                 // Success and failure both land on the web app's own origin: the
                 // provider's callback arrives at this API, which in local
                 // development is not where the pages live. See SignInFailureHandler
