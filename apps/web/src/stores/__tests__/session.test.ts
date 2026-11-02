@@ -5,10 +5,10 @@ import { ApiRequestError } from '@/api/client'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, getCurrentIdentity: vi.fn(), logout: vi.fn() }
+  return { ...actual, getCurrentIdentity: vi.fn(), logout: vi.fn(), requestInvitation: vi.fn() }
 })
 
-import { getCurrentIdentity, logout } from '@/api/client'
+import { getCurrentIdentity, logout, requestInvitation } from '@/api/client'
 
 describe('session store', () => {
   beforeEach(() => {
@@ -61,6 +61,48 @@ describe('session store', () => {
     expect(store.identity).toBeNull()
     // The server's own explanation, which says what is wrong; not a status number.
     expect(store.lastError).toBe('The database is away.')
+  })
+
+  it('exposes the allowance and the invitation ask on the identity', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue({
+      userId: 1, issuer: 'i', subject: 's', allowance: 'FREE_DAILY', invitationRequested: true,
+      memberships: [{ workspaceId: 42, role: 'OWNER' }],
+    })
+
+    const store = useSessionStore()
+    await store.loadIdentity()
+
+    expect(store.allowance).toBe('FREE_DAILY')
+    expect(store.invitationRequested).toBe(true)
+  })
+
+  it('asks for an invitation and marks it requested', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue({
+      userId: 1, issuer: 'i', subject: 's', allowance: 'FREE_DAILY', invitationRequested: false,
+      memberships: [{ workspaceId: 42, role: 'OWNER' }],
+    })
+    vi.mocked(requestInvitation).mockResolvedValue(undefined)
+
+    const store = useSessionStore()
+    await store.loadIdentity()
+    await store.requestInvitation('would like a seat')
+
+    expect(requestInvitation).toHaveBeenCalledWith('would like a seat')
+    expect(store.invitationRequested).toBe(true)
+  })
+
+  it('does not mark the ask requested when the request is refused', async () => {
+    vi.mocked(getCurrentIdentity).mockResolvedValue({
+      userId: 1, issuer: 'i', subject: 's', allowance: 'FREE_DAILY', invitationRequested: false,
+      memberships: [{ workspaceId: 42, role: 'OWNER' }],
+    })
+    vi.mocked(requestInvitation).mockRejectedValue(new ApiRequestError(500, { detail: 'x' } as never))
+
+    const store = useSessionStore()
+    await store.loadIdentity()
+    await expect(store.requestInvitation()).rejects.toThrow()
+
+    expect(store.invitationRequested).toBe(false)
   })
 
   it('records an error it has no better words for plainly, and says to try again', async () => {

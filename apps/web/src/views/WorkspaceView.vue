@@ -67,7 +67,8 @@ import {
   type RuleResponse,
   type TemplateLayoutResponse,
 } from '@/api/client'
-import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
+import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
+import { brownieSaysNotThere, describeCommonFailure, isOpenLimitRefusal } from '@/api/failures'
 import { describePayload } from '@/rules/describeRule'
 import { formatBytes, loadCapabilities } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, offeredAccess, originLink, originLinkLabel, originSentence } from '@/connections/words'
@@ -642,7 +643,7 @@ async function followLatestRun(): Promise<void> {
       // DEAD and FAILED are the job queue's names for a run that stopped trying, not words for a person.
       extractionError.value =
         latest.job.state === 'DEAD' || latest.job.state === 'FAILED'
-          ? 'The last reading gave up before it could finish.'
+          ? (latest.job.failureMessage ?? 'The last reading gave up before it could finish.')
           : 'The last reading ended without a result.'
   }
 }
@@ -678,6 +679,9 @@ const proposalFromJobId = ref<number | null>(null)
 const decidedRunJobId = ref<number | null>(null)
 
 const fieldActionError = ref<string | null>(null)
+const openLimitError = ref(false)
+const invitationDialog = ref<InstanceType<typeof InvitationRequestDialog> | null>(null)
+const invitationSent = ref(false)
 const fieldActionPending = ref<string | null>(null)
 
 /** Why the first load failed, for the message that stands in for the page; null otherwise. */
@@ -1518,7 +1522,8 @@ function reportFieldActionFailure(error: unknown, fallback: string): void {
     fieldActionError.value = 'That was not done: this document is no longer available, for example because it was moved to the trash.'
     return
   }
-  fieldActionError.value = describeCommonFailure(error, 'field reviews and locks') ?? fallback
+  openLimitError.value = isOpenLimitRefusal(error)
+    fieldActionError.value = describeCommonFailure(error, 'field reviews and locks') ?? fallback
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1750,6 +1755,7 @@ async function restorePreviousVersion(): Promise<void> {
     if (await reloadedAfterStaleRevision(error)) return
     reportFieldActionFailure(error, 'Could not undo the last change. Try again.')
     if (error instanceof ApiRequestError && error.routeMissing) {
+      openLimitError.value = isOpenLimitRefusal(error)
       fieldActionError.value = describeCommonFailure(error, 'a way to undo a change')
     }
   }
@@ -2504,7 +2510,7 @@ async function pollJobUntilTerminal(workspaceId: number, jobId: number): Promise
       } else {
         extractionStage.value = 'failed'
         // FAILED or DEAD: the job queue's names for a run that stopped trying, not words for a person.
-        extractionError.value = 'This reading gave up before it could finish.'
+        extractionError.value = job.failureMessage ?? 'This reading gave up before it could finish.'
       }
       return
     }
@@ -2566,6 +2572,7 @@ async function retryRun(): Promise<void> {
     } else {
       // Nothing happened to the run. A server without the retry route says nothing about the run
       // itself, so it keeps its ending and the offer stays for once the server has been updated.
+      openLimitError.value = isOpenLimitRefusal(error)
       extractionError.value = describeCommonFailure(error, 'a way to start a run again') ?? 'Could not start this reading again. Try again.'
     }
     return
@@ -2942,6 +2949,7 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
     interpretation = anchor ? await interpretAssist(workspaceId, props.documentId, text, anchor) : await interpretAssist(workspaceId, props.documentId, text)
   } catch (error) {
     assistStage.value = 'failed'
+    openLimitError.value = isOpenLimitRefusal(error)
     say({
       from: 'brownie',
       tone: 'error',
@@ -3067,6 +3075,7 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
       say({ from: 'brownie', tone: 'error', text: message })
       return
     }
+    openLimitError.value = isOpenLimitRefusal(error)
     say({
       from: 'brownie',
       tone: 'error',
@@ -3910,6 +3919,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         <AppIcon name="alert-circle" :size="18" />
         <span class="workspace-notice__text">
           {{ fieldActionError }}
+          <template v-if="openLimitError">
+            <button
+              v-if="!session.invitationRequested && !invitationSent"
+              type="button"
+              class="button"
+              @click="invitationDialog?.open()"
+            >
+              Ask for an invitation
+            </button>
+            <p v-else class="field-hint">Invitation requested</p>
+          </template>
           <RouterLink v-if="documentGone && !reloadError" to="/trash">Open the trash bin</RouterLink>
         </span>
       </p>
@@ -4425,7 +4445,20 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     <p class="msg__who">Brownie</p>
                     <div class="msg__body">
                       <blockquote v-if="line.quote" class="chat-line__quote"><p>{{ line.text }}</p></blockquote>
-                      <p v-else :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                      <template v-else>
+                        <p :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                        <template v-if="line.tone === 'error' && openLimitError">
+                          <button
+                            v-if="!session.invitationRequested && !invitationSent"
+                            type="button"
+                            class="button"
+                            @click="invitationDialog?.open()"
+                          >
+                            Ask for an invitation
+                          </button>
+                          <p v-else class="field-hint">Invitation requested</p>
+                        </template>
+                      </template>
                       <ul v-if="line.help && line.help.length > 0" class="chat-suggestions" aria-label="What you can ask">
                         <li v-for="item in line.help" :key="item">
                           <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>
@@ -4557,6 +4590,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   <template v-else-if="extractionStage === 'failed'">
                     <div class="msg__body">
                       <p class="field-error" role="alert">{{ extractionError ?? 'The reading stopped before it could finish.' }}</p>
+                      <template v-if="openLimitError">
+                        <button
+                          v-if="!session.invitationRequested && !invitationSent"
+                          type="button"
+                          class="button"
+                          @click="invitationDialog?.open()"
+                        >
+                          Ask for an invitation
+                        </button>
+                        <p v-else class="field-hint">Invitation requested</p>
+                      </template>
                     </div>
                     <div v-if="canRetryRun" class="run-status__actions">
                       <button class="button button--secondary button--small" type="button" :aria-disabled="retryingRun" @click="!retryingRun && retryRun()">
@@ -4888,6 +4932,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     />
     <PlaceSpotDialog ref="placeDialogRef" :lines="anchorLines" :send="sendNewSpot" @added="onSpotAdded" />
     <RenameSpotDialog ref="renameDialogRef" :send="sendRename" />
+    <InvitationRequestDialog ref="invitationDialog" @sent="invitationSent = true" />
     <RemoveSpotDialog ref="removeDialogRef" :send="sendRemove" @removed="onSpotRemoved" />
   </div>
 </template>
