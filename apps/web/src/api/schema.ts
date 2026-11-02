@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** The name the person gave themselves. Each part is 1-100 characters after trimming. Saving also writes person.first_name, person.last_name and person.full_name into their saved details (origin MANUAL), and marks the name confirmed. */
+        put: operations["saveName"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/invitation-request": {
         parameters: {
             query?: never;
@@ -1847,12 +1864,22 @@ export interface components {
             subject: string;
             email?: string;
             displayName?: string;
+            /** @description The name the person gave themselves; null until they confirm it. */
+            givenName?: string;
+            /** @description The family name the person gave themselves; null until they confirm it. */
+            familyName?: string;
+            /** @description True once the person has saved their name themselves. */
+            nameConfirmed?: boolean;
             /** @enum {string} */
             allowance: "FULL" | "FREE_DAILY";
             invitationRequested: boolean;
             memberships: components["schemas"]["MembershipResponse"][];
             /** @description The person's saved details, masked: a non-sensitive value is its plain text; a sensitive row carries only its four-character hint. */
             savedDetails?: components["schemas"]["SavedDetailResponse"][];
+        };
+        SaveNameRequest: {
+            givenName: string;
+            familyName: string;
         };
         DetailsResponse: {
             details: components["schemas"]["SavedDetailResponse"][];
@@ -3942,6 +3969,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    saveName: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveNameRequest"];
+            };
+        };
+        responses: {
+            /** @description Saved; answers the same payload as GET /api/v1/me. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+            /** @description A part is blank or longer than 100 characters. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
             };
         };
     };

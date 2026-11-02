@@ -57,7 +57,7 @@ class JobControllerTest {
                 new FixedJobEventRepository(Optional.empty()),
                 new CanonicalRequestHasher(new ObjectMapper()),
                 new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
-                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
+                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null, null, null, null)));
 
         JobController.CommandReceiptResponse response = controller.requestResume(
                 42L, 81L, "resume-key", oidcUserWith("https://issuer.example", "subject-7"));
@@ -79,7 +79,7 @@ class JobControllerTest {
                 new FixedJobEventRepository(Optional.of(latestReason())),
                 new CanonicalRequestHasher(new ObjectMapper()),
                 new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
-                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
+                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null, null, null, null)));
 
         JobResponse response = controller.find(42L, 81L, oidcUserWith("https://issuer.example", "subject-7"));
 
@@ -95,7 +95,7 @@ class JobControllerTest {
                 new FixedJobEventRepository(Optional.of(latestReason())),
                 new CanonicalRequestHasher(new ObjectMapper()),
                 new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
-                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
+                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null, null, null, null)));
 
         JobResponse response = controller.find(42L, 81L, oidcUserWith("https://issuer.example", "subject-7"));
 
@@ -188,6 +188,11 @@ class JobControllerTest {
         @Override
         public UserIdentity recordLogin(String issuer, String subject, String email, String displayName) {
             throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public UserIdentity recordName(long userId, String givenName, String familyName) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

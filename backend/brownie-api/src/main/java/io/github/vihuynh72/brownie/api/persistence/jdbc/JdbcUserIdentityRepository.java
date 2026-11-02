@@ -27,7 +27,10 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
             rs.getString("display_name"),
             rs.getObject("created_at", OffsetDateTime.class),
             rs.getObject("last_login_at", OffsetDateTime.class),
-            rs.getObject("disabled_at", OffsetDateTime.class));
+            rs.getObject("disabled_at", OffsetDateTime.class),
+            rs.getString("given_name"),
+            rs.getString("family_name"),
+            rs.getObject("name_confirmed_at", OffsetDateTime.class));
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -46,7 +49,8 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT (issuer, subject)
                 DO UPDATE SET email = EXCLUDED.email, display_name = EXCLUDED.display_name, last_login_at = now()
-                RETURNING id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at
+                RETURNING id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at,
+                    given_name, family_name, name_confirmed_at
                 """,
                 ROW_MAPPER,
                 issuer,
@@ -56,9 +60,26 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
     }
 
     @Override
+    public UserIdentity recordName(long userId, String givenName, String familyName) {
+        return jdbcTemplate.queryForObject(
+                """
+                UPDATE user_identity
+                SET given_name = ?, family_name = ?, name_confirmed_at = now()
+                WHERE id = ?
+                RETURNING id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at,
+                    given_name, family_name, name_confirmed_at
+                """,
+                ROW_MAPPER,
+                givenName,
+                familyName,
+                userId);
+    }
+
+    @Override
     public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
         List<UserIdentity> results = jdbcTemplate.query(
-                "SELECT id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at "
+                "SELECT id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at, "
+                        + "given_name, family_name, name_confirmed_at "
                         + "FROM user_identity WHERE issuer = ? AND subject = ?",
                 ROW_MAPPER,
                 issuer,

@@ -10,6 +10,7 @@ import {
   ApiRequestError,
   listBatches,
   listDocuments,
+  saveName,
   trashDocument,
   type DocumentSummaryResponse,
 } from '@/api/client'
@@ -34,6 +35,39 @@ const signInFailureReason = computed(() => (typeof route.query.reason === 'strin
 const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'not_invited')
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
+
+// The name card: on first sign-in (nameConfirmed false) Brownie asks for
+// the name once, prefilled from the provider's display name. Skip hides it
+// for this browser session only.
+const nameSkipped = ref(sessionStorage.getItem('brownie-name-skip') === '1')
+const showNameCard = computed(
+  () => authenticated.value && session.identity?.nameConfirmed === false && !nameSkipped.value,
+)
+const providerNameParts = (session.identity?.displayName ?? '').trim().split(/\s+/)
+const nameGiven = ref(providerNameParts[0] ?? '')
+const nameFamily = ref(providerNameParts.length > 1 ? providerNameParts.slice(1).join(' ') : '')
+const nameBusy = ref(false)
+const nameError = ref('')
+
+async function submitName(): Promise<void> {
+  nameError.value = ''
+  nameBusy.value = true
+  try {
+    session.identity = await saveName(nameGiven.value, nameFamily.value)
+  } catch (error) {
+    nameError.value =
+      error instanceof ApiRequestError && error.problem?.detail
+        ? error.problem.detail
+        : 'The name could not be saved. Try again.'
+  } finally {
+    nameBusy.value = false
+  }
+}
+
+function skipName(): void {
+  sessionStorage.setItem('brownie-name-skip', '1')
+  nameSkipped.value = true
+}
 
 // A batch page that deleted itself sends the person here with what it was called; the notice says what stays.
 const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string' ? route.query.batchDeleted : null))
@@ -618,6 +652,27 @@ const showHowItWorks = computed(
         <span class="visually-hidden">Dismiss</span>
       </button>
     </div>
+
+    <section v-if="showNameCard" class="card home__name" aria-labelledby="home-name-heading">
+      <h2 id="home-name-heading" class="home__name-heading">What&rsquo;s your name?</h2>
+      <form class="home__name-form" @submit.prevent="submitName">
+        <label class="home__name-field">
+          <span>First</span>
+          <input v-model="nameGiven" type="text" autocomplete="given-name" maxlength="100" required />
+        </label>
+        <label class="home__name-field">
+          <span>Last</span>
+          <input v-model="nameFamily" type="text" autocomplete="family-name" maxlength="100" required />
+        </label>
+        <div class="home__name-actions">
+          <button type="submit" class="button button--primary button--small" :disabled="nameBusy">
+            {{ nameBusy ? 'Saving…' : 'Save' }}
+          </button>
+          <button type="button" class="link-button" @click="skipName">Skip</button>
+        </div>
+        <p v-if="nameError" class="field-error" role="alert">{{ nameError }}</p>
+      </form>
+    </section>
 
     <h1 class="page-title home__greeting">
       {{ authenticated ? greeting : 'Welcome to Brownie!' }}
