@@ -107,6 +107,27 @@ public class BuiltInTemplateProvisioningService {
         }
     }
 
+    /**
+     * Provisions the retired built-ins a workspace predates -- the entries
+     * {@code forNewWorkspace} leaves out so a new account never sees them.
+     * Repair keeps their blobs readable once provisioned; this is the "an
+     * existing workspace still has them" half of the same rule.
+     */
+    public void ensureRetiredBuiltInTemplates(long workspaceId, long userId) {
+        synchronized (TURNS[(int) Math.floorMod(workspaceId, (long) TURNS.length)]) {
+            java.util.Set<String> names = new java.util.HashSet<>();
+            templateService.findAllIncludingTrashed(workspaceId, userId)
+                    .forEach(template -> names.add(template.displayName()));
+            java.util.List<BuiltInTemplate> missing = BuiltInTemplateRegistry.all().stream()
+                    .filter(BuiltInTemplate::retired)
+                    .filter(builtIn -> !names.contains(builtIn.displayName()))
+                    .toList();
+            if (!missing.isEmpty()) {
+                provision(workspaceId, userId, missing, new LinkedHashMap<>());
+            }
+        }
+    }
+
     private static final Object[] TURNS = new Object[64];
 
     static {
