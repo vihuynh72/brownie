@@ -17,6 +17,7 @@ import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestRedirectFilter;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.regex.Pattern;
@@ -75,6 +76,7 @@ class SecurityConfig {
             throws Exception {
         // Straight after the session has said who is asking, and before CSRF, sign-in and the rest answer anything.
         rateLimitFilter.ifAvailable(filter -> http.addFilterAfter(filter, SecurityContextHolderFilter.class));
+        http.addFilterBefore(new SignedInSignInRedirectFilter(webOrigin), OAuth2AuthorizationRequestRedirectFilter.class);
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/oauth2/**", "/login/**", "/logout", "/error", "/test-support/**")
                         .permitAll()
