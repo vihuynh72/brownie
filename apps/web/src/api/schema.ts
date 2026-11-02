@@ -2068,6 +2068,8 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description The person-facing reason a FAILED or DEAD job ended, from the latest safe job event. Null in every other state. */
+            failureMessage: string | null;
         };
         EventResponse: {
             /** Format: int64 */
@@ -2209,10 +2211,10 @@ export interface components {
             }[];
             recoveryActions: string[];
             /**
-             * @description Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH is this workspace's own monthly allowance, which starts again next calendar month; GLOBAL_MONTH is the allowance every workspace shares, which only whoever runs the service can raise.
+             * @description Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH is this workspace's own monthly allowance, which starts again next calendar month; GLOBAL_MONTH is the allowance every workspace shares, which only whoever runs the service can raise; OPEN_DAY is the free allowance a not-yet-invited workspace has each day, which starts again at midnight UTC; OPEN_MONTH is the free allowance every such workspace shares this month.
              * @enum {string}
              */
-            limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
+            limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH" | "OPEN_DAY" | "OPEN_MONTH";
             /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED for an event, and GONE, ACCESS_LOST, TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY for a Drive file; with CONNECTOR_RESOURCE_UNSUPPORTED, TYPE or NOT_UTF8 for a Drive file (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT, EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE, HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID; with UNSUPPORTED_MEDIA_TYPE, why the file was refused: NOT_A_DOCUMENT, SPREADSHEET, PRESENTATION, PASSWORD_PROTECTED, RIGHTS_PROTECTED, REMOTE_CONTENT (it asks whoever opens it to fetch something from a network) or DAMAGED; with FILLABLE_FORM_FAILED, CANNOT_OPEN, DAMAGED or TIMED_OUT. */
             reason?: string;
             /**

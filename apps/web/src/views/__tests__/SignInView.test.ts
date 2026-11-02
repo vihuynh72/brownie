@@ -1,9 +1,15 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import SignInView from '@/views/SignInView.vue'
+import { getWelcome } from '@/api/client'
 import { axe } from '@/test/axe'
+
+vi.mock('@/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
+  return { ...actual, getWelcome: vi.fn() }
+})
 
 async function mountAt(path: string) {
   const router = createRouter({
@@ -22,12 +28,17 @@ const ONE_PAGE_FOR_BOTH =
 // These mount into the document so a click on a real anchor reaches this listener, which
 // cancels the navigation jsdom cannot perform; the assertion is about what the handler
 // parked on the way out, not about the navigation itself.
+function flushPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 function swallowNavigation(event: Event): void {
   event.preventDefault()
 }
 
 describe('SignInView', () => {
   beforeEach(() => {
+    vi.mocked(getWelcome).mockReset().mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: null })
     setActivePinia(createPinia())
     window.sessionStorage.clear()
     document.body.innerHTML = ''
@@ -119,6 +130,31 @@ describe('SignInView', () => {
     expect(steps[0]?.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
     expect(steps[1]?.text()).toContain('Brownie reads only what you add.')
     expect(steps[2]?.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
+  })
+
+  it('says the day is free when the deployment offers the open allowance', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: null })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+
+    expect(wrapper.get('.signin__note').text()).toContain('Free to use every day; invited people get more')
+  })
+
+  it('says only that the workspace is private when sign-up is open', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: null })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+
+    expect(wrapper.get('.signin__note').text()).toContain('Your workspace is private to you.')
+    expect(wrapper.get('.signin__note').text()).not.toContain('invited people')
+  })
+
+  it('says it is by invitation when the welcome answer never comes', async () => {
+    vi.mocked(getWelcome).mockRejectedValue(new Error('offline'))
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+
+    expect(wrapper.get('.signin__note').text()).toContain('Open to invited people only')
   })
 
   it('has no automatically-detectable accessibility violations', async () => {
