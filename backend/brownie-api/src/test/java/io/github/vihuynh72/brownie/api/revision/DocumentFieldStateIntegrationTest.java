@@ -99,8 +99,8 @@ class DocumentFieldStateIntegrationTest {
         Cookie session = loginAndGetSessionCookie("subject-doc-field-state");
         long workspaceId = ensureWorkspace("subject-doc-field-state").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-doc-field-state").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         long[] templateAndVersion = findFlowingTemplateAndActiveVersion(session, workspaceId);
 
         long documentId = createMinimalDocument(session, workspaceId, templateAndVersion[0], templateAndVersion[1]);
@@ -186,8 +186,8 @@ class DocumentFieldStateIntegrationTest {
         Cookie session = loginAndGetSessionCookie("subject-doc-row-state");
         long workspaceId = ensureWorkspace("subject-doc-row-state").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-doc-row-state").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         long[] templateAndVersion = findFlowingTemplateAndActiveVersion(session, workspaceId);
         long documentId = createMinimalDocument(session, workspaceId, templateAndVersion[0], templateAndVersion[1]);
         long revisionId = currentRevisionId(session, workspaceId, documentId);

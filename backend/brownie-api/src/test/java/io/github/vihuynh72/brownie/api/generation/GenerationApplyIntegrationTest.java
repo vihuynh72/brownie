@@ -122,8 +122,8 @@ class GenerationApplyIntegrationTest {
         Cookie session = loginAndGetSessionCookie("subject-generation-apply");
         long workspaceId = ensureWorkspace("subject-generation-apply").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-apply").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
         JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                 .andExpect(status().isOk())
@@ -208,8 +208,8 @@ class GenerationApplyIntegrationTest {
         Cookie session = loginAndGetSessionCookie("subject-generation-apply-items");
         long workspaceId = ensureWorkspace("subject-generation-apply-items").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-apply-items").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode flowing = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                         .andExpect(status().isOk())
@@ -315,8 +315,8 @@ class GenerationApplyIntegrationTest {
         Cookie ownerSession = loginAndGetSessionCookie("subject-generation-owner");
         long ownerWorkspaceId = ensureWorkspace("subject-generation-owner").id();
         long ownerUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-owner").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(ownerWorkspaceId, ownerUserId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(ownerWorkspaceId, ownerUserId);
         JsonNode ownerTemplate = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + ownerWorkspaceId + "/templates").cookie(ownerSession))
                         .andExpect(status().isOk())
@@ -343,8 +343,8 @@ class GenerationApplyIntegrationTest {
         Cookie intruderSession = loginAndGetSessionCookie("subject-generation-intruder");
         long intruderWorkspaceId = ensureWorkspace("subject-generation-intruder").id();
         long intruderUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-intruder").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(intruderWorkspaceId, intruderUserId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(intruderWorkspaceId, intruderUserId);
         JsonNode intruderTemplate = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + intruderWorkspaceId + "/templates").cookie(intruderSession))
                         .andExpect(status().isOk())

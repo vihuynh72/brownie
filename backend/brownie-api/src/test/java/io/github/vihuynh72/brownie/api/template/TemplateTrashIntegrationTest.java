@@ -247,15 +247,15 @@ class TemplateTrashIntegrationTest {
         long tableLed = findTemplate(session, workspaceId, TABLE_LED)[0];
         trash(session, workspaceId, flowing).andExpect(status().isOk());
 
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
         assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactly(tableLed);
 
         // Nor is a workspace whose every template is in the Trash Bin taken for one that has none.
         trash(session, workspaceId, tableLed).andExpect(status().isOk());
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
-        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
         assertThat(ids(listTemplates(session, workspaceId, ""))).isEmpty();
         assertThat(ids(listTemplates(session, workspaceId, "?trashed=true"))).containsExactly(tableLed, flowing);
@@ -310,6 +310,7 @@ class TemplateTrashIntegrationTest {
         Cookie session = loginAndGetSessionCookie(subject);
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceOf(subject), userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceOf(subject), userId);
         return session;
     }
 
