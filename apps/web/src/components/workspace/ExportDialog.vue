@@ -187,7 +187,7 @@ const countTags = computed<{ key: string; text: string; icon?: IconName }[]>(() 
   const counts = props.fillCounts
   if (!counts) return []
   const tags: { key: string; text: string; icon?: IconName }[] = [
-    { key: 'filled', text: `${counts.filled} of ${counts.total} ${counts.total === 1 ? 'fill spot' : 'fill spots'} filled` },
+    { key: 'filled', text: `${counts.filled} of ${counts.total} ${counts.total === 1 ? 'place' : 'places'} filled` },
     { key: 'accepted', text: `${counts.accepted} accepted` },
   ]
   if (counts.locked > 0) tags.push({ key: 'locked', text: `${counts.locked} locked`, icon: 'lock' })

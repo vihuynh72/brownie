@@ -16,5 +16,8 @@ public record UserIdentity(
         String displayName,
         OffsetDateTime createdAt,
         OffsetDateTime lastLoginAt,
-        OffsetDateTime disabledAt) {
+        OffsetDateTime disabledAt,
+        String givenName,
+        String familyName,
+        OffsetDateTime nameConfirmedAt) {
 }

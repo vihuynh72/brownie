@@ -63,7 +63,7 @@ async function confirm(): Promise<void> {
 <template>
   <SpotDialogShell
     ref="shell"
-    caption="Remove a fill spot"
+    caption="Remove a place"
     :title="`Remove ${label}?`"
     danger
     :busy="busy"
@@ -80,7 +80,7 @@ async function confirm(): Promise<void> {
         Cancel
       </button>
       <button type="button" class="button button--danger" :aria-disabled="busy ? 'true' : undefined" @click="confirm">
-        <AppIcon name="trash" :size="18" />{{ busy ? 'Removing…' : 'Remove the fill spot' }}
+        <AppIcon name="trash" :size="18" />{{ busy ? 'Removing…' : 'Remove the place' }}
       </button>
     </template>
   </SpotDialogShell>
