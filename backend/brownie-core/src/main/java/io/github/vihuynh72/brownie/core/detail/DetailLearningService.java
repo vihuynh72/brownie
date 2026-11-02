@@ -151,7 +151,7 @@ public class DetailLearningService {
         DocumentRevision revision = documentRepository.findRevision(workspaceId, userId, documentId, revisionId)
                 .orElseThrow(() -> new DetailDocumentNotFoundException(documentId));
 
-        Map<String, String> labels = fieldIdToLabel(workspaceId, userId, document);
+        Map<String, String> labels = fieldIdToLabel(workspaceId, userId, document, revision);
         List<AcceptedField> accepted = new ArrayList<>();
         revision.fieldStates().forEach((ref, state) -> {
             if (state.review() != ReviewState.ACCEPTED) {
@@ -207,7 +207,7 @@ public class DetailLearningService {
                 continue;
             }
             DetailKey detailKey = DetailKey.find(slug).orElse(null);
-            if (detailKey == null || detailKey.sensitive()) {
+            if (detailKey == null || detailKey.sensitive() || field.value().length() > 2000) {
                 continue;
             }
             SavedDetail previous = byKey.get(slug);
@@ -254,20 +254,36 @@ public class DetailLearningService {
         }
     }
 
-    private Map<String, String> fieldIdToLabel(long workspaceId, long userId, Document document) {
+    private Map<String, String> fieldIdToLabel(long workspaceId, long userId, Document document, DocumentRevision revision) {
         Map<String, String> labels = new LinkedHashMap<>();
-        templateService.findVersion(workspaceId, userId, document.templateId(), document.templateVersionId())
+        templateService.findVersion(workspaceId, userId, document.templateId(), revision.templateVersionId())
                 .ifPresent(version -> version.fieldDefinitions()
                         .forEach(field -> labels.put(field.fieldId(), field.label() == null ? field.fieldId() : field.label())));
         return labels;
     }
 
-    /** "Full name", "Name", "Your name", "Complete name": the value a person's identity hangs on. */
+    /** Labels that mean the PRIMARY subject's own name, and no one else's. */
+    private static final java.util.Set<String> OTHER_PERSON_WORDS = java.util.Set.of(
+            "spouse", "partner", "emergency", "contact", "parent", "guardian", "child", "dependent",
+            "employer", "reference", "representative", "preparer", "requester");
+
+    /** "Name", "Full name", "Legal name", "Applicant name", "Patient name", "Name of entity", "Name of individual":
+        the primary subject's own name, and not a spouse's or an emergency contact's. */
     private static boolean isFullNameLabel(String label) {
         String normalized = normalize(label);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (String word : OTHER_PERSON_WORDS) {
+            if (java.util.Arrays.asList(normalized.split(" ")).contains(word)) {
+                return false;
+            }
+        }
         return normalized.equals("name") || normalized.equals("your name")
                 || normalized.equals("full name") || normalized.equals("complete name")
-                || normalized.equals("applicant name") || normalized.endsWith(" full name");
+                || normalized.equals("legal name") || normalized.equals("applicant name")
+                || normalized.equals("patient name") || normalized.equals("name of entity")
+                || normalized.equals("name of individual") || normalized.endsWith(" full name");
     }
 
     /**

@@ -8,10 +8,15 @@ import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -38,7 +43,9 @@ class DetailLearningController {
         this.workspaceRepository = workspaceRepository;
     }
 
-    /** Called after the person approves a fill: decides who the form is about and saves the mapped answers. */
+    /* Called after the person approves a fill: the reads and every write the learning makes run inside
+       one transaction, so the upserts and the learning record that guards the undo stand or fall together. */
+    @Transactional
     @PostMapping("/learn")
     LearningResponse learn(@AuthenticationPrincipal OidcUser oidcUser, @RequestBody LearnRequest request) {
         UserIdentity identity = identityOf(oidcUser);
@@ -52,7 +59,7 @@ class DetailLearningController {
                 result.reason());
     }
 
-    /** Undoes one learn run: restores what it replaced, deletes what it added, only where the value is still the one it wrote. */
+    @Transactional
     @PostMapping("/learnings/{id}/undo")
     ResponseEntity<Void> undo(@AuthenticationPrincipal OidcUser oidcUser, @PathVariable long id) {
         UserIdentity identity = identityOf(oidcUser);

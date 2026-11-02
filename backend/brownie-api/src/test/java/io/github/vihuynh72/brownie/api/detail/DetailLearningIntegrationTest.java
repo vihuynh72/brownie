@@ -274,6 +274,47 @@ class DetailLearningIntegrationTest {
     }
 
     @Test
+    void aSpouseNameLabelDoesNotTriggerTheNameRule() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-spouse");
+        long[] ids = documentWithAccepted("subject-spouse",
+                new String[] {"spouse_name"}, new String[] {"Spouse name"}, new String[] {"Maya Chen"});
+        fake().calls = 0;
+        fake().answer("{\"subject\":\"SELF\",\"pairs\":[{\"label\":\"Spouse name\",\"key\":\"contact.email\"}]}");
+
+        JsonNode body = readJson(mockMvc.perform(post("/api/v1/me/details/learn")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType("application/json")
+                        .content("{\"documentId\":" + ids[0] + ",\"revisionId\":" + ids[1] + "}"))
+                .andExpect(status().isOk()).andReturn());
+        // "Spouse name" is someone else's name: the name rule never sees it, so the model is asked.
+        assertThat(body.get("subject").asText()).isEqualTo("SELF");
+        assertThat(fake().calls).isEqualTo(1);
+    }
+
+    @Test
+    void aValueLongerThanTwoThousandCharactersIsSkipped() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-long");
+        long[] ids = documentWithAccepted("subject-long",
+                new String[] {"email_addr", "long_note"}, new String[] {"Email", "Long note"},
+                new String[] {"daniel@example.com", "x".repeat(2500)});
+        fake().answer("{\"subject\":\"SELF\",\"pairs\":["
+                + "{\"label\":\"Email\",\"key\":\"contact.email\"},"
+                + "{\"label\":\"Long note\",\"key\":\"contact.notes\"}]}");
+
+        JsonNode body = readJson(mockMvc.perform(post("/api/v1/me/details/learn")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType("application/json")
+                        .content("{\"documentId\":" + ids[0] + ",\"revisionId\":" + ids[1] + "}"))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(body.get("subject").asText()).isEqualTo("SELF");
+        var user = ensureUser("subject-long", null);
+        var saved = savedDetailRepository.list(user.id());
+        assertThat(saved.stream().map(each -> each.key()).toList()).containsExactlyInAnyOrder("contact.email");
+    }
+
+    @Test
     void aNameMismatchIsOtherWithNoModelCall() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-other", "Daniel Ortiz");
         long[] ids = documentWithAccepted("subject-other", new String[] {"full_name"}, new String[] {"Full name"}, new String[] {"Maya Chen"});
