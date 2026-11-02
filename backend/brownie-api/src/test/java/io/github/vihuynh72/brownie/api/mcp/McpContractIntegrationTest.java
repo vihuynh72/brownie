@@ -486,6 +486,107 @@ class McpContractIntegrationTest {
         }
     }
 
+    @Test
+    void unknownMethodsAnswerMethodNotFound() throws Exception {
+        Browser browser = signIn("subject-mcp-unknown-method");
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Unknown methods\",\"scopes\":[\"read\"]}", 201));
+        String token = issued.get("token").asText();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+
+        // The first call OpenAI's remote MCP connector makes, byte for
+        // byte as observed from it: a newer-protocol discovery probe a
+        // legacy server must answer "method not found", so the client
+        // knows to fall back to the ordinary handshake.
+        HttpResponse<String> discover = http.send(
+                HttpRequest.newBuilder(URI.create(url("/mcp")))
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json, text/event-stream")
+                        .header("Authorization", "Bearer " + token)
+                        .header("Mcp-Method", "server/discover")
+                        .header("Mcp-Protocol-Version", "2026-07-28")
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                "{\"jsonrpc\":\"2.0\",\"id\":\"openai-mcp-discover\",\"method\":\"server/discover\","
+                                        + "\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
+                                        + "\"io.modelcontextprotocol/clientInfo\":{\"name\":\"openai-mcp (Responses API)\","
+                                        + "\"version\":\"1.0.0\"},"
+                                        + "\"io.modelcontextprotocol/clientCapabilities\":{\"experimental\":"
+                                        + "{\"openai/visibility\":{\"enabled\":true}},\"extensions\":"
+                                        + "{\"io.modelcontextprotocol/ui\":{\"mimeTypes\":[\"text/html;profile=mcp-app\"]}}}}}}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(discover.statusCode()).isEqualTo(200);
+        JsonNode discovered = JSON.readTree(discover.body());
+        assertThat(discovered.get("id").asText()).isEqualTo("openai-mcp-discover");
+        assertThat(discovered.get("error").get("code").asInt()).isEqualTo(-32601);
+        assertThat(discovered.get("error").get("message").asText()).isEqualTo("Method not found");
+        assertThat(discover.body())
+                .doesNotContain("stackTrace")
+                .doesNotContain("java.")
+                .doesNotContain("io.github");
+
+        HttpResponse<String> madeUp = mcpCall(token,
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"totally/made.up\",\"params\":{}}");
+        assertThat(madeUp.statusCode()).isEqualTo(200);
+        JsonNode madeUpResult = JSON.readTree(madeUp.body());
+        assertThat(madeUpResult.get("id").asInt()).isEqualTo(7);
+        assertThat(madeUpResult.get("error").get("code").asInt()).isEqualTo(-32601);
+        assertThat(madeUpResult.get("error").get("message").asText()).isEqualTo("Method not found");
+        assertThat(madeUp.body())
+                .doesNotContain("stackTrace")
+                .doesNotContain("java.")
+                .doesNotContain("io.github");
+    }
+
+    @Test
+    void unknownNotificationsAreAccepted() throws Exception {
+        Browser browser = signIn("subject-mcp-unknown-notification");
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Unknown notifications\",\"scopes\":[\"read\"]}", 201));
+        String token = issued.get("token").asText();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+
+        // A notification carries no id and so no error channel: the
+        // server absorbs it quietly instead of answering an error a
+        // notification cannot be answered with.
+        HttpResponse<String> response = http.send(
+                HttpRequest.newBuilder(URI.create(url("/mcp")))
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json, text/event-stream")
+                        .header("Authorization", "Bearer " + token)
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/not.a.thing\"}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(202);
+        assertThat(response.body()).isEmpty();
+    }
+
+    @Test
+    void toolResultsLeadWithTheirJson() throws Exception {
+        Browser browser = signIn("subject-mcp-json-first");
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        JsonNode issued = readJson(postJson(
+                browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
+                "{\"name\":\"Json first\",\"scopes\":[\"read\"]}", 201));
+        String token = issued.get("token").asText();
+        assertThat(mcpInitialize(token).statusCode()).isEqualTo(200);
+
+        // A client that hands the model only the FIRST text block -- as
+        // OpenAI's connector does -- must see the data, not the summary
+        // line, so the JSON block leads.
+        JsonNode result = readJson(mcpCall(token,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_templates\",\"arguments\":{}}}"))
+                .get("result");
+        JsonNode content = result.get("content");
+        assertThat(content.get(0).get("type").asText()).isEqualTo("text");
+        assertThat(JSON.readTree(content.get(0).get("text").asText()))
+                .isEqualTo(result.get("structuredContent"));
+        assertThat(content.get(1).get("type").asText()).isEqualTo("text");
+    }
+
     // -- plumbing ---------------------------------------------------------------
 
     /** A signed-in browser: a real Spring Session row the main chain trusts, plus its CSRF token for mutations. */

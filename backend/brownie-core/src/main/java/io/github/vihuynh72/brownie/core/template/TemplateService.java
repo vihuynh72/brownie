@@ -288,6 +288,43 @@ public class TemplateService {
         return activated;
     }
 
+    /**
+     * A spot Brownie found that the baseline cannot write into cleanly is not
+     * a reason to refuse the whole form: it is dropped from the draft and the
+     * draft activates with the rest. Only automatic intake uses this -- a
+     * person editing a template sees the same refusal as always, and a spot
+     * the form itself carries (an AcroForm field, say) is never dropped for
+     * the same reason: it is the form's own, and refusing is the honest answer.
+     */
+    public record ActivationWithDrops(TemplateVersion version, List<String> droppedLabels) {}
+
+    public ActivationWithDrops activateDroppingUnwritableFoundPlaces(
+            long workspaceId, long userId, long templateId, int expectedVersionNumber) {
+        try {
+            return new ActivationWithDrops(
+                    activate(workspaceId, userId, templateId, expectedVersionNumber, false), List.of());
+        } catch (TemplateBaselineIntegrityException first) {
+            TemplateVersion draft = requireDraftVersion(workspaceId, userId, templateId);
+            List<String> failed = first.failedFieldIds();
+            List<FieldDefinition> rest = draft.fieldDefinitions().stream()
+                    .filter(field -> !failed.contains(field.fieldId())).toList();
+            // A place the form itself carries is never dropped; a form with nothing left fails as one with no places.
+            List<FieldDefinition> kept = draft.fieldDefinitions().stream()
+                    .filter(field -> failed.contains(field.fieldId()) && field.effectiveOrigin() != SpotOrigin.FOUND_BY_BROWNIE)
+                    .toList();
+            if (!kept.isEmpty() || rest.isEmpty()) {
+                throw first;
+            }
+            List<String> droppedLabels = draft.fieldDefinitions().stream()
+                    .filter(field -> failed.contains(field.fieldId()))
+                    .map(field -> field.label() == null ? field.fieldId() : field.label())
+                    .toList();
+            draft = templateRepository.replaceDraftBindings(workspaceId, userId, templateId, draft.versionNumber(), rest);
+            TemplateVersion activated = activate(workspaceId, userId, templateId, draft.versionNumber(), false);
+            return new ActivationWithDrops(activated, droppedLabels);
+        }
+    }
+
     /** The baseline render an activated version was proven against, if this version is activated. */
     public Optional<BaselineRenderResult> findBaselineRender(long workspaceId, long userId, long templateVersionId) {
         return templateBaselineRenderRepository.findBaselineRender(workspaceId, userId, templateVersionId);

@@ -204,6 +204,26 @@ class AssistCommandParserTest {
         assertInstanceOf(AssistCommand.DraftFromSources.class, AssistCommandParser.parse("fill it in from the transcript", FIELDS));
     }
 
+    @Test
+    void aMessageCarryingTheAnswersIsASourceNotACommand() {
+        String answers = "My name is Jordan Rivera, email jordan.rivera@example.com, phone (408) 555-0142";
+        assertEquals(new AssistCommand.SupplyAnswers(answers), AssistCommandParser.parse(answers, FIELDS));
+        assertEquals(new AssistCommand.SupplyAnswers("availability: weekends"),
+                AssistCommandParser.parse("availability: weekends", FIELDS));
+        // A named field of this form alone reads as an answer to it.
+        assertInstanceOf(AssistCommand.SupplyAnswers.class, AssistCommandParser.parse("my phone number is (408) 555-0142", FIELDS));
+    }
+
+    @Test
+    void wordsThatAreNotAnswersStayUnrecognized() {
+        assertInstanceOf(AssistCommand.Unrecognized.class, AssistCommandParser.parse("hello", FIELDS));
+        // A failed instruction keeps being one instead of becoming a source.
+        assertInstanceOf(AssistCommand.Unrecognized.class, AssistCommandParser.parse("set the field to the other one", FIELDS));
+        // The ordinary commands keep their meaning.
+        assertEquals(new AssistCommand.ChangeField("meeting.title", "Spring Planning"),
+                AssistCommandParser.parse("change the meeting title to Spring Planning", FIELDS));
+    }
+
     private static AssistCommand add(String label, String quoted, AssistCommand.SpotPlacement placement, boolean here, FieldType type) {
         return new AssistCommand.AddFillSpot(label, quoted, placement, here, type);
     }

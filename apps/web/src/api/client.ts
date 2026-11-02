@@ -738,11 +738,11 @@ export function activateTemplateVersion(
   workspaceId: number,
   templateId: number,
   expectedVersionNumber: number,
-  options: { allowNoPlaces?: boolean } = {},
+  options: { allowNoPlaces?: boolean; dropUnwritablePlaces?: boolean } = {},
 ): Promise<TemplateVersionResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/templates/${templateId}/versions`, {
     method: 'POST',
-    body: options.allowNoPlaces ? { expectedVersionNumber, allowNoPlaces: true } : { expectedVersionNumber },
+    body: { expectedVersionNumber, ...options },
   })
 }
 
@@ -1107,4 +1107,13 @@ export function getBatchExport(workspaceId: number, batchId: number, exportId: n
 /** Not a fetch wrapper -- the session cookie authenticates this URL directly as a link's href, like an artifact download. */
 export function batchExportDownloadUrl(workspaceId: number, batchId: number, exportId: number): string {
   return `/api/v1/workspaces/${workspaceId}/batches/${batchId}/exports/${exportId}/download`
+}
+
+/** A voice note's words, from the workspace's transcription route; the audio is never kept. */
+export function transcribeVoice(workspaceId: number, audio: Blob): Promise<{ text: string; language?: string; duration_seconds?: number }> {
+  return request(`/api/v1/workspaces/${workspaceId}/transcriptions`, {
+    method: 'POST',
+    headers: { 'Content-Type': audio.type || 'audio/webm' },
+    rawBody: audio,
+  })
 }

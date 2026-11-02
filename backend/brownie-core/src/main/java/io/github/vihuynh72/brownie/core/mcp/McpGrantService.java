@@ -78,6 +78,11 @@ public class McpGrantService {
         return grantRepository.findLiveOAuthGrant(userId, registeredClientId);
     }
 
+    /** Touches the grant's last-used stamp, throttled in the database to at most one write a minute. */
+    public void markUsed(long grantId) {
+        grantRepository.markUsed(grantId);
+    }
+
     /**
      * Marks the grant revoked. For an OAUTH_CLIENT grant the same call
      * also drops the authorization rows its access and refresh tokens

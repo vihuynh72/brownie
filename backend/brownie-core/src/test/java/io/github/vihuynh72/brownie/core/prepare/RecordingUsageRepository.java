@@ -33,7 +33,7 @@ final class RecordingUsageRepository implements MemberUsageRepository {
     @Override
     public UsageReservationOutcome reserve(long workspaceId, long userId, String modelName, String promptVersion, String rateCard,
                                            int estimatedInputTokens, int estimatedMaxOutputTokens, BigDecimal estimatedCostUsd,
-                                           BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits) {
+                                           BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits, String purpose) {
         if (refuseWith != null) {
             return new UsageReservationOutcome(refuseWith, null);
         }
@@ -43,13 +43,13 @@ final class RecordingUsageRepository implements MemberUsageRepository {
     }
 
     @Override
-    public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd) {
+    public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd, String purpose) {
         settlements.add(new Settlement(usageId, inputTokens, outputTokens, actualCostUsd));
         return true;
     }
 
     @Override
-    public boolean retain(long workspaceId, long userId, long usageId) {
+    public boolean retain(long workspaceId, long userId, long usageId, String purpose) {
         retained.add(usageId);
         return true;
     }

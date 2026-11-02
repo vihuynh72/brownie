@@ -86,6 +86,11 @@ class SecurityConfig {
                         // it like any other unauthenticated traffic.
                         .requestMatchers("/api/v1/mcp-downloads", "/api/v1/mcp-downloads/**")
                         .permitAll()
+                        // A chat-app upload link is its own one-time
+                        // credential too, claimed in the database itself;
+                        // same reasoning as the download route above.
+                        .requestMatchers("/api/v1/mcp-uploads", "/api/v1/mcp-uploads/**")
+                        .permitAll()
                         // Liveness and readiness are answered without a session so a
                         // load balancer or orchestrator can ask; health shows no
                         // details (management.endpoint.health.show-details: never)
@@ -94,7 +99,14 @@ class SecurityConfig {
                         .permitAll()
                         .anyRequest()
                         .authenticated())
-                .csrf(csrf -> csrf.spa())
+                .csrf(csrf -> {
+                    csrf.spa();
+                    // The upload route answers a link, not a session: no
+                    // cookie authority is involved, so there is nothing a
+                    // forged request could borrow; the token is the whole
+                    // credential and it is single-use on top.
+                    csrf.ignoringRequestMatchers("/api/v1/mcp-uploads", "/api/v1/mcp-uploads/**");
+                })
                 // Success and failure both land on the web app's own origin: the
                 // provider's callback arrives at this API, which in local
                 // development is not where the pages live. See SignInFailureHandler

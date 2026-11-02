@@ -570,6 +570,32 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
     }
 
     @Test
+    void usingAnAccessTokenStampsTheGrantLastUsedAndThrottlesTheStamp() throws Exception {
+        Browser browser = signIn("subject-oauth-last-used", ISSUER);
+        JsonNode registration = register(Map.of("token_endpoint_auth_method", "none"), 201);
+        String clientId = registration.get("client_id").asText();
+        Pkce pkce = pkce();
+        Map<String, String> consentParams = queryParams(getRaw(browser,
+                authorizeQuery(clientId, pkce.challenge, "lu", "read"))
+                .headers().firstValue("Location").orElseThrow());
+        String code = codeFrom(postConsentAllow(browser, clientId, consentParams.get("state"), List.of("read")));
+        JsonNode tokens = tokenExchange(clientId, null, code, pkce.verifier);
+        String accessToken = tokens.get("access_token").asText();
+
+        // Before the token is used the grant has never served a call.
+        String stampBefore = oauthGrantLastUsed(browser);
+        assertThat(stampBefore).as("last_used_at starts unset").isNull();
+
+        assertThat(mcpInitialize(accessToken).statusCode()).isEqualTo(200);
+        String stamped = oauthGrantLastUsed(browser);
+        assertThat(stamped).as("a call stamps the grant").isNotBlank();
+
+        // A second call inside the throttle window keeps the same stamp.
+        assertThat(mcpInitialize(accessToken).statusCode()).isEqualTo(200);
+        assertThat(oauthGrantLastUsed(browser)).isEqualTo(stamped);
+    }
+
+    @Test
     void aWorkspacePurgeRemovesThePersonsAuthorizations() throws Exception {
         Browser browser = signIn("subject-oauth-purge", ISSUER);
         JsonNode registration = register(Map.of("token_endpoint_auth_method", "none"), 201);
@@ -733,6 +759,18 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
         String code = queryParams(location).get("code");
         assertThat(code).as("no code in %s", location).isNotBlank();
         return code;
+    }
+
+    private String oauthGrantLastUsed(Browser browser) throws Exception {
+        JsonNode grants = readJson(get(browser,
+                "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/grants", 200));
+        for (JsonNode grant : grants) {
+            if ("OAUTH_CLIENT".equals(grant.get("kind").asText())) {
+                JsonNode lastUsed = grant.get("lastUsedAt");
+                return lastUsed == null || lastUsed.isNull() ? null : lastUsed.asText();
+            }
+        }
+        return null;
     }
 
     private JsonNode tokenExchange(String clientId, String secret, String code, String verifier) throws Exception {

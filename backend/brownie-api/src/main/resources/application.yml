@@ -251,6 +251,13 @@ brownie:
       # the caps were sized for replies written with none, so "none" keeps
       # every cap for the reply itself. The same value in brownie-worker.
       reasoning-effort: ${BROWNIE_OPENAI_REASONING_EFFORT:none}
+  transcription:
+    # The speech model every voice note is transcribed with. Chosen as the
+    # current OpenAI speech-to-text model that has been out long enough to
+    # be trusted in production, overridable per deployment; a caller's
+    # request can never choose another. Like the chat model's own comment
+    # says, the provider can change its behaviour under the same name.
+    model: ${BROWNIE_TRANSCRIPTION_MODEL:gpt-4o-transcribe}
   fill-spots:
     # Whether the model reads an uploaded form's text to decide which of the
     # places Brownie found are meant for filling in, and to name them. Each

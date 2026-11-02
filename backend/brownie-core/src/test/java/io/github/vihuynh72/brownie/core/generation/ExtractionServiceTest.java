@@ -275,6 +275,76 @@ class ExtractionServiceTest {
         assertTrue(gateway.receivedRequests().isEmpty());
     }
 
+    @Test
+    void aFormWhoseReplyFitsOneCallAsksForExactlyItsSizedCap() {
+        List<FieldDefinition> fields = java.util.stream.IntStream.range(0, 106)
+                .mapToObj(i -> scalarField("f" + i)).toList();
+
+        assertEquals(5900, ExtractionService.outputTokenCap(fields));
+        assertEquals(1, ExtractionService.batches(fields).size());
+    }
+
+    @Test
+    void aFormTooBigForOneReplyIsSplitIntoCallsWhoseCandidatesMerge() throws Exception {
+        List<FieldDefinition> fields = java.util.stream.IntStream.range(0, 300)
+                .mapToObj(i -> scalarField("f" + i)).toList();
+        assertEquals(3, ExtractionService.batches(fields).size());
+        assertEquals(140, ExtractionService.batches(fields).get(0).size());
+        assertEquals(140, ExtractionService.batches(fields).get(1).size());
+        assertEquals(20, ExtractionService.batches(fields).get(2).size());
+
+        FakeModelGateway gateway = new FakeModelGateway();
+        FakeExtractionResponseParser parser = new FakeExtractionResponseParser();
+        for (int batch = 0; batch < 3; batch++) {
+            List<FieldDefinition> call = ExtractionService.batches(fields).get(batch);
+            gateway.enqueue(new ModelCompletion.Success("{}", new ModelUsage(10, 5)));
+            java.util.Map<String, FieldCandidate> part = new java.util.LinkedHashMap<>();
+            call.forEach(field -> part.put(field.fieldId(), resolved(field.fieldId(), "v-" + field.fieldId(), 101)));
+            parser.enqueue(new ExtractionResult(part, List.of()));
+        }
+        ExtractionService service = new ExtractionService(null, null, gateway, parser);
+
+        ExtractionResult result = service.extractFromExcerpts(fields, EXCERPTS, freshBudget(), neverCancelled());
+
+        assertEquals(3, gateway.receivedRequests().size());
+        assertEquals(300, result.scalarCandidates().size());
+        assertEquals("v-f0", result.scalarCandidates().get("f0").value());
+        assertEquals("v-f299", result.scalarCandidates().get("f299").value());
+    }
+
+    @Test
+    void repeatedFieldsRideOnlyWithTheFirstBatch() {
+        List<FieldDefinition> fields = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, 200)
+                .mapToObj(i -> scalarField("f" + i)).toList());
+        fields.add(TASK_FIELD);
+        List<List<FieldDefinition>> batches = ExtractionService.batches(fields);
+        assertEquals(2, batches.size());
+        assertTrue(batches.get(0).contains(TASK_FIELD));
+        assertTrue(batches.stream().skip(1).noneMatch(batch -> batch.contains(TASK_FIELD)));
+    }
+
+    @Test
+    void aTruncatedReplyInALaterBatchFailsTheWholeExtractionPlainly() {
+        List<FieldDefinition> fields = java.util.stream.IntStream.range(0, 300)
+                .mapToObj(i -> scalarField("f" + i)).toList();
+        FakeModelGateway gateway = new FakeModelGateway();
+        FakeExtractionResponseParser parser = new FakeExtractionResponseParser();
+        gateway.enqueue(new ModelCompletion.Success("{}", new ModelUsage(10, 5)));
+        parser.enqueue(new ExtractionResult(java.util.Map.of("f0", resolved("f0", "v", 101)), List.of()));
+        gateway.enqueue(new ModelCompletion.IncompleteOutput("{}", "truncated at its configured output limit", new ModelUsage(10, 5)));
+        ExtractionService service = new ExtractionService(null, null, gateway, parser);
+
+        ExtractionFailedException refused = org.junit.jupiter.api.Assertions.assertThrows(
+                ExtractionFailedException.class,
+                () -> service.extractFromExcerpts(fields, EXCERPTS, freshBudget(), neverCancelled()));
+        assertTrue(refused.getMessage().contains("cut off"), refused.getMessage());
+    }
+
+    private static FieldDefinition scalarField(String fieldId) {
+        return new FieldDefinition(fieldId, FieldType.TEXT, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                new io.github.vihuynh72.brownie.core.template.FieldBindingTarget.ContentControlTag(fieldId));
+    }
+
     private static UsageBudget freshBudget() {
         return new UsageBudget(UsageLimits.defaultRunLimits(), ModelPricing.forModel("gpt-6-luna"));
     }

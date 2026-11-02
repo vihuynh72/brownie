@@ -55,12 +55,15 @@ public final class OAuthAccessTokenCallerResolver implements McpCallerResolver {
         }
         return grantService
                 .findLiveOAuthGrant(userId.getAsLong(), authorization.getRegisteredClientId())
-                .map(grant -> new McpCaller(
-                        grant.userId(),
-                        grant.workspaceId(),
-                        grant.grantId(),
-                        grant.name(),
-                        intersect(grant.scopes(), authorization.getAuthorizedScopes())));
+                .map(grant -> {
+                    grantService.markUsed(grant.grantId());
+                    return new McpCaller(
+                            grant.userId(),
+                            grant.workspaceId(),
+                            grant.grantId(),
+                            grant.name(),
+                            intersect(grant.scopes(), authorization.getAuthorizedScopes()));
+                });
     }
 
     /** What the authorization request asked for as RFC 8707 {@code resource}; both endpoints enforce it before issue, and the resource checks it again at use. */

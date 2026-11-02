@@ -156,6 +156,12 @@ class JobEventControllerTest {
 
     private static final class CapturingJobEventRepository implements JobEventRepository {
 
+        @Override
+        public java.util.Optional<JobEvent> latestForJob(long workspaceId, long actorUserId, long jobId) {
+            return java.util.Optional.empty();
+        }
+
+
         private final boolean cursorExists;
         private final List<JobEvent> results;
         private List<Long> existsArguments = List.of();

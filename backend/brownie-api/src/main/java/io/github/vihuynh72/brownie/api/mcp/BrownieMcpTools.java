@@ -80,6 +80,7 @@ class BrownieMcpTools {
     private final ValidationService validationService;
     private final ExportService exportService;
     private final McpAuditRepository auditRepository;
+    private final io.github.vihuynh72.brownie.core.mcp.McpFormUploadService formUploadService;
     private final McpSettings settings;
 
     BrownieMcpTools(
@@ -96,7 +97,8 @@ class BrownieMcpTools {
             ValidationService validationService,
             ExportService exportService,
             McpAuditRepository auditRepository,
-            McpSettings settings) {
+            McpSettings settings,
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService formUploadService) {
         this.executor = executor;
         this.fillOrchestration = fillOrchestration;
         this.templateService = templateService;
@@ -111,6 +113,7 @@ class BrownieMcpTools {
         this.exportService = exportService;
         this.auditRepository = auditRepository;
         this.settings = settings;
+        this.formUploadService = formUploadService;
     }
 
     @McpTool(name = BrownieMcpToolScopes.LIST_TEMPLATES,
@@ -140,7 +143,8 @@ class BrownieMcpTools {
         });
     }
     @McpTool(name = BrownieMcpToolScopes.START_DOCUMENT,
-            description = "Create a new document from a template's active version.")
+            description = "Create a new document from a template's active version."
+                    + " Start one document per form the person wants filled; reuse it for every later step.")
     McpSchema.CallToolResult startDocument(
             @McpToolParam(description = "The template id") long template_id,
             @McpToolParam(required = false, description = "The document's title; the template's name when left out") String title) {
@@ -282,8 +286,10 @@ class BrownieMcpTools {
     }
 
     @McpTool(name = BrownieMcpToolScopes.PROPOSE_FILL,
-            description = "Read a source and propose the document's field values. Answers the run's state: PROPOSED when the "
-                    + "model finished inside the call, RUNNING or QUESTIONS otherwise.")
+            description = "Read a source and propose the document's field values. Answers the run's state: PROPOSED "
+                    + "(show the person the summary, then call confirm_fill with proposal_id and payload_hash), "
+                    + "RUNNING (call get_fill_status with run_id until it changes; do not call propose_fill again), "
+                    + "or QUESTIONS (answer each with answer_question). Call it once per source.")
     McpSchema.CallToolResult proposeFill(
             @McpToolParam(description = "The document id") long document_id,
             @McpToolParam(description = "The source artifact id, from add_text_source") long source_artifact_id) {
@@ -433,18 +439,25 @@ class BrownieMcpTools {
                 default -> throw new McpToolRefusal(McpToolRefusal.INVALID_ARGUMENT,
                         "Format must be \"docx\", \"pdf\" or \"both\".");
             };
-            if (proposalRepository.findForDocument(caller.workspaceId(), caller.userId(), document_id).stream()
-                    .anyMatch(proposal -> proposal.status() == PatchProposalStatus.PROPOSED)) {
-                throw new McpToolRefusal(McpToolRefusal.PROPOSAL_PENDING,
-                        "A proposed fill is still waiting on document " + document_id + "; confirm it or leave it before exporting.");
-            }
+            proposalRepository.findForDocument(caller.workspaceId(), caller.userId(), document_id).stream()
+                    .filter(proposal -> proposal.status() == PatchProposalStatus.PROPOSED)
+                    .reduce((first, second) -> second)
+                    .ifPresent(proposal -> {
+                        throw new McpToolRefusal(McpToolRefusal.PROPOSAL_PENDING,
+                                "Proposal " + proposal.id() + " is still waiting on document " + document_id
+                                        + ". Confirm it with confirm_fill (its payload_hash is in get_fill_status), or ask the person, before exporting.");
+                    });
             DocumentRevision revision = revisionService
                     .findRevision(caller.workspaceId(), caller.userId(), document_id, document.currentRevisionId())
                     .orElseThrow(() -> new McpToolRefusal(McpToolRefusal.NOT_FOUND, "The document's current revision is gone."));
-            Map<String, String> labels = labels(
-                    templateService
-                            .findVersion(caller.workspaceId(), caller.userId(), document.templateId(), revision.templateVersionId())
-                            .orElse(null));
+            io.github.vihuynh72.brownie.core.template.TemplateVersion version = templateService
+                    .findVersion(caller.workspaceId(), caller.userId(), document.templateId(), revision.templateVersionId())
+                    .orElse(null);
+            if (version != null && version.fieldDefinitions().isEmpty()) {
+                throw new McpToolRefusal(McpToolRefusal.NO_FILL_SPOTS,
+                        "This document's template has no places to fill, so there is nothing to export.");
+            }
+            Map<String, String> labels = labels(version);
             List<String> unreviewed = revision.fieldStates().entrySet().stream()
                     .filter(entry -> entry.getValue().authorship() == Authorship.AI_COMPOSED
                             && entry.getValue().review() != ReviewState.ACCEPTED)
@@ -478,8 +491,13 @@ class BrownieMcpTools {
             files.put("pdf", receipt.pdfArtifactId() != null);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("receipt_id", receipt.id());
+            out.put("format", normalized);
             out.put("files", files);
-            return new McpToolExecutor.ToolResult(out, "Export recorded as receipt " + receipt.id() + ".");
+            List<String> kinds = files.entrySet().stream()
+                    .filter(e -> Boolean.TRUE.equals(e.getValue())).map(Map.Entry::getKey).toList();
+            return new McpToolExecutor.ToolResult(out,
+                    "Export recorded as receipt " + receipt.id() + " (" + String.join(" and ", kinds)
+                            + " file); ask get_export_link with receipt_id and the file kind the person wants.");
         });
     }
 
@@ -536,12 +554,67 @@ class BrownieMcpTools {
                 .map(field -> {
                     Map<String, Object> spot = new LinkedHashMap<String, Object>();
                     spot.put("field_id", field.fieldId());
-                    spot.put("label", field.label() != null ? field.label() : field.fieldId());
+                    spot.put("label", field.displayLabel());
                     spot.put("type", field.type().name());
                     spot.put("required", field.requiredness() == FieldRequiredness.REQUIRED);
                     return spot;
                 })
                 .toList();
+    }
+
+    @McpTool(name = BrownieMcpToolScopes.REQUEST_FORM_UPLOAD,
+            description = "Get a one-time link the person opens to give Brownie a form file (Word, PDF, ODT, RTF and "
+                    + "the like). Use it whenever the person has a form to fill and you cannot pass the file itself; "
+                    + "in Claude, always. Give the person upload_url, tell them it works once and expires at "
+                    + "expires_at, then call get_form_upload with upload_id until it answers READY, and "
+                    + "start_document with its template_id.")
+    McpSchema.CallToolResult requestFormUpload(
+            @McpToolParam(required = false, description = "The file's name when the caller already knows it") String file_name) {
+        return executor.run(BrownieMcpToolScopes.REQUEST_FORM_UPLOAD, null, () -> {
+            McpCaller caller = caller();
+            require(caller, McpScope.FILL);
+            io.github.vihuynh72.brownie.core.mcp.McpFormUploadService.IssuedFormUpload issued = formUploadService.create(caller, file_name);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("upload_id", issued.upload().id());
+            out.put("upload_url", settings.publicOrigin() + "/upload/" + issued.token());
+            out.put("expires_at", issued.upload().expiresAt().toString());
+            return new McpToolExecutor.ToolResult(out, "Upload link " + issued.upload().id() + ", live until " + issued.upload().expiresAt() + ".");
+        });
+    }
+
+    @McpTool(name = BrownieMcpToolScopes.GET_FORM_UPLOAD,
+            description = "Check a form upload's state: PENDING or PROCESSING while the file travels, READY with the template it became (template_id, name and fill_spots, the same shape list_templates returns), FAILED with the reason in words.",
+            annotations = @McpTool.McpAnnotations(readOnlyHint = true))
+    McpSchema.CallToolResult getFormUpload(
+            @McpToolParam(description = "The upload id request_form_upload returned") long upload_id) {
+        return executor.run(BrownieMcpToolScopes.GET_FORM_UPLOAD, null, () -> {
+            McpCaller caller = caller();
+            require(caller, McpScope.READ);
+            io.github.vihuynh72.brownie.core.mcp.McpFormUpload upload = formUploadService
+                    .findForWorkspace(caller, upload_id)
+                    .orElseThrow(() -> new McpToolRefusal(McpToolRefusal.NOT_FOUND, "No upload " + upload_id + "."));
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("upload_id", upload.id());
+            out.put("state", upload.state());
+            if ("READY".equals(upload.state()) && upload.templateId() != null) {
+                out.put("template_id", upload.templateId());
+                templateService.findAll(caller.workspaceId(), caller.userId()).stream()
+                        .filter(t -> t.id() == upload.templateId())
+                        .findFirst()
+                        .ifPresent(template -> {
+                            out.put("name", template.displayName());
+                            if (template.currentActiveVersionId() != null) {
+                                templateService.findVersion(caller.workspaceId(), caller.userId(),
+                                        template.id(), template.currentActiveVersionId())
+                                        .ifPresent(version -> out.put("fill_spots", fillSpots(version)));
+                            }
+                        });
+            }
+            if ("FAILED".equals(upload.state()) && upload.failureCode() != null) {
+                out.put("reason", upload.failureCode());
+            }
+            return new McpToolExecutor.ToolResult(out, "Upload " + upload.id() + ": " + upload.state() + ".");
+        });
     }
 
     private static Map<String, String> labels(TemplateVersion version) {
@@ -550,7 +623,7 @@ class BrownieMcpTools {
         }
         Map<String, String> labels = new LinkedHashMap<>();
         for (FieldDefinition field : version.fieldDefinitions()) {
-            labels.put(field.fieldId(), field.label() != null ? field.label() : field.fieldId());
+            labels.put(field.fieldId(), field.displayLabel());
         }
         return labels;
     }
@@ -561,6 +634,7 @@ class BrownieMcpTools {
             case FieldValue.DateValue date -> date.value().toString();
             case FieldValue.RepeatedTextValue texts -> texts.values();
             case FieldValue.RepeatedDateValue dates -> dates.values().stream().map(Object::toString).toList();
+            case FieldValue.CheckboxValue checkbox -> checkbox.checked() ? "checked" : "unchecked";
         };
     }
 }

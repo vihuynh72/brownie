@@ -18,6 +18,7 @@ public final class McpTokenGeneration {
 
     public static final String PERSONAL_TOKEN_PREFIX = "brownie_pat_";
     public static final String DOWNLOAD_TOKEN_PREFIX = "brownie_dl_";
+    public static final String UPLOAD_TOKEN_PREFIX = "brownie_up_";
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int SECRET_BYTES = 32;
@@ -32,6 +33,11 @@ public final class McpTokenGeneration {
 
     public static String newDownloadToken() {
         return DOWNLOAD_TOKEN_PREFIX + randomUrlSafe();
+    }
+
+    /** A one-time upload link token: {@value #UPLOAD_TOKEN_PREFIX} plus 32 random bytes, URL-safe. */
+    public static String newUploadToken() {
+        return UPLOAD_TOKEN_PREFIX + randomUrlSafe();
     }
 
     public static boolean looksLikePersonalToken(String presented) {

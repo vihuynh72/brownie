@@ -29,9 +29,9 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * The envelope every tool body runs inside: the caller's scope is checked
  * once more (defense behind the request-level check), the result becomes
- * structured content plus text -- a summary line and the same fields
- * again as JSON -- and the call is recorded -- OK, REFUSED with its
- * code, or ERROR -- whatever happens.
+ * structured content plus text -- the fields again as JSON first, a
+ * summary line second -- and the call is recorded -- OK, REFUSED with
+ * its code, or ERROR -- whatever happens.
  * A refusal is an {@code isError} result carrying its code so a client can
  * tell "no" from "broke"; an unexpected exception is logged, recorded,
  * and answered with a message that carries nothing internal.
@@ -53,11 +53,13 @@ class McpToolExecutor {
      * text, and the document the call turned out to be about when that
      * was only knowable partway through -- a document created by the
      * call, or the one a proposal or receipt id resolved to. The answer
-     * sent to the client repeats the structured fields as a JSON text
-     * block next to that line: some chat apps give the model only a
-     * result's text content, and the protocol asks for the serialized
-     * JSON in a text block alongside structured content, so without it
-     * the model would see the summary and nothing else.
+     * sent to the client carries the structured fields as a JSON text
+     * block FIRST and the summary line second: some chat apps give the
+     * model only a result's text content (Claude reads every text block,
+     * OpenAI's connector reads only the first), and the protocol asks
+     * for the serialized JSON in a text block alongside structured
+     * content, so the data must lead or the model sees the summary and
+     * nothing else.
      */
     record ToolResult(Map<String, Object> data, String text, Long documentId) {
         ToolResult(Map<String, Object> data, String text) {
@@ -73,8 +75,8 @@ class McpToolExecutor {
             record(caller, tool, recorded, McpToolCallOutcome.OK, null);
             return McpSchema.CallToolResult.builder()
                     .structuredContent(result.data())
-                    .addTextContent(result.text())
                     .addTextContent(objectMapper.writeValueAsString(result.data()))
+                    .addTextContent(result.text())
                     .build();
         } catch (McpToolRefusal refusal) {
             record(caller, tool, documentId, McpToolCallOutcome.REFUSED, refusal.code());

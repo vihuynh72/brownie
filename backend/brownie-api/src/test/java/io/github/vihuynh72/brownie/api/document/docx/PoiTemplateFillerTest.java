@@ -39,6 +39,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -153,7 +154,7 @@ class PoiTemplateFillerTest {
      * Word and LibreOffice are both permitted to trim untagged boundary
      * whitespace on a {@code <w:t>} run. A typed value with a trailing
      * space -- routine for dictated or copy-pasted free text -- must be
-     * written with {@code xml:space="preserve"} or that space can be
+     * written with {@code xml:space=\"preserve\"} or that space can be
      * silently lost by the very renderer this compiler depends on.
      */
     @Test
@@ -591,6 +592,113 @@ class PoiTemplateFillerTest {
             }
         }
         throw new IllegalStateException("word/document.xml not found in produced DOCX");
+    }
+
+    /**
+     * A spot Brownie made from the form's own blank can sit between words that
+     * already carry the sign or unit, so "Desired salary: $____" filled with
+     * "$72,000" writes "72,000", not "$$72,000". The stored value keeps the
+     * sign; only the written copy drops it, and intendedText records what was
+     * written so the output check does not flag the difference.
+     */
+    @Test
+    void aCurrencySignTheBlankAlreadyCarriesIsNotWrittenTwice() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:r><w:t xml:space=\"preserve\">Desired salary: $</w:t></w:r>"
+                        + "<w:sdt><w:sdtPr><w:tag w:val=\"salary\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>___________</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+                .build();
+        FieldDefinition field = foundField("salary", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("salary", new FieldValue.TextValue("$72,000")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("72,000"), filled.intendedText().get("salary"));
+        assertTrue(filled.reopenedBodyText().contains("$72,000"), filled.reopenedBodyText());
+        assertFalse(filled.reopenedBodyText().contains("$$72,000"), filled.reopenedBodyText());
+    }
+
+    @Test
+    void aPercentTheBlankAlreadyCarriesIsNotWrittenTwice() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:sdt><w:sdtPr><w:tag w:val=\"score\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>_____</w:t></w:r></w:sdtContent></w:sdt>"
+                        + "<w:r><w:t xml:space=\"preserve\">% of quota</w:t></w:r></w:p>")
+                .build();
+        FieldDefinition field = foundField("score", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("score", new FieldValue.TextValue("95%")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("95"), filled.intendedText().get("score"));
+        assertTrue(filled.reopenedBodyText().contains("95%"), filled.reopenedBodyText());
+    }
+
+    @Test
+    void aUnitTheBlankAlreadyCarriesIsNotWrittenTwice() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:r><w:t xml:space=\"preserve\">Experience: </w:t></w:r>"
+                        + "<w:sdt><w:sdtPr><w:tag w:val=\"years\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>____</w:t></w:r></w:sdtContent></w:sdt>"
+                        + "<w:r><w:t xml:space=\"preserve\"> years</w:t></w:r></w:p>")
+                .build();
+        FieldDefinition field = foundField("years", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("years", new FieldValue.TextValue("5 years")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("5"), filled.intendedText().get("years"));
+        assertTrue(filled.reopenedBodyText().contains("5 years"), filled.reopenedBodyText());
+        assertFalse(filled.reopenedBodyText().contains("5 yearsyears"), filled.reopenedBodyText());
+    }
+
+    @Test
+    void aValueWithoutTheSignTheFormCarriesIsWrittenAsItIs() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:r><w:t xml:space=\"preserve\">Desired salary: $</w:t></w:r>"
+                        + "<w:sdt><w:sdtPr><w:tag w:val=\"salary\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>___</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+                .build();
+        FieldDefinition field = foundField("salary", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("salary", new FieldValue.TextValue("72,000")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("72,000"), filled.intendedText().get("salary"));
+        assertTrue(filled.reopenedBodyText().contains("$72,000"), filled.reopenedBodyText());
+    }
+
+    @Test
+    void aValueWithDifferentMoneyWordingIsWrittenAsItIs() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:r><w:t xml:space=\"preserve\">Desired salary: $</w:t></w:r>"
+                        + "<w:sdt><w:sdtPr><w:tag w:val=\"salary\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>___</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+                .build();
+        FieldDefinition field = foundField("salary", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("salary", new FieldValue.TextValue("USD 72,000")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("USD 72,000"), filled.intendedText().get("salary"));
+        assertTrue(filled.reopenedBodyText().contains("$USD 72,000"), filled.reopenedBodyText());
+    }
+
+    @Test
+    void aSignInAnotherParagraphDoesNotChangeWhatIsWritten() throws IOException {
+        byte[] docx = RawDocx.builder()
+                .document("<w:p><w:r><w:t>Total: $500</w:t></w:r></w:p>"
+                        + "<w:p><w:r><w:t xml:space=\"preserve\">Name: </w:t></w:r>"
+                        + "<w:sdt><w:sdtPr><w:tag w:val=\"name\"/></w:sdtPr>"
+                        + "<w:sdtContent><w:r><w:t>___</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+                .build();
+        FieldDefinition field = foundField("name", FieldType.TEXT, null);
+        DocumentContent content = new DocumentContent(Map.of("name", new FieldValue.TextValue("Jordan Rivera")));
+
+        FilledDocument filled = filler.fill(docx, List.of(field), content);
+
+        assertEquals(List.of("Jordan Rivera"), filled.intendedText().get("name"));
+        assertTrue(filled.reopenedBodyText().contains("Jordan Rivera"), filled.reopenedBodyText());
     }
 
     private static FieldDefinition scalarField(String fieldId, FieldType type) {

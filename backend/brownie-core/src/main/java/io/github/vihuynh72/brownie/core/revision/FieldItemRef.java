@@ -42,6 +42,7 @@ public record FieldItemRef(String fieldId, Integer itemIndex) {
             case FieldValue.DateValue ignored -> List.of(scalar(fieldId));
             case FieldValue.RepeatedTextValue(List<String> values) -> items(fieldId, values.size());
             case FieldValue.RepeatedDateValue(List<LocalDate> values) -> items(fieldId, values.size());
+            case FieldValue.CheckboxValue ignored -> List.of(scalar(fieldId));
         };
     }
 

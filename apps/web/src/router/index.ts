@@ -41,6 +41,15 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      // A chat app's one-time upload link. No session: the token in the
+      // address is the whole credential.
+      path: '/upload/:token',
+      name: 'form-upload',
+      component: () => import('@/views/FormUploadView.vue'),
+      // A link someone opens from a chat app stands alone: none of the app's chrome is for them.
+      meta: { bare: true },
+    },
+    {
       // Where Google sends a person back after its consent page, as well as the page itself.
       path: '/connections',
       name: 'connections',

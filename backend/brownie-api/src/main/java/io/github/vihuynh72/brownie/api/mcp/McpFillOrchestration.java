@@ -10,6 +10,7 @@ import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
 import io.github.vihuynh72.brownie.core.job.Job;
 import io.github.vihuynh72.brownie.core.job.JobCommandRepository;
+import io.github.vihuynh72.brownie.core.job.JobEventRepository;
 import io.github.vihuynh72.brownie.core.job.JobNotFoundException;
 import io.github.vihuynh72.brownie.core.job.JobState;
 import io.github.vihuynh72.brownie.core.mcp.McpAppliedRunRepository;
@@ -57,6 +58,7 @@ class McpFillOrchestration {
     private final GenerationOrchestrationService orchestrationService;
     private final GenerationRunRepository runRepository;
     private final JobCommandRepository jobRepository;
+    private final io.github.vihuynh72.brownie.core.job.JobEventRepository jobEventRepository;
     private final QuestionService questionService;
     private final PatchProposalRepository proposalRepository;
     private final McpAppliedRunRepository appliedRunRepository;
@@ -69,6 +71,7 @@ class McpFillOrchestration {
             GenerationOrchestrationService orchestrationService,
             GenerationRunRepository runRepository,
             JobCommandRepository jobRepository,
+            io.github.vihuynh72.brownie.core.job.JobEventRepository jobEventRepository,
             QuestionService questionService,
             PatchProposalRepository proposalRepository,
             McpAppliedRunRepository appliedRunRepository,
@@ -79,6 +82,7 @@ class McpFillOrchestration {
         this.orchestrationService = orchestrationService;
         this.runRepository = runRepository;
         this.jobRepository = jobRepository;
+        this.jobEventRepository = jobEventRepository;
         this.questionService = questionService;
         this.proposalRepository = proposalRepository;
         this.appliedRunRepository = appliedRunRepository;
@@ -92,6 +96,21 @@ class McpFillOrchestration {
     Map<String, Object> proposeFill(McpCaller caller, long documentId, long sourceArtifactId) {
         long workspaceId = caller.workspaceId();
         long userId = caller.userId();
+        // A document whose template has no places to fill cannot take a
+        // proposal; say so up front rather than spending a run on it.
+        var spotlessDoc = revisionService.findDocument(workspaceId, userId, documentId);
+        if (spotlessDoc.isPresent()) {
+            var spotlessRev = revisionService.findRevision(
+                    workspaceId, userId, documentId, spotlessDoc.get().currentRevisionId());
+            if (spotlessRev.isPresent()) {
+                var spotlessVersion = templateService.findVersion(
+                        workspaceId, userId, spotlessDoc.get().templateId(), spotlessRev.get().templateVersionId());
+                if (spotlessVersion.isPresent() && spotlessVersion.get().fieldDefinitions().isEmpty()) {
+                    throw new McpToolRefusal(McpToolRefusal.NO_FILL_SPOTS,
+                            "This document's template has no places to fill, so there is nothing to propose.");
+                }
+            }
+        }
         // A run already in flight for this document and source is the
         // answer: retried and repeated calls join it instead of starting
         // another reading of the same source over the same document.
@@ -183,6 +202,11 @@ class McpFillOrchestration {
                     failed.put("run_id", run.id());
                     failed.put("code", job.state().name());
                     failed.put("open_in_brownie", settings.documentUrl(documentId));
+                    // The job's own last words, when it left any, in the person's language.
+                    jobEventRepository.latestForJob(workspaceId, caller.userId(), job.id())
+                            .map(io.github.vihuynh72.brownie.core.job.JobEvent::safeMessage)
+                            .filter(message -> !message.isBlank())
+                            .ifPresent(message -> failed.put("reason", message));
                     return failed;
                 }
                 case WAITING_FOR_INPUT -> {
@@ -300,7 +324,7 @@ class McpFillOrchestration {
                 .map(version -> version.fieldDefinitions().stream()
                         .collect(java.util.stream.Collectors.toMap(
                                 FieldDefinition::fieldId,
-                                field -> field.label() != null ? field.label() : field.fieldId(),
+                                FieldDefinition::displayLabel,
                                 (a, b) -> a)))
                 .orElse(Map.of());
     }
@@ -328,6 +352,8 @@ class McpFillOrchestration {
             case io.github.vihuynh72.brownie.core.revision.FieldValue.RepeatedTextValue texts -> texts.values();
             case io.github.vihuynh72.brownie.core.revision.FieldValue.RepeatedDateValue dates ->
                 dates.values().stream().map(Object::toString).toList();
+            case io.github.vihuynh72.brownie.core.revision.FieldValue.CheckboxValue checkbox ->
+                checkbox.checked() ? "checked" : "unchecked";
         };
     }
 }

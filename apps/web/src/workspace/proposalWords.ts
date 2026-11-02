@@ -34,7 +34,10 @@ function orWords(items: readonly string[]): string {
 }
 
 /** A stored value the way the person reads it: dates the way the export prints them. */
-function shown(value: string, type: 'TEXT' | 'DATE'): string {
+function shown(value: string, type: 'TEXT' | 'DATE' | 'CHECKBOX'): string {
+  if (type === 'CHECKBOX') {
+    return value === 'checked' ? 'Checked' : 'Not checked'
+  }
   return type === 'DATE' ? formatDateLikeExport(value) : value
 }
 

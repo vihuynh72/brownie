@@ -17,6 +17,7 @@ import io.github.vihuynh72.brownie.core.document.UnsupportedPdfFormReason;
 import io.github.vihuynh72.brownie.core.template.PdfBoxGeometry;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDAppearanceContentStream;
@@ -150,6 +151,7 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
                 form.setNeedAppearances(false);
             }
             dropUsageRights(document.getDocumentCatalog());
+            dropAttachmentsAndScripts(document);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             document.save(out);
             return new FilledPdf(out.toByteArray(), findings);
@@ -189,7 +191,13 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
             return null;
         }
         if (form.hasXFA()) {
-            throw new PdfFormNotFillableException(UnsupportedPdfFormReason.XFA, "The form is an XFA form.");
+            boolean dynamic = catalog.getCOSObject().getBoolean("NeedsRendering", false) || form.xfaIsDynamic();
+            if (dynamic) {
+                throw new PdfFormNotFillableException(UnsupportedPdfFormReason.XFA, "The form is an XFA form.");
+            }
+            // A static or hybrid XFA is dropped from the copy being filled: the AcroForm fields
+            // carry everything, and what goes out fills in any PDF reader.
+            form.setXFA(null);
         }
         for (PDField field : form.getFieldTree()) {
             if (field instanceof PDSignatureField && field.getCOSObject().getDictionaryObject(COSName.V) instanceof COSDictionary) {
@@ -215,11 +223,63 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         }
     }
 
+    /**
+     * What the filled copy never carries: files attached to the form and the
+     * scripts that would run when it opens. A field's own format or
+     * calculate scripts stay -- they are part of the form, not of the file.
+     */
+    private static void dropAttachmentsAndScripts(PDDocument document) {
+        PDDocumentCatalog catalog = document.getDocumentCatalog();
+        COSDictionary root = catalog.getCOSObject();
+        COSDictionary names = root.getCOSDictionary(COSName.NAMES);
+        if (names != null) {
+            names.removeItem(COSName.EMBEDDED_FILES);
+            names.removeItem(COSName.JAVA_SCRIPT);
+        }
+        root.removeItem(COSName.AF);
+        root.removeItem(COSName.COLLECTION);
+        // A JavaScript open action goes; anything else the form does on open stays.
+        if (root.getDictionaryObject(COSName.OPEN_ACTION) instanceof COSDictionary open
+                && "JavaScript".equalsIgnoreCase(String.valueOf(open.getNameAsString(COSName.S)))) {
+            root.removeItem(COSName.OPEN_ACTION);
+        }
+        root.removeItem(COSName.AA);
+        for (PDPage page : document.getPages()) {
+            COSDictionary pageDictionary = page.getCOSObject();
+            pageDictionary.removeItem(COSName.AA);
+            pageDictionary.removeItem(COSName.AF);
+            COSArray annotations = pageDictionary.getCOSArray(COSName.ANNOTS);
+            if (annotations == null) {
+                continue;
+            }
+            for (int index = annotations.size() - 1; index >= 0; index--) {
+                if (annotations.getObject(index) instanceof COSDictionary annotation
+                        && "FileAttachment".equalsIgnoreCase(String.valueOf(annotation.getNameAsString(COSName.SUBTYPE)))) {
+                    annotations.remove(index);
+                }
+            }
+        }
+    }
+
     // ---- the form's own fields ----
 
     private boolean fillField(PDDocument document, PDAcroForm form, PdfFonts.ForDocument fonts, PdfFillItem item,
             PdfFillTarget.Widget target, List<PdfFillFinding> findings) throws IOException {
         PDField found = form == null ? null : form.getField(target.fullName());
+        if (found instanceof org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox checkbox) {
+            io.github.vihuynh72.brownie.core.revision.CheckboxAnswers.parse(item.value()).ifPresent(checked -> {
+                try {
+                    if (checked) {
+                        checkbox.check();
+                    } else {
+                        checkbox.unCheck();
+                    }
+                } catch (IOException e) {
+                    throw new IllegalStateException("The checkbox " + target.fullName() + " could not be set.", e);
+                }
+            });
+            return true;
+        }
         if (!(found instanceof PDTextField field) || field.isReadOnly() || field.isPassword() || field.isFileSelect()) {
             findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.FIELD_NOT_FILLABLE,
                     "The form has no text field named " + target.fullName() + " that can be filled."));
@@ -234,8 +294,13 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         }
         int maxLen = field.getMaxLen();
         if (maxLen >= 0 && text.codePointCount(0, text.length()) > maxLen) {
-            findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.MAX_LENGTH_EXCEEDED, Integer.toString(maxLen)));
-            return false;
+            String fit = PdfFillText.fitFormatted(text, maxLen);
+            if (fit != null) {
+                text = fit;
+            } else {
+                findings.add(new PdfFillFinding(item.fieldId(), PdfFillFindingCode.MAX_LENGTH_EXCEEDED, Integer.toString(maxLen)));
+                return false;
+            }
         }
         boolean comb = field.isComb() && maxLen > 0 && !field.isMultiline();
         boolean automatic = appearance.sizePt <= 0;
@@ -386,8 +451,8 @@ public final class PdfBoxFormFiller implements PdfFormFiller {
         PdfFormGraph.CropBox cropBox = new PdfFormGraph.CropBox(crop.getLowerLeftX(), crop.getLowerLeftY(), crop.getWidth(), crop.getHeight());
         PdfBoxGeometry.UprightFrame frame = PdfBoxGeometry.uprightFrame(target.box(), cropBox, page.getRotation());
         double start = target.style().sizePt();
-        double lineAdvance = start * (metrics.ascent - metrics.descent + metrics.lineGap);
-        boolean wrap = target.multiline() || frame.height() >= 2 * lineAdvance;
+        double minLineAdvance = 6 * (metrics.ascent - metrics.descent + metrics.lineGap);
+        boolean wrap = target.multiline() || frame.height() >= 2 * minLineAdvance;
         PdfTextLayout.Result result = PdfTextLayout.layOut(new PdfTextLayout.Request(
                 wrap ? text : text.replace('\n', ' '), frame.width(), frame.height(), BOX_PADDING, wrap, true, 0, 0,
                 start, item.overflow() == PdfOverflowPolicy.SHRINK_TO_FIT, metrics.ascent, metrics.descent, metrics.lineGap),

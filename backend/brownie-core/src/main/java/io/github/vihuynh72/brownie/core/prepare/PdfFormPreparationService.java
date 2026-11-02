@@ -94,20 +94,23 @@ public class PdfFormPreparationService {
     private static final int MAX_CONTEXT_CHARACTERS = 200;
     private static final Pattern DATE_WORD = Pattern.compile("(?i)\\b(date|dob)\\b");
     private static final Pattern SIGNATURE_WORD = Pattern.compile("(?i)\\b(signature|sign here|signed|initials)\\b");
-    private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?");
+        private static final Pattern GENERIC_NAME = Pattern.compile("(?i)(text|field|text field|textfield|fill|fill in|untitled|undefined|blank)( ?\\d+)?|[a-z]{1,3}( ?\\d+)+");
     private static final Pattern NAME_PREFIX = Pattern.compile("^(txt|fld|tf|tb|text|field|str)(?=[A-Z_\\-\\d])");
 
     private final ArtifactService artifactService;
     private final PdfFormReader reader;
     private final PdfFormExtractionVersionRepository readings;
     private final SpotNamer spotNamer;
+    private final VisionSpotFinder visionSpotFinder;
 
     public PdfFormPreparationService(
-            ArtifactService artifactService, PdfFormReader reader, PdfFormExtractionVersionRepository readings, SpotNamer spotNamer) {
+            ArtifactService artifactService, PdfFormReader reader, PdfFormExtractionVersionRepository readings, SpotNamer spotNamer,
+            VisionSpotFinder visionSpotFinder) {
         this.artifactService = artifactService;
         this.reader = reader;
         this.readings = readings;
         this.spotNamer = spotNamer;
+        this.visionSpotFinder = visionSpotFinder;
     }
 
     /**
@@ -122,11 +125,29 @@ public class PdfFormPreparationService {
         PdfFormGraph graph = reading.graph();
         Found found = candidates(graph);
         List<PreparationNotice> notices = new ArrayList<>();
+        if (graph.risks().embeddedFiles()) {
+            notices.add(new PreparationNotice(PreparationNotice.ATTACHED_FILES_REMOVED, 1,
+                    "This form carried other files inside it, which Brownie removed from its copy; the form itself is unchanged."));
+        }
+        if (graph.risks().scriptsDroppedFromCopies()) {
+            notices.add(new PreparationNotice(PreparationNotice.SCRIPTS_REMOVED, 1,
+                    "This form carried scripts that run when it opens, which Brownie removed from its copy; its fields are unchanged."));
+        }
+        if (graph.acroForm().xfa() == PdfFormGraph.XfaKind.STATIC) {
+            notices.add(new PreparationNotice(PreparationNotice.XFA_LAYER_REMOVED, 1,
+                    "This form also carried an XFA layer, which Brownie removed so the form can be filled in any PDF reader; its fields are unchanged."));
+        }
         if (found.leftFields() > 0) {
             notices.add(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, found.leftFields(), null));
         }
+        boolean scanned = graph.pages().stream().noneMatch(PdfFormGraph.Page::hasText) && graph.acroForm().fields().isEmpty();
+        if (scanned && visionSpotFinder != null) {
+            PdfFormPreparation readByVision = readScan(workspaceId, userId, artifactId, reading, graph, notices);
+            if (readByVision != null) {
+                return readByVision;
+            }
+        }
         if (found.candidates().isEmpty()) {
-            boolean scanned = graph.pages().stream().noneMatch(PdfFormGraph.Page::hasText) && graph.acroForm().fields().isEmpty();
             notices.add(new PreparationNotice(scanned ? PreparationNotice.SCANNED_PDF : PreparationNotice.NO_SPOTS_FOUND, 0, null));
             return new PdfFormPreparation(artifactId, reading.id(), List.of(), notices, NamingSource.RULES, SpotNaming.NO_CANDIDATES);
         }
@@ -180,6 +201,73 @@ public class PdfFormPreparationService {
     }
 
     /** The kept reading of this file under the current reader, reading and keeping it first when there is none. */
+    /**
+     * A scan's places, found by the vision model reading each page: the boxes it
+     * names, snapped onto the line under them where there is one, as found
+     * PageBox spots. Null when the model could not read a page (the scanned
+     * notice path takes over).
+     */
+    private PdfFormPreparation readScan(long workspaceId, long userId, long artifactId,
+            PdfFormExtractionVersion reading, PdfFormGraph graph, List<PreparationNotice> notices) {
+        VisionSpotFinder.Result found;
+        try {
+            found = visionSpotFinder.find(workspaceId, userId, readPdf(workspaceId, userId, artifactId), graph);
+        } catch (java.io.IOException e) {
+            return null;
+        }
+        List<PreparedPdfSpot> spots = new ArrayList<>();
+        java.util.Set<String> takenIds = new java.util.HashSet<>();
+        for (VisionSpotFinder.FoundBox box : found.boxes()) {
+            PdfFormGraph.Page page = graph.pages().stream()
+                    .filter(p -> p.pageNumber() == box.pageNumber()).findFirst().orElse(null);
+            if (page == null || page.cropBox() == null) {
+                continue;
+            }
+            PdfRect rect = thousandthsToPageBox(box, page);
+            if (rect == null) {
+                continue;
+            }
+            FieldType type = "DATE".equals(box.type()) ? FieldType.DATE : FieldType.TEXT;
+            String fieldId = FieldIds.fromLabel(TableCellLabels.idWords(box.label()), takenIds);
+            takenIds.add(fieldId);
+            FieldDefinition definition = new FieldDefinition(
+                    fieldId, type, FieldCardinality.SCALAR, FieldRequiredness.OPTIONAL,
+                    new FieldBindingTarget.PageBox(box.pageNumber(), rect.x(), rect.y(), rect.width(), rect.height(),
+                            null, false, PdfOverflowPolicy.SHRINK_TO_FIT),
+                    box.label(), SpotOrigin.FOUND_BY_BROWNIE, null, null);
+            spots.add(new PreparedPdfSpot(definition, NamingSource.MODEL, false));
+        }
+        if (spots.isEmpty()) {
+            return null;
+        }
+        if (found.signatureCount() > 0) {
+            notices.add(new PreparationNotice(PreparationNotice.SIGNATURE_LINES_LEFT, found.signatureCount(), null));
+        }
+        if (found.checkboxCount() > 0) {
+            notices.add(new PreparationNotice(PreparationNotice.CHECKBOXES_LEFT, found.checkboxCount(), null));
+        }
+        notices.add(new PreparationNotice(PreparationNotice.READ_FROM_PICTURE, spots.size(), null));
+        return new PdfFormPreparation(artifactId, reading.id(), spots, notices, NamingSource.MODEL, null);
+    }
+
+    /** The model's thousandths of a page's width and height, as a box over it in PDF points, its bottom on the line under it where a drawn one is. */
+    private PdfRect thousandthsToPageBox(VisionSpotFinder.FoundBox box, PdfFormGraph.Page page) {
+        double width = page.cropBox().width();
+        double height = page.cropBox().height();
+        double left = page.cropBox().llx() + box.left() * width;
+        double right = page.cropBox().llx() + box.right() * width;
+        double top = page.cropBox().lly() + box.top() * height;
+        double bottom = page.cropBox().lly() + box.bottom() * height;
+        if (right <= left + 0.5 || bottom <= top + 0.5) {
+            return null;
+        }
+        PdfRect rect = new PdfRect(left, top, right - left, bottom - top);
+        if (rect.width() < 36.0 || rect.height() < 10.0) {
+            return null;
+        }
+        return rect;
+    }
+
     private PdfFormExtractionVersion readOnce(long workspaceId, long userId, long artifactId) {
         return readings.findByArtifact(workspaceId, userId, artifactId, reader.parserVersion()).orElseGet(() -> {
             byte[] pdf = readPdf(workspaceId, userId, artifactId);
@@ -249,28 +337,37 @@ public class PdfFormPreparationService {
         List<Candidate> candidates = new ArrayList<>();
         int leftFields = 0;
         int fieldNumber = 0;
+        int typedFields = 0;
         for (PdfFormGraph.Field field : graph.acroForm().fields()) {
             if (!TemplateBindingValidator.fillable(field)) {
-                if (field.kind() != PdfFormGraph.FieldKind.BUTTON) {
+                if (field.kind() == PdfFormGraph.FieldKind.RADIO || field.kind() == PdfFormGraph.FieldKind.CHOICE
+                        || field.kind() == PdfFormGraph.FieldKind.SIGNATURE) {
                     leftFields++;
                 }
                 continue;
             }
             String id = "f" + (++fieldNumber);
+            if (field.kind() == PdfFormGraph.FieldKind.TEXT) {
+                typedFields++;
+            }
             PdfFormGraph.Widget widget = field.widgets().get(0);
             String nearby = nearbyLabel(graph, widget);
-            String label = formFieldLabel(field, nearby, fieldNumber);
-            FieldType type = (field.dateFormat() != null || DATE_WORD.matcher(label).find())
-                    && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH) ? FieldType.DATE : FieldType.TEXT;
+            String label = field.kind() == PdfFormGraph.FieldKind.CHECKBOX
+                    ? checkboxFieldLabel(field, rightOfLabel(graph, widget), nearby, fieldNumber)
+                    : formFieldLabel(field, nearby, fieldNumber);
+            FieldType type = field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? FieldType.CHECKBOX
+                    : (field.dateFormat() != null || DATE_WORD.matcher(label).find())
+                            && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH) ? FieldType.DATE : FieldType.TEXT;
             boolean signatureLike = SIGNATURE_WORD.matcher(label).find();
             // A field the form made is a place to fill, as a Word form's own controls are: the naming step names it but keeps it.
             NamingCandidate naming = new NamingCandidate(
-                    id, "FORM_FIELD", label, type, formFieldContext(field, nearby), signatureLike, null, true, null, List.of());
+                    id, field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? "FORM_CHECKBOX" : "FORM_FIELD", label, type,
+                    formFieldContext(field, nearby), signatureLike, null, true, null, List.of());
             candidates.add(new Candidate(naming, new Place(id, widget.pageNumber(), widget.box()), field.fullName(), field.required(), null));
         }
         int blankNumber = 0;
         // A form with fields to type in is filled through them; boxes guessed beside them would mostly be the same places twice.
-        if (fieldNumber == 0 && graph.pages().stream().anyMatch(PdfFormGraph.Page::hasText)) {
+        if (typedFields == 0 && graph.pages().stream().anyMatch(PdfFormGraph.Page::hasText)) {
             for (PdfSpotCandidate found : PdfSpotCandidateDetector.detect(graph)) {
                 String label = FieldIds.normalizeLabel(found.labelGuess());
                 if (label == null) {
@@ -308,6 +405,27 @@ public class PdfFormPreparationService {
      * came ("Text1"), then the words beside it, then the readable name
      * however plain, and last "Field" and its number.
      */
+    /** A checkbox's own words first (tooltip, a real name), then the caption beside it on its line, then "Checkbox N". */
+    static String checkboxFieldLabel(PdfFormGraph.Field field, String rightOf, String nearby, int number) {
+        String tooltip = FieldIds.normalizeLabel(field.tooltip());
+        if (tooltip != null) {
+            return tooltip;
+        }
+        String readable = FieldIds.normalizeLabel(readableName(field.fullName()));
+        if (readable != null && !GENERIC_NAME.matcher(readable).matches()) {
+            return readable;
+        }
+        String caption = FieldIds.normalizeLabel(rightOf);
+        if (caption != null) {
+            return caption;
+        }
+        String beside = FieldIds.normalizeLabel(nearby);
+        if (beside != null) {
+            return beside;
+        }
+        return "Checkbox " + number;
+    }
+
     static String formFieldLabel(PdfFormGraph.Field field, String nearby, int number) {
         String tooltip = FieldIds.normalizeLabel(field.tooltip());
         if (tooltip != null) {
@@ -355,6 +473,29 @@ public class PdfFormPreparationService {
         }
         return PdfSpotCandidateDetector.boxSuggestion(graph, widget.pageNumber(), new PdfPoint(widget.box().x() + 1, widget.box().centerY()))
                 .labelGuess();
+    }
+
+    /** The words a checkbox's caption sits at: on its line, beginning just past its box. */
+    static String rightOfLabel(PdfFormGraph graph, PdfFormGraph.Widget widget) {
+        PdfFormGraph.Page page = graph.pages().stream().filter(candidate -> candidate.pageNumber() == widget.pageNumber()).findFirst().orElse(null);
+        if (page == null || !page.hasText()) {
+            return null;
+        }
+        StringBuilder words = new StringBuilder();
+        for (PdfFormGraph.Line line : page.lines()) {
+            if (Math.abs(line.box().centerY() - widget.box().centerY()) > widget.box().height() * 0.8 + 2) {
+                continue;
+            }
+            for (PdfFormGraph.Word word : line.words()) {
+                if (word.box().x() >= widget.box().right() - 1 && word.box().x() <= widget.box().right() + 200) {
+                    if (words.length() > 0) {
+                        words.append(' ');
+                    }
+                    words.append(word.text());
+                }
+            }
+        }
+        return words.isEmpty() ? null : words.toString();
     }
 
     private static String formFieldContext(PdfFormGraph.Field field, String nearby) {

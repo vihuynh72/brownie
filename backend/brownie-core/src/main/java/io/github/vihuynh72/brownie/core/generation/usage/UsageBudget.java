@@ -181,6 +181,9 @@ public final class UsageBudget {
         long quarterTokens = quarterTokens(request.responseSchema().schemaJson());
         for (ModelMessage message : request.messages()) {
             quarterTokens += quarterTokens(message.content());
+            // A page image at the size the image route sends: a conservative 1,100
+            // input tokens, in quarters.
+            quarterTokens += message.images().size() * 4400L;
         }
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, (quarterTokens + 3) / 4));
     }

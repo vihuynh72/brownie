@@ -145,7 +145,7 @@ class AssistIntegrationTest {
         JsonNode none = interpret(session, workspaceId, documentId, "write me a poem about the club");
         assertThat(none.get("kind").asText()).isEqualTo("NONE");
         assertThat(none.get("executable").asBoolean()).isFalse();
-        assertThat(none.get("help")).hasSize(7);
+        assertThat(none.get("help")).hasSize(8);
         mockMvc.perform(post(assistPath(workspaceId, documentId) + "/execute").cookie(session).with(csrf())
                         .contentType("application/json")
                         .content("{\"text\":\"write me a poem about the club\",\"expectedRevisionId\":" + revisionId + "}"))
@@ -292,6 +292,40 @@ class AssistIntegrationTest {
         assertThat(notPlaced.get("summary").asText()).startsWith("I could not tell where that goes.");
         assertThat(notPlaced.get("spotChange").isNull()).isTrue();
         assertThat(currentRevisionId(session, workspaceId, documentId)).isEqualTo(removedRevisionId);
+    }
+
+    @Test
+    void aMessageCarryingAnswersBecomesASourceAndStartsTheFillRun() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-assist-answers");
+        long workspaceId = ensureWorkspace("subject-assist-answers").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-answers").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        JsonNode flowing = findByDisplayName(
+                readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                        .andExpect(status().isOk())
+                        .andReturn()),
+                "Flowing meeting minutes");
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(), flowing.get("currentActiveVersionId").asLong());
+        long revisionId = currentRevisionId(session, workspaceId, documentId);
+
+        String message = "my meeting title is Spring Planning Meeting, and the meeting date is 2026-04-09";
+        JsonNode answers = interpret(session, workspaceId, documentId, message);
+        assertThat(answers.get("kind").asText()).isEqualTo("ANSWERS");
+        assertThat(answers.get("executable").asBoolean()).isTrue();
+        assertThat(answers.get("usesModel").asBoolean()).isTrue();
+
+        // Executing stores the message as a pasted-text source and starts the same fill-from-source run;
+        // the proposal still waits for the person to accept, exactly like a DRAFT.
+        JsonNode executed = execute(session, workspaceId, documentId, message, revisionId);
+        assertThat(executed.get("kind").asText()).isEqualTo("DRAFT");
+
+        JsonNode sources = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/sources")
+                        .cookie(session)).andExpect(status().isOk()).andReturn());
+        assertThat(sources.toString()).contains("Answers in the chat");
+
+        JsonNode runs = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/documents/" + documentId + "/generations")
+                        .cookie(session)).andExpect(status().isOk()).andReturn());
+        assertThat(runs.size()).isEqualTo(1);
     }
 
     private JsonNode interpret(Cookie session, long workspaceId, long documentId, String text) throws Exception {

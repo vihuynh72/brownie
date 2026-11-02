@@ -1832,7 +1832,7 @@ export interface components {
         };
         FieldValueRequest: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string;
@@ -1840,7 +1840,7 @@ export interface components {
         };
         FieldValueResponse: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string | null;
@@ -1934,7 +1934,7 @@ export interface components {
             fieldId?: string | null;
             label?: string | null;
             /** @enum {string|null} */
-            type?: "TEXT" | "DATE" | null;
+            type?: "TEXT" | "DATE" | "CHECKBOX" | null;
             anchor?: components["schemas"]["DocxAnchor"] | null;
             /** @description ADD_BOX only. */
             pageNumber?: number | null;
@@ -2256,7 +2256,7 @@ export interface components {
         FieldDefinitionResponse: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /** @enum {string} */
@@ -2322,6 +2322,8 @@ export interface components {
              * @description The version this one was made from by correcting a document's fill spots; null for one made from a file.
              */
             derivedFromVersionId?: number | null;
+            /** @description Labels of places Brownie found but its baseline could not write, left out of the activated version. Present on an automatic activation's answer. */
+            placesLeftOut?: string[];
             /** @description What the person was told when the template's file was made ready to fill: the upload step's notices (codes as in FillableFormResponse.notices), kept with the template version and carried on to every version made from it. Null for a version made before notices were kept, and absent from older servers. */
             preparationNotices?: components["schemas"]["PreparationNoticeResponse"][] | null;
         };
@@ -2541,7 +2543,7 @@ export interface components {
         FieldDefinitionRequest: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /** @enum {string} */
@@ -2631,7 +2633,7 @@ export interface components {
             /** @description Null for a control the form had already named with a usable id; its name is worked out from fieldId. */
             label?: string | null;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             /**
@@ -2665,7 +2667,7 @@ export interface components {
         CandidateFieldBindingResponse: {
             fieldId: string;
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             contentControlTag: string;
@@ -2822,6 +2824,8 @@ export interface components {
             mcpEnabled: boolean;
             /** @description The MCP endpoint's absolute address when MCP is on; null when it is not. */
             mcpServerUrl?: string | null;
+            /** @description A microphone button in the chat composers, only when the deployment has a speech model to call. A server from before voice input leaves it out. */
+            voiceInput?: boolean;
         };
         McpGrantResponse: {
             /** Format: int64 */
@@ -3007,7 +3011,7 @@ export interface components {
         /** @description Exactly one of value (SCALAR) or values (REPEATED) is set, the same shape FieldValueResponse uses for a stored field. */
         ProposedFieldResponse: {
             /** @enum {string} */
-            type: "TEXT" | "DATE";
+            type: "TEXT" | "DATE" | "CHECKBOX";
             /** @enum {string} */
             cardinality: "SCALAR" | "REPEATED";
             value?: string | null;

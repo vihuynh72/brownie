@@ -700,7 +700,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
                 <td
                   v-for="field in fields.filter((f) => f.cardinality === 'SCALAR' && choices.get(f.fieldId)?.column != null)"
                   :key="field.fieldId"
-                  :class="{ 'fill-many__cell-problem': doc.cells.find((c) => c.fieldId === field.fieldId)?.problem || doc.cells.find((c) => c.fieldId === field.fieldId)?.notADate }"
+                  :class="{ 'fill-many__cell-problem': doc.cells.find((c) => c.fieldId === field.fieldId)?.problem || doc.cells.find((c) => c.fieldId === field.fieldId)?.notADate || doc.cells.find((c) => c.fieldId === field.fieldId)?.notACheckbox }"
                 >
                   {{ doc.cells.find((c) => c.fieldId === field.fieldId)?.display ?? '' }}
                 </td>

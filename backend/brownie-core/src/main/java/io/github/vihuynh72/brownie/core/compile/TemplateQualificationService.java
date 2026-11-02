@@ -115,7 +115,7 @@ public class TemplateQualificationService implements TemplateBaselineRenderer {
                 .orElseThrow(() -> new IllegalStateException(
                         "PDF form reading " + draftVersion.pdfFormExtractionId() + " of template version " + draftVersion.id() + " no longer exists."));
         PdfTemplateFill.Result result = pdfTemplateFill.fill(
-                sourceBytes, draftVersion.fieldDefinitions(), pdfSampleContent(draftVersion.fieldDefinitions(), graph));
+                sourceBytes, graph, draftVersion.fieldDefinitions(), pdfSampleContent(draftVersion.fieldDefinitions(), graph));
         Artifact pdfArtifact = storeGenerated(
                 workspaceId, userId, "baseline-" + draftVersion.templateId() + "-v" + draftVersion.versionNumber() + ".pdf",
                 result.filled().bytes());
@@ -162,10 +162,12 @@ public class TemplateQualificationService implements TemplateBaselineRenderer {
             case SCALAR -> switch (field.type()) {
                 case TEXT -> new FieldValue.TextValue("Sample value for " + field.fieldId());
                 case DATE -> new FieldValue.DateValue(SAMPLE_DATE);
+                case CHECKBOX -> new FieldValue.CheckboxValue(true);
             };
             case REPEATED -> switch (field.type()) {
                 case TEXT -> new FieldValue.RepeatedTextValue(sampleTextItems(field.fieldId()));
                 case DATE -> new FieldValue.RepeatedDateValue(sampleDateItems());
+                case CHECKBOX -> throw new IllegalArgumentException("A checkbox field is always a single checkbox.");
             };
         };
     }

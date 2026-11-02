@@ -20,6 +20,12 @@ public record PreparationNotice(String code, int count, String detail) {
     public static final String LINKED_CONTENT_REMOVED = "LINKED_CONTENT_REMOVED";
     /** Fields that fetch or run something were replaced by the text they showed. */
     public static final String FIELDS_FROZEN = "FIELDS_FROZEN";
+    /** A static or hybrid XFA layer was dropped; the AcroForm fields it shadowed fill as usual. */
+    public static final String XFA_LAYER_REMOVED = "XFA_LAYER_REMOVED";
+    /** Files attached to the form were dropped from the copy Brownie fills. */
+    public static final String ATTACHED_FILES_REMOVED = "ATTACHED_FILES_REMOVED";
+    /** Scripts that would run when the file opens were dropped from the copy Brownie fills. */
+    public static final String SCRIPTS_REMOVED = "SCRIPTS_REMOVED";
     public static final String EMBEDDED_FILES_TO_PICTURES = "EMBEDDED_FILES_TO_PICTURES";
     public static final String EDITING_RESTRICTION_REMOVED = "EDITING_RESTRICTION_REMOVED";
     /** {@code detail} is the format converted from. */
@@ -35,6 +41,7 @@ public record PreparationNotice(String code, int count, String detail) {
     public static final String BLANKS_OUTSIDE_BODY = "BLANKS_OUTSIDE_BODY";
     public static final String TABLE_ROWS_GROW = "TABLE_ROWS_GROW";
     public static final String SCANNED_PDF = "SCANNED_PDF";
+    public static final String READ_FROM_PICTURE = "READ_FROM_PICTURE";
     public static final String PDF_FIELDS_LEFT = "PDF_FIELDS_LEFT";
     /**
      * The naming step decided that some places the rules found are not
@@ -49,7 +56,8 @@ public record PreparationNotice(String code, int count, String detail) {
             TRACKED_CHANGES_AND_COMMENTS, MACROS_REMOVED, SIGNATURE_REMOVED, LINKED_CONTENT_REMOVED, FIELDS_FROZEN,
             EMBEDDED_FILES_TO_PICTURES, EDITING_RESTRICTION_REMOVED, CONVERTED, KEPT_AS_IS, SPOTS_FOUND, NO_SPOTS_FOUND,
             SIGNATURE_LINES_LEFT, CHECKBOXES_LEFT, SOME_NAMED_BY_RULES, SPOTS_SKIPPED, BLANKS_OUTSIDE_BODY, TABLE_ROWS_GROW,
-            SCANNED_PDF, PDF_FIELDS_LEFT, PLACES_LEFT_OUT);
+            SCANNED_PDF, PDF_FIELDS_LEFT, PLACES_LEFT_OUT, XFA_LAYER_REMOVED, ATTACHED_FILES_REMOVED, SCRIPTS_REMOVED,
+            READ_FROM_PICTURE);
 
     public PreparationNotice {
         Objects.requireNonNull(code, "code");

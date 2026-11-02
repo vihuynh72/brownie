@@ -191,6 +191,26 @@ class UsageBudgetTest {
     }
 
     @Test
+    void anImageCountsAsElevenHundredInputTokens() {
+        io.github.vihuynh72.brownie.core.model.ModelRequest withImage = new io.github.vihuynh72.brownie.core.model.ModelRequest(
+                "image-v1",
+                java.util.List.of(new io.github.vihuynh72.brownie.core.model.ModelMessage(
+                        io.github.vihuynh72.brownie.core.model.ModelMessageRole.USER, "read this page",
+                        java.util.List.of(new io.github.vihuynh72.brownie.core.model.ModelImage(
+                                new byte[]{1, 2, 3}, io.github.vihuynh72.brownie.core.model.ModelImage.MEDIA_TYPE_PNG)))),
+                new io.github.vihuynh72.brownie.core.model.JsonSchema("{}"),
+                500);
+        io.github.vihuynh72.brownie.core.model.ModelRequest withoutImage = new io.github.vihuynh72.brownie.core.model.ModelRequest(
+                "image-v1",
+                java.util.List.of(new io.github.vihuynh72.brownie.core.model.ModelMessage(
+                        io.github.vihuynh72.brownie.core.model.ModelMessageRole.USER, "read this page")),
+                new io.github.vihuynh72.brownie.core.model.JsonSchema("{}"),
+                500);
+
+        assertEquals(1100, UsageBudget.estimateInputTokens(withImage) - UsageBudget.estimateInputTokens(withoutImage));
+    }
+
+    @Test
     void textOutsideAsciiIsCountedAtMoreThanATokenACharacterNotAQuarter() {
         io.github.vihuynh72.brownie.core.model.ModelRequest chinese = new io.github.vihuynh72.brownie.core.model.ModelRequest(
                 "extract-v1",

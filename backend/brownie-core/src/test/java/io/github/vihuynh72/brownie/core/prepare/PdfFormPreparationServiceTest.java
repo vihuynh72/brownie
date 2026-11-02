@@ -62,21 +62,34 @@ class PdfFormPreparationServiceTest {
         PdfFormPreparation prepared = harness.service().prepare(WORKSPACE_ID, USER_ID, ARTIFACT_ID);
 
         List<FieldDefinition> fields = prepared.spots().stream().map(PreparedPdfSpot::definition).toList();
-        assertEquals(List.of("Company name", "Email address", "Phone", "Date of birth"),
+        assertEquals(List.of("Company name", "Email address", "Phone", "Date of birth", "News"),
                 fields.stream().map(FieldDefinition::label).toList());
-        assertEquals(List.of("company.name", "email.address", "phone", "date.of.birth"),
+        assertEquals(List.of("company.name", "email.address", "phone", "date.of.birth", "news"),
                 fields.stream().map(FieldDefinition::fieldId).toList());
         assertEquals(new FieldBindingTarget.AcroFormField("applicant.txtCompanyName"), fields.get(0).binding());
         assertTrue(fields.stream().allMatch(field -> field.requiredness() == FieldRequiredness.OPTIONAL));
         assertTrue(fields.stream().allMatch(field -> field.effectiveOrigin() == SpotOrigin.FORM && field.docxControl() == null));
-        assertEquals(List.of(false, true, false, false), prepared.spots().stream().map(PreparedPdfSpot::requiredHint).toList());
+        assertEquals(List.of(false, true, false, false, false), prepared.spots().stream().map(PreparedPdfSpot::requiredHint).toList());
         assertEquals(FieldType.DATE, fields.get(3).type());
         assertEquals(FieldType.TEXT, fields.get(1).type());
-        assertTrue(prepared.notices().contains(new PreparationNotice(PreparationNotice.SPOTS_FOUND, 4, null)));
-        assertTrue(prepared.notices().contains(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, 2, null)));
+        assertTrue(prepared.notices().contains(new PreparationNotice(PreparationNotice.SPOTS_FOUND, 5, null)));
+        assertTrue(prepared.notices().stream().noneMatch(notice -> notice.code().equals(PreparationNotice.PDF_FIELDS_LEFT)));
         assertEquals(NamingSource.RULES, prepared.spotNaming());
         assertEquals(SpotNaming.DISABLED, prepared.rulesOnlyReason());
         assertEquals(harness.readings.lastSavedId, prepared.formExtractionId());
+    }
+
+    @Test
+    void aHybridXfaFormWhoseScriptsAndRightsAreStrippedGetsBothNotices() {
+        PdfFormGraph graph = graph(List.of(fillableForm().pages().get(0)), fillableForm().acroForm().fields(),
+                PdfFormGraph.XfaKind.STATIC, new PdfFormGraph.Risks(false, false, false, true));
+        Harness harness = new Harness(new PdfFormReading.Supported(graph));
+
+        PdfFormPreparation prepared = harness.service().prepare(WORKSPACE_ID, USER_ID, ARTIFACT_ID);
+
+        assertTrue(prepared.notices().stream().anyMatch(notice -> notice.code().equals(PreparationNotice.SCRIPTS_REMOVED)));
+        assertTrue(prepared.notices().stream().anyMatch(notice -> notice.code().equals(PreparationNotice.XFA_LAYER_REMOVED)));
+        assertTrue(prepared.notices().stream().noneMatch(notice -> notice.code().equals(PreparationNotice.ATTACHED_FILES_REMOVED)));
     }
 
     @Test
@@ -115,7 +128,7 @@ class PdfFormPreparationServiceTest {
         harness.service().prepare(WORKSPACE_ID, USER_ID, ARTIFACT_ID);
 
         List<NamingCandidate> offered = harness.namer.inputs.getFirst().candidates();
-        assertEquals(4, offered.size());
+        assertEquals(5, offered.size());
         assertTrue(offered.stream().allMatch(NamingCandidate::sure), "a person cannot draw a box over a field the form made");
     }
 
@@ -188,9 +201,12 @@ class PdfFormPreparationServiceTest {
 
         PdfFormPreparation prepared = harness.service().prepare(WORKSPACE_ID, USER_ID, ARTIFACT_ID);
 
-        assertEquals(1, prepared.spots().size());
-        assertTrue(prepared.spots().get(0).definition().binding() instanceof FieldBindingTarget.PageBox);
-        assertTrue(prepared.notices().contains(new PreparationNotice(PreparationNotice.PDF_FIELDS_LEFT, 1, null)));
+        assertEquals(2, prepared.spots().size());
+        assertEquals(FieldType.CHECKBOX, prepared.spots().stream()
+                .filter(spot -> spot.definition().binding() instanceof FieldBindingTarget.AcroFormField)
+                .findFirst().orElseThrow().definition().type());
+        assertTrue(prepared.spots().stream().anyMatch(spot -> spot.definition().binding() instanceof FieldBindingTarget.PageBox));
+        assertTrue(prepared.notices().stream().noneMatch(notice -> notice.code().equals(PreparationNotice.PDF_FIELDS_LEFT)));
     }
 
     @Test
@@ -475,10 +491,16 @@ class PdfFormPreparationServiceTest {
     }
 
     private static PdfFormGraph graph(List<PdfFormGraph.Page> pages, List<PdfFormGraph.Field> fields) {
+        return graph(pages, fields, PdfFormGraph.XfaKind.NONE, new PdfFormGraph.Risks(false, false, false));
+    }
+
+    private static PdfFormGraph graph(
+            List<PdfFormGraph.Page> pages, List<PdfFormGraph.Field> fields, PdfFormGraph.XfaKind xfa,
+            PdfFormGraph.Risks risks) {
         PdfFormGraph.AcroForm form = fields.isEmpty()
                 ? PdfFormGraph.AcroForm.absent()
-                : new PdfFormGraph.AcroForm(true, PdfFormGraph.XfaKind.NONE, false, fields, 0);
-        return new PdfFormGraph("test-form-v1", pages, form, new PdfFormGraph.Risks(false, false, false));
+                : new PdfFormGraph.AcroForm(true, xfa, false, fields, 0);
+        return new PdfFormGraph("test-form-v1", pages, form, risks);
     }
 
     private static PdfFormGraph.CropBox crop() {
@@ -523,7 +545,7 @@ class PdfFormPreparationServiceTest {
 
         PdfFormPreparationService service() {
             ArtifactService artifacts = new ArtifactService(new OneArtifact(this), new OneBlob(), null, 1_000_000, Duration.ofHours(1));
-            return new PdfFormPreparationService(artifacts, reader, readings, namer);
+            return new PdfFormPreparationService(artifacts, reader, readings, namer, null);
         }
 
         PdfFillableForms forms() {

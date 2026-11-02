@@ -67,6 +67,13 @@ public sealed interface AssistCommand {
         }
     }
 
+    /** The person's message itself carries the answers: stored as a source and read like any attached source. */
+    record SupplyAnswers(String text) implements AssistCommand {
+        public SupplyAnswers {
+            Objects.requireNonNull(text, "text");
+        }
+    }
+
     /** Text that maps to no command. */
     record Unrecognized(String text) implements AssistCommand {
         public Unrecognized {

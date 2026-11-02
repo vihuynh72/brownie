@@ -112,6 +112,11 @@ class JdbcMcpGrantRepository implements McpGrantRepository {
     }
 
     @Override
+    public void markUsed(long grantId) {
+        jdbcTemplate.queryForObject("SELECT mcp_mark_grant_used(?)", Object.class, grantId);
+    }
+
+    @Override
     @Transactional
     public McpGrant createOrRefreshOAuthGrant(
             long workspaceId, long userId, String clientName, String registeredClientId, Set<McpScope> scopes) {

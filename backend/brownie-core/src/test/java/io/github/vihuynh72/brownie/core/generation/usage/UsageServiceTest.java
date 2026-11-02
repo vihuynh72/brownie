@@ -93,17 +93,19 @@ class UsageServiceTest {
         @Override
         public UsageReservationOutcome reserve(
                 long workspaceId, long userId, String modelName, String promptVersion, String rateCard, int estimatedInputTokens,
-                int estimatedMaxOutputTokens, BigDecimal estimatedCostUsd, BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits) {
+                int estimatedMaxOutputTokens, BigDecimal estimatedCostUsd, BigDecimal runLimitUsd, MonthlyUsageLimits monthlyLimits,
+                    String purpose) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd) {
+        public boolean settle(long workspaceId, long userId, long usageId, int inputTokens, int outputTokens, BigDecimal actualCostUsd,
+                String purpose) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public boolean retain(long workspaceId, long userId, long usageId) {
+        public boolean retain(long workspaceId, long userId, long usageId, String purpose) {
             throw new UnsupportedOperationException();
         }
 

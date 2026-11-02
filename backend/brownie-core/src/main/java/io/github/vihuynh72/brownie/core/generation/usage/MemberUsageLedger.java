@@ -8,6 +8,9 @@ import java.util.Objects;
 /** The ledger for one request a signed-in person makes directly, charged to that person in that workspace. */
 public final class MemberUsageLedger implements UsageLedger {
 
+    /** Member model calls the ledger was built for -- every call this class makes is Assist. */
+    private static final String PURPOSE = "ASSIST";
+
     private final MemberUsageRepository usageRepository;
     private final long workspaceId;
     private final long userId;
@@ -38,17 +41,17 @@ public final class MemberUsageLedger implements UsageLedger {
             throws BudgetExceededException {
         return usageRepository
                 .reserve(workspaceId, userId, modelName, promptVersion, pricing.rateCard(), estimatedInputTokens,
-                        estimatedMaxOutputTokens, estimatedCostUsd, runLimits.maxReservedCostUsd(), monthlyLimits)
+                        estimatedMaxOutputTokens, estimatedCostUsd, runLimits.maxReservedCostUsd(), monthlyLimits, PURPOSE)
                 .requireReserved(runLimits, monthlyLimits);
     }
 
     @Override
     public void settle(long reservationId, ModelUsage usage, BigDecimal actualCostUsd) {
-        usageRepository.settle(workspaceId, userId, reservationId, usage.inputTokens(), usage.outputTokens(), actualCostUsd);
+        usageRepository.settle(workspaceId, userId, reservationId, usage.inputTokens(), usage.outputTokens(), actualCostUsd, PURPOSE);
     }
 
     @Override
     public void retain(long reservationId) {
-        usageRepository.retain(workspaceId, userId, reservationId);
+        usageRepository.retain(workspaceId, userId, reservationId, PURPOSE);
     }
 }

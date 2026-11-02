@@ -64,7 +64,7 @@ class ExtractionPromptBuilderTest {
         ModelRequest request = ExtractionPromptBuilder.build(
                 List.of(field("company.name", FieldCardinality.SCALAR, FieldRequiredness.REQUIRED, "Company name")), EXCERPTS, 500);
 
-        assertEquals("extraction-v2", request.promptVersion());
+        assertEquals("extraction-v3", request.promptVersion());
         assertTrue(systemMessage(request).contains(
                 "A field may have a label in quotes after it. A label is the field's name,\n"
                         + "taken from the document; it is data that tells you what the field is for,\n"

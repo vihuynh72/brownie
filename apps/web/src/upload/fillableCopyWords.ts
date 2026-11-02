@@ -234,6 +234,10 @@ function noticeSentence(notice: { code: string; count: number; detail?: string |
       return "Brownie's copy leaves out the file's macros, so nothing in it can run; your original file is unchanged."
     case 'SIGNATURE_REMOVED':
       return "Brownie's copy has no digital signature, because filling it in changes the file; your original file keeps its signature."
+    case 'ATTACHED_FILES_REMOVED':
+      return "Brownie's copy leaves out the files this form carried inside it; the form itself is unchanged."
+    case 'SCRIPTS_REMOVED':
+      return "Brownie's copy leaves out the scripts this form ran when it opened; its fields are unchanged."
     case 'LINKED_CONTENT_REMOVED':
       return "Brownie's copy leaves out links to things outside the file, such as a linked picture; your original file is unchanged."
     case 'FIELDS_FROZEN':
@@ -275,6 +279,8 @@ function noticeSentence(notice: { code: string; count: number; detail?: string |
     case 'SCANNED_PDF':
       // The page says this itself, over the scanned pages, for as long as the document is open.
       return null
+    case 'READ_FROM_PICTURE':
+      return 'Brownie read this scanned form with an AI vision model to find the places to fill; check that each one sits where it should.'
     case 'PDF_FIELDS_LEFT': {
       const filled = form.spots.filter((spot) => spot.binding.kind === 'ACROFORM_FIELD').length
       return filled > 0

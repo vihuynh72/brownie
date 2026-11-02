@@ -58,14 +58,17 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         List<String> names = client.listTools().tools().stream().map(McpSchema.Tool::name).sorted().toList();
         assertThat(names).containsExactlyInAnyOrder(
                 "add_text_source", "answer_question", "confirm_fill", "export_document", "get_document",
-                "get_export_link", "get_fill_status", "list_templates", "propose_fill", "start_document");
+                "get_export_link", "get_fill_status", "get_form_upload", "list_templates", "propose_fill",
+                "request_form_upload", "start_document", "add_form_file");
 
         JsonNode templates = toolResult(client, "list_templates", Map.of());
         assertThat(templates.get("templates")).isNotEmpty();
         JsonNode first = templates.get("templates").get(0);
         assertThat(first.get("template_id").asLong()).isPositive();
         assertThat(first.get("name").asText()).isNotBlank();
-        assertThat(first.get("fill_spots").get(0).has("label")).isTrue();
+        // A field with no stored label shows the name worked out from
+        // its id, the same one the workspace shows -- not the raw id.
+        assertThat(first.get("fill_spots").get(0).get("label").asText()).isEqualTo("Meeting title");
     }
 
     @Test
@@ -85,8 +88,8 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         assertThat(document.get("document_id").asLong()).isEqualTo(documentId);
         assertThat(document.get("fields")).isNotEmpty();
         JsonNode field = document.get("fields").get(0);
-        assertThat(field.get("field_id").asText()).isNotBlank();
-        assertThat(field.get("label").asText()).isNotBlank();
+        assertThat(field.get("field_id").asText()).isEqualTo("meeting.title");
+        assertThat(field.get("label").asText()).isEqualTo("Meeting title");
         assertThat(document.get("open_in_brownie").asText()).endsWith("/documents/" + documentId);
     }
 

@@ -139,11 +139,62 @@ public final class AssistCommandParser {
                 return new AssistCommand.ChangeField(fieldId, unquote(matcher.group("value")));
             }
         }
+        if (looksLikeAnswers(line, fields)) {
+            return new AssistCommand.SupplyAnswers(text);
+        }
         return new AssistCommand.Unrecognized(text);
     }
 
     /** Stands for a fill spot request that names a spot this form does not have. */
     private static final AssistCommand UNRESOLVED = new AssistCommand.Unrecognized("");
+
+    /** A lead verb means the words were meant as an instruction, not as answers to read. */
+    private static final Pattern COMMAND_LEAD = Pattern.compile(
+            "^(?:please\\s+)?(?:add|put|insert|place|create|make|remove|delete|take|rename|change|set|update|replace|fill|draft|generate|extract|start|explain|why|shorten|condense|tighten|trim|rewrite|reword|rephrase|improve|polish)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern EMAIL = Pattern.compile("\\b[\\w.+-]+@[\\w-]+\\.[\\w.]+\\b");
+    private static final Pattern PHONE = Pattern.compile("\\b\\+?\\d[\\d\\s().-]{6,}\\d\\b");
+    private static final Pattern DATE_VALUE = Pattern.compile(
+            "\\b\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}\\b"
+                    + "|\\b(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,\\s*\\d{4})?\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern IS_PAIR = Pattern.compile("\\S[^:=]{1,60}?\\s*[:=]\\s*\\S+|\\S[\\w' ]{0,60}?\\s+is\\s+\\S+", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Whether the words carry the answers themselves rather than a request: a
+     * named field of this form, a "name is ..." or "phone: ..." pair, or a
+     * value that looks like an email address, a phone number or a date. Words
+     * that open with a request verb are instructions that failed to match, so
+     * they stay unrecognized.
+     */
+    private static boolean looksLikeAnswers(String line, List<FieldDefinition> fields) {
+        if (COMMAND_LEAD.matcher(line).find()) {
+            return false;
+        }
+        String normalized = normalizeWords(line);
+        for (FieldDefinition field : fields) {
+            if (field.displayLabel() == null) {
+                continue;
+            }
+            String label = normalizeWords(field.displayLabel());
+            if (!label.isEmpty() && normalized.contains(label)) {
+                return true;
+            }
+            String head = label.isEmpty() ? "" : label.split(" ")[0];
+            if (head.length() >= 3 && normalized.contains(" " + head + " ")) {
+                return true;
+            }
+        }
+        return EMAIL.matcher(line).find()
+                || PHONE.matcher(line).find()
+                || DATE_VALUE.matcher(line).find()
+                || IS_PAIR.matcher(line).find();
+    }
+
+    /** Lowercase words with punctuation folded away, for comparing a message with a field's label. */
+    private static String normalizeWords(String text) {
+        return " " + text.toLowerCase().replaceAll("[^a-z0-9@.]+", " ").replaceAll("\\s+", " ").strip() + " ";
+    }
 
     /**
      * A request to add, rename or take away a fill spot, or null when the

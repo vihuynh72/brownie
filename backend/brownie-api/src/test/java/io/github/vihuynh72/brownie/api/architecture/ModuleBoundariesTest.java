@@ -356,11 +356,16 @@ class ModuleBoundariesTest {
     /**
      * Only the classes that talk to Google hold an HTTP client, so there is
      * no other place from which a request could reach a person's account.
+     * The chat-app file fetcher is the one named exception: it asks a URL
+     * for bytes, and its own allowlist means only the chat app's file host
+     * ever answers.
      */
     @Test
     void nothingButTheGoogleAdapterHoldsAnHttpClient() {
         noClasses().that().resideInAPackage("io.github.vihuynh72.brownie..")
                 .and().resideOutsideOfPackage(GOOGLE_ADAPTER)
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.mcp.OaiFormFileFetcher")
                 .should().dependOnClassesThat().resideInAPackage("java.net.http..")
                 .orShould().dependOnClassesThat().belongToAnyOf(RestClient.class, RestTemplate.class, HttpURLConnection.class)
                 .check(production);

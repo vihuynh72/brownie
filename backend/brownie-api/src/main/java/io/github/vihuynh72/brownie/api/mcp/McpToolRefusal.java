@@ -28,5 +28,6 @@ final class McpToolRefusal extends RuntimeException {
     static final String UNREVIEWED_FIELDS = "UNREVIEWED_FIELDS";
     static final String VALIDATION_BLOCKING = "VALIDATION_BLOCKING";
     static final String INVALID_ARGUMENT = "INVALID_ARGUMENT";
+    static final String NO_FILL_SPOTS = "NO_FILL_SPOTS";
     static final String CONFLICT = "CONFLICT";
 }

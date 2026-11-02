@@ -13,7 +13,7 @@ import java.util.Objects;
  * definition before it is persisted.
  */
 public sealed interface FieldValue permits FieldValue.TextValue, FieldValue.DateValue,
-        FieldValue.RepeatedTextValue, FieldValue.RepeatedDateValue {
+        FieldValue.RepeatedTextValue, FieldValue.RepeatedDateValue, FieldValue.CheckboxValue {
 
     FieldType type();
 
@@ -26,6 +26,7 @@ public sealed interface FieldValue permits FieldValue.TextValue, FieldValue.Date
             case DateValue date -> date.value().toString();
             case RepeatedTextValue ignored -> null;
             case RepeatedDateValue ignored -> null;
+            case CheckboxValue checkbox -> checkbox.checked() ? "checked" : "unchecked";
         };
     }
 
@@ -55,6 +56,19 @@ public sealed interface FieldValue permits FieldValue.TextValue, FieldValue.Date
         @Override
         public FieldType type() {
             return FieldType.DATE;
+        }
+
+        @Override
+        public FieldCardinality cardinality() {
+            return FieldCardinality.SCALAR;
+        }
+    }
+
+    record CheckboxValue(boolean checked) implements FieldValue {
+
+        @Override
+        public FieldType type() {
+            return FieldType.CHECKBOX;
         }
 
         @Override
