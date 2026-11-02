@@ -55,7 +55,7 @@ const stripLines = computed(() => {
 })
 
 const previewWords = computed(() => {
-  const spots = `${props.preview?.count ?? 0} fill ${props.preview?.count === 1 ? 'spot' : 'spots'}`
+  const spots = `${props.preview?.count ?? 0} ${props.preview?.count === 1 ? 'place' : 'places'}`
   return props.preview?.shown
     ? { title: `Previewing ${spots} from Brownie`, note: 'Dashed values are not in the document yet. Nothing is filled until you approve.' }
     : { title: `Brownie has ${spots} for you to approve`, note: 'The preview is hidden. Nothing is filled until you approve.' }

@@ -91,13 +91,13 @@ const title = computed(() => {
   if (!current) return ''
   switch (current.kind) {
     case 'add':
-      return step.value === 'where' ? 'Add a fill spot' : 'Name the fill spot'
+      return step.value === 'where' ? 'Add a place' : 'Name the place'
     case 'rename':
       return `Rename ${current.label}`
     case 'restyle':
       return `Text size and overflow for ${current.label}`
     default:
-      return `Remove the fill spot ${current.label}?`
+      return `Remove the place ${current.label}?`
   }
 })
 
@@ -324,7 +324,7 @@ async function next(): Promise<void> {
   if (busy.value) return
   const chosen = pageHasLines.value ? lineIndex.value : TOP_OF_PAGE
   if (chosen === null) {
-    problem.value = 'Choose the line the fill spot goes next to.'
+    problem.value = 'Choose the line the place goes next to.'
     return
   }
   problem.value = null
@@ -404,7 +404,7 @@ function request(): PdfSpotRequest | string {
     return { kind: 'rename', label: name, changes: [{ kind: 'RENAME', fieldId: current.fieldId, label: name }] }
   }
   const box = placedBox.value
-  if (box === null) return 'Choose where the fill spot goes first.'
+  if (box === null) return 'Choose where the place goes first.'
   const change: FillSpotChangeRequest = {
     kind: 'ADD_BOX',
     pageNumber: pageNumber.value,
@@ -444,7 +444,7 @@ async function submit(): Promise<void> {
 const submitWords = computed(() => {
   switch (mode.value?.kind) {
     case 'add':
-      return 'Add the fill spot'
+      return 'Add the place'
     case 'rename':
       return 'Rename'
     case 'restyle':
@@ -485,7 +485,7 @@ const submitWords = computed(() => {
       <div :class="popover ? 'pdf-spot-dialog__body' : 'dialog__body pdf-spot-dialog__body'">
         <!-- The keyboard's way: a page, then one of its lines. -->
         <template v-if="mode.kind === 'add' && step === 'where'">
-          <p class="field-hint">Choose a page and the line the fill spot goes next to. Brownie puts a box just after the line's words.</p>
+          <p class="field-hint">Choose a page and the line the place goes next to. Brownie puts a box just after the line's words.</p>
           <div v-if="pages.length > 1">
             <label class="field-label" :for="ids.page">Page</label>
             <select :id="ids.page" v-model.number="pageNumber" class="text-field" @change="pageChanged">

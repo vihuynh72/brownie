@@ -327,7 +327,7 @@ describe('findingWords', () => {
   it('words the findings that carry no place, and every unknown code safely', () => {
     const none = () => null
     expect(findingWords('MISSING_REQUIRED_FIELD', none)).toBe('a required place is empty')
-    expect(findingWords('CHANGE_OUTSIDE_FILL_SPOTS', none)).toBe('the page changed outside its fill spots')
+    expect(findingWords('CHANGE_OUTSIDE_FILL_SPOTS', none)).toBe('the page changed outside its places')
     expect(findingWords('PROTECTED_REGION_MODIFIED', none)).toBe('a part of the form that must not change was changed')
     expect(findingWords('LAYOUT_PROTECTED_REGION_CHANGE', none)).toBe('a part of the form that must not change was changed')
     expect(findingWords('PACKAGE_INTEGRITY_FAILURE', none)).toBe('the Word file did not pass a safety check')

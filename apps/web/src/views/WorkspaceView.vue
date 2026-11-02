@@ -108,6 +108,7 @@ import VoiceMicButton from '@/components/VoiceMicButton.vue'
 import CalendarSourcePicker from '@/components/CalendarSourcePicker.vue'
 import DriveSourcePicker from '@/components/DriveSourcePicker.vue'
 import ChoiceList from '@/components/workspace/ChoiceList.vue'
+import SelectionMoreMenu from '@/components/workspace/SelectionMoreMenu.vue'
 import DocumentPage from '@/components/workspace/DocumentPage.vue'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
 import PageBanners from '@/components/workspace/PageBanners.vue'
@@ -557,7 +558,7 @@ const runSteps = computed<{ text: string; state: RunStepState }[]>(() => {
         : ['active', 'pending', 'pending']
   return [
     'Picked up by a worker',
-    `Reading the source and matching it to ${spots} fill ${spots === 1 ? 'spot' : 'spots'}`,
+    `Reading the source and matching it to ${spots} ${spots === 1 ? 'place' : 'places'}`,
     'Showing you what I found to approve',
   ].map((text, index) => ({ text, state: states[index]! }))
 })
@@ -967,7 +968,7 @@ const { behindLatest, newerVersionWords, moving: movingToLatest, moveError } = s
 /** A document on an older version of its form is moved to the newest first; the page says so and offers the move. */
 function spotChangesWait(): boolean {
   if (!behindLatest.value) return false
-  fieldActionError.value = 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.'
+  fieldActionError.value = 'This document is on an older version of its form. Move it to the newest version first, then change its places.'
   // The offer may have been set aside with "Not now"; the move is needed now, so it comes back.
   spotChanges.offerNewerVersionAgain()
   void nextTick(() => pageBannersRef.value?.focusMove())
@@ -1037,7 +1038,7 @@ const spotActionsShown = computed(() => {
   return fieldDefinitions.value.length > 0 && selectedField.value !== null && document.value?.templateLatestVersionId !== undefined
 })
 
-function openRename(event: MouseEvent): void {
+function openRenameAt(returnTo: HTMLElement | null): void {
   const current = selected.value
   if (!current || spotChangesWait()) return
   if (isPdfForm.value) {
@@ -1045,7 +1046,7 @@ function openRename(event: MouseEvent): void {
     return
   }
   spotChangeTarget = current.fieldId
-  renameDialogRef.value?.open(labelOf(current.fieldId), event.currentTarget as HTMLElement)
+  renameDialogRef.value?.open(labelOf(current.fieldId), returnTo)
 }
 
 async function sendRename(label: string): Promise<string | null> {
@@ -1072,7 +1073,7 @@ function openRestyle(): void {
   pdfPageRef.value?.openRestyle(current.fieldId)
 }
 
-function openRemove(event: MouseEvent): void {
+function openRemoveAt(returnTo: HTMLElement | null): void {
   const current = selected.value
   if (!current || spotChangesWait()) return
   if (isPdfForm.value) {
@@ -1083,7 +1084,7 @@ function openRemove(event: MouseEvent): void {
   const definition = fieldDefinitions.value.find((field) => field.fieldId === current.fieldId)
   const hasValue = scalarDraft(current.fieldId).trim() !== '' || document.value?.currentRevision.fields[current.fieldId] !== undefined
   const fromTheForm = (definition?.origin ?? 'FORM') === 'FORM'
-  removeDialogRef.value?.open(labelOf(current.fieldId), hasValue, fromTheForm, event.currentTarget as HTMLElement)
+  removeDialogRef.value?.open(labelOf(current.fieldId), hasValue, fromTheForm, returnTo)
 }
 
 async function sendRemove(): Promise<string | null> {
@@ -1479,7 +1480,7 @@ function saveFailureMessage(error: unknown): string {
   }
   if (error instanceof ApiRequestError) {
     if (error.status === 409 && error.problem?.code === 'FIELD_LOCKED') {
-      return error.problem.detail ?? 'A fill spot you changed is locked. Unlock it first, or undo that change.'
+      return error.problem.detail ?? 'A place you changed is locked. Unlock it first, or undo that change.'
     }
     if (error.status === 422 || error.status === 400) {
       return error.problem?.detail ?? error.message
@@ -2725,7 +2726,7 @@ let chatSequence = 0
 const chatLogRef = ref<HTMLElement | null>(null)
 /** Ways to begin, under Brownie's first words: offered until something has been said or a source is attached. */
 const startersShown = computed(() => chat.value.length === 0 && attachedSources.value.length === 0)
-/** The same test the page makes before it offers "Add a fill spot" over a Word form: a drawn page with places to put one. */
+/** The same test the page makes before it offers "Add a place" over a Word form: a drawn page with places to put one. */
 const starterAddsSpot = computed(() => docView.value === 'page' && !pageLoading.value && layoutState.value === 'ready' && anchorLines.value.length > 0)
 /**
  * Where the reading and the proposal sit in the conversation: after whatever was said before they
@@ -2983,7 +2984,7 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
   if (interpretation.kind === 'DRAFT') {
     assistStage.value = 'done'
     if (attachedSources.value.length === 0) {
-      say({ from: 'brownie', text: 'Add your notes or a transcript with Add a source (+) first, then ask me again.' })
+      say({ from: 'brownie', text: 'Add your notes or a document with Add a source (+) first, then ask me again.' })
       return
     }
     if (extractionStage.value === 'unconfirmed') {
@@ -3202,7 +3203,7 @@ async function acceptProposal(): Promise<void> {
     } else {
       say({
         from: 'brownie',
-        text: `Filled in ${applied} fill ${applied === 1 ? 'spot' : 'spots'}.${heldWords} Check each one before you export.`,
+        text: `Filled in ${applied} ${applied === 1 ? 'place' : 'places'}.${heldWords} Check each one before you export.`,
       })
       // What is left to check stays under it, with a way to each spot.
       reviewFilledIds.value = filled
@@ -3713,10 +3714,10 @@ watch(composerSaysHere, (here) => {
 })
 
 const SPOT_CHANGE_DONE: Record<PdfSpotRequest['kind'], (label: string, count: number) => string> = {
-  add: (label) => `Added a fill spot for ${label}. New documents from this form will have it too.`,
-  rename: (label) => `Renamed the fill spot to ${label}. New documents from this form will have the new name too.`,
+  add: (label) => `Added a place for ${label}. New documents from this form will have it too.`,
+  rename: (label) => `Renamed the place to ${label}. New documents from this form will have the new name too.`,
   restyle: (label) => `Changed how the text fits in ${label}. New documents from this form will have the change too.`,
-  remove: (label) => `Removed the fill spot ${label}. Its value stays in the version history.`,
+  remove: (label) => `Removed the place ${label}. Its value stays in the version history.`,
   move: (label, count) =>
     `${count === 1 ? `Moved the box for ${label}.` : `Moved ${count} boxes.`} New documents from this form will have the change too.`,
 }
@@ -3735,7 +3736,7 @@ async function changePdfSpots(request: PdfSpotRequest): Promise<PdfSpotResult> {
   if (workspaceId === undefined || !document.value) return { ok: false, message: 'This document is not loaded yet. Try again in a moment.' }
   if (behindLatest.value) {
     spotChanges.offerNewerVersionAgain()
-    return { ok: false, message: 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.' }
+    return { ok: false, message: 'This document is on an older version of its form. Move it to the newest version first, then change its places.' }
   }
   const unsaved = await saveTypingFirst()
   if (unsaved !== null) return { ok: false, message: unsaved }
@@ -3987,16 +3988,16 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         -->
         <p v-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading && editableFields.length > 0" class="empty-hint">
           <strong>Nothing filled in yet.</strong> Type into the highlighted spots, or
-          <button type="button" class="link-button" @click="goToSources">add notes or a transcript</button> for Brownie to
+          <button type="button" class="link-button" @click="goToSources">add notes or a document</button> for Brownie to
           fill them in.
         </p>
         <div v-else-if="docView === 'page' && !hasAnyValue && !isDirty && !pageLoading" class="empty-state">
           <p class="empty-state__title">Nothing filled in yet.</p>
           <p class="field-hint">
-            Type straight into the highlighted spots, or give Brownie your notes or a transcript and ask it to fill them
+            Type straight into the highlighted spots, or give Brownie your notes or a document and ask it to fill them
             in. You check every value before it is exported.
           </p>
-          <button type="button" class="button button--secondary button--small" @click="goToSources">Add notes or a transcript</button>
+          <button type="button" class="button button--secondary button--small" @click="goToSources">Add notes or a document</button>
         </div>
 
         <!-- A PDF form is its own pages with the spots laid over them; a Word form is drawn from its text. -->
@@ -4136,7 +4137,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 <span class="tag tag--honey"><AppIcon name="sparkle" />Found by Brownie</span> Check that this is the right place.
               </p>
               <button type="button" class="button button--small button--secondary" :aria-disabled="keepPending !== null" @click="keepSelectedPlace">
-                <AppIcon name="check" />Keep<span class="visually-hidden"> this fill spot</span>
+                <AppIcon name="check" />Keep<span class="visually-hidden"> this place</span>
               </button>
             </div>
             <div v-if="decisionsShown" class="selection-bar__group" role="group" aria-labelledby="selection-bar-value-label">
@@ -4157,23 +4158,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   @click="fieldActionPending !== selectedPendingKey && reviewSelected('REJECTED')"
                 >
                   <AppIcon name="close" />Reject<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
-                </button>
-                <button
-                  v-if="selected.rowIndex === null"
-                  class="button button--small button--secondary"
-                  type="button"
-                  :aria-disabled="fieldActionPending === selectedPendingKey"
-                  @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
-                >
-                  <AppIcon name="help-circle" />Needs clarification<span class="visually-hidden"> for {{ selectedTarget }}</span>
-                </button>
-                <button
-                  class="button button--small button--secondary"
-                  type="button"
-                  :aria-disabled="fieldActionPending === selectedPendingKey"
-                  @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()"
-                >
-                  <AppIcon :name="selectedLocked ? 'unlock' : 'lock'" />{{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
                 </button>
               </span>
             </div>
@@ -4215,49 +4199,57 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 </template>
               </div>
             </div>
-            <!-- The fill spot itself: its name, on a box Brownie drew how its text fits, or the spot taken away, each asked about in a dialog. -->
-            <div v-if="spotActionsShown" class="selection-bar__group selection-bar__group--quiet" role="group" aria-labelledby="selection-bar-spot-label">
-              <span id="selection-bar-spot-label" class="selection-bar__group-label">This fill spot:</span>
-              <span class="selection-bar__group-buttons">
-                <button type="button" class="button button--small button--quiet" @click="openRename">
-                  Rename…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
-                </button>
-                <button v-if="selectedPdfSpot?.bindingKind === 'PAGE_BOX'" type="button" class="button button--small button--quiet" @click="openRestyle">
-                  Text size…<span class="visually-hidden">{{ ` for ${labelOf(selected.fieldId)}` }}</span>
-                </button>
-                <button v-if="isPdfForm || selectedField?.cardinality === 'SCALAR'" type="button" class="button button--small button--quiet" @click="openRemove">
-                  Remove…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
-                </button>
-              </span>
-            </div>
             <p v-if="isPdfForm && selectedPdfSpot?.bindingKind === 'ACROFORM_FIELD'" class="field-hint">
               This box belongs to the PDF’s own form, so the form sets where it is and how its text looks.
             </p>
-            <div v-if="selected.rowIndex !== null" class="selection-bar__group selection-bar__group--quiet" role="group" aria-labelledby="selection-bar-row-label">
-              <span id="selection-bar-row-label" class="selection-bar__group-label">This row:</span>
-              <span class="selection-bar__group-buttons">
-                <button class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
+            <SelectionMoreMenu v-slot="{ returnTo }">
+              <button
+                v-if="decisionsShown && selected.rowIndex === null"
+                role="menuitem"
+                tabindex="-1"
+                class="button button--small button--quiet"
+                type="button"
+                :aria-disabled="fieldActionPending === selectedPendingKey"
+                @click="fieldActionPending !== selectedPendingKey && reviewSelected('NEEDS_CLARIFICATION')"
+              >
+                <AppIcon name="help-circle" />Ask Brownie<span class="visually-hidden"> for {{ selectedTarget }}</span>
+              </button>
+              <button
+                v-if="decisionsShown"
+                role="menuitem"
+                tabindex="-1"
+                class="button button--small button--quiet"
+                type="button"
+                :aria-disabled="fieldActionPending === selectedPendingKey"
+                @click="fieldActionPending !== selectedPendingKey && toggleSelectedLock()"
+              >
+                <AppIcon :name="selectedLocked ? 'unlock' : 'lock'" />{{ selectedLocked ? 'Unlock' : 'Lock' }}<span class="visually-hidden">{{ ` ${selectedTarget}` }}</span>
+              </button>
+              <button v-if="spotActionsShown" role="menuitem" tabindex="-1" type="button" class="button button--small button--quiet" @click="openRenameAt(returnTo)">
+                Rename…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+              </button>
+              <button v-if="spotActionsShown && selectedPdfSpot?.bindingKind === 'PAGE_BOX'" role="menuitem" tabindex="-1" type="button" class="button button--small button--quiet" @click="openRestyle">
+                Text size…<span class="visually-hidden">{{ ` for ${labelOf(selected.fieldId)}` }}</span>
+              </button>
+              <button v-if="spotActionsShown && (isPdfForm || selectedField?.cardinality === 'SCALAR')" role="menuitem" tabindex="-1" type="button" class="button button--small button--quiet" @click="openRemoveAt(returnTo)">
+                Remove…<span class="visually-hidden">{{ ` ${labelOf(selected.fieldId)}` }}</span>
+              </button>
+              <template v-if="selected.rowIndex !== null">
+                <button role="menuitem" tabindex="-1" class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked || selected.rowIndex === 0" @click="!rowsLocked && selected.rowIndex > 0 && moveRow(selected.rowIndex, -1)">
                   Move up<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
                 </button>
-                <button
-                  class="button button--small button--quiet"
-                  type="button"
-                  :aria-disabled="rowsLocked || selected.rowIndex === rowCount - 1"
-                  @click="!rowsLocked && selected.rowIndex < rowCount - 1 && moveRow(selected.rowIndex, 1)"
-                >
+                <button role="menuitem" tabindex="-1" class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked || selected.rowIndex === rowCount - 1" @click="!rowsLocked && selected.rowIndex < rowCount - 1 && moveRow(selected.rowIndex, 1)">
                   Move down<span class="visually-hidden"> row {{ selected.rowIndex + 1 }}</span>
                 </button>
-                <button class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
+                <button role="menuitem" tabindex="-1" class="button button--small button--quiet" type="button" :aria-disabled="rowsLocked" @click="!rowsLocked && selected && removeRow(selected.rowIndex!)">
                   Remove row {{ selected.rowIndex + 1 }}
                 </button>
-              </span>
-            </div>
-            <div class="selection-bar__rules">
-              <button type="button" class="button button--small button--quiet" @click="showAssistant()">Text style and rules</button>
-            </div>
+              </template>
+              <button role="menuitem" tabindex="-1" type="button" class="button button--small button--quiet" @click="showAssistant()">Text style and rules</button>
+            </SelectionMoreMenu>
             <p v-if="selected.rowIndex !== null && rowsLocked" class="field-hint">A row is locked, so the rows cannot be changed until it is unlocked.</p>
             <div class="selection-bar__foot">
-              <p class="field-hint selection-bar__keys">{{ actionsKey }} in a fill spot comes here. Escape goes back to the spot.</p>
+              <p class="field-hint selection-bar__keys">{{ actionsKey }} in a place comes here. Escape goes back to the spot.</p>
               <button
                 type="button"
                 class="button button--small button--quiet selection-bar__next"
@@ -4290,7 +4282,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           >
             <div ref="rulesCardBodyRef" class="rules-card__body">
               <div class="rules-card__head">
-                <h3 id="rules-heading" class="rules-card__heading">Rules</h3>
+                <h3 id="rules-heading" class="rules-card__heading">About this form</h3>
                 <p v-if="!rulesOpen && rulesSummary.length > 0" class="rules-card__summary">
                   <template v-for="(part, index) in rulesSummary" :key="part">
                     <span v-if="index > 0" aria-hidden="true"> · </span><span v-if="index > 0" class="visually-hidden">, </span>{{ part }}
@@ -4303,7 +4295,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   aria-controls="rules-card-details"
                   @click="toggleRules"
                 >
-                  About this form
+                  Details
                   <AppIcon :name="rulesOpen ? 'chevron-up' : 'chevron-down'" :size="20" />
                 </button>
               </div>
@@ -4315,7 +4307,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   <span class="rules-card__glyph" aria-hidden="true">Aa</span>
                   <div>
                     <p class="rules-card__caption">
-                      Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Fill spots' }}
+                      Text style <span aria-hidden="true">·</span> {{ selected ? selectedLabel : 'Places' }}
                     </p>
                     <ul v-if="styleChips.length > 0" class="chip-list" aria-label="Text style">
                       <li v-for="chip in styleChips" :key="chip" class="chip">{{ chip }}</li>
@@ -4410,7 +4402,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 <li v-if="starterAddsSpot">
                   <button type="button" class="button button--secondary button--small" @click="openPlaceDialog">
                     <AppIcon name="plus" :size="16" />
-                    Add a fill spot<span class="visually-hidden"> to this form</span>
+                    Add a place<span class="visually-hidden"> to this form</span>
                   </button>
                 </li>
               </ul>
@@ -4485,7 +4477,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       <ChoiceList
                         v-if="line.choices && line.choices.length > 0 && !line.chosen"
                         :options="line.choices.map((choice) => choice.lineText)"
-                        name="The paragraph the fill spot goes in"
+                        name="The paragraph the place goes in"
                         :id-prefix="`place-choice-${line.id}`"
                         :allow-other="false"
                         :busy="assistBusy"
@@ -4821,7 +4813,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       :disabled="sourceUploadState === 'uploading'"
                       @click="sourceUploadOpen = !sourceUploadOpen"
                     >
-                      Upload notes or a transcript
+                      Upload notes or a document
                     </button>
                     <p id="add-source-upload-hint" class="field-hint">
                       Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
@@ -4847,7 +4839,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       :class="{ 'add-source__choose--busy': sourceUploadState === 'uploading' }"
                     >
                       <AppIcon name="upload" :size="16" />
-                      Choose a file<span class="visually-hidden"> to upload notes or a transcript</span>
+                      Choose a file<span class="visually-hidden"> to upload notes or a document</span>
                     </label>
                     <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
                     <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
@@ -4890,7 +4882,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
         <form class="composer" @submit.prevent="sendMessage()">
           <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
-          <label class="visually-hidden" for="assist-composer">How may I help you?</label>
+          <label class="visually-hidden" for="assist-composer">Tell me what to fill</label>
           <textarea
             ref="composerTextareaRef"
             id="assist-composer"
@@ -4898,7 +4890,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             class="composer__input"
             rows="2"
             maxlength="1000"
-            :placeholder="composerBusy ? 'Working on it…' : 'How may I help you?'"
+            :placeholder="composerBusy ? 'Working on it…' : 'Tell me what to fill'"
             :aria-describedby="hereHint ? 'assist-composer-here' : undefined"
             @keydown="onComposerKeydown"
           ></textarea>

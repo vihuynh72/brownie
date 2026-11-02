@@ -93,7 +93,7 @@ function pageMenu(): HTMLElement | null {
   return document.querySelector<HTMLElement>('.spot-menu')
 }
 
-describe('DocumentPage: where a fill spot can be added', () => {
+describe('DocumentPage: where a place can be added', () => {
   it('marks each line and each piece of text with what a place chosen in it needs', () => {
     const page = mountPage()
 
@@ -109,15 +109,15 @@ describe('DocumentPage: where a fill spot can be added', () => {
     expect(page.get('p[data-repeats="true"]').attributes('data-anchorable')).toBe('false')
   })
 
-  it('offers "Add a fill spot" beside the other page actions only where spots can be added', async () => {
+  it('offers "Add a place" beside the other page actions only where spots can be added', async () => {
     const page = mountPage()
-    const add = page.findAll('button').find((button) => button.text() === 'Add a fill spot')!
+    const add = page.findAll('button').find((button) => button.text() === 'Add a place')!
     await add.trigger('click')
     expect(page.emitted('add-spot')).toHaveLength(1)
     wrapper!.unmount()
 
     const plain = mountPage(false)
-    expect(plain.findAll('button').some((button) => button.text() === 'Add a fill spot')).toBe(false)
+    expect(plain.findAll('button').some((button) => button.text() === 'Add a place')).toBe(false)
     expect(plain.find('.document-page__tool-message').exists()).toBe(false)
   })
 })
@@ -157,7 +157,7 @@ describe('DocumentPage: "Fill in here" beside a selection', () => {
     expect(page.emitted('fill-here')).toBeUndefined()
     const status = page.get('.document-page__tool-message')
     expect(status.attributes('role')).toBe('status')
-    expect(status.text()).toBe('Select within one paragraph to add a fill spot there.')
+    expect(status.text()).toBe('Select within one paragraph to add a place there.')
     expect(status.classes()).not.toContain('visually-hidden')
   })
 
@@ -306,7 +306,7 @@ describe('DocumentPage: "Fill in here" beside a selection', () => {
       expect(document.activeElement?.id).toBe('pane')
     })
 
-    it('when focus moves into a fill spot, even with the words still selected', async () => {
+    it('when focus moves into a place, even with the words still selected', async () => {
       const page = mountPage()
       const blank = pieceOf(page, '________')
       await select(textNode(blank), 0, textNode(blank), 8)
@@ -332,7 +332,7 @@ describe('DocumentPage: "Fill in here" beside a selection', () => {
     })
   })
 
-  it('never takes typing in a fill spot for a place', async () => {
+  it('never takes typing in a place for a place', async () => {
     const page = mountPage()
     const spot = page.get('[id="edit-meeting.title"]').element as HTMLTextAreaElement
     spot.focus()
@@ -516,7 +516,7 @@ describe('DocumentPage: the menu on the page text', () => {
     Reflect.deleteProperty(navigator, 'clipboard')
   })
 
-  it('leaves the browser menu alone with Shift, over a fill spot, and outside the text', async () => {
+  it('leaves the browser menu alone with Shift, over a place, and outside the text', async () => {
     const page = mountPage()
     expect(rightClick(pieceOf(page, 'Company: '), { shiftKey: true }).defaultPrevented).toBe(false)
     expect(rightClick(page.get('[id="edit-meeting.title"]').element).defaultPrevented).toBe(false)
