@@ -61,6 +61,11 @@ function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+function session_allowance(allowance: 'FULL' | 'FREE_DAILY', invitationRequested: boolean): void {
+  const session = useSessionStore()
+  session.identity = { ...session.identity!, allowance, invitationRequested }
+}
+
 function signIn(): void {
   const session = useSessionStore()
   session.status = 'authenticated'
@@ -1057,6 +1062,34 @@ describe('AppSidebar', () => {
       } finally {
         Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
       }
+    })
+  })
+
+  describe('the allowance note', () => {
+    it('offers the ask for an invitation when the allowance is the free daily one', async () => {
+      signIn()
+      session_allowance('FREE_DAILY', false)
+      wrapper = await mountSidebar({ open: true, docked: true })
+
+      expect(wrapper.get('.sidebar__allowance-tag').text()).toBe('Free daily allowance')
+      expect(wrapper.get('.sidebar__allowance-ask').text()).toBe('Ask for an invitation')
+    })
+
+    it('says the ask was already made', async () => {
+      signIn()
+      session_allowance('FREE_DAILY', true)
+      wrapper = await mountSidebar({ open: true, docked: true })
+
+      expect(wrapper.get('.sidebar__allowance-requested').text()).toBe('Invitation requested')
+      expect(wrapper.find('.sidebar__allowance-ask').exists()).toBe(false)
+    })
+
+    it('is absent when the allowance is the full one', async () => {
+      signIn()
+      session_allowance('FULL', false)
+      wrapper = await mountSidebar({ open: true, docked: true })
+
+      expect(wrapper.find('.sidebar__allowance').exists()).toBe(false)
     })
   })
 

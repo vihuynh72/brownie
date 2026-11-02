@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
 import TemplateActionsMenu from './TemplateActionsMenu.vue'
+import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
 import { useSessionStore } from '@/stores/session'
 import { documentTitleFor, useTemplatesStore } from '@/stores/templates'
 import { navigateTo } from '@/navigation'
@@ -37,6 +38,8 @@ const props = defineProps<{ open: boolean; docked: boolean }>()
 const emit = defineEmits<{ close: []; open: [] }>()
 
 const session = useSessionStore()
+const invitationDialog = ref<InstanceType<typeof InvitationRequestDialog> | null>(null)
+const invitationSent = ref(false)
 const templates = useTemplatesStore()
 const router = useRouter()
 const route = useRoute()
@@ -803,6 +806,25 @@ async function moveToTrash(): Promise<void> {
 
         <p v-if="signOutError" class="field-error sidebar__error" role="alert">{{ signOutError }}</p>
 
+        <!-- Which allowance this workspace is on is its business, not the world's, so it only shows when the
+             free daily one is what there is, and the ask sits with it. -->
+        <div v-if="session.allowance === 'FREE_DAILY'" class="sidebar__allowance">
+          <span class="tag sidebar__allowance-tag">Free daily allowance</span>
+          <button
+            v-if="!session.invitationRequested && !invitationSent"
+            type="button"
+            class="sidebar__allowance-ask"
+            @click="invitationDialog?.open()"
+          >
+            Ask for an invitation
+          </button>
+          <p v-else class="sidebar__allowance-requested">
+            <AppIcon name="check" :size="16" />
+            <span>Invitation requested</span>
+          </p>
+          <p class="visually-hidden" aria-live="polite">{{ invitationSent ? 'Your request was sent.' : '' }}</p>
+        </div>
+
         <div v-if="session.status === 'authenticated'" class="sidebar__account">
           <!-- The name beside it says who this is; the disc is only a landmark for the eye. -->
           <span class="sidebar__avatar" aria-hidden="true">
@@ -828,6 +850,7 @@ async function moveToTrash(): Promise<void> {
         </RouterLink>
       </div>
     </div>
+    <InvitationRequestDialog ref="invitationDialog" @sent="invitationSent = true" />
   </aside>
 </template>
 
@@ -1341,6 +1364,42 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 0.1875rem;
+}
+
+.sidebar__allowance {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-inline: 0.4375rem;
+  margin-block-end: 0.25rem;
+}
+
+.sidebar__allowance-tag {
+  align-self: flex-start;
+  color: var(--color-text-muted);
+}
+
+.sidebar__allowance-ask {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-cocoa);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.sidebar__allowance-ask:hover {
+  text-decoration: none;
+}
+
+.sidebar__allowance-requested {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .sidebar__account {
