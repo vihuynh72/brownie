@@ -10,6 +10,7 @@ import {
   ApiRequestError,
   listBatches,
   listDocuments,
+  saveName,
   searchForms,
   startForm,
   trashDocument,
@@ -87,6 +88,49 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
   } finally {
     formBusyId.value = null
   }
+}
+
+// The name card: on first sign-in (nameConfirmed false) Brownie asks for the name
+// once, prefilled from the provider's display name. Skip hides it for this browser session.
+function readNameSkipped(): boolean {
+  try {
+    return sessionStorage.getItem('brownie-name-skip') === '1'
+  } catch {
+    return false
+  }
+}
+const nameSkipped = ref(readNameSkipped())
+const showNameCard = computed(
+  () => authenticated.value && session.identity?.nameConfirmed === false && !nameSkipped.value,
+)
+const providerNameParts = (session.identity?.displayName ?? '').trim().split(/\s+/)
+const nameGiven = ref(providerNameParts[0] ?? '')
+const nameFamily = ref(providerNameParts.length > 1 ? providerNameParts.slice(1).join(' ') : '')
+const nameBusy = ref(false)
+const nameError = ref('')
+
+async function submitName(): Promise<void> {
+  nameError.value = ''
+  nameBusy.value = true
+  try {
+    session.identity = await saveName(nameGiven.value, nameFamily.value)
+  } catch (error) {
+    nameError.value =
+      error instanceof ApiRequestError && error.problem?.detail
+        ? error.problem.detail
+        : 'The name could not be saved. Try again.'
+  } finally {
+    nameBusy.value = false
+  }
+}
+
+function skipName(): void {
+  try {
+    sessionStorage.setItem('brownie-name-skip', '1')
+  } catch {
+    // Blocked storage keeps the card until the visit ends, which the ref already says.
+  }
+  nameSkipped.value = true
 }
 
 onMounted(() => void runFormSearch())
