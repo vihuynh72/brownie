@@ -106,6 +106,9 @@ class BuiltInTemplateProvisioningIntegrationTest {
     @Autowired
     private io.github.vihuynh72.brownie.core.template.TemplateService templateService;
 
+    @Autowired
+    private io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService pdfFormPreparationService;
+
     @Test
     void bothBuiltInTemplatesAreActivatedAndListableAfterProvisioning() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-fresh-workspace");
@@ -119,16 +122,16 @@ class BuiltInTemplateProvisioningIntegrationTest {
                 .andReturn());
         assertThat(templates).hasSize(2);
         List<String> displayNames = List.of(templates.get(0).get("displayName").asText(), templates.get(1).get("displayName").asText());
-        assertThat(displayNames).containsExactlyInAnyOrder("Flowing meeting minutes", "Table-led meeting minutes");
+        assertThat(displayNames).containsExactlyInAnyOrder("IRS Form W-9", "Job application");
         for (JsonNode template : templates) {
             assertThat(template.get("status").asText()).isEqualTo("ACTIVE");
             assertThat(template.get("currentActiveVersionId").isNull()).isFalse();
         }
 
-        long flowingTemplateId = templates.get(0).get("displayName").asText().equals("Flowing meeting minutes")
+        long flowingTemplateId = templates.get(0).get("displayName").asText().equals("IRS Form W-9")
                 ? templates.get(0).get("id").asLong()
                 : templates.get(1).get("id").asLong();
-        long flowingVersionId = templates.get(0).get("displayName").asText().equals("Flowing meeting minutes")
+        long flowingVersionId = templates.get(0).get("displayName").asText().equals("IRS Form W-9")
                 ? templates.get(0).get("currentActiveVersionId").asLong()
                 : templates.get(1).get("currentActiveVersionId").asLong();
         JsonNode version = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + flowingTemplateId + "/versions/" + flowingVersionId)
@@ -139,7 +142,7 @@ class BuiltInTemplateProvisioningIntegrationTest {
         assertThat(version.get("fields")).isNotEmpty();
         List<String> fieldIds = new java.util.ArrayList<>();
         version.get("fields").forEach(field -> fieldIds.add(field.get("fieldId").asText()));
-        assertThat(fieldIds).contains("meeting.title", "meeting.date");
+        assertThat(fieldIds).contains("person.name", "person.ssn.1");
     }
 
     /**
@@ -158,7 +161,7 @@ class BuiltInTemplateProvisioningIntegrationTest {
         JsonNode templates = readJson(mockMvc.perform(get(templatesPath(workspaceId)).cookie(session))
                 .andExpect(status().isOk())
                 .andReturn());
-        JsonNode flowing = templates.get(0).get("displayName").asText().equals("Flowing meeting minutes") ? templates.get(0) : templates.get(1);
+        JsonNode flowing = templates.get(0).get("displayName").asText().equals("IRS Form W-9") ? templates.get(0) : templates.get(1);
         JsonNode version = readJson(mockMvc.perform(get(templatesPath(workspaceId) + "/" + flowing.get("id").asLong() + "/versions/"
                         + flowing.get("currentActiveVersionId").asLong()).cookie(session))
                 .andExpect(status().isOk())
@@ -234,8 +237,8 @@ class BuiltInTemplateProvisioningIntegrationTest {
         long workspaceId = ensureWorkspace("subject-interrupted-provisioning").id();
         long userId =
                 userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-interrupted-provisioning").orElseThrow().id();
-        var first = io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry.all().get(0);
-        draftFrom(workspaceId, userId, first.displayName(), packagedBytes(first.id()));
+        var first = io.github.vihuynh72.brownie.core.template.BuiltInTemplateRegistry.all().get(0);
+        draftFrom(workspaceId, userId, first);
 
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
 
@@ -254,9 +257,9 @@ class BuiltInTemplateProvisioningIntegrationTest {
         Cookie session = loginAndGetSessionCookie("subject-own-draft-same-name");
         long workspaceId = ensureWorkspace("subject-own-draft-same-name").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-own-draft-same-name").orElseThrow().id();
-        var builtIns = io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry.all();
+        var builtIns = io.github.vihuynh72.brownie.core.template.BuiltInTemplateRegistry.all();
         // The first built-in's name over a different file: the name matches, what it was made from does not.
-        draftFrom(workspaceId, userId, builtIns.get(0).displayName(), packagedBytes(builtIns.get(1).id()));
+        draftFrom(workspaceId, userId, builtIns.get(0), packagedBytes(builtIns.get(1)));
 
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
 
@@ -298,16 +301,23 @@ class BuiltInTemplateProvisioningIntegrationTest {
         assertThat(templates).hasSize(2);
     }
 
-    private void draftFrom(long workspaceId, long userId, String displayName, byte[] docx) {
-        var artifact = artifactService.initiateUpload(workspaceId, userId, displayName + ".docx");
-        artifactService.receiveContent(workspaceId, userId, artifact.id(), new java.io.ByteArrayInputStream(docx));
-        artifactService.finalizeUpload(workspaceId, userId, artifact.id());
-        documentExtractionService.extract(workspaceId, userId, artifact.id());
-        templateService.createDraft(workspaceId, userId, displayName, artifact.id());
+    private void draftFrom(long workspaceId, long userId, io.github.vihuynh72.brownie.core.template.BuiltInTemplate builtIn) throws java.io.IOException {
+        draftFrom(workspaceId, userId, builtIn, packagedBytes(builtIn));
     }
 
-    private static byte[] packagedBytes(String builtInId) throws java.io.IOException {
-        try (var in = new org.springframework.core.io.ClassPathResource("builtin-templates/" + builtInId + ".docx").getInputStream()) {
+    private void draftFrom(long workspaceId, long userId, io.github.vihuynh72.brownie.core.template.BuiltInTemplate builtIn, byte[] bytes) throws java.io.IOException {
+        var artifact = artifactService.initiateUpload(workspaceId, userId, builtIn.displayName() + "." + builtIn.extension());
+        artifactService.receiveContent(workspaceId, userId, artifact.id(), new java.io.ByteArrayInputStream(bytes));
+        artifactService.finalizeUpload(workspaceId, userId, artifact.id());
+        documentExtractionService.extract(workspaceId, userId, artifact.id());
+        if ("pdf".equals(builtIn.extension()) && packagedBytes(builtIn).length == bytes.length && java.util.Arrays.equals(packagedBytes(builtIn), bytes)) {
+            pdfFormPreparationService.prepare(workspaceId, userId, artifact.id());
+        }
+        templateService.createDraft(workspaceId, userId, builtIn.displayName(), artifact.id());
+    }
+
+    private static byte[] packagedBytes(io.github.vihuynh72.brownie.core.template.BuiltInTemplate builtIn) throws java.io.IOException {
+        try (var in = new org.springframework.core.io.ClassPathResource("builtin-templates/" + builtIn.id() + "." + builtIn.extension()).getInputStream()) {
             return in.readAllBytes();
         }
     }

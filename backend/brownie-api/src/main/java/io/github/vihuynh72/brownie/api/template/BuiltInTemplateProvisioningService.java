@@ -5,8 +5,9 @@ import io.github.vihuynh72.brownie.core.artifact.ArtifactRepository;
 import io.github.vihuynh72.brownie.core.artifact.BlobStore;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
-import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplate;
-import io.github.vihuynh72.brownie.core.template.BuiltInMinutesTemplateRegistry;
+import io.github.vihuynh72.brownie.core.prepare.PdfFormPreparationService;
+import io.github.vihuynh72.brownie.core.template.BuiltInTemplate;
+import io.github.vihuynh72.brownie.core.template.BuiltInTemplateRegistry;
 import io.github.vihuynh72.brownie.core.template.Template;
 import io.github.vihuynh72.brownie.core.template.TemplateService;
 import io.github.vihuynh72.brownie.core.template.TemplateVersion;
@@ -28,7 +29,7 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 
 /**
- * Turns {@link BuiltInMinutesTemplateRegistry}'s fixed catalog into real,
+ * Turns {@link BuiltInTemplateRegistry}'s fixed catalog into real,
  * activated {@code Template}/{@code TemplateVersion} rows in one
  * workspace, the first time that workspace needs them. Before this
  * existed, the registry was only ever read by tests -- nothing put a
@@ -48,18 +49,21 @@ public class BuiltInTemplateProvisioningService {
     private final TemplateService templateService;
     private final ArtifactRepository artifactRepository;
     private final BlobStore blobStore;
+    private final PdfFormPreparationService pdfFormPreparationService;
 
     public BuiltInTemplateProvisioningService(
             ArtifactService artifactService,
             DocumentExtractionService documentExtractionService,
             TemplateService templateService,
             ArtifactRepository artifactRepository,
-            BlobStore blobStore) {
+            BlobStore blobStore,
+            PdfFormPreparationService pdfFormPreparationService) {
         this.artifactService = artifactService;
         this.documentExtractionService = documentExtractionService;
         this.templateService = templateService;
         this.artifactRepository = artifactRepository;
         this.blobStore = blobStore;
+        this.pdfFormPreparationService = pdfFormPreparationService;
     }
 
     /**
@@ -93,7 +97,7 @@ public class BuiltInTemplateProvisioningService {
         synchronized (TURNS[(int) Math.floorMod(workspaceId, (long) TURNS.length)]) {
             List<Template> existing = templateService.findAllIncludingTrashed(workspaceId, userId);
             if (existing.isEmpty()) {
-                provision(workspaceId, userId, BuiltInMinutesTemplateRegistry.all(), new LinkedHashMap<>());
+                provision(workspaceId, userId, BuiltInTemplateRegistry.all(), new LinkedHashMap<>());
                 return;
             }
             if (finishInterruptedProvisioning(workspaceId, userId, existing)) {
@@ -112,9 +116,9 @@ public class BuiltInTemplateProvisioningService {
     }
 
     private boolean finishInterruptedProvisioning(long workspaceId, long userId, List<Template> existing) {
-        Map<BuiltInMinutesTemplate, Template> neverActivated = new LinkedHashMap<>();
-        List<BuiltInMinutesTemplate> missing = new ArrayList<>();
-        for (BuiltInMinutesTemplate builtIn : BuiltInMinutesTemplateRegistry.all()) {
+        Map<BuiltInTemplate, Template> neverActivated = new LinkedHashMap<>();
+        List<BuiltInTemplate> missing = new ArrayList<>();
+        for (BuiltInTemplate builtIn : BuiltInTemplateRegistry.all()) {
             boolean present = false;
             for (Template template : existing) {
                 if (!template.displayName().equals(builtIn.displayName())) {
@@ -144,7 +148,7 @@ public class BuiltInTemplateProvisioningService {
      * with the built-in's. Only a draft made from exactly the packaged file
      * is one of these.
      */
-    private boolean isNeverActivatedBuiltIn(long workspaceId, long userId, Template template, BuiltInMinutesTemplate builtIn) {
+    private boolean isNeverActivatedBuiltIn(long workspaceId, long userId, Template template, BuiltInTemplate builtIn) {
         if (template.currentActiveVersionId() != null) {
             return false;
         }
@@ -153,7 +157,7 @@ public class BuiltInTemplateProvisioningService {
             return false;
         }
         Optional<Artifact> source = artifactRepository.find(workspaceId, userId, draft.get().sourceArtifactId());
-        return source.isPresent() && sha256Hex(readPackagedTemplate(builtIn.id())).equals(source.get().sha256());
+        return source.isPresent() && sha256Hex(readPackagedTemplate(builtIn)).equals(source.get().sha256());
     }
 
     /**
@@ -169,7 +173,7 @@ public class BuiltInTemplateProvisioningService {
      * is left alone and logged: it is not the packaged file.
      */
     private void repairUnreadableBuiltIns(long workspaceId, long userId, List<Template> templates) {
-        for (BuiltInMinutesTemplate builtIn : BuiltInMinutesTemplateRegistry.all()) {
+        for (BuiltInTemplate builtIn : BuiltInTemplateRegistry.all()) {
             for (Template template : templates) {
                 if (!template.displayName().equals(builtIn.displayName()) || template.currentActiveVersionId() == null) {
                     continue;
@@ -186,7 +190,7 @@ public class BuiltInTemplateProvisioningService {
                     if (blobStore.sizeOf(artifact.get().blobKey()).isPresent()) {
                         continue;
                     }
-                    byte[] bytes = readPackagedTemplate(builtIn.id());
+                    byte[] bytes = readPackagedTemplate(builtIn);
                     if (!sha256Hex(bytes).equals(artifact.get().sha256())) {
                         log.warn("Built-in template artifact {} in workspace {} has no stored bytes and the packaged copy does not match its recorded hash; not repaired.",
                                 artifact.get().id(), workspaceId);
@@ -214,27 +218,30 @@ public class BuiltInTemplateProvisioningService {
     private void provision(
             long workspaceId,
             long userId,
-            List<BuiltInMinutesTemplate> toCreate,
-            Map<BuiltInMinutesTemplate, Template> alreadyDrafted) {
-        Map<BuiltInMinutesTemplate, Template> drafts = new LinkedHashMap<>(alreadyDrafted);
-        for (BuiltInMinutesTemplate builtIn : toCreate) {
+            List<BuiltInTemplate> toCreate,
+            Map<BuiltInTemplate, Template> alreadyDrafted) {
+        Map<BuiltInTemplate, Template> drafts = new LinkedHashMap<>(alreadyDrafted);
+        for (BuiltInTemplate builtIn : toCreate) {
             drafts.put(builtIn, createDraft(workspaceId, userId, builtIn));
         }
-        for (Map.Entry<BuiltInMinutesTemplate, Template> draft : drafts.entrySet()) {
+        for (Map.Entry<BuiltInTemplate, Template> draft : drafts.entrySet()) {
             bindAndActivate(workspaceId, userId, draft.getValue(), draft.getKey());
         }
     }
 
-    private Template createDraft(long workspaceId, long userId, BuiltInMinutesTemplate builtIn) {
-        byte[] bytes = readPackagedTemplate(builtIn.id());
-        Artifact artifact = artifactService.initiateUpload(workspaceId, userId, builtIn.displayName() + ".docx");
+    private Template createDraft(long workspaceId, long userId, BuiltInTemplate builtIn) {
+        byte[] bytes = readPackagedTemplate(builtIn);
+        Artifact artifact = artifactService.initiateUpload(workspaceId, userId, builtIn.displayName() + "." + builtIn.extension());
         artifactService.receiveContent(workspaceId, userId, artifact.id(), new java.io.ByteArrayInputStream(bytes));
         artifactService.finalizeUpload(workspaceId, userId, artifact.id());
         documentExtractionService.extract(workspaceId, userId, artifact.id());
+        if ("pdf".equals(builtIn.extension())) {
+            pdfFormPreparationService.prepare(workspaceId, userId, artifact.id());
+        }
         return templateService.createDraft(workspaceId, userId, builtIn.displayName(), artifact.id());
     }
 
-    private void bindAndActivate(long workspaceId, long userId, Template template, BuiltInMinutesTemplate builtIn) {
+    private void bindAndActivate(long workspaceId, long userId, Template template, BuiltInTemplate builtIn) {
         TemplateVersion draft = templateService
                 .findDraftVersion(workspaceId, userId, template.id())
                 .orElseThrow(() -> new IllegalStateException(
@@ -245,18 +252,14 @@ public class BuiltInTemplateProvisioningService {
     }
 
     /**
-     * Reads the same DOCX bytes {@link BuiltInMinutesTemplateRegistry}
-     * names, but from this module's own packaged {@code
-     * builtin-templates/} classpath resources rather than the
-     * repository-relative {@code fixtures/} path the registry's own
-     * javadoc describes. That path only resolves on a machine with the
-     * full repository checked out (as every test environment has); a
-     * deployed server ships just this module's built artifact, so the two
-     * built-in DOCX files are duplicated here deliberately, as a real
-     * application asset rather than a test fixture.
+     * Reads {@link BuiltInTemplateRegistry}'s source file for a built-in
+     * from this module's own packaged {@code builtin-templates/}
+     * classpath resources: the extension on the catalog entry names it
+     * ("docx", "pdf"). A deployed server ships just this module's built
+     * artifact, so the files live here as real application assets.
      */
-    private static byte[] readPackagedTemplate(String builtInId) {
-        String resourcePath = "builtin-templates/" + builtInId + ".docx";
+    private static byte[] readPackagedTemplate(BuiltInTemplate builtIn) {
+        String resourcePath = "builtin-templates/" + builtIn.id() + "." + builtIn.extension();
         try (InputStream in = new ClassPathResource(resourcePath).getInputStream()) {
             return in.readAllBytes();
         } catch (IOException e) {
