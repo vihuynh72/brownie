@@ -8,6 +8,13 @@ import io.github.vihuynh72.brownie.core.job.CommandReceipt;
 import io.github.vihuynh72.brownie.core.job.CommandReceiptStatus;
 import io.github.vihuynh72.brownie.core.job.EnqueueJobCommand;
 import io.github.vihuynh72.brownie.core.job.Job;
+import io.github.vihuynh72.brownie.core.job.JobEvent;
+import io.github.vihuynh72.brownie.core.job.JobEventRepository;
+import io.github.vihuynh72.brownie.core.job.JobEventType;
+import io.github.vihuynh72.brownie.core.job.JobStage;
+import io.github.vihuynh72.brownie.core.job.JobState;
+import io.github.vihuynh72.brownie.core.job.JobTarget;
+import io.github.vihuynh72.brownie.core.job.JobType;
 import io.github.vihuynh72.brownie.core.job.JobCommandRepository;
 import io.github.vihuynh72.brownie.core.job.JobCommandType;
 import io.github.vihuynh72.brownie.core.job.ResumeJobCommand;
@@ -47,6 +54,7 @@ class JobControllerTest {
         CapturingJobCommandRepository jobRepository = new CapturingJobCommandRepository(receipt);
         JobController controller = new JobController(
                 jobRepository,
+                new FixedJobEventRepository(Optional.empty()),
                 new CanonicalRequestHasher(new ObjectMapper()),
                 new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
                 new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
@@ -62,6 +70,57 @@ class JobControllerTest {
         assertThat(response.status()).isEqualTo("ACCEPTED");
     }
 
+    @Test
+    void findReportsTheLatestSafeReasonForADeadJob() {
+        CapturingJobCommandRepository jobRepository = new CapturingJobCommandRepository(null);
+        jobRepository.found = deadJob();
+        JobController controller = new JobController(
+                jobRepository,
+                new FixedJobEventRepository(Optional.of(latestReason())),
+                new CanonicalRequestHasher(new ObjectMapper()),
+                new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
+                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
+
+        JobResponse response = controller.find(42L, 81L, oidcUserWith("https://issuer.example", "subject-7"));
+
+        assertThat(response.failureMessage()).isEqualTo("Today's free allowance is used up. Ask for an invitation to keep going.");
+    }
+
+    @Test
+    void findReportsNoFailureForARunningJob() {
+        CapturingJobCommandRepository jobRepository = new CapturingJobCommandRepository(null);
+        jobRepository.found = runningJob();
+        JobController controller = new JobController(
+                jobRepository,
+                new FixedJobEventRepository(Optional.of(latestReason())),
+                new CanonicalRequestHasher(new ObjectMapper()),
+                new WorkspaceAuthorizationService(new OwnerWorkspaceRepository()),
+                new FixedIdentityRepository(new UserIdentity(7L, "https://issuer.example", "subject-7", null, null, null, null, null)));
+
+        JobResponse response = controller.find(42L, 81L, oidcUserWith("https://issuer.example", "subject-7"));
+
+        assertThat(response.failureMessage()).isNull();
+    }
+
+    private static Job deadJob() {
+        return new Job(81L, 42L, 7L, new JobType("generation.extraction"), new JobTarget("document", 1L, 1L), new JobStage("extracting"),
+                null, JobState.DEAD, 2, null, null, null, 0L, null,
+                OffsetDateTime.parse("2026-09-11T17:00:00Z"), OffsetDateTime.parse("2026-09-11T17:30:00Z"));
+    }
+
+    private static Job runningJob() {
+        return new Job(81L, 42L, 7L, new JobType("generation.extraction"), new JobTarget("document", 1L, 1L), new JobStage("extracting"),
+                null, JobState.LEASED, 1, null, null, null, 0L, null,
+                OffsetDateTime.parse("2026-09-11T17:00:00Z"), OffsetDateTime.parse("2026-09-11T17:30:00Z"));
+    }
+
+    private static JobEvent latestReason() {
+        return new JobEvent(1L, 42L, 81L, new JobTarget("document", 1L, 1L), new JobStage("extracting"), 4L,
+                JobEventType.COMPLETED, JobState.DEAD,
+                "Today's free allowance is used up. Ask for an invitation to keep going.", null, null,
+                OffsetDateTime.parse("2026-09-11T17:30:00Z"));
+    }
+
     private static OidcUser oidcUserWith(String issuer, String subject) {
         OidcIdToken idToken = new OidcIdToken(
                 "test-token", Instant.now(), Instant.now().plusSeconds(300),
@@ -69,10 +128,29 @@ class JobControllerTest {
         return new DefaultOidcUser(List.of(), idToken);
     }
 
+    private record FixedJobEventRepository(Optional<JobEvent> latest) implements JobEventRepository {
+
+        @Override
+        public List<JobEvent> findAfter(long workspaceId, long actorUserId, long afterEventId, int limit) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public Optional<JobEvent> latestForJob(long workspaceId, long actorUserId, long jobId) {
+            return latest;
+        }
+
+        @Override
+        public boolean exists(long workspaceId, long actorUserId, long eventId) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+    }
+
     private static final class CapturingJobCommandRepository implements JobCommandRepository {
 
         private final CommandReceipt receipt;
         private ResumeJobCommand resumeCommand;
+        private Job found;
 
         private CapturingJobCommandRepository(CommandReceipt receipt) {
             this.receipt = receipt;
@@ -96,7 +174,7 @@ class JobControllerTest {
 
         @Override
         public Optional<Job> find(long workspaceId, long actorUserId, long jobId) {
-            throw new UnsupportedOperationException("not needed by this test");
+            return Optional.ofNullable(found);
         }
 
         @Override
@@ -116,6 +194,16 @@ class JobControllerTest {
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
             return Optional.of(identity);
         }
+
+        @Override
+        public void recordInvitationRequest(long userId, String note) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public boolean hasInvitationRequest(long userId) {
+            return false;
+        }
     }
 
     private static final class OwnerWorkspaceRepository implements WorkspaceRepository {
@@ -134,5 +222,15 @@ class JobControllerTest {
         public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
             return Optional.of(WorkspaceRole.OWNER);
         }
-    }
+
+            @Override
+            public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
+
+            @Override
+            public java.util.Optional<Boolean> findOpenAllowance(long userId) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
+        }
 }

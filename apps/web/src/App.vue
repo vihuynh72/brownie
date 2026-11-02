@@ -34,8 +34,15 @@ const docked = ref(dockQuery ? dockQuery.matches : true)
 const SIDEBAR_KEY = 'brownie.sidebarOpen'
 const sidebarOpen = ref(docked.value ? readDockedPreference() : false)
 
-/** A page reached through a link of its own stands alone: the sidebar and its bar are not for it. */
-const bare = computed(() => route.meta.bare === true)
+/** Home for a visitor who is not signed in: the landing page, which brings its own bar and runs edge to edge. */
+const landing = computed(() => route.name === 'home' && session.status === 'anonymous')
+
+/**
+ * A page reached through a link of its own stands alone: the sidebar and its bar are not for it. Neither is the
+ * landing page. Before the first page is known there is nothing to dress yet, so the chrome waits for it rather than
+ * flashing up in front of a landing page that turns out not to have any.
+ */
+const bare = computed(() => route.matched.length === 0 || route.meta.bare === true || landing.value)
 
 function readDockedPreference(): boolean {
   try {
@@ -178,7 +185,11 @@ onBeforeUnmount(() => {
       <main
         id="main-content"
         class="shell__main"
-        :class="{ 'shell__main--under-bar': docked && !sidebarOpen, 'shell__main--after-bar': !docked }"
+        :class="{
+          'shell__main--under-bar': !bare && docked && !sidebarOpen,
+          'shell__main--after-bar': !bare && !docked,
+          'shell__main--landing': landing,
+        }"
       >
         <section v-if="session.status === 'error'" class="panel shell__notice" role="alert">
           <h1 class="shell__notice-title">Could not confirm your sign-in</h1>
@@ -347,6 +358,11 @@ onBeforeUnmount(() => {
   .shell__main {
     --shell-gutter-inline: var(--space-6);
   }
+}
+
+/* The landing page sets its own gutters, so its sections can run the full width of the window. */
+.shell__main--landing {
+  padding: 0;
 }
 
 /*

@@ -18,6 +18,8 @@ const IDENTITY = {
   userId: 1,
   issuer: 'https://issuer',
   subject: 'subject',
+  allowance: 'FULL' as const,
+  invitationRequested: false,
   memberships: [{ workspaceId: 7, role: 'OWNER' }],
 }
 

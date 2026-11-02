@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import { getWelcome, type WelcomeResponse } from '@/api/client'
 import { isInAppPath, rememberSignInIntent } from '@/auth/intent'
 
 const route = useRoute()
@@ -25,6 +26,27 @@ const PURPOSE: Record<string, string> = {
 
 /** Set by the page that deleted the workspace, so the first thing the person reads is that it worked. */
 const workspaceDeleted = computed(() => route.query.deleted === '1')
+
+const welcome = ref<WelcomeResponse | null>(null)
+onMounted(async () => {
+  try {
+    welcome.value = await getWelcome()
+  } catch {
+    welcome.value = null
+  }
+})
+
+/**
+ * What the deployment says about sign-up before anyone is in: a free daily allowance, an open
+ * door, or invitation only. A welcome answer that never comes says the quiet thing, which is
+ * what the page always said.
+ */
+const accessNote = computed(() => {
+  if (welcome.value?.signUp === 'OPEN_WITH_DAILY_ALLOWANCE')
+    return 'Free to use every day; invited people get more. Your workspace is private to you.'
+  if (welcome.value?.signUp === 'OPEN') return 'Your workspace is private to you.'
+  return 'Open to invited people only. Your workspace is private to you.'
+})
 
 const purpose = computed(() => {
   if (!next.value) return null
@@ -57,7 +79,7 @@ const STEPS = [
   {
     icon: 'document-text',
     title: 'Add your notes',
-    text: 'A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.',
+    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
   },
   {
     icon: 'document-check',
@@ -103,7 +125,7 @@ function keepDestination(): void {
 
     <p class="signin__note">
       <AppIcon name="shield-check" :size="16" />
-      Open to invited people only. Your workspace is private to you.
+      {{ accessNote }}
     </p>
 
     <!--

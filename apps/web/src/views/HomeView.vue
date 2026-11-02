@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
+import LandingView from '@/views/LandingView.vue'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import {
@@ -39,7 +40,7 @@ const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string
 
 // A typographer's apostrophe, as the rest of the interface sets it.
 const greeting = computed(() =>
-  session.firstName ? `What’s on your mind today, ${session.firstName}?` : 'What’s on your mind today?',
+  session.firstName ? `What form are we filling, ${session.firstName}?` : 'What form are we filling today?',
 )
 
 async function loadDocuments(): Promise<void> {
@@ -114,14 +115,18 @@ const authenticated = computed(() => session.status === 'authenticated')
 // nothing is claimed that it did not say.
 const namingByModel = ref(false)
 const uploadLimit = ref<string | null>(null)
+// "or a photo" is claimed only while the server lists an image type for a form, the same shape the upload takes.
+const acceptsPhoto = ref(false)
 async function loadCapabilityNotes(): Promise<void> {
   try {
     const capabilities = await loadCapabilities()
     namingByModel.value = capabilities.fillSpotNaming === 'MODEL'
     uploadLimit.value = capabilities.maxUploadBytes > 0 ? formatBytes(capabilities.maxUploadBytes) : null
+    acceptsPhoto.value = (capabilities.formFileTypes ?? []).some((type) => type.mediaType.startsWith('image/'))
   } catch {
     namingByModel.value = false
     uploadLimit.value = null
+    acceptsPhoto.value = false
   }
 }
 onMounted(() => {
@@ -130,7 +135,8 @@ onMounted(() => {
 
 /** The kinds of file the button takes, and how large one may be where the server said. */
 const kindsLine = computed(
-  () => `Word, PDF, Pages, OpenDocument or RTF${uploadLimit.value ? `, up to ${uploadLimit.value}` : ''}`,
+  () =>
+    `Word, PDF, Pages, OpenDocument${acceptsPhoto.value ? ', RTF or a photo' : ' or RTF'}${uploadLimit.value ? `, up to ${uploadLimit.value}` : ''}`,
 )
 // Where the AI service names the places in an uploaded form, the form's text goes to it, and the person is told so
 // before they choose a file. While a form is being learned there is no file left to choose, so the note waits.
@@ -390,7 +396,7 @@ const HOW_BROWNIE_WORKS: readonly { icon: IconName; title: string; text: string 
   {
     icon: 'document-text',
     title: 'Add your notes',
-    text: 'A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.',
+    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
   },
   {
     icon: 'document-check',
@@ -577,7 +583,21 @@ const showHowItWorks = computed(
 </script>
 
 <template>
-  <div class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
+  <!-- A visitor who is not signed in gets the landing page, with any sign-in that just failed explained at its top. -->
+  <LandingView v-if="session.status === 'anonymous'">
+    <template v-if="signInFailed" #notice>
+      <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
+        This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think
+        it should be, ask whoever invited you; signing in again with the same account will not change it.
+      </p>
+      <p v-else class="card home__signin-error" role="alert">
+        Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again;
+        if it keeps failing, pass that reason on to whoever runs this Brownie.
+        <a href="/oauth2/authorization/entra">Try again</a>
+      </p>
+    </template>
+  </LandingView>
+  <div v-else class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
     <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
       This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
       should be, ask whoever invited you; signing in again with the same account will not change it.

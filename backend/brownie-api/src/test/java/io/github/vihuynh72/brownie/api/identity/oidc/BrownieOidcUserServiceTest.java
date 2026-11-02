@@ -149,6 +149,70 @@ class BrownieOidcUserServiceTest {
         assertThat(result).isSameAs(fakeOidcUser);
     }
 
+    @Test
+    void anUninvitedPersonSignsInOnTheOpenAllowance() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-o", "subject-o", "stranger@example.com", "Stranger");
+        RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                new RecordingUserIdentityRepository(),
+                workspaceRepository,
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com", true));
+
+        assertThat(service.loadUser(null)).isSameAs(fakeOidcUser);
+        assertThat(workspaceRepository.openAllowanceSet).isTrue();
+    }
+
+    @Test
+    void anInvitedPersonSignsInWithoutTheOpenAllowance() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-f", "subject-f", "Secretary@example.com", "Secretary");
+        RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                new RecordingUserIdentityRepository(),
+                workspaceRepository,
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com", true));
+
+        assertThat(service.loadUser(null)).isSameAs(fakeOidcUser);
+        assertThat(workspaceRepository.openAllowanceSet).isFalse();
+    }
+
+    @Test
+    void anOpenSignInIsRefusedWhenItsAllowanceCannotBeSet() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-a", "subject-a", "stranger@example.com", "Stranger");
+        RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
+        workspaceRepository.failsOpenAllowance = true;
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                new RecordingUserIdentityRepository(),
+                workspaceRepository,
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com", true));
+
+        assertThatThrownBy(() -> service.loadUser(null))
+                .isInstanceOf(OAuth2AuthenticationException.class)
+                .hasMessageContaining("Try signing in again")
+                .satisfies(thrown -> assertThat(((OAuth2AuthenticationException) thrown).getError().getErrorCode())
+                        .isEqualTo("allowance_not_set"));
+    }
+
+    @Test
+    void anInvitedSignInOnlyWarnsWhenItsAllowanceCannotBeCleared() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-c", "subject-c", "Secretary@example.com", "Secretary");
+        RecordingWorkspaceRepository workspaceRepository = new RecordingWorkspaceRepository();
+        workspaceRepository.failsOpenAllowance = true;
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser,
+                new RecordingUserIdentityRepository(),
+                workspaceRepository,
+                noOpProvisioning(),
+                new InvitedPeople(true, "secretary@example.com", true));
+
+        assertThat(service.loadUser(null)).isSameAs(fakeOidcUser);
+    }
+
     private static BuiltInTemplateProvisioningService noOpProvisioning() {
         return new BuiltInTemplateProvisioningService(null, null, null, null, null, null) {
             @Override
@@ -190,10 +254,22 @@ class BrownieOidcUserServiceTest {
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
             throw new UnsupportedOperationException("not needed by this test");
         }
+
+        @Override
+        public void recordInvitationRequest(long userId, String note) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public boolean hasInvitationRequest(long userId) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
     }
 
     private static final class RecordingWorkspaceRepository implements WorkspaceRepository {
         private Long ensuredForUserId;
+        private Boolean openAllowanceSet;
+        private boolean failsOpenAllowance;
 
         @Override
         public Workspace ensurePersonalWorkspace(long ownerUserId) {
@@ -208,6 +284,20 @@ class BrownieOidcUserServiceTest {
 
         @Override
         public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+            if (failsOpenAllowance) {
+                throw new IllegalStateException("the flag could not be set");
+            }
+            this.openAllowanceSet = open;
+            return true;
+        }
+
+        @Override
+        public Optional<Boolean> findOpenAllowance(long userId) {
             throw new UnsupportedOperationException("not needed by this test");
         }
     }

@@ -14,6 +14,7 @@ vi.mock('@/api/client', async () => {
     listDocuments: vi.fn(),
     trashDocument: vi.fn(),
     getCapabilities: vi.fn(),
+    getWelcome: vi.fn(),
     listBatches: vi.fn(),
   }
 })
@@ -25,6 +26,7 @@ vi.mock('@/upload/learnAndStart', async () => {
 import {
   ApiRequestError,
   getCapabilities,
+  getWelcome,
   listBatches,
   listDocuments,
   trashDocument,
@@ -86,6 +88,8 @@ function signedIn(): void {
     issuer: 'x',
     subject: 'y',
     displayName: 'Vi Huynh',
+    allowance: 'FULL',
+    invitationRequested: false,
     memberships: [{ workspaceId: 7, role: 'OWNER' }],
   }
 }
@@ -103,6 +107,7 @@ describe('HomeView', () => {
     vi.mocked(trashDocument).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
+    vi.mocked(getWelcome).mockReset().mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: null })
     vi.mocked(listBatches).mockReset().mockResolvedValue([])
     resetCapabilitiesCache()
   })
@@ -132,23 +137,22 @@ describe('HomeView', () => {
     expect(wrapper.find('.home__empty').exists()).toBe(false)
   })
 
-  /** Signed out, the same button is a way to sign in that comes back here, rather than a control that refuses. */
-  it('welcomes a signed-out visitor and sends the upload action to sign in, and back here', async () => {
+  /** Signed out, home is the landing page: it says what Brownie does and sends every entry to the provider. */
+  it('shows a signed-out visitor the landing page, and signs in through the provider', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: null })
     const session = useSessionStore()
     session.status = 'anonymous'
 
     const wrapper = await mountWithRouter()
+    await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('Welcome to Brownie!')
-    const upload = wrapper.get('a.home__upload')
-    expect(upload.text()).toBe('Upload your documents')
-    expect(upload.attributes('href')).toBe('/signin?next=/')
+    expect(wrapper.get('h1').text()).toBe('Brownie fills your forms from what you tell it. You make the calls.')
+    const signIn = wrapper.get('a.button--primary')
+    expect(signIn.attributes('href')).toBe('/oauth2/authorization/entra')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    expect(wrapper.find('a.home__upload').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(listDocuments).not.toHaveBeenCalled()
-    // What the button takes is said to everyone; how large a file may be, and what happens to a form's text, are
-    // asked about only once signed in.
-    expect(wrapper.get('.home__upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF')
     expect(getCapabilities).not.toHaveBeenCalled()
     expect(wrapper.find('.home__how').exists()).toBe(false)
     expect(wrapper.find('.home__recent').exists()).toBe(false)
@@ -162,11 +166,11 @@ describe('HomeView', () => {
 
     const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied')
 
-    const alert = wrapper.find('[role="alert"]')
+    const alert = wrapper.find('.landing [role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('Sign-in did not complete')
     expect(alert.text()).toContain('access_denied')
-    expect(alert.find('a[href="/signin"]').text()).toBe('Try again')
+    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -181,11 +185,11 @@ describe('HomeView', () => {
 
     const wrapper = await mountWithRouter('/?signin=failed&reason=not_invited')
 
-    const alert = wrapper.find('[role="alert"]')
+    const alert = wrapper.find('.landing [role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('invited people only')
     expect(alert.text()).not.toContain('not_invited')
-    expect(alert.find('a[href="/signin"]').exists()).toBe(false)
+    expect(alert.find('a').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -196,7 +200,7 @@ describe('HomeView', () => {
     const wrapper = await mountWithRouter()
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('What’s on your mind today, Vi?')
+    expect(wrapper.get('h1').text()).toBe('What form are we filling, Vi?')
   })
 
   it('groups recent documents by the day they were made, newest first, with the time beside each', async () => {
@@ -326,7 +330,7 @@ describe('HomeView', () => {
       'Step 3 Check and export',
     ])
     expect(how.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
-    expect(how.text()).toContain('A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.')
+    expect(how.text()).toContain('Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.')
     expect(how.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
     // Nothing to continue from yet.
     expect(wrapper.find('.home__resume').exists()).toBe(false)

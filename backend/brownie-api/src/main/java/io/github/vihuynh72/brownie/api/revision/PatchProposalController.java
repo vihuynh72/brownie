@@ -69,7 +69,8 @@ class PatchProposalController {
                 documentId,
                 proposalId,
                 positive(request.expectedRevisionId(), "expectedRevisionId"),
-                editReason);
+                editReason,
+                Boolean.TRUE.equals(request.acceptEvidencedValues()));
         return PatchAcceptResponse.from(result);
     }
 
@@ -100,7 +101,7 @@ class PatchProposalController {
             String operation, long workspaceId, long documentId, long proposalId, AcceptPatchProposalRequest request) {
     }
 
-    record AcceptPatchProposalRequest(long expectedRevisionId, String editReason) {
+    record AcceptPatchProposalRequest(long expectedRevisionId, String editReason, Boolean acceptEvidencedValues) {
     }
 
     record PatchAcceptResponse(boolean applied, Map<String, String> fieldStatuses, DocumentController.DocumentRevisionResponse revision) {

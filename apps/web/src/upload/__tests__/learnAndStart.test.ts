@@ -372,7 +372,7 @@ describe('learnFormAndStartDocument', () => {
       ok: true,
       documentId: 77,
       name: 'Club minutes',
-      notes: ['Brownie did not find any blanks. Choose Add a fill spot, or select a place on the page and choose Fill in here.'],
+      notes: ['Brownie did not find any blanks. Choose Add a place, or select a place on the page and choose Fill in here.'],
     })
     expect(replaceDraftBindings).not.toHaveBeenCalled()
     expect(getTemplateLayout).not.toHaveBeenCalled()
