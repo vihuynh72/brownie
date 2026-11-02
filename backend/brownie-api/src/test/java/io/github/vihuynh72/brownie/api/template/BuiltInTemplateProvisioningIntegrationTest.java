@@ -228,6 +228,56 @@ class BuiltInTemplateProvisioningIntegrationTest {
     }
 
     /**
+     * A workspace that already carries a meeting-minutes built-in keeps it even though the minutes are retired:
+     * blob repair still visits it, so a lost blob gets the packaged minutes bytes back.
+     */
+    @Test
+    void anExistingMinutesTemplateWhoseStoredBytesWentMissingIsRepaired() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-minutes-repair");
+        long workspaceId = ensureWorkspace("subject-minutes-repair").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-minutes-repair").orElseThrow().id();
+
+        /* The minutes entry as a workspace that provisioned before the real forms came in carries it: the
+           packaged file's own bytes uploaded, drafted with its fields, and activated. */
+        byte[] minutes = getClass().getResourceAsStream("/builtin-templates/flowing-meeting-minutes.docx").readAllBytes();
+        JsonNode allocateResponse = readJson(mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/workspaces/" + workspaceId + "/uploads")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType("application/json")
+                        .content("{\"filename\":\"flowing-meeting-minutes.docx\"}"))
+                .andExpect(status().isCreated())
+                .andReturn());
+        long artifactId = allocateResponse.get("id").asLong();
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .put("/api/v1/workspaces/" + workspaceId + "/uploads/" + artifactId + "/content")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType("application/octet-stream")
+                        .content(minutes))
+                .andExpect(status().isOk());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/workspaces/" + workspaceId + "/uploads/" + artifactId + "/complete")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk());
+        documentExtractionService.extract(workspaceId, userId, artifactId);
+        var minutesTemplate = templateService.createDraft(workspaceId, userId, "Flowing meeting minutes", artifactId);
+        var builtIn = io.github.vihuynh72.brownie.core.template.BuiltInTemplateRegistry.find("flowing-meeting-minutes").orElseThrow();
+        var draft = templateService.findDraftVersion(workspaceId, userId, minutesTemplate.id()).orElseThrow();
+        var bound = templateService.replaceDraftBindings(workspaceId, userId, minutesTemplate.id(), draft.versionNumber(), builtIn.fields());
+        templateService.activate(workspaceId, userId, minutesTemplate.id(), bound.versionNumber());
+
+        String blobKey = artifactRepository.find(workspaceId, userId, artifactId).orElseThrow().blobKey();
+        blobStore.delete(blobKey);
+        assertThat(blobStore.sizeOf(blobKey)).isEmpty();
+
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+
+        assertThat(blobStore.sizeOf(blobKey)).isPresent();
+    }
+
+    /**
      * What a first sign-in leaves behind when the renderer is down or busy at its last step: a built-in that was
      * drafted and never activated, and a second one that was never reached.
      */

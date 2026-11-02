@@ -17,7 +17,11 @@ import java.util.Set;
  * that belongs to that kind of source.
  */
 public record BuiltInTemplate(
-        String id, String displayName, String extension, List<FieldDefinition> fields) {
+        String id, String displayName, String extension, List<FieldDefinition> fields, boolean retired) {
+
+    public BuiltInTemplate(String id, String displayName, String extension, List<FieldDefinition> fields) {
+        this(id, displayName, extension, fields, false);
+    }
 
     public BuiltInTemplate {
         requireText(id, "id");

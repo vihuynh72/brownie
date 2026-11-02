@@ -97,7 +97,7 @@ public class BuiltInTemplateProvisioningService {
         synchronized (TURNS[(int) Math.floorMod(workspaceId, (long) TURNS.length)]) {
             List<Template> existing = templateService.findAllIncludingTrashed(workspaceId, userId);
             if (existing.isEmpty()) {
-                provision(workspaceId, userId, BuiltInTemplateRegistry.all(), new LinkedHashMap<>());
+                provision(workspaceId, userId, BuiltInTemplateRegistry.forNewWorkspace(), new LinkedHashMap<>());
                 return;
             }
             if (finishInterruptedProvisioning(workspaceId, userId, existing)) {
@@ -118,7 +118,7 @@ public class BuiltInTemplateProvisioningService {
     private boolean finishInterruptedProvisioning(long workspaceId, long userId, List<Template> existing) {
         Map<BuiltInTemplate, Template> neverActivated = new LinkedHashMap<>();
         List<BuiltInTemplate> missing = new ArrayList<>();
-        for (BuiltInTemplate builtIn : BuiltInTemplateRegistry.all()) {
+        for (BuiltInTemplate builtIn : BuiltInTemplateRegistry.forNewWorkspace()) {
             boolean present = false;
             for (Template template : existing) {
                 if (!template.displayName().equals(builtIn.displayName())) {

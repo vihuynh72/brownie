@@ -52,7 +52,39 @@ public final class BuiltInTemplateRegistry {
                             tag("applicant.employer", "Most recent employer", FieldRequiredness.OPTIONAL),
                             tag("applicant.jobTitle", "Job title", FieldRequiredness.OPTIONAL),
                             tag("applicant.datesEmployed", "Dates employed", FieldRequiredness.OPTIONAL),
-                            tag("applicant.education", "Highest education", FieldRequiredness.OPTIONAL))));
+                            tag("applicant.education", "Highest education", FieldRequiredness.OPTIONAL))),
+            /* The meeting-minutes pair a workspace built before the real forms came in keeps: retired, so a
+               new workspace never gets them, but repairUnreadableBuiltIns still visits them for a blob lost. */
+            new BuiltInTemplate(
+                    "flowing-meeting-minutes",
+                    "Flowing meeting minutes",
+                    "docx",
+                    List.of(
+                            tag("meeting.title", "Meeting title", FieldRequiredness.REQUIRED),
+                            tag("meeting.organization", "Organization", FieldRequiredness.OPTIONAL),
+                            tag("meeting.date", "Meeting date", FieldType.DATE, FieldRequiredness.REQUIRED),
+                            tag("meeting.location", "Location", FieldRequiredness.OPTIONAL),
+                            tag("meeting.attendees", "Attendees", FieldRequiredness.OPTIONAL),
+                            tag("meeting.decisions", "Decisions", FieldRequiredness.OPTIONAL),
+                            repeated("action.item.task", "Task", FieldType.TEXT),
+                            repeated("action.item.owner", "Owner", FieldType.TEXT),
+                            repeated("action.item.due", "Due date", FieldType.DATE)),
+                    true),
+            new BuiltInTemplate(
+                    "table-led-meeting-minutes",
+                    "Table-led meeting minutes",
+                    "docx",
+                    List.of(
+                            tag("meeting.title", "Meeting title", FieldRequiredness.REQUIRED),
+                            tag("meeting.organization", "Organization", FieldRequiredness.OPTIONAL),
+                            tag("meeting.date", "Meeting date", FieldType.DATE, FieldRequiredness.REQUIRED),
+                            tag("meeting.location", "Location", FieldRequiredness.OPTIONAL),
+                            tag("meeting.attendees", "Attendees", FieldRequiredness.OPTIONAL),
+                            tag("meeting.decisions", "Decisions", FieldRequiredness.OPTIONAL),
+                            repeated("action.item.task", "Task", FieldType.TEXT),
+                            repeated("action.item.owner", "Owner", FieldType.TEXT),
+                            repeated("action.item.due", "Due date", FieldType.DATE)),
+                    true));
 
     private static final Map<String, BuiltInTemplate> BY_ID =
             TEMPLATES.stream().collect(Collectors.toUnmodifiableMap(BuiltInTemplate::id, Function.identity()));
@@ -60,9 +92,14 @@ public final class BuiltInTemplateRegistry {
     private BuiltInTemplateRegistry() {
     }
 
-    /** The complete catalog in display order. */
+    /** The complete catalog in display order, retired entries included. */
     public static List<BuiltInTemplate> all() {
         return TEMPLATES;
+    }
+
+    /** The entries a brand-new workspace starts with: the live ones, never a retired one. */
+    public static List<BuiltInTemplate> forNewWorkspace() {
+        return TEMPLATES.stream().filter((builtIn) -> !builtIn.retired()).toList();
     }
 
     /** Finds one built-in template by its stable identifier. */
@@ -85,6 +122,19 @@ public final class BuiltInTemplateRegistry {
 
     private static FieldDefinition tag(String fieldId, String label, FieldRequiredness requiredness) {
         return tag(fieldId, label, FieldType.TEXT, requiredness);
+    }
+
+    private static FieldDefinition repeated(String fieldId, String label, FieldType type) {
+        return new FieldDefinition(
+                fieldId,
+                type,
+                FieldCardinality.REPEATED,
+                FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag(fieldId),
+                label,
+                null,
+                null,
+                null);
     }
 
     private static FieldDefinition tag(String fieldId, String label, FieldType type, FieldRequiredness requiredness) {
