@@ -5519,7 +5519,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   }
 }
 
-@container main (max-width: 49.4999rem) {
+@container main (max-width: 39.9999rem) {
   .workspace-switch {
     display: inline-flex;
   }
@@ -5769,16 +5769,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     min-block-size: 44px;
     display: inline-flex;
     align-items: center;
-  }
-
-  /* A PDF spot's checkbox keeps its drawn size; an invisible box around it takes the tap. */
-  .pdf-form-page__spot :deep(.fill-spot__control--checkbox) {
-    position: relative;
-  }
-  .pdf-form-page__spot :deep(.fill-spot__control--checkbox)::before {
-    content: "";
-    position: absolute;
-    inset: calc((44px - 100%) / -2);
   }
 }
 
