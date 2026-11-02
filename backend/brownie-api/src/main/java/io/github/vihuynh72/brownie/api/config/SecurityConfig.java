@@ -83,6 +83,9 @@ class SecurityConfig {
                         // personal data in it.
                         .requestMatchers("/api/v1/welcome")
                         .permitAll()
+                        // The form library's catalog is what the landing page can offer before sign-in; starting one still takes a session.
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/forms")
+                        .permitAll()
                         // A chat-app download link is its own one-time
                         // credential, claimed in the database itself; the
                         // route exists only while MCP is on, and it does

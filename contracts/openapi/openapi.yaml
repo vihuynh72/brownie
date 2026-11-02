@@ -271,6 +271,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/WelcomeResponse"
 
+  /api/v1/forms:
+    get:
+      operationId: searchForms
+      summary: >
+        Searches the form library -- the official federal and state forms
+        Brownie can fetch and start -- by title, agency and keywords,
+        case-insensitive. At most 20 entries, in the catalog's own
+        popularity order; an empty q is the "popular forms" row. Answered
+        without a session so the landing page can offer it.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Always.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormLibraryResponse"
+
+  /api/v1/forms/{id}/start:
+    post:
+      operationId: startForm
+      summary: >
+        Downloads the catalog entry's official form and runs it through
+        the same intake a person's upload takes -- sniffing, scanning,
+        the places read, the draft activated -- then starts a document
+        from it and answers with the id the web opens. Requires a session
+        and the X-XSRF-TOKEN header.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The document the form started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormStartResponse"
+        "404":
+          description: No catalog entry has this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The agency's site could not be downloaded right now.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /logout:
     post:
       operationId: logout
@@ -4223,6 +4281,43 @@ components:
           type: string
           maxLength: 500
 
+    FormLibraryResponse:
+      type: object
+      required: [forms]
+      properties:
+        forms:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/FormEntry"
+    FormEntry:
+      type: object
+      required: [id, title, agency, category, description]
+      properties:
+        id:
+          type: string
+          example: irs-w9
+        title:
+          type: string
+          example: Form W-9, Request for Taxpayer Identification Number and Certification
+        agency:
+          type: string
+          example: Internal Revenue Service
+        category:
+          type: string
+          example: Tax
+        description:
+          type: string
+          example: Gives a business or client your taxpayer identification number so they can report what they pay you.
+    FormStartResponse:
+      type: object
+      required: [documentId, title]
+      properties:
+        documentId:
+          type: integer
+          format: int64
+        title:
+          type: string
     WelcomeResponse:
       type: object
       required: [signUp]

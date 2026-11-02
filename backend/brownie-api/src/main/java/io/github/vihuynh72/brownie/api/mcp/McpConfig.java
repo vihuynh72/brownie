@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.api.mcp;
 
 import io.github.vihuynh72.brownie.core.mcp.McpAppliedRunRepository;
+import io.github.vihuynh72.brownie.api.form.FormIntakeService;
 import io.github.vihuynh72.brownie.core.mcp.McpDownloadLinkRepository;
 import io.github.vihuynh72.brownie.core.mcp.McpDownloadLinkService;
 import io.github.vihuynh72.brownie.core.mcp.McpGrantRepository;
@@ -63,16 +64,6 @@ class McpConfig {
 
     @Bean
     @ConditionalOnProperty(name = ENABLED, havingValue = "true")
-    McpFormIntakeService mcpFormIntakeService(
-            io.github.vihuynh72.brownie.core.artifact.ArtifactService artifactService,
-            io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
-            io.github.vihuynh72.brownie.core.template.TemplateService templateService,
-            io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService) {
-        return new McpFormIntakeService(artifactService, fillableFormService, templateService, fillSpotReviewService);
-    }
-
-    @Bean
-    @ConditionalOnProperty(name = ENABLED, havingValue = "true")
     FormFileFetcher formFileFetcher() {
         return new OaiFormFileFetcher();
     }
@@ -86,7 +77,7 @@ class McpConfig {
     java.util.List<io.modelcontextprotocol.server.McpStatelessServerFeatures.SyncToolSpecification> addFormFileSpecification(
             McpToolExecutor executor,
             io.github.vihuynh72.brownie.core.mcp.McpFormUploadService uploadService,
-            McpFormIntakeService intakeService,
+            FormIntakeService intakeService,
             io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository,
             io.github.vihuynh72.brownie.core.mcp.McpAuditRepository auditRepository,
             FormFileFetcher fetcher) {
