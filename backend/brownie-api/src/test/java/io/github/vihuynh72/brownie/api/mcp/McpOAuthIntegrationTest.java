@@ -659,13 +659,68 @@ class McpOAuthIntegrationTest extends McpIntegrationTestSupport {
     }
 
     private String authorizeQuery(String clientId, String challenge, String state, String scope) {
+        return authorizeQuery(clientId, challenge, state, scope, REDIRECT);
+    }
+
+    private String authorizeQuery(String clientId, String challenge, String state, String scope, String redirectUri) {
         return AUTHORIZE + "?response_type=code&client_id=" + clientId
-                + "&redirect_uri=" + encode(REDIRECT)
+                + "&redirect_uri=" + encode(redirectUri)
                 + "&scope=" + encode(scope)
                 + "&state=" + encode(state)
                 + "&resource=" + encode(RESOURCE)
                 + "&code_challenge=" + challenge
                 + "&code_challenge_method=S256";
+    }
+
+    /**
+     * Claude Code registers its callback on whatever loopback port it has,
+     * then asks for a new port next time; localhost is the one host whose
+     * port is not part of the client's identity.
+     */
+    @Test
+    void aLocalhostCallbackOnANewEphemeralPortIsStillTheRegisteredClient() throws Exception {
+        Browser browser = signIn("subject-oauth-loopback", ISSUER);
+        HttpResponse<String> registration = postRaw(REGISTER,
+                "{\"redirect_uris\":[\"http://localhost:53682/callback\"],"
+                        + "\"client_name\":\"Loopback Chat\",\"token_endpoint_auth_method\":\"none\"}");
+        assertThat(registration.statusCode()).as("DCR -> %s", registration.body()).isEqualTo(201);
+        JsonNode registered = readJson(registration);
+        String clientId = registered.get("client_id").asText();
+        Pkce pkce = pkce();
+
+        HttpResponse<String> authorize = getRaw(browser,
+                authorizeQuery(clientId, pkce.challenge, "loopback-state", "read", "http://localhost:60111/callback"));
+
+        assertThat(authorize.statusCode()).isEqualTo(302);
+        assertThat(authorize.headers().firstValue("Location").orElseThrow())
+                .doesNotContain("error");
+    }
+
+    /**
+     * The loopback rule accepts the client; it is not a blanket pass on
+     * the request. A scope outside the client's registration is refused
+     * the same way on a new port as on the registered one.
+     */
+    @Test
+    void aLocalhostCallbackOnANewPortStillRunsTheScopeCheck() throws Exception {
+        Browser browser = signIn("subject-oauth-loopback-scope", ISSUER);
+        HttpResponse<String> registration = postRaw(REGISTER,
+                "{\"redirect_uris\":[\"http://localhost:53682/callback\"],"
+                        + "\"client_name\":\"Loopback Scoped\",\"token_endpoint_auth_method\":\"none\","
+                        + "\"scope\":\"read\"}");
+        assertThat(registration.statusCode()).as("DCR -> %s", registration.body()).isEqualTo(201);
+        String clientId = readJson(registration).get("client_id").asText();
+
+        HttpResponse<String> response = getRaw(browser,
+                authorizeQuery(clientId, pkce().challenge, "loopback-scope-state", "read fill",
+                        "http://localhost:60111/callback"));
+
+        assertThat(response.statusCode()).isEqualTo(302);
+        String location = response.headers().firstValue("Location").orElseThrow();
+        assertThat(location).startsWith("http://localhost:60111/callback");
+        Map<String, String> back = queryParams(location);
+        assertThat(back.get("error")).isEqualTo("invalid_scope");
+        assertThat(back.get("state")).isEqualTo("loopback-scope-state");
     }
 
     private HttpResponse<String> getRaw(Browser browser, String path) throws Exception {
