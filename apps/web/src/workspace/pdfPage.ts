@@ -341,7 +341,7 @@ export function normalizeSpotLabel(text: string): string | null {
 }
 
 /** What the person is told when a name is not one. */
-export const LABEL_RULE = 'Give the fill spot a name of 1 to 60 characters, with at least one letter or number.'
+export const LABEL_RULE = 'Give the place a name of 1 to 60 characters, with at least one letter or number.'
 
 // ---- Sending a change ---------------------------------------------------------------------------
 
@@ -368,10 +368,10 @@ export type PdfSpotResult = { ok: true; focusId: string | null } | { ok: false; 
 
 /** What the page says while a change is under way; every change that alters a box is checked by printing the form once. */
 export const WORKING_WORDS: Record<PdfSpotChangeKind, string> = {
-  add: 'Adding the fill spot… Brownie is checking the form still prints correctly.',
-  rename: 'Renaming the fill spot…',
+  add: 'Adding the place… Brownie is checking the form still prints correctly.',
+  rename: 'Renaming the place…',
   restyle: 'Changing how the text fits… Brownie is checking the form still prints correctly.',
-  remove: 'Removing the fill spot…',
+  remove: 'Removing the place…',
   move: 'Moving the boxes… Brownie is checking the form still prints correctly.',
 }
 
@@ -380,7 +380,7 @@ export const WORKING_WORDS: Record<PdfSpotChangeKind, string> = {
 const PLACE_REASONS: Record<string, string> = {
   OFF_PAGE: 'That box is off the page.',
   TOO_SMALL: 'That box is too small to hold text; make it bigger.',
-  OVERLAPS: 'That box covers another fill spot; move it a little.',
+  OVERLAPS: 'That box covers another place; move it a little.',
   NOT_FILLABLE: 'Brownie cannot write on that page of the PDF, so a box cannot go there.',
 }
 
@@ -389,13 +389,13 @@ const PLACE_REASONS: Record<string, string> = {
  * is left to the caller, which reloads the document first. `labelOf` names a field the answer points at.
  */
 export function spotChangeFailure(error: unknown, labelOf: (fieldId: string) => string, action: 'add' | 'change' = 'change'): string {
-  const common = describeCommonFailure(error, 'a way to change fill spots')
+  const common = describeCommonFailure(error, 'a way to change places')
   if (common) return common
-  if (!(error instanceof ApiRequestError)) return 'Brownie could not change the fill spots. Try again.'
+  if (!(error instanceof ApiRequestError)) return 'Brownie could not change the places. Try again.'
   const problem = (error.problem ?? {}) as { code?: string; reason?: string; fieldId?: string; detail?: string }
   switch (problem.code) {
     case 'FILL_SPOT_PLACE_NOT_ALLOWED':
-      return (problem.reason && PLACE_REASONS[problem.reason]) ?? 'A fill spot cannot go there. Choose another place.'
+      return (problem.reason && PLACE_REASONS[problem.reason]) ?? 'A place cannot go there. Choose another place.'
     case 'TEMPLATE_VERSION_MOVED_ON':
       return 'This form changed while you were working, so it was reloaded. Try again.'
     case 'DOCUMENT_TEMPLATE_VERSION_MOVED':
@@ -403,15 +403,15 @@ export function spotChangeFailure(error: unknown, labelOf: (fieldId: string) => 
     case 'FILL_SPOT_ANCHOR_STALE':
       return 'The page changed; choose the place again.'
     case 'FILL_SPOT_LOCKED':
-      return problem.fieldId ? `Unlock ${labelOf(problem.fieldId)} first; its value would be lost.` : 'Unlock that fill spot first; its value would be lost.'
+      return problem.fieldId ? `Unlock ${labelOf(problem.fieldId)} first; its value would be lost.` : 'Unlock that place first; its value would be lost.'
     case 'FILL_SPOT_WOULD_NOT_PRINT':
       return action === 'add'
-        ? 'Brownie could not add the fill spot, because the form would not print correctly with it. Nothing was changed.'
+        ? 'Brownie could not add the place, because the form would not print correctly with it. Nothing was changed.'
         : 'Brownie could not make that change, because the form would not print correctly with it. Nothing was changed.'
     case 'FILL_SPOT_CHANGE_INVALID':
       return problem.detail ? `${problem.detail} Nothing was changed.` : 'Brownie could not make that change. Nothing was changed.'
     default:
       if (error.status === 404) return 'This document or its form is no longer available.'
-      return error.status < 500 && problem.detail ? problem.detail : 'Brownie could not change the fill spots. Try again.'
+      return error.status < 500 && problem.detail ? problem.detail : 'Brownie could not change the places. Try again.'
   }
 }

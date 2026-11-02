@@ -462,7 +462,7 @@ describe('what the check found', () => {
     expect(buttonNamed(wrapper, 'Check again')?.classes()).toContain('button--secondary')
   })
 
-  it('tags each finding by kind with a word and an icon, and offers a way to the fill spot only for what asks something', async () => {
+  it('tags each finding by kind with a word and an icon, and offers a way to the place only for what asks something', async () => {
     vi.mocked(validateDocument).mockResolvedValue(
       manifest({
         hasUnresolvedBlocking: true,
@@ -949,7 +949,7 @@ describe('when nothing needs fixing', () => {
 
     const panel = wrapper.get('.export-dialog__clear')
     expect(panel.get('.export-dialog__clear-title').text()).toBe('Brownie checked this version. It found nothing to fix.')
-    expect(panel.findAll('.tag').map((tag) => tag.text())).toEqual(['9 of 9 fill spots filled', '9 accepted', '1 locked'])
+    expect(panel.findAll('.tag').map((tag) => tag.text())).toEqual(['9 of 9 places filled', '9 accepted', '1 locked'])
     expect(wrapper.find('.export-dialog__findings').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
@@ -962,7 +962,7 @@ describe('when nothing needs fixing', () => {
 
     const single = await mountDialog({ fillCounts: { total: 1, filled: 1, accepted: 0, locked: 0 } })
     await openDialog(single.wrapper)
-    expect(single.wrapper.findAll('.export-dialog__counts .tag').map((tag) => tag.text())).toEqual(['1 of 1 fill spot filled', '0 accepted'])
+    expect(single.wrapper.findAll('.export-dialog__counts .tag').map((tag) => tag.text())).toEqual(['1 of 1 place filled', '0 accepted'])
   })
 
   it('offers the three formats as cards that say what each is good for', async () => {

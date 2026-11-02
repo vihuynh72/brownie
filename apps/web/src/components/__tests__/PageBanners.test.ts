@@ -134,12 +134,12 @@ describe('PageBanners', () => {
   })
 
   describe('the preview of what Brownie proposes', () => {
-    it('says how many fill spots it previews, that the values are not in the document yet, and offers to hide them', async () => {
+    it('says how many places it previews, that the values are not in the document yet, and offers to hide them', async () => {
       const wrapper = show({ preview: { count: 6, shown: true } })
 
       const band = wrapper.get('.preview-band')
       expect(band.attributes('aria-label')).toBe('Preview of Brownie’s values')
-      expect(norm(band.text())).toContain('Previewing 6 fill spots from Brownie')
+      expect(norm(band.text())).toContain('Previewing 6 places from Brownie')
       expect(norm(band.text())).toContain('Dashed values are not in the document yet. Nothing is filled until you approve.')
       expect(names(wrapper)).toEqual(['Hide preview'])
 
@@ -147,21 +147,21 @@ describe('PageBanners', () => {
       expect(wrapper.emitted('toggle-preview')).toHaveLength(1)
     })
 
-    it('says one fill spot in the singular', () => {
-      expect(norm(show({ preview: { count: 1, shown: true } }).get('.preview-band').text())).toContain('Previewing 1 fill spot from Brownie')
+    it('says one place in the singular', () => {
+      expect(norm(show({ preview: { count: 1, shown: true } }).get('.preview-band').text())).toContain('Previewing 1 place from Brownie')
     })
 
     it('says what is waiting while the drawing is hidden, and offers to show it again', () => {
       const wrapper = show({ preview: { count: 2, shown: false } })
 
-      expect(norm(wrapper.get('.preview-band').text())).toContain('Brownie has 2 fill spots for you to approve')
+      expect(norm(wrapper.get('.preview-band').text())).toContain('Brownie has 2 places for you to approve')
       expect(norm(wrapper.get('.preview-band').text())).toContain('The preview is hidden. Nothing is filled until you approve.')
       expect(names(wrapper)).toEqual(['Show preview'])
     })
   })
 
   describe('a newer version of the form', () => {
-    const NEWER = { text: 'This form has a newer version. It adds the fill spot "Company".', error: null, moving: false }
+    const NEWER = { text: 'This form has a newer version. It adds the place "Company".', error: null, moving: false }
 
     it('says what the newer version adds and offers the move and not now', async () => {
       const wrapper = show({ newer: NEWER })

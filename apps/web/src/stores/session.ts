@@ -45,7 +45,7 @@ export const useSessionStore = defineStore('session', {
 
     /** What to call this person in the account row: their name, or the address they signed in with. */
     accountLabel(state): string | null {
-      return state.identity?.displayName ?? state.identity?.email ?? null
+      return state.identity?.givenName ?? state.identity?.displayName ?? state.identity?.email ?? null
     },
 
     /**
@@ -65,6 +65,8 @@ export const useSessionStore = defineStore('session', {
     },
 
     firstName(state): string | null {
+      const given = state.identity?.givenName?.trim()
+      if (given) return given
       const fromName = state.identity?.displayName?.trim().split(/\s+/)[0]
       if (fromName) return fromName
       const fromEmail = state.identity?.email?.split('@')[0]?.trim()

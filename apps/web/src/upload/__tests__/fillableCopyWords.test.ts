@@ -158,7 +158,7 @@ describe('the notes about a form Brownie made ready', () => {
     ['CONVERTED', 1, 'ODT_TEMPLATE', 'Brownie turned your OpenDocument file into a Word copy to fill; check that it looks right.'],
     ['CONVERTED', 1, 'PAGES', 'Brownie turned your Pages file into a Word copy to fill; check that it looks right.'],
     ['CONVERTED', 1, null, 'Brownie turned your file into a Word copy to fill; check that it looks right.'],
-    ['NO_SPOTS_FOUND', 0, null, 'Brownie did not find any blanks. Choose Add a fill spot, or select a place on the page and choose Fill in here.'],
+    ['NO_SPOTS_FOUND', 0, null, 'Brownie did not find any blanks. Choose Add a place, or select a place on the page and choose Fill in here.'],
     ['SIGNATURE_LINES_LEFT', 1, null, 'Brownie left the signature line empty, for signing by hand.'],
     ['SIGNATURE_LINES_LEFT', 2, null, 'Brownie left 2 signature lines empty, for signing by hand.'],
     ['CHECKBOXES_LEFT', 1, null, 'Brownie does not tick check boxes, so it left the one in this form for you to tick in the exported file.'],
@@ -242,7 +242,7 @@ describe('the notes about a form Brownie made ready', () => {
     // The page says a scan is a scan itself, over its pages, so the note does not say it again.
     expect(formNoteSentences(pdf([{ code: 'SCANNED_PDF', count: 0 }]))).toEqual([])
     expect(formNoteSentences(pdf([{ code: 'NO_SPOTS_FOUND', count: 0 }]))).toEqual([
-      'Brownie did not find any blanks. Choose Add a fill spot, or draw a box wherever something should be filled in.',
+      'Brownie did not find any blanks. Choose Add a place, or draw a box wherever something should be filled in.',
     ])
     expect(formNoteSentences(pdf([{ code: 'PDF_FIELDS_LEFT', count: 4 }], [field, field, field]))).toEqual([
       "Brownie will fill 3 of this form's fields. It leaves the check boxes and lists for you to set in your PDF reader.",

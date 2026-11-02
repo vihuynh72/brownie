@@ -266,7 +266,7 @@ describe('spotChangeFailure', () => {
       'That box is too small to hold text; make it bigger.',
     )
     expect(spotChangeFailure(problem(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'OVERLAPS' }), labelOf)).toBe(
-      'That box covers another fill spot; move it a little.',
+      'That box covers another place; move it a little.',
     )
     expect(spotChangeFailure(problem(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'NOT_FILLABLE' }), labelOf)).toContain('cannot write on that page')
   })
@@ -277,7 +277,7 @@ describe('spotChangeFailure', () => {
     )
     expect(spotChangeFailure(problem(409, 'FILL_SPOT_LOCKED', { fieldId: 'company' }), labelOf)).toBe('Unlock Company first; its value would be lost.')
     expect(spotChangeFailure(problem(422, 'FILL_SPOT_WOULD_NOT_PRINT'), labelOf, 'add')).toBe(
-      'Brownie could not add the fill spot, because the form would not print correctly with it. Nothing was changed.',
+      'Brownie could not add the place, because the form would not print correctly with it. Nothing was changed.',
     )
     expect(spotChangeFailure(problem(422, 'FILL_SPOT_CHANGE_INVALID', { detail: 'Only a box Brownie draws can be moved.' }), labelOf)).toBe(
       'Only a box Brownie draws can be moved. Nothing was changed.',

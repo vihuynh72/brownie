@@ -491,12 +491,12 @@ export type PlaceRefusal =
 
 export const PLACE_REFUSAL_WORDS: Record<PlaceRefusal, string> = {
   NOT_ON_PAGE: "Select a place in the document's text first.",
-  ACROSS_LINES: 'Select within one paragraph to add a fill spot there.',
+  ACROSS_LINES: 'Select within one paragraph to add a place there.',
   HEADER_FOOTER: 'Brownie fills only the body of the form, not its header or footer.',
-  REPEATING: 'This part of the form repeats for each row, so a single fill spot cannot go here.',
-  NOT_ANCHORABLE: 'Brownie cannot add a fill spot in this paragraph. Choose another paragraph.',
-  IN_FILL_SPOT: "That is a fill spot already. Choose a place in the form's own words.",
-  ACROSS_FILL_SPOT: 'Select words on one side of a fill spot, not across it.',
+  REPEATING: 'This part of the form repeats for each row, so a single place cannot go here.',
+  NOT_ANCHORABLE: 'Brownie cannot add a place in this paragraph. Choose another paragraph.',
+  IN_FILL_SPOT: "That is a place already. Choose a place in the form's own words.",
+  ACROSS_FILL_SPOT: 'Select words on one side of a place, not across it.',
 }
 
 export type PageReading = { point: PagePoint } | { refusal: PlaceRefusal }

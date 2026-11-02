@@ -12,6 +12,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -62,8 +63,42 @@ class MeController {
                                 detail.savedAt(), detail.confirmedAt(), 0, 0))
                         .toList();
         return new MeResponse(identity.id(), identity.issuer(), identity.subject(), identity.email(),
-                identity.displayName(), allowance, userIdentityRepository.hasInvitationRequest(identity.id()),
-                memberships, details);
+                identity.displayName(), identity.givenName(), identity.familyName(),
+                identity.nameConfirmedAt() != null, allowance,
+                userIdentityRepository.hasInvitationRequest(identity.id()), memberships, details);
+    }
+
+    /**
+     * The name the person typed themselves, saved on the identity and
+     * mirrored into their details so a form can fill it without asking
+     * again. Each part is 1-100 characters after trimming.
+     */
+    @PutMapping("/name")
+    MeResponse saveName(@AuthenticationPrincipal OidcUser oidcUser, @RequestBody SaveNameRequest body) {
+        UserIdentity identity = identityOf(oidcUser);
+        String givenName = requireNamePart(body == null ? null : body.givenName(), "givenName");
+        String familyName = requireNamePart(body == null ? null : body.familyName(), "familyName");
+        identity = userIdentityRepository.recordName(identity.id(), givenName, familyName);
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(identity.id()).id();
+        saveDetail(identity.id(), workspaceId, "person.first_name", "First name", givenName);
+        saveDetail(identity.id(), workspaceId, "person.last_name", "Last name", familyName);
+        saveDetail(identity.id(), workspaceId, "person.full_name", "Full name", givenName + " " + familyName);
+        return me(oidcUser);
+    }
+
+    private void saveDetail(long userId, long workspaceId, String key, String label, String value) {
+        savedDetailRepository.upsert(
+                userId, workspaceId, key, label, value, null, null, false,
+                io.github.vihuynh72.brownie.core.detail.DetailOrigin.MANUAL, null, null, null);
+    }
+
+    private static String requireNamePart(String value, String field) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.isEmpty() || trimmed.length() > 100) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, field + " is 1-100 characters.");
+        }
+        return trimmed;
     }
 
     /** An uninvited person's one way to ask: remembered, not answered here. */
@@ -89,12 +124,16 @@ class MeController {
     }
 
     record MeResponse(long userId, String issuer, String subject, String email, String displayName,
+                       String givenName, String familyName, boolean nameConfirmed,
                        String allowance, boolean invitationRequested,
                        List<MembershipResponse> memberships,
                        List<io.github.vihuynh72.brownie.api.detail.SavedDetailResponse> savedDetails) {
     }
 
     record MembershipResponse(long workspaceId, String role) {
+    }
+
+    record SaveNameRequest(String givenName, String familyName) {
     }
 
     record InvitationRequestBody(String note) {

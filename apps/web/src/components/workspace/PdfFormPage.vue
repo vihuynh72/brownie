@@ -207,7 +207,7 @@ const targets = computed(() => {
 const progressText = computed(() => {
   const total = targets.value.length
   const filled = targets.value.filter((target) => !isEmpty(target.fieldId)).length
-  return `${filled} of ${total} ${total === 1 ? 'fill spot' : 'fill spots'} filled`
+  return `${filled} of ${total} ${total === 1 ? 'place' : 'places'} filled`
 })
 
 const hasEmptyTarget = computed(() => targets.value.some((target) => isEmpty(target.fieldId) && !props.lockedFieldIds.has(target.fieldId)))
@@ -337,8 +337,8 @@ async function load(src: string | null): Promise<void> {
     drawState.value = 'error'
     drawError.value =
       cause instanceof Error && /fetched/.test(cause.message)
-        ? `${cause.message} The fill spots still work; only the picture of the pages is missing.`
-        : 'Brownie could not draw the pages of this PDF. The fill spots still work; only the picture of the pages is missing.'
+        ? `${cause.message} The places still work; only the picture of the pages is missing.`
+        : 'Brownie could not draw the pages of this PDF. The places still work; only the picture of the pages is missing.'
   }
 }
 
@@ -396,7 +396,7 @@ async function renderAll(): Promise<void> {
     } catch (cause) {
       if (pass !== renderPass || (cause instanceof Error && cause.name === 'RenderingCancelledException')) continue
       drawState.value = 'error'
-      drawError.value = `Brownie could not draw page ${page.pageNumber}. Its fill spots still work.`
+      drawError.value = `Brownie could not draw page ${page.pageNumber}. Its places still work.`
     }
   }
 }
@@ -612,7 +612,7 @@ function onSurfaceClick(event: MouseEvent, page: PdfPageModel): void {
   if (!shown) return
   picked.value = { pageNumber: page.pageNumber, shown }
   emit('pick-point', { kind: 'PDF', pageNumber: page.pageNumber, point: toStored(shown, page) })
-  status.value = `The place on ${pageName(page).toLowerCase()} is picked. Send your message to add the fill spot there.`
+  status.value = `The place on ${pageName(page).toLowerCase()} is picked. Send your message to add the place there.`
 }
 
 // ---- Drawing a box ------------------------------------------------------------------------------
@@ -728,9 +728,9 @@ async function placeNewBox(page: PdfPageModel, drawn: PdfBox | null, point: PdfP
   openDialog({ kind: 'add', pageNumber: page.pageNumber, box, style: suggestion?.style ?? null, labelGuess: suggestion?.labelGuess ?? null })
 }
 
-function openDialog(next: PdfSpotDialogMode, beside: HTMLElement | null = null): void {
+function openDialog(next: PdfSpotDialogMode, beside: HTMLElement | null = null, returnTo: HTMLElement | null = null): void {
   problem.value = null
-  dialogRef.value?.open(next, beside)
+  dialogRef.value?.open(next, beside, returnTo)
 }
 
 /** The box laid over a place on the page, which a question about that place is asked beside; null when it is not on a page. */
@@ -944,8 +944,8 @@ function isFormField(fieldId: string): boolean | null {
   return spot ? spot.formField : null
 }
 
-function openRename(fieldId: string): void {
-  openDialog({ kind: 'rename', fieldId, label: labelOf(fieldId) })
+function openRename(fieldId: string, returnTo: HTMLElement | null = null): void {
+  openDialog({ kind: 'rename', fieldId, label: labelOf(fieldId) }, null, returnTo)
 }
 
 function openRestyle(fieldId: string): void {
@@ -1067,10 +1067,10 @@ function goToPlace(fieldId: string): void {
     <!-- What can be done to the page, then what the outlines drawn on it mean. -->
     <div class="pdf-form-page__tools">
       <button v-if="hasEmptyTarget && mode === 'fill'" type="button" class="button button--secondary button--small" @click="focusNextEmpty">
-        <AppIcon name="chevron-down" :size="16" />Next empty spot
+        <AppIcon name="chevron-down" :size="16" />Next empty place
       </button>
       <template v-if="layout?.pdf && mode !== 'edit'">
-        <button type="button" class="button button--secondary button--small" @click="addWithKeyboard"><AppIcon name="plus" :size="16" />Add a fill spot</button>
+        <button type="button" class="button button--secondary button--small" @click="addWithKeyboard"><AppIcon name="plus" :size="16" />Add a place</button>
         <button
           ref="drawButton"
           type="button"
@@ -1180,7 +1180,7 @@ function goToPlace(fieldId: string): void {
             </div>
             <div :ref="(element) => setPageElement(page.pageNumber, element)" class="pdf-form-page__page" :style="pageStyle(page)" :data-page="page.pageNumber">
               <canvas :ref="(element) => setCanvas(page.pageNumber, element)" class="pdf-form-page__canvas" role="img" :aria-label="pageName(page)"></canvas>
-              <!-- The paper itself: where a box is drawn, or the chat's "here" is picked, by pointer. Keyboard users have Add a fill spot. -->
+              <!-- The paper itself: where a box is drawn, or the chat's "here" is picked, by pointer. Keyboard users have Add a place. -->
               <div
                 class="pdf-form-page__surface"
                 aria-hidden="true"
@@ -1254,7 +1254,7 @@ function goToPlace(fieldId: string): void {
     </div>
 
     <div v-if="listed.length > 0" class="pdf-form-page__list">
-      <h3 class="pdf-form-page__list-heading">Other fill spots</h3>
+      <h3 class="pdf-form-page__list-heading">Other places</h3>
       <p class="field-hint">The form has no place on its pages for these.</p>
       <p v-for="field in listed" :key="field.fieldId" class="pdf-form-page__list-item">
         <span class="pdf-form-page__field-label">{{ labelOf(field.fieldId) }}:</span>

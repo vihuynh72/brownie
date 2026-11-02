@@ -79,7 +79,7 @@ const STEPS = [
   {
     icon: 'document-text',
     title: 'Add your notes',
-    text: 'A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.',
+    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
   },
   {
     icon: 'document-check',
