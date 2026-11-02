@@ -64,7 +64,13 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
 
         JsonNode templates = toolResult(client, "list_templates", Map.of());
         assertThat(templates.get("templates")).isNotEmpty();
-        JsonNode first = templates.get("templates").get(0);
+        JsonNode first = null;
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                first = each;
+            }
+        }
+        assertThat(first).as("the minutes template the round-trip expects").isNotNull();
         assertThat(first.get("template_id").asLong()).isPositive();
         assertThat(first.get("name").asText()).isNotBlank();
         // A field with no stored label shows the name worked out from
@@ -234,12 +240,23 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
 
     private long firstTemplateId(McpSyncClient client) throws Exception {
         JsonNode templates = toolResult(client, "list_templates", Map.of());
-        return templates.get("templates").get(0).get("template_id").asLong();
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                return each.get("template_id").asLong();
+            }
+        }
+        throw new AssertionError("Flowing meeting minutes template was not provisioned: " + templates);
     }
 
     private long startDocument(McpSyncClient client, long workspaceId) throws Exception {
         JsonNode templates = toolResult(client, "list_templates", Map.of());
-        long templateId = templates.get("templates").get(0).get("template_id").asLong();
+        long templateId = -1;
+        for (JsonNode each : templates.get("templates")) {
+            if ("Flowing meeting minutes".equals(each.get("name").asText())) {
+                templateId = each.get("template_id").asLong();
+            }
+        }
+        assertThat(templateId).as("the minutes template the round-trip expects").isPositive();
         JsonNode started = toolResult(client, "start_document", Map.of("template_id", templateId));
         return started.get("document_id").asLong();
     }

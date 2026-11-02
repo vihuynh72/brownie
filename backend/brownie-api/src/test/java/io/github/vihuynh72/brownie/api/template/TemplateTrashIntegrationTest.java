@@ -65,6 +65,8 @@ class TemplateTrashIntegrationTest {
     private static final String ISSUER = "https://issuer-template-trash";
     private static final String FLOWING = "Flowing meeting minutes";
     private static final String TABLE_LED = "Table-led meeting minutes";
+    private static final String W9 = "IRS Form W-9";
+    private static final String JOB_APPLICATION = "Job application";
 
     static final TestDatabase DB = SharedContainers.newDatabase();
 
@@ -104,6 +106,8 @@ class TemplateTrashIntegrationTest {
         long workspaceId = workspaceOf("subject-trash-round-trip");
         long flowing = findTemplate(session, workspaceId, FLOWING)[0];
         long tableLed = findTemplate(session, workspaceId, TABLE_LED)[0];
+        long w9 = findTemplate(session, workspaceId, W9)[0];
+        long jobApplication = findTemplate(session, workspaceId, JOB_APPLICATION)[0];
         assertThat(listTemplates(session, workspaceId, "").get(0).get("trashedAt").isNull()).isTrue();
 
         JsonNode trashed = readJson(trash(session, workspaceId, flowing).andExpect(status().isOk()).andReturn());
@@ -114,8 +118,8 @@ class TemplateTrashIntegrationTest {
         assertThat(trashed.get("displayName").asText()).isEqualTo(FLOWING);
         assertThat(trashed.get("trashedAt").isNull()).isFalse();
         assertThat(trashedAgain.get("trashedAt").asText()).isEqualTo(trashed.get("trashedAt").asText());
-        assertThat(ids(listTemplates(session, workspaceId, ""))).isEmpty();
-        assertThat(ids(listTemplates(session, workspaceId, "?trashed=false"))).isEmpty();
+        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactlyInAnyOrder(w9, jobApplication);
+        assertThat(ids(listTemplates(session, workspaceId, "?trashed=false"))).containsExactlyInAnyOrder(w9, jobApplication);
         assertThat(ids(listTemplates(session, workspaceId, "?trashed=true"))).containsExactly(tableLed, flowing);
 
         JsonNode restored = readJson(restore(session, workspaceId, flowing).andExpect(status().isOk()).andReturn());
@@ -124,7 +128,7 @@ class TemplateTrashIntegrationTest {
         assertThat(restored.get("trashedAt").isNull()).isTrue();
         assertThat(restoredAgain.get("trashedAt").isNull()).isTrue();
         assertThat(restored.get("currentActiveVersionId").asLong()).isEqualTo(trashed.get("currentActiveVersionId").asLong());
-        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactly(flowing);
+        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactlyInAnyOrder(w9, jobApplication, flowing);
         assertThat(ids(listTemplates(session, workspaceId, "?trashed=true"))).containsExactly(tableLed);
     }
 
@@ -245,19 +249,21 @@ class TemplateTrashIntegrationTest {
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-trash-built-ins").orElseThrow().id();
         long flowing = findTemplate(session, workspaceId, FLOWING)[0];
         long tableLed = findTemplate(session, workspaceId, TABLE_LED)[0];
+        long w9 = findTemplate(session, workspaceId, W9)[0];
+        long jobApplication = findTemplate(session, workspaceId, JOB_APPLICATION)[0];
         trash(session, workspaceId, flowing).andExpect(status().isOk());
 
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
         builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
-        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactly(tableLed);
+        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactlyInAnyOrder(w9, jobApplication, tableLed);
 
         // Nor is a workspace whose every template is in the Trash Bin taken for one that has none.
         trash(session, workspaceId, tableLed).andExpect(status().isOk());
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
         builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
 
-        assertThat(ids(listTemplates(session, workspaceId, ""))).isEmpty();
+        assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactlyInAnyOrder(w9, jobApplication);
         assertThat(ids(listTemplates(session, workspaceId, "?trashed=true"))).containsExactly(tableLed, flowing);
     }
 

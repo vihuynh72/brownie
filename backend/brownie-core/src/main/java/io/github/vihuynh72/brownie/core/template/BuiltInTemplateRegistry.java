@@ -59,31 +59,13 @@ public final class BuiltInTemplateRegistry {
                     "flowing-meeting-minutes",
                     "Flowing meeting minutes",
                     "docx",
-                    List.of(
-                            tag("meeting.title", "Meeting title", FieldRequiredness.REQUIRED),
-                            tag("meeting.organization", "Organization", FieldRequiredness.OPTIONAL),
-                            tag("meeting.date", "Meeting date", FieldType.DATE, FieldRequiredness.REQUIRED),
-                            tag("meeting.location", "Location", FieldRequiredness.OPTIONAL),
-                            tag("meeting.attendees", "Attendees", FieldRequiredness.OPTIONAL),
-                            tag("meeting.decisions", "Decisions", FieldRequiredness.OPTIONAL),
-                            repeated("action.item.task", "Task", FieldType.TEXT),
-                            repeated("action.item.owner", "Owner", FieldType.TEXT),
-                            repeated("action.item.due", "Due date", FieldType.DATE)),
+                    meetingMinutesFields(),
                     true),
             new BuiltInTemplate(
                     "table-led-meeting-minutes",
                     "Table-led meeting minutes",
                     "docx",
-                    List.of(
-                            tag("meeting.title", "Meeting title", FieldRequiredness.REQUIRED),
-                            tag("meeting.organization", "Organization", FieldRequiredness.OPTIONAL),
-                            tag("meeting.date", "Meeting date", FieldType.DATE, FieldRequiredness.REQUIRED),
-                            tag("meeting.location", "Location", FieldRequiredness.OPTIONAL),
-                            tag("meeting.attendees", "Attendees", FieldRequiredness.OPTIONAL),
-                            tag("meeting.decisions", "Decisions", FieldRequiredness.OPTIONAL),
-                            repeated("action.item.task", "Task", FieldType.TEXT),
-                            repeated("action.item.owner", "Owner", FieldType.TEXT),
-                            repeated("action.item.due", "Due date", FieldType.DATE)),
+                    meetingMinutesFields(),
                     true));
 
     private static final Map<String, BuiltInTemplate> BY_ID =
@@ -118,6 +100,42 @@ public final class BuiltInTemplateRegistry {
                 null,
                 null,
                 null);
+    }
+
+    /*
+     * The retired minutes' fields carry no label of their own, the way the
+     * original registry's did -- the interface derives one from the field id,
+     * "meeting.location" becoming "Meeting location".
+     */
+    private static List<FieldDefinition> meetingMinutesFields() {
+        return List.of(
+                scalar("meeting.title", FieldType.TEXT, FieldRequiredness.REQUIRED),
+                scalar("meeting.organization", FieldType.TEXT, FieldRequiredness.OPTIONAL),
+                scalar("meeting.date", FieldType.DATE, FieldRequiredness.REQUIRED),
+                scalar("meeting.location", FieldType.TEXT, FieldRequiredness.OPTIONAL),
+                scalar("meeting.attendees", FieldType.TEXT, FieldRequiredness.OPTIONAL),
+                scalar("meeting.decisions", FieldType.TEXT, FieldRequiredness.OPTIONAL),
+                repeated("action.item.task", FieldType.TEXT),
+                repeated("action.item.owner", FieldType.TEXT),
+                repeated("action.item.due", FieldType.DATE));
+    }
+
+    private static FieldDefinition scalar(String fieldId, FieldType type, FieldRequiredness requiredness) {
+        return new FieldDefinition(
+                fieldId,
+                type,
+                FieldCardinality.SCALAR,
+                requiredness,
+                new FieldBindingTarget.ContentControlTag(fieldId));
+    }
+
+    private static FieldDefinition repeated(String fieldId, FieldType type) {
+        return new FieldDefinition(
+                fieldId,
+                type,
+                FieldCardinality.REPEATED,
+                FieldRequiredness.OPTIONAL,
+                new FieldBindingTarget.ContentControlTag(fieldId));
     }
 
     private static FieldDefinition tag(String fieldId, String label, FieldRequiredness requiredness) {
