@@ -90,6 +90,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/details/learn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Learns the answers a person approved on a form into their saved details. Bulk fills are skipped, sensitive keys are never saved automatically, and a form that reads as someone else's is left alone. The X-XSRF-TOKEN header is required like every other mutation. */
+        post: operations["learnDetails"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/details/learnings/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undoes one learn run: restores what it replaced and deletes what it added, but only where the current value is still the one it wrote. Idempotent. The X-XSRF-TOKEN header is required like every other mutation. */
+        post: operations["undoLearning"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/details/{key}": {
         parameters: {
             query?: never;
@@ -1885,6 +1919,29 @@ export interface components {
             savedAt: string;
             /** Format: date-time */
             confirmedAt: string;
+        };
+        LearnDetailsRequest: {
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+        };
+        LearnedKey: {
+            key: string;
+            label: string;
+        };
+        LearningResponse: {
+            /**
+             * Format: int64
+             * @description The run's id, for undo; null when nothing was written.
+             */
+            learningId?: number | null;
+            /** @enum {string} */
+            subject: "SELF" | "OTHER" | "UNSURE" | "SKIPPED";
+            saved: components["schemas"]["LearnedKey"][];
+            replaced: components["schemas"]["LearnedKey"][];
+            /** @description Why nothing was saved (OTHER, UNSURE or SKIPPED). */
+            reason?: string | null;
         };
         InvitationRequestBody: {
             note?: string;
@@ -4022,6 +4079,78 @@ export interface operations {
             };
             /** @description Not logged in. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    learnDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LearnDetailsRequest"];
+            };
+        };
+        responses: {
+            /** @description What the run decided and saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningResponse"];
+                };
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The document or revision is not the caller's. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    undoLearning: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Undone. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such learning run for this person. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

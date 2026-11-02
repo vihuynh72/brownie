@@ -250,7 +250,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class,
             FillableFormNotFoundException.class, TemplateFieldNotFoundException.class,
             io.github.vihuynh72.brownie.core.mcp.McpGrantNotFoundException.class,
-            io.github.vihuynh72.brownie.api.detail.SavedDetailNotFoundException.class})
+            io.github.vihuynh72.brownie.api.detail.SavedDetailNotFoundException.class,
+            io.github.vihuynh72.brownie.core.detail.DetailDocumentNotFoundException.class,
+            io.github.vihuynh72.brownie.core.detail.DetailLearningNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
