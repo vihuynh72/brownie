@@ -21,4 +21,14 @@ public interface WorkspaceRepository {
 
     /** Empty when the user has no membership in that workspace at all. */
     Optional<WorkspaceRole> findRole(long workspaceId, long userId);
+
+    /**
+     * Sets whether the user's personal workspace shares the open allowance.
+     * True only when the row changed: the function refuses anyone but the
+     * owner's own personal workspace.
+     */
+    boolean setOpenAllowance(long workspaceId, long userId, boolean open);
+
+    /** The user's personal workspace's open-allowance flag; empty when there is none. */
+    Optional<Boolean> findOpenAllowance(long userId);
 }

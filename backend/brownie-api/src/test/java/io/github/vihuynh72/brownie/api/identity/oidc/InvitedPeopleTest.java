@@ -52,6 +52,34 @@ class InvitedPeopleTest {
         assertThat(people.mayUseBrownie("  ")).isFalse();
     }
 
+    @Test
+    void anUninvitedPersonGetsTheOpenAllowanceWhenOpenSignUpIsOn() {
+        InvitedPeople people = new InvitedPeople(true, "secretary@example.com", true);
+
+        assertThat(people.accessFor("stranger@example.com")).isEqualTo(InvitedPeople.Access.OPEN);
+        assertThat(people.accessFor("secretary@example.com")).isEqualTo(InvitedPeople.Access.FULL);
+        assertThat(people.accessFor(null)).isEqualTo(InvitedPeople.Access.OPEN);
+        assertThat(people.accessFor("  ")).isEqualTo(InvitedPeople.Access.OPEN);
+        assertThat(people.mayUseBrownie("stranger@example.com")).isTrue();
+    }
+
+    @Test
+    void anUninvitedPersonIsRefusedWhenOpenSignUpIsOff() {
+        InvitedPeople people = new InvitedPeople(true, "secretary@example.com", false);
+
+        assertThat(people.accessFor("stranger@example.com")).isEqualTo(InvitedPeople.Access.REFUSED);
+        assertThat(people.accessFor(null)).isEqualTo(InvitedPeople.Access.REFUSED);
+        assertThat(people.mayUseBrownie("stranger@example.com")).isFalse();
+    }
+
+    @Test
+    void noGateAtAllIsStillFullForAnyone() {
+        InvitedPeople people = new InvitedPeople(false, "", true);
+
+        assertThat(people.accessFor("stranger@example.com")).isEqualTo(InvitedPeople.Access.FULL);
+        assertThat(people.accessFor(null)).isEqualTo(InvitedPeople.Access.FULL);
+    }
+
     /** A gate that opens when it is misconfigured is not a gate. */
     @Test
     void theGateOnWithNobodyInvitedLetsNobodyIn() {

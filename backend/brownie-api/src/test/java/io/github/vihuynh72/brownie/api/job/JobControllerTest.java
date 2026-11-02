@@ -116,6 +116,16 @@ class JobControllerTest {
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
             return Optional.of(identity);
         }
+
+        @Override
+        public void recordInvitationRequest(long userId, String note) {
+            throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public boolean hasInvitationRequest(long userId) {
+            return false;
+        }
     }
 
     private static final class OwnerWorkspaceRepository implements WorkspaceRepository {
@@ -134,5 +144,15 @@ class JobControllerTest {
         public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
             return Optional.of(WorkspaceRole.OWNER);
         }
-    }
+
+            @Override
+            public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
+
+            @Override
+            public java.util.Optional<Boolean> findOpenAllowance(long userId) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
+        }
 }

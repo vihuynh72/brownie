@@ -69,6 +69,8 @@ function signIn(): void {
     issuer: 'x',
     subject: 'y',
     displayName: 'Vi Huynh',
+    allowance: 'FULL',
+    invitationRequested: false,
     memberships: [{ workspaceId: 7, role: 'OWNER' }],
   }
 }

@@ -20,6 +20,13 @@
 #   BROWNIE_OIDC_CLIENT_ID           the registered application
 #   BROWNIE_COMPOSE_B64              the compose file, base64
 #   BROWNIE_INVITED_ADDRESSES        who may sign in at all, comma separated
+#   BROWNIE_OPEN_SIGN_UP             optional, true or false (the default); lets
+#                                    people who are not invited sign in on the
+#                                    free daily allowance
+#   BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT    optional; one open person's limit per
+#                                         UTC day (default 0.10)
+#   BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT  optional; what all open people share
+#                                         each month (default 5.00)
 #   BROWNIE_SUPPORT_CONTACT          optional; shown to people on their data page
 #   BROWNIE_CERTIFICATE_CONTACT      optional; expiry warnings from the authority
 #   BROWNIE_GOOGLE_CLIENT_ID         optional; lets people connect a Google
@@ -173,6 +180,9 @@ write_env /etc/brownie/api.env \
   "BROWNIE_RENDER_EXPECTED_IMAGE_ID=${render_image_id}" \
   "BROWNIE_SUPPORT_CONTACT=${BROWNIE_SUPPORT_CONTACT:-}" \
   "BROWNIE_INVITED_ADDRESSES=${BROWNIE_INVITED_ADDRESSES:-}" \
+  "BROWNIE_OPEN_SIGN_UP=${BROWNIE_OPEN_SIGN_UP:-false}" \
+  "BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT=${BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT:-0.10}" \
+  "BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT=${BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT:-5.00}" \
   ${google_settings[@]+"${google_settings[@]}"} \
   ${mcp_settings[@]+"${mcp_settings[@]}"}
 
@@ -183,6 +193,8 @@ write_env /etc/brownie/worker.env \
   "BROWNIE_DB_PASSWORD=${db_worker_password}" \
   "BROWNIE_STORAGE_ENDPOINT=${BROWNIE_STORAGE_ENDPOINT}" \
   "BROWNIE_DELETION_RECORD_STORAGE_ENDPOINT=${BROWNIE_DELETION_RECORD_ENDPOINT}" \
+  "BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT=${BROWNIE_MODEL_OPEN_DAILY_USD_LIMIT:-0.10}" \
+  "BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT=${BROWNIE_MODEL_OPEN_MONTHLY_USD_LIMIT:-5.00}" \
   "BROWNIE_OPENAI_API_KEY=${openai_api_key}"
 
 # The images this deployment is moving to, and the ones it is moving from. The

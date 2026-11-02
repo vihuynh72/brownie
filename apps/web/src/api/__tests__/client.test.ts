@@ -38,7 +38,7 @@ describe('api client', () => {
   })
 
   it('sends credentials and no CSRF header on a GET', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { userId: 1, issuer: 'x', subject: 'y', memberships: [] }))
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { userId: 1, issuer: 'x', subject: 'y', allowance: 'FULL', invitationRequested: false, memberships: [] }))
     vi.stubGlobal('fetch', fetchMock)
 
     await getCurrentIdentity()

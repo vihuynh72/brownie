@@ -1,6 +1,7 @@
 import type { components } from './schema'
 
 export type MeResponse = components['schemas']['MeResponse']
+export type WelcomeResponse = components['schemas']['WelcomeResponse']
 export type DocumentSummaryResponse = components['schemas']['DocumentSummaryResponse']
 export type DocumentResponse = components['schemas']['DocumentResponse']
 export type CreateDocumentRequest = components['schemas']['CreateDocumentRequest']
@@ -218,6 +219,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export function getCurrentIdentity(): Promise<MeResponse> {
   return request<MeResponse>('/api/v1/me')
+}
+
+/** What the landing page may say before anyone signs in: the sign-up mode and the chat-app address. No session needed. */
+export function getWelcome(): Promise<WelcomeResponse> {
+  return request<WelcomeResponse>('/api/v1/welcome')
 }
 
 /**

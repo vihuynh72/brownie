@@ -12,6 +12,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,5 +87,41 @@ class JdbcUserIdentityRepositoryTest {
         Optional<UserIdentity> result = repository.findByIssuerAndSubject("https://issuer-unknown", "nobody");
 
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    void anInvitationRequestIsWrittenOnceAndReadAsAsked() {
+        UserIdentity person = repository.recordLogin("https://issuer-ir", "subject-ir", "ir@example.com", "Ira");
+
+        repository.recordInvitationRequest(person.id(), "would like a seat");
+
+        assertThat(repository.hasInvitationRequest(person.id())).isTrue();
+        assertThat(repository.hasInvitationRequest(person.id() + 9_999)).isFalse();
+    }
+
+    @Test
+    void askingAgainChangesTheNoteButKeepsTheFirstTime() throws SQLException {
+        UserIdentity person = repository.recordLogin("https://issuer-ir2", "subject-ir2", "ir2@example.com", "Ira Two");
+
+        repository.recordInvitationRequest(person.id(), "first note");
+        String firstAt = requestedAt(person.id());
+        repository.recordInvitationRequest(person.id(), "a better reason");
+        String secondAt = requestedAt(person.id());
+
+        assertThat(secondAt).isEqualTo(firstAt);
+        assertThat(repository.hasInvitationRequest(person.id())).isTrue();
+    }
+
+    /** The row's own timestamp, read as the migration role so RLS does not filter it. */
+    private static String requestedAt(long userId) throws SQLException {
+        try (Connection connection = DriverManager.getConnection(DB.jdbcUrl(), "brownie_migration", MIGRATION_PASSWORD);
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT requested_at FROM invitation_request WHERE user_id = ?")) {
+            statement.setLong(1, userId);
+            try (ResultSet rs = statement.executeQuery()) {
+                rs.next();
+                return rs.getString(1);
+            }
+        }
     }
 }

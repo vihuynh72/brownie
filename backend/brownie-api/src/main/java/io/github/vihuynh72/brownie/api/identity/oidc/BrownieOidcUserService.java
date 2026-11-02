@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.api.identity.oidc;
 
 import io.github.vihuynh72.brownie.api.template.BuiltInTemplateProvisioningService;
+import io.github.vihuynh72.brownie.api.identity.oidc.InvitedPeople.Access;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
@@ -79,11 +80,12 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
     @Override
     public OidcUser loadUser(OidcUserRequest userRequest) {
         OidcUser oidcUser = delegate.loadUser(userRequest);
-        refuseIfNotInvited(oidcUser);
+        Access access = accessOf(oidcUser);
         OidcIdToken idToken = oidcUser.getIdToken();
         UserIdentity identity = userIdentityRepository.recordLogin(
                 idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser));
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(identity.id());
+        setOpenAllowanceOrRefuse(workspace.id(), identity.id(), access);
         ensureBuiltInTemplatesWithoutBreakingLogin(workspace.id(), identity.id());
         return oidcUser;
     }
@@ -97,9 +99,10 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
      * application log is one more copy of somebody's personal information in
      * a place nobody thought about.
      */
-    private void refuseIfNotInvited(OidcUser oidcUser) {
-        if (invitedPeople.mayUseBrownie(oidcUser.getEmail())) {
-            return;
+    private Access accessOf(OidcUser oidcUser) {
+        Access access = invitedPeople.accessFor(oidcUser.getEmail());
+        if (access != Access.REFUSED) {
+            return access;
         }
         log.warn("A sign-in was refused because the account is not on the invitation list.");
         throw new OAuth2AuthenticationException(
@@ -108,6 +111,41 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
                         "This Brownie is open to invited people only.",
                         null),
                 "This Brownie is open to invited people only.");
+    }
+
+    /**
+     * Written on every sign-in, not only the first, so that inviting
+     * someone who signed up before they were invited moves them off the
+     * open allowance at their next sign-in, and dropping someone moves
+     * them back on. An open person's sign-in must not go through without
+     * the flag that prices their calls: failing closed keeps the shared
+     * pool honest; an invited person's allowance stays the ordinary one,
+     * so a failed write only needs a warning.
+     */
+    private void setOpenAllowanceOrRefuse(long workspaceId, long userId, Access access) {
+        try {
+            if (workspaceRepository.setOpenAllowance(workspaceId, userId, access == Access.OPEN)) {
+                return;
+            }
+            if (access == Access.OPEN) {
+                refuseAllowanceSetup();
+            }
+            log.warn("A sign-in could not clear its workspace's open-allowance flag.");
+        } catch (RuntimeException e) {
+            if (access == Access.OPEN) {
+                refuseAllowanceSetup();
+            }
+            log.warn("A sign-in could not clear its workspace's open-allowance flag.");
+        }
+    }
+
+    private static void refuseAllowanceSetup() {
+        throw new OAuth2AuthenticationException(
+                new OAuth2Error(
+                        "allowance_not_set",
+                        "Brownie could not set up your free allowance. Try signing in again.",
+                        null),
+                "Brownie could not set up your free allowance. Try signing in again.");
     }
 
     /**
