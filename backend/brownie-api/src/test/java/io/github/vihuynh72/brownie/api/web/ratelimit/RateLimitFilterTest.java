@@ -34,6 +34,14 @@ class RateLimitFilterTest {
         assertThat(statusOf(filter, "/actuator/healthy")).isEqualTo(429);
     }
 
+    @Test
+    void theLearnPathCountsAsAModelCall() throws Exception {
+        RateLimitFilter filter = new RateLimitFilter(oneAMinute());
+
+        assertThat(statusOf(filter, "/api/v1/me/details/learn")).isEqualTo(200);
+        assertThat(statusOf(filter, "/api/v1/me/details/learn")).isEqualTo(429);
+    }
+
     private int statusOf(RateLimitFilter filter, String path) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
         request.setRemoteAddr("203.0.113.9");
