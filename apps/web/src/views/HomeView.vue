@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
+import LandingView from '@/views/LandingView.vue'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import {
@@ -577,7 +578,21 @@ const showHowItWorks = computed(
 </script>
 
 <template>
-  <div class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
+  <!-- A visitor who is not signed in gets the landing page, with any sign-in that just failed explained at its top. -->
+  <LandingView v-if="session.status === 'anonymous'">
+    <template v-if="signInFailed" #notice>
+      <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
+        This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think
+        it should be, ask whoever invited you; signing in again with the same account will not change it.
+      </p>
+      <p v-else class="card home__signin-error" role="alert">
+        Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again;
+        if it keeps failing, pass that reason on to whoever runs this Brownie.
+        <a href="/oauth2/authorization/entra">Try again</a>
+      </p>
+    </template>
+  </LandingView>
+  <div v-else class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
     <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
       This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
       should be, ask whoever invited you; signing in again with the same account will not change it.
