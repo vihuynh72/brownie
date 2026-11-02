@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { RouterView, createRouter, createWebHistory } from 'vue-router'
@@ -261,7 +261,11 @@ function accessibleName(element: Element): string {
 }
 
 function buttonNamed(page: Page, name: string, within = ''): DOMWrapper<HTMLButtonElement> | undefined {
-  return page.findAll<HTMLButtonElement>(`${within} button`.trim()).find((button) => accessibleName(button.element) === name)
+  /* The bar's "More" menu teleports to the body, so a button inside it is not in the page's own tree. */
+  const buttons = within === '.selection-more-menu'
+    ? Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button')).map((element) => new DOMWrapper(element))
+    : page.findAll<HTMLButtonElement>(`${within} button`.trim())
+  return buttons.find((button) => accessibleName(button.element) === name)
 }
 
 async function press(page: Page, name: string, within = ''): Promise<void> {
