@@ -53,6 +53,11 @@ final class LoopbackRedirectUris {
     }
 
     private static URI parse(String uri) {
+        // An authorize request may carry no redirect_uri at all -- a client
+        // with several registered callbacks then has nothing to match.
+        if (uri == null) {
+            return null;
+        }
         try {
             URI parsed = URI.create(uri);
             return parsed.getFragment() != null ? null : parsed;

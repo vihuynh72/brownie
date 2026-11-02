@@ -143,10 +143,10 @@ class McpAuthorizationServerConfig {
                                                 // A localhost client on a new ephemeral port fails the
                                                 // default exact-port check; the loopback rule accepts
                                                 // it and everything else about the refusal stands.
-                                                if (LoopbackRedirectUris.matches(context)
-                                                        && "invalid_request".equals(refused.getError().getErrorCode())
+                                                if ("invalid_request".equals(refused.getError().getErrorCode())
                                                         && refused.getError().getDescription() != null
-                                                        && refused.getError().getDescription().contains("redirect_uri")) {
+                                                        && refused.getError().getDescription().contains("redirect_uri")
+                                                        && LoopbackRedirectUris.matches(context)) {
                                                     // Spring stops at its first refusal, so the scope check it
                                                     // never reached is run here before anything else.
                                                     OAuth2AuthorizationCodeRequestAuthenticationValidator.DEFAULT_SCOPE_VALIDATOR
