@@ -1,4 +1,4 @@
-package io.github.vihuynh72.brownie.api.mcp;
+package io.github.vihuynh72.brownie.api.form;
 
 import io.github.vihuynh72.brownie.core.artifact.Artifact;
 import io.github.vihuynh72.brownie.core.artifact.ArtifactService;
@@ -13,20 +13,21 @@ import java.io.InputStream;
 import java.util.List;
 
 /**
- * The file-to-template intake the form-upload route and the
- * {@code add_form_file} tool share: the same allocate-receive-scan pipeline
- * a person's upload meets, then extraction or form preparation, a draft,
- * the spots it found marked as Brownie's own, and activation -- so the
- * answer is a template {@code start_document} can use right away.
+ * The file-to-template intake the form-upload route, the {@code
+ * add_form_file} tool and the form library share: the same
+ * allocate-receive-scan pipeline a person's upload meets, then extraction
+ * or form preparation, a draft, the spots it found marked as Brownie's
+ * own, and activation -- so the answer is a template {@code
+ * start_document} can use right away.
  */
-class McpFormIntakeService {
+public class FormIntakeService {
 
     private final ArtifactService artifactService;
     private final io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService;
     private final TemplateService templateService;
     private final io.github.vihuynh72.brownie.core.template.FillSpotReviewService fillSpotReviewService;
 
-    McpFormIntakeService(
+    public FormIntakeService(
             ArtifactService artifactService,
             io.github.vihuynh72.brownie.core.prepare.FillableFormService fillableFormService,
             TemplateService templateService,
@@ -37,7 +38,7 @@ class McpFormIntakeService {
         this.fillSpotReviewService = fillSpotReviewService;
     }
 
-    IntakeResult takeIn(long workspaceId, long userId, String fileName, InputStream content) {
+    public IntakeResult takeIn(long workspaceId, long userId, String fileName, InputStream content) {
         Artifact artifact = artifactService.initiateUpload(workspaceId, userId, fileName);
         artifact = artifactService.receiveContent(workspaceId, userId, artifact.id(), content);
         artifact = artifactService.finalizeUpload(workspaceId, userId, artifact.id());
@@ -82,7 +83,7 @@ class McpFormIntakeService {
                 .orElseThrow(() -> new IllegalStateException("Fresh draft " + templateId + " is gone."));
     }
 
-    record IntakeResult(Template template, TemplateVersion activeVersion, java.util.List<String> placesLeftOut) {
+    public record IntakeResult(Template template, TemplateVersion activeVersion, java.util.List<String> placesLeftOut) {
         IntakeResult(Template template, TemplateVersion activeVersion) {
             this(template, activeVersion, java.util.List.of());
         }

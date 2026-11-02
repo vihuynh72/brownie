@@ -1,6 +1,7 @@
 package io.github.vihuynh72.brownie.api.mcp;
 
 import io.github.vihuynh72.brownie.core.mcp.ClaimedFormUpload;
+import io.github.vihuynh72.brownie.api.form.FormIntakeService;
 import io.github.vihuynh72.brownie.core.mcp.McpAuditRepository;
 import io.github.vihuynh72.brownie.core.mcp.McpFormUploadService;
 import io.github.vihuynh72.brownie.core.mcp.McpToolCallOutcome;
@@ -40,13 +41,13 @@ class McpFormUploadController {
     private static final Logger log = LoggerFactory.getLogger(McpFormUploadController.class);
 
     private final McpFormUploadService uploadService;
-    private final McpFormIntakeService intakeService;
+    private final FormIntakeService intakeService;
     private final McpToolCallRepository toolCallRepository;
     private final McpAuditRepository auditRepository;
 
     McpFormUploadController(
             McpFormUploadService uploadService,
-            McpFormIntakeService intakeService,
+            FormIntakeService intakeService,
             McpToolCallRepository toolCallRepository,
             McpAuditRepository auditRepository) {
         this.uploadService = uploadService;
@@ -86,7 +87,7 @@ class McpFormUploadController {
             // malware scan, sniffing and conversion all live inside it.
             String name = filename != null && !filename.isBlank()
                     ? filename : claimed.fileName();
-            McpFormIntakeService.IntakeResult taken =
+            FormIntakeService.IntakeResult taken =
                     intakeService.takeIn(claimed.workspaceId(), claimed.userId(), name, request.getInputStream());
             Template template = taken.template();
             uploadService.finish(claimed.workspaceId(), claimed.uploadId(), "READY", template.id(), null);

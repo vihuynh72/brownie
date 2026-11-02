@@ -366,6 +366,10 @@ class ModuleBoundariesTest {
                 .and().resideOutsideOfPackage(GOOGLE_ADAPTER)
                 .and().doNotHaveFullyQualifiedName(
                         "io.github.vihuynh72.brownie.api.mcp.OaiFormFileFetcher")
+                // The form library's own fetcher is the second named exception: it too asks a URL
+                // for bytes, and its own allowlist means only a catalog host ever answers.
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.form.HttpCatalogFormFetcher")
                 .should().dependOnClassesThat().resideInAPackage("java.net.http..")
                 .orShould().dependOnClassesThat().belongToAnyOf(RestClient.class, RestTemplate.class, HttpURLConnection.class)
                 .check(production);

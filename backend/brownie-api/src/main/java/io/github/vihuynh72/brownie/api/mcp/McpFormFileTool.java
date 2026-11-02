@@ -2,6 +2,7 @@ package io.github.vihuynh72.brownie.api.mcp;
 
 import io.modelcontextprotocol.server.McpStatelessServerFeatures.SyncToolSpecification;
 import io.github.vihuynh72.brownie.core.mcp.McpCaller;
+import io.github.vihuynh72.brownie.api.form.FormIntakeService;
 import io.github.vihuynh72.brownie.core.mcp.McpScope;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.io.ByteArrayInputStream;
@@ -34,7 +35,7 @@ final class McpFormFileTool {
     static SyncToolSpecification specification(
             McpToolExecutor executor,
             io.github.vihuynh72.brownie.core.mcp.McpFormUploadService uploadService,
-            McpFormIntakeService intakeService,
+            FormIntakeService intakeService,
             io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository,
             io.github.vihuynh72.brownie.core.mcp.McpAuditRepository auditRepository,
             FormFileFetcher fetcher) {
@@ -72,7 +73,7 @@ final class McpFormFileTool {
     private static McpToolExecutor.ToolResult handle(
             Object arguments,
             io.github.vihuynh72.brownie.core.mcp.McpFormUploadService uploadService,
-            McpFormIntakeService intakeService,
+            FormIntakeService intakeService,
             io.github.vihuynh72.brownie.core.mcp.McpToolCallRepository toolCallRepository,
             io.github.vihuynh72.brownie.core.mcp.McpAuditRepository auditRepository,
             FormFileFetcher fetcher) {

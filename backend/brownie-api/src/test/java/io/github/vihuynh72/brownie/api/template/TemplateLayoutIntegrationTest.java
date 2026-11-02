@@ -328,6 +328,7 @@ class TemplateLayoutIntegrationTest {
         Cookie session = loginAndGetSessionCookie(subject);
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceOf(subject), userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceOf(subject), userId);
         return session;
     }
 

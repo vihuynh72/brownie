@@ -236,6 +236,14 @@ class JdbcBatchRepository implements BatchRepository {
 
     @Override
     @Transactional(readOnly = true)
+    public boolean documentIsInBatch(long workspaceId, long userId, long documentId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM batch_row WHERE workspace_id = ? AND document_id = ?)",
+                Boolean.class, workspaceId, documentId));
+    }
+
+    @Transactional(readOnly = true)
     public List<Long> createdDocumentIds(long workspaceId, long userId, long batchId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
         return jdbcTemplate.queryForList(

@@ -107,6 +107,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/details/learn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Learns the answers a person approved on a form into their saved details. Bulk fills are skipped, sensitive keys are never saved automatically, and a form that reads as someone else's is left alone. The X-XSRF-TOKEN header is required like every other mutation. */
+        post: operations["learnDetails"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/details/learnings/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undoes one learn run: restores what it replaced and deletes what it added, but only where the current value is still the one it wrote. Idempotent. The X-XSRF-TOKEN header is required like every other mutation. */
+        post: operations["undoLearning"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/details/{key}": {
         parameters: {
             query?: never;
@@ -136,6 +170,40 @@ export interface paths {
         get: operations["getWelcome"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/forms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Searches the form library -- the official federal and state forms Brownie can fetch and start -- by title, agency and keywords, case-insensitive. At most 20 entries, in the catalog's own popularity order; an empty q is the "popular forms" row. Answered without a session so the landing page can offer it. */
+        get: operations["searchForms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/forms/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Downloads the catalog entry's official form and runs it through the same intake a person's upload takes -- sniffing, scanning, the places read, the draft activated -- then starts a document from it and answers with the id the web opens. Requires a session and the X-XSRF-TOKEN header. */
+        post: operations["startForm"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1913,8 +1981,51 @@ export interface components {
             /** Format: date-time */
             confirmedAt: string;
         };
+        LearnDetailsRequest: {
+            /** Format: int64 */
+            documentId: number;
+            /** Format: int64 */
+            revisionId: number;
+        };
+        LearnedKey: {
+            key: string;
+            label: string;
+        };
+        LearningResponse: {
+            /**
+             * Format: int64
+             * @description The run's id, for undo; null when nothing was written.
+             */
+            learningId?: number | null;
+            /** @enum {string} */
+            subject: "SELF" | "OTHER" | "UNSURE" | "SKIPPED";
+            saved: components["schemas"]["LearnedKey"][];
+            replaced: components["schemas"]["LearnedKey"][];
+            /** @description Why nothing was saved (OTHER, UNSURE or SKIPPED). */
+            reason?: string | null;
+        };
         InvitationRequestBody: {
             note?: string;
+        };
+        FormLibraryResponse: {
+            forms: components["schemas"]["FormEntry"][];
+        };
+        FormEntry: {
+            /** @example irs-w9 */
+            id: string;
+            /** @example Form W-9, Request for Taxpayer Identification Number and Certification */
+            title: string;
+            /** @example Internal Revenue Service */
+            agency: string;
+            /** @example Tax */
+            category: string;
+            /** @example Gives a business or client your taxpayer identification number so they can report what they pay you. */
+            description: string;
+        };
+        FormStartResponse: {
+            /** Format: int64 */
+            documentId: number;
+            title: string;
         };
         WelcomeResponse: {
             /** @enum {string} */
@@ -4093,6 +4204,78 @@ export interface operations {
             };
         };
     };
+    learnDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LearnDetailsRequest"];
+            };
+        };
+        responses: {
+            /** @description What the run decided and saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningResponse"];
+                };
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The document or revision is not the caller's. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    undoLearning: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Undone. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such learning run for this person. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     saveDetail: {
         parameters: {
             query?: never;
@@ -4190,6 +4373,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WelcomeResponse"];
+                };
+            };
+        };
+    };
+    searchForms: {
+        parameters: {
+            query?: {
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Always. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormLibraryResponse"];
+                };
+            };
+        };
+    };
+    startForm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document the form started. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormStartResponse"];
+                };
+            };
+            /** @description No catalog entry has this id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The agency's site could not be downloaded right now. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
                 };
             };
         };

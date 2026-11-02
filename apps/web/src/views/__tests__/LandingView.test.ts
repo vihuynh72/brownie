@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import LandingView from '@/views/LandingView.vue'
-import { getWelcome } from '@/api/client'
+import { getWelcome, searchForms } from '@/api/client'
 import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
-  return { ...actual, getWelcome: vi.fn() }
+  return { ...actual, getWelcome: vi.fn(), searchForms: vi.fn() }
 })
 
 const MCP_URL = 'https://api.example.com/mcp'
@@ -32,12 +32,63 @@ function tabs(wrapper: VueWrapper) {
 describe('LandingView', () => {
   beforeEach(() => {
     vi.mocked(getWelcome).mockReset()
+    vi.mocked(searchForms).mockReset().mockResolvedValue([])
     document.body.innerHTML = ''
   })
 
   afterEach(() => {
     for (const wrapper of mounted.splice(0)) wrapper.unmount()
     Reflect.deleteProperty(navigator, 'clipboard')
+  })
+
+  /** The library is offered before sign-in: the popular row first, a Sign-in link on each. */
+  it('offers popular forms before the install choices, with a Sign in link on each', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+    vi.mocked(searchForms).mockResolvedValue([
+      { id: 'irs-w9', title: 'Form W-9', agency: 'Internal Revenue Service', category: 'Tax', description: 'x' },
+      { id: 'uscis-i9', title: 'Form I-9', agency: 'U.S. Citizenship and Immigration Services', category: 'Employment', description: 'x' },
+    ])
+    const wrapper = await mountLanding()
+
+    expect(wrapper.get('.landing-forms h2').text()).toBe('Start from an official form')
+    expect(wrapper.get('.landing-forms__popular').text()).toBe('Popular forms')
+    const rows = wrapper.findAll('.landing-forms__row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('Form W-9')
+    expect(rows[0].text()).toContain('Internal Revenue Service')
+    expect(rows[0].get('a.landing-forms__start').attributes('href')).toBe(SIGN_IN)
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** Typing is its own search; an eight-row catalog shows at most eight. */
+  it('searches the library as the person types, at most eight rows', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+    const wrapper = await mountLanding()
+    vi.useFakeTimers()
+
+    vi.mocked(searchForms).mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => ({
+        id: `f${i}`, title: `Form ${i}`, agency: 'Agency', category: 'Tax', description: 'x',
+      })),
+    )
+    await wrapper.get('.landing-forms__search').setValue('va')
+    await vi.advanceTimersByTimeAsync(300)
+    vi.useRealTimers()
+    await flushPromises()
+
+    expect(searchForms).toHaveBeenLastCalledWith('va')
+    expect(wrapper.findAll('.landing-forms__row')).toHaveLength(8)
+  })
+
+  /** No catalog, no section: a failure takes the whole thing away, not an empty shell. */
+  it('hides the forms section entirely when the catalog cannot be reached', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+    vi.mocked(searchForms).mockRejectedValue(new Error('down'))
+    const wrapper = await mountLanding()
+
+    expect(wrapper.find('.landing-forms').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Works where you already are')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
   it('says the day is free when sign-up is open with a daily allowance', async () => {

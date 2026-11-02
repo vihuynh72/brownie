@@ -45,8 +45,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
      */
     private static final String ID = "[^/]+";
     private static final Pattern MODEL = Pattern.compile(
-            "^/api/v1/workspaces/" + ID + "/(?:documents/" + ID + "/(?:assist/execute|generations|generations/" + ID + "/resume)"
-                    + "|jobs/" + ID + "/(?:resume|retry)|batches/" + ID + "/compose|transcriptions)$");
+            "^(?:/api/v1/workspaces/" + ID + "/(?:documents/" + ID + "/(?:assist/execute|generations|generations/" + ID + "/resume)"
+                    + "|jobs/" + ID + "/(?:resume|retry)|batches/" + ID + "/compose|transcriptions)"
+                    + "|/api/v1/me/details/learn)$");
     private static final Pattern RENDER = Pattern.compile(
             "^/api/v1/workspaces/" + ID + "/(?:documents/" + ID + "/(?:validate|export|fill-spots|revisions/" + ID + "/compile)"
                     + "|templates/" + ID + "/versions|artifacts/" + ID + "/fillable-form"
