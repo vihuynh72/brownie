@@ -200,6 +200,35 @@ describe('HomeView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
+  /** An old callback URL revisited while already signed in: nothing to show, nothing to keep in the address bar. */
+  it('shows a signed-in person no sign-in failure, and takes the code out of the address', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+
+    const wrapper = await mountWithRouter('/?signin=failed&reason=authorization_request_not_found')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(router.currentRoute.value.query.signin).toBeUndefined()
+    expect(router.currentRoute.value.query.reason).toBeUndefined()
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** A signed-out visitor whose saved authorization request is gone started it twice or let it expire. */
+  it('tells a signed-out visitor whose sign-in went stale to sign in again', async () => {
+    const session = useSessionStore()
+    session.status = 'anonymous'
+
+    const wrapper = await mountWithRouter('/?signin=failed&reason=authorization_request_not_found')
+
+    const alert = wrapper.find('.landing [role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('That sign-in had expired or was started twice.')
+    expect(alert.text()).not.toContain('authorization_request_not_found')
+    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Sign in again')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
   /**
    * A person who has never confirmed their name gets the one-step card,
    * prefilled from what the provider called them.

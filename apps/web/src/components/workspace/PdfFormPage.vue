@@ -1904,6 +1904,25 @@ function goToPlace(fieldId: string): void {
   padding-inline: 0.25rem;
 }
 
+/* On a touch screen the zoom controls reach a finger's target. */
+@media (pointer: coarse) {
+  .pdf-form-page__zoom-fit,
+  .pdf-form-page__zoom-step {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+
+  /* A PDF spot's checkbox keeps its drawn size; an invisible box around it takes the tap. */
+  .pdf-form-page__spot :deep(.fill-spot__control--checkbox) {
+    position: relative;
+  }
+  .pdf-form-page__spot :deep(.fill-spot__control--checkbox)::before {
+    content: "";
+    position: absolute;
+    inset: calc((44px - 100%) / -2);
+  }
+}
+
 /* Fitting the width is the resting state; once a size has been chosen, the button that goes back to it is quieter. */
 .pdf-form-page__zoom-fit[aria-pressed='false'] {
   color: var(--color-text-muted);

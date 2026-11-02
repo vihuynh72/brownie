@@ -754,6 +754,7 @@ class OperationalControlsIntegrationTest {
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         OidcIdToken idToken = OidcIdToken.withTokenValue("test-token")
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))
