@@ -499,7 +499,8 @@ describe('WorkspaceView with a PDF form', () => {
     // The pages keep their zoom at the same foot of the view, so the card rests above it.
     expect(bar.classList.contains('selection-bar--above-zoom')).toBe(true)
     await openMore()
-    expect([...bar.querySelectorAll('.selection-more-menu [role="menuitem"]')].map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim())).toEqual([
+    /* The "More" menu teleports to the body: its items live outside the bar's own scroll. */
+    expect([...document.body.querySelectorAll('.selection-more-menu [role="menuitem"]')].map((item) => (item.textContent ?? '').replace(/\s+/g, ' ').trim())).toEqual([
       'Rename… Company',
       'Text size… for Company',
       'Remove… Company',
@@ -542,7 +543,6 @@ describe('WorkspaceView with a PDF form', () => {
 
     await focusSpot('edit-company')
     await openMore()
-    console.log('MENU:', document.querySelector('.selection-more-menu')?.innerHTML?.slice(0, 400) ?? 'none')
     await press('Remove… Company', '.selection-more-menu')
     expect(document.querySelector('dialog')?.textContent).toContain('Its value stays in the version history.')
     await press('Remove', 'dialog')

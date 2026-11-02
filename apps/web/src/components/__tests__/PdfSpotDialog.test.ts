@@ -42,7 +42,7 @@ function mountDialog(send = vi.fn(async (): Promise<PdfSpotResult> => ({ ok: tru
   document.body.appendChild(opener)
   opener.focus()
   wrapper = mount(PdfSpotDialog, { props: { pages, suggest, send }, attachTo: document.body })
-  const dialog = wrapper.vm as unknown as { open: (mode: unknown, beside?: HTMLElement | null) => void; close: (focusId?: string | null) => void }
+  const dialog = wrapper.vm as unknown as { open: (mode: unknown, beside?: HTMLElement | null, returnTo?: HTMLElement | null) => void; close: (focusId?: string | null) => void }
   return { wrapper, dialog, send, suggest, opener }
 }
 
