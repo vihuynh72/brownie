@@ -54,6 +54,11 @@ public class DetailSealer {
         return Optional.of(new DetailSealer(new SecretKeySpec(keyBytes, "AES")));
     }
 
+    /** Whether a key is configured -- the {@code sealingAvailable} flag the API reports. */
+    public boolean available() {
+        return key != null;
+    }
+
     /** The last four characters of the plain value, for masked display. */
     public static String hint(String plain) {
         if (plain == null || plain.isEmpty()) {

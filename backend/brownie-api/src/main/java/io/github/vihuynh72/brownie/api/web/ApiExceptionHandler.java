@@ -249,7 +249,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
             RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class,
             FillableFormNotFoundException.class, TemplateFieldNotFoundException.class,
-            io.github.vihuynh72.brownie.core.mcp.McpGrantNotFoundException.class})
+            io.github.vihuynh72.brownie.core.mcp.McpGrantNotFoundException.class,
+            io.github.vihuynh72.brownie.api.detail.SavedDetailNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Not Found");
@@ -360,6 +361,30 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
      * not correspond to anything real in the source's extraction -- a bad
      * request, not a conflict or a missing resource.
      */
+    @ExceptionHandler(io.github.vihuynh72.brownie.api.detail.SavedDetailValueException.class)
+    public ResponseEntity<Object> handleSavedDetailValue(
+            io.github.vihuynh72.brownie.api.detail.SavedDetailValueException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Bad Request");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "SAVED_DETAIL_VALUE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_REQUEST, request);
+    }
+
+    /**
+     * A sensitive detail could not be sealed because this Brownie has no
+     * sealing key: a plain no, not a broken save and never a plain-text write.
+     */
+    @ExceptionHandler(io.github.vihuynh72.brownie.api.detail.DetailSealingUnavailableException.class)
+    public ResponseEntity<Object> handleDetailSealingUnavailable(
+            io.github.vihuynh72.brownie.api.detail.DetailSealingUnavailableException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Sensitive details unavailable");
+        problem.setDetail("Sensitive details can't be saved on this Brownie yet.");
+        enrich(problem, "SAVED_DETAIL_SEALING_UNAVAILABLE");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.SERVICE_UNAVAILABLE, request);
+    }
+
     @ExceptionHandler(InvalidEvidenceLocatorException.class)
     public ResponseEntity<Object> handleInvalidEvidenceLocator(InvalidEvidenceLocatorException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
