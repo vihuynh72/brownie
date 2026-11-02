@@ -72,6 +72,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The signed-in person's saved details ("Your details"), ordered by group then by declaration order. A sensitive row's value is null and it carries only its four-character hint. */
+        get: operations["listSavedDetails"];
+        put?: never;
+        post?: never;
+        /** Deletes every saved detail the person has ("Delete all saved details"). The X-XSRF-TOKEN header is required like every other mutation. */
+        delete: operations["deleteSavedDetails"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/details/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** A manual save of one detail. Sensitive values are sealed before they are stored and the response carries only the hint. The X-XSRF-TOKEN header is required like every other mutation. */
+        put: operations["saveDetail"];
+        post?: never;
+        /** Deletes one saved detail; 204 whether or not a row existed. The X-XSRF-TOKEN header is required like every other mutation. */
+        delete: operations["deleteSavedDetail"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/welcome": {
         parameters: {
             query?: never;
@@ -1815,6 +1851,40 @@ export interface components {
             allowance: "FULL" | "FREE_DAILY";
             invitationRequested: boolean;
             memberships: components["schemas"]["MembershipResponse"][];
+            /** @description The person's saved details, masked: a non-sensitive value is its plain text; a sensitive row carries only its four-character hint. */
+            savedDetails?: components["schemas"]["SavedDetailResponse"][];
+        };
+        DetailsResponse: {
+            details: components["schemas"]["SavedDetailResponse"][];
+            /** @description Whether this Brownie can seal sensitive details. */
+            sealingAvailable: boolean;
+        };
+        SaveDetailRequest: {
+            value: string;
+        };
+        DetailSource: {
+            /** Format: int64 */
+            documentId?: number | null;
+            label?: string | null;
+            title?: string | null;
+        };
+        SavedDetailResponse: {
+            key: string;
+            label: string;
+            /** @enum {string} */
+            group: "IDENTITY" | "CONTACT" | "ADDRESS" | "WORK" | "INCOME" | "EDUCATION" | "HOUSEHOLD" | "EMERGENCY" | "SENSITIVE";
+            sensitive: boolean;
+            /** @description Null for a sensitive row. */
+            value?: string | null;
+            /** @description The last four characters, only for a sensitive row. */
+            hint?: string | null;
+            /** @enum {string} */
+            origin: "AUTO" | "MANUAL";
+            source?: components["schemas"]["DetailSource"];
+            /** Format: date-time */
+            savedAt: string;
+            /** Format: date-time */
+            confirmedAt: string;
         };
         InvitationRequestBody: {
             note?: string;
@@ -3897,6 +3967,139 @@ export interface operations {
             };
             /** @description The note is longer than 500 characters. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSavedDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetailsResponse"];
+                };
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteSavedDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveDetailRequest"];
+            };
+        };
+        responses: {
+            /** @description The saved row. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedDetailResponse"];
+                };
+            };
+            /** @description The value is blank or past the length the key allows. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The key is not a canonical saved-detail key. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This Brownie has no sealing key, so a sensitive detail cannot be saved. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteSavedDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
