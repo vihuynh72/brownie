@@ -2681,7 +2681,8 @@ async function applyResultToDocument(): Promise<void> {
     acceptResult.value = null
     proposalIntro.value = `Here is what I found in ${runSourceName.value ?? 'your source'}:`
     applyStage.value = 'proposed'
-    announce('Brownie found values for this document. Check them, then approve them to fill them in.')
+    const filled = Object.keys(proposal.proposedValues).length
+    announce(`Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}. Look them over, then approve.`)
     // "Show what I found" went away with the reading's status; the proposal it showed takes focus.
     await keepFocusInChat()
   } catch (error) {
@@ -2891,6 +2892,12 @@ const composerText = ref('')
 const voiceEnabled = ref(false)
 const voiceError = ref('')
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null)
+
+/** The "Type my details" starter: seeds the composer with the beginning of the answer and focuses it. */
+function typeMyDetails(): void {
+  composerText.value = 'My name is '
+  composerTextareaRef.value?.focus()
+}
 const wsId = computed(() => session.personalWorkspaceId ?? -1)
 try {
   void loadCapabilities().then((c) => { voiceEnabled.value = c.voiceInput === true }).catch(() => {})
@@ -3148,8 +3155,19 @@ const reviewList = computed<ReviewEntry[]>(() =>
     ? reviewEntries(reviewFilledIds.value, document.value.currentRevision.fields, labelOf, answeredByField.value, chatFieldOrder.value)
     : [],
 )
+/** Entries Brownie guessed at: none of their fields carries a span from what the person gave. Accepting one does not move it -- it is still a guess. */
+const reviewGuesses = computed(() =>
+  reviewList.value.filter((entry) => entry.fieldIds.every((fieldId) => evidenceSpanIdsOf(fieldId).length === 0)),
+)
+/** Entries whose value carries a span from what the person gave it: "accepted from what you said". */
+const reviewFromYou = computed(() =>
+  reviewList.value.filter((entry) => entry.fieldIds.some((fieldId) => evidenceSpanIdsOf(fieldId).length > 0)),
+)
+/** Entries the person has accepted, whichever side of the two they sit on: the "N of M accepted" count. */
+const reviewAccepted = computed(() => reviewList.value.filter((entry) => entry.review === 'ACCEPTED'))
+const reviewAcceptedOpen = ref(false)
 /** "0 of 6 accepted": it follows the document, so every decision recorded moves it. */
-const reviewHeading = computed(() => `${reviewList.value.filter((entry) => entry.review === 'ACCEPTED').length} of ${reviewList.value.length} accepted`)
+const reviewHeading = computed(() => `${reviewAccepted.value.length} of ${reviewList.value.length} accepted`)
 /** The entry whose fill spot is the one selected on the page, drawn as open. */
 const reviewOpenKey = computed(() => {
   const open = selected.value?.fieldId
@@ -3175,6 +3193,7 @@ async function acceptProposal(): Promise<void> {
       proposal.id,
       document.value.currentRevision.id,
       crypto.randomUUID(),
+      true,
     )
     applyStage.value = 'accepted'
     await loadDocument()
@@ -4377,16 +4396,21 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <p class="msg__who">Brownie</p>
               <div class="msg__body">
                 <p>
-                  I can fill this document from your notes, a transcript or a conversation. Add one with Add a source (+),
-                  then ask me to fill it in.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template>
+                  Tell me your details, typed or said, and I'll fill this form. Or add a document that has them with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template>
                 </p>
               </div>
               <!-- Where to begin: offered until something has been said or a source attached. -->
               <ul v-if="startersShown" class="chat-line__starters" aria-label="Ways to begin">
                 <li>
+                  <button type="button" class="button button--secondary button--small" @click="typeMyDetails">
+                    <AppIcon name="pencil" :size="16" />
+                    Type my details
+                  </button>
+                </li>
+                <li>
                   <button type="button" class="button button--secondary button--small" @click="goToSources">
                     <AppIcon name="attach" :size="16" />
-                    Add notes or a transcript
+                    Add a document
                   </button>
                 </li>
                 <li v-if="starterAddsSpot">
@@ -4709,17 +4733,24 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 aria-labelledby="proposal-review-title"
               >
                 <header class="proposal-review__head">
-                  <h3 id="proposal-review-title" class="proposal-review__title">To review</h3>
+                  <h3 id="proposal-review-title" class="proposal-review__title">Check my work</h3>
                   <p class="proposal-review__count">{{ reviewHeading }}</p>
                 </header>
-                <ul class="proposal-review__list">
+                <p v-if="reviewGuesses.length === 0" class="proposal-review__all-backed">
+                  Everything Brownie filled came from what you gave it.
+                  <button type="button" class="button" @click="exportDialogRef?.open()">Export</button>
+                </p>
+                <ul v-if="reviewGuesses.length > 0" class="proposal-review__list">
                   <li
-                    v-for="entry in reviewList"
+                    v-for="entry in reviewGuesses"
                     :key="entry.key"
                     class="proposal-review__row"
                     :class="{ 'proposal-review__row--open': entry.key === reviewOpenKey }"
                   >
-                    <span class="proposal-review__name">{{ entry.label }}</span>
+                    <span class="proposal-review__name">
+                      {{ entry.label }}
+                      <span class="proposal-review__why">Brownie's guess, nothing you gave said this</span>
+                    </span>
                     <span class="proposal-review__tail">
                       <span v-if="entry.source" class="tag" :class="stateTagClass(entry.source)">
                         <AppIcon v-if="entry.source.icon" :name="entry.source.icon" :size="16" />{{ entry.source.text }}
@@ -4727,12 +4758,39 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       <span class="tag" :class="stateTagClass(entry.reviewTag)">
                         <AppIcon v-if="entry.reviewTag.icon" :name="entry.reviewTag.icon" :size="16" />{{ entry.reviewTag.text }}
                       </span>
+                      <span v-if="entry.review === 'ACCEPTED'" class="proposal-review__by-you">Accepted by you</span>
                       <button type="button" class="proposal-review__go" @click="goToReviewEntry(entry)">
                         {{ entry.key === reviewOpenKey ? 'Open' : 'Go to' }}<span class="visually-hidden">{{ ` ${entry.label}` }}</span>
                       </button>
                     </span>
                   </li>
                 </ul>
+                <details v-if="reviewFromYou.length > 0" class="proposal-review__accepted" :open="reviewAcceptedOpen">
+                  <summary @click.prevent="reviewAcceptedOpen = !reviewAcceptedOpen">
+                    {{ reviewFromYou.length }} accepted from what you said &middot; {{ reviewAcceptedOpen ? 'Hide' : 'Show' }}
+                  </summary>
+                  <ul class="proposal-review__list">
+                    <li
+                      v-for="entry in reviewFromYou"
+                      :key="entry.key"
+                      class="proposal-review__row"
+                      :class="{ 'proposal-review__row--open': entry.key === reviewOpenKey }"
+                    >
+                      <span class="proposal-review__name">{{ entry.label }}</span>
+                      <span class="proposal-review__tail">
+                        <span v-if="entry.source" class="tag" :class="stateTagClass(entry.source)">
+                          <AppIcon v-if="entry.source.icon" :name="entry.source.icon" :size="16" />{{ entry.source.text }}
+                        </span>
+                        <span class="tag" :class="stateTagClass(entry.reviewTag)">
+                          <AppIcon v-if="entry.reviewTag.icon" :name="entry.reviewTag.icon" :size="16" />{{ entry.reviewTag.text }}
+                        </span>
+                        <button type="button" class="proposal-review__go" @click="goToReviewEntry(entry)">
+                          {{ entry.key === reviewOpenKey ? 'Open' : 'Go to' }}<span class="visually-hidden">{{ ` ${entry.label}` }}</span>
+                        </button>
+                      </span>
+                    </li>
+                  </ul>
+                </details>
               </section>
             </template>
             <div v-if="assistStage === 'interpreting' || assistStage === 'executing'" class="msg--brownie">
@@ -6574,6 +6632,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* A guess the person accepted keeps its "Brownie's guess" provenance; this says who accepted it. */
+.proposal-review__by-you {
+  color: var(--color-text-quiet);
+  font-size: var(--font-size-small);
 }
 
 .proposal-review__row {

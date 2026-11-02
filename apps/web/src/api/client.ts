@@ -646,10 +646,11 @@ export function acceptPatchProposal(
   proposalId: number,
   expectedRevisionId: number,
   idempotencyKey: string,
+  acceptEvidencedValues = false,
 ): Promise<PatchAcceptResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/patch-proposals/${proposalId}/accept`, {
     method: 'POST',
-    body: { expectedRevisionId },
+    body: { expectedRevisionId, acceptEvidencedValues },
     headers: { 'Idempotency-Key': idempotencyKey },
   })
 }

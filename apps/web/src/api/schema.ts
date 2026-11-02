@@ -3170,6 +3170,8 @@ export interface components {
             expectedRevisionId: number;
             /** @description Defaults to a fixed reason when blank or omitted. */
             editReason?: string | null;
+            /** @description When true, every applied field Brownie backed with evidence comes out accepted in the same revision; a field with no evidence stays unreviewed. Defaults to false. */
+            acceptEvidencedValues?: boolean;
         };
         PatchAcceptResponse: {
             applied: boolean;
