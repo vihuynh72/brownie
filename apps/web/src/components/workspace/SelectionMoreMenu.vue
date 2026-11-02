@@ -18,6 +18,9 @@ const menuId = useId()
 const open = ref(false)
 const buttonRef = ref<HTMLButtonElement | null>(null)
 const menuRef = ref<HTMLElement | null>(null)
+const menuLeft = ref(0)
+const menuTop = ref(0)
+const menuOpenDown = ref(true)
 
 function items(): HTMLElement[] {
   return menuRef.value ? Array.from(menuRef.value.querySelectorAll<HTMLElement>('[role="menuitem"]')) : []
@@ -26,6 +29,17 @@ function items(): HTMLElement[] {
 async function openMenu(first: number): Promise<void> {
   open.value = true
   await nextTick()
+  /* The menu teleports to the body and sits by the button's own rect, so the bar's scroll
+     never clips it. It opens below while there is room, and flips up when there is not. */
+  const rect = buttonRef.value?.getBoundingClientRect()
+  const menuBox = menuRef.value?.getBoundingClientRect()
+  if (rect) {
+    const height = menuBox?.height ?? 0
+    menuOpenDown.value = rect.bottom + height <= window.innerHeight
+    menuTop.value = menuOpenDown.value ? rect.bottom : Math.max(8, rect.top - height)
+    const width = menuBox?.width ?? 0
+    menuLeft.value = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))
+  }
   items()[first]?.focus({ preventScroll: true })
 }
 
@@ -120,9 +134,21 @@ defineExpose({ open })
       <AppIcon name="more" :size="16" />
       More
     </button>
-    <span v-if="open" :id="menuId" ref="menuRef" role="menu" class="selection-more-menu" @keydown="onKeydown" @click="onMenuClick">
-      <slot :return-to="buttonRef" />
-    </span>
+    <Teleport to="body">
+      <span
+        v-if="open"
+        :id="menuId"
+        ref="menuRef"
+        role="menu"
+        class="selection-more-menu"
+        :style="{ insetInlineStart: `${menuLeft}px`, insetBlockStart: `${menuTop}px` }"
+        :class="{ 'selection-more-menu--up': !menuOpenDown }"
+        @keydown="onKeydown"
+        @click="onMenuClick"
+      >
+        <slot :return-to="buttonRef" />
+      </span>
+    </Teleport>
   </span>
 </template>
 
@@ -133,18 +159,16 @@ defineExpose({ open })
 }
 
 .selection-more-menu {
-  position: absolute;
-  inset-block-start: 100%;
-  inset-inline-end: 0;
+  position: fixed;
   z-index: 30;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   min-width: 12rem;
   padding: var(--space-2);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-2);
-  box-shadow: var(--shadow-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
 }
 </style>

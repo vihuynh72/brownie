@@ -1042,7 +1042,7 @@ function openRenameAt(returnTo: HTMLElement | null): void {
   const current = selected.value
   if (!current || spotChangesWait()) return
   if (isPdfForm.value) {
-    pdfPageRef.value?.openRename(current.fieldId)
+    pdfPageRef.value?.openRename(current.fieldId, returnTo)
     return
   }
   spotChangeTarget = current.fieldId
@@ -3701,7 +3701,7 @@ async function goToFieldFromExport(fieldId: string): Promise<void> {
 
 const isPdfForm = computed(() => layout.value?.kind === 'PDF')
 const pdfPageRef = ref<{
-  openRename: (fieldId: string) => void
+  openRename: (fieldId: string, returnTo?: HTMLElement | null) => void
   openRestyle: (fieldId: string) => void
   openRemove: (fieldId: string) => void
 } | null>(null)

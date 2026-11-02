@@ -399,4 +399,17 @@ describe('PdfSpotDialog', () => {
     expect(document.activeElement).toBe(opener)
     expect(send).not.toHaveBeenCalled()
   })
+
+  it('hands focus on close to a named element instead of the opener when one is given', async () => {
+    const returnTo = document.createElement('button')
+    document.body.appendChild(returnTo)
+    const { wrapper, dialog } = mountDialog()
+    dialog.open({ kind: 'rename', fieldId: 'company', label: 'Company' }, null, returnTo)
+    await flushPromises()
+
+    await wrapper.get('dialog').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.activeElement).toBe(returnTo)
+    returnTo.remove()
+  })
 })
