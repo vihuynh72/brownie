@@ -617,13 +617,13 @@ describe('HomeView: uploading a form', () => {
 
     expect(openChooser).toHaveBeenCalledTimes(1)
     expect(input.attributes('accept')).toBe(
-      '.docx,.dotx,.docm,.dotm,.doc,.dot,.rtf,.odt,.ott,.pages,.pdf,' +
+      '.docx,.dotx,.docm,.dotm,.doc,.dot,.rtf,.odt,.ott,.pages,.pdf,.jpg,.jpeg,.png,' +
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
         'application/vnd.openxmlformats-officedocument.wordprocessingml.template,' +
         'application/vnd.ms-word.document.macroEnabled.12,application/vnd.ms-word.template.macroEnabled.12,' +
         'application/msword,application/rtf,text/rtf,application/vnd.oasis.opendocument.text,' +
         'application/vnd.oasis.opendocument.text-template,application/vnd.apple.pages,' +
-        'application/x-iwork-pages-sffpages,application/pdf',
+        'application/x-iwork-pages-sffpages,application/pdf,image/jpeg,image/png',
     )
     expect(input.attributes('tabindex')).toBe('-1')
     expect(input.attributes('aria-hidden')).toBe('true')
