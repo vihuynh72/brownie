@@ -125,6 +125,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/forms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Searches the form library -- the official federal and state forms Brownie can fetch and start -- by title, agency and keywords, case-insensitive. At most 20 entries, in the catalog's own popularity order; an empty q is the "popular forms" row. Answered without a session so the landing page can offer it. */
+        get: operations["searchForms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/forms/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Downloads the catalog entry's official form and runs it through the same intake a person's upload takes -- sniffing, scanning, the places read, the draft activated -- then starts a document from it and answers with the id the web opens. Requires a session and the X-XSRF-TOKEN header. */
+        post: operations["startForm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/logout": {
         parameters: {
             query?: never;
@@ -1888,6 +1922,26 @@ export interface components {
         };
         InvitationRequestBody: {
             note?: string;
+        };
+        FormLibraryResponse: {
+            forms: components["schemas"]["FormEntry"][];
+        };
+        FormEntry: {
+            /** @example irs-w9 */
+            id: string;
+            /** @example Form W-9, Request for Taxpayer Identification Number and Certification */
+            title: string;
+            /** @example Internal Revenue Service */
+            agency: string;
+            /** @example Tax */
+            category: string;
+            /** @example Gives a business or client your taxpayer identification number so they can report what they pay you. */
+            description: string;
+        };
+        FormStartResponse: {
+            /** Format: int64 */
+            documentId: number;
+            title: string;
         };
         WelcomeResponse: {
             /** @enum {string} */
@@ -4130,6 +4184,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WelcomeResponse"];
+                };
+            };
+        };
+    };
+    searchForms: {
+        parameters: {
+            query?: {
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Always. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormLibraryResponse"];
+                };
+            };
+        };
+    };
+    startForm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document the form started. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormStartResponse"];
+                };
+            };
+            /** @description No catalog entry has this id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The agency's site could not be downloaded right now. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
                 };
             };
         };

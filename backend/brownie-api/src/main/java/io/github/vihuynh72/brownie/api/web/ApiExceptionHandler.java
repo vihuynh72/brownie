@@ -249,6 +249,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             ExportReceiptNotFoundException.class, QuestionNotFoundException.class, PatchProposalNotFoundException.class,
             RuleNotFoundException.class, DeletionRequestNotFoundException.class, SupportGrantNotFoundException.class,
             FillableFormNotFoundException.class, TemplateFieldNotFoundException.class,
+            io.github.vihuynh72.brownie.api.form.FormLibraryNotFoundException.class,
             io.github.vihuynh72.brownie.core.mcp.McpGrantNotFoundException.class,
             io.github.vihuynh72.brownie.api.detail.SavedDetailNotFoundException.class})
     public ResponseEntity<Object> handleTenantResourceNotFound(RuntimeException ex, WebRequest request) {
@@ -722,6 +723,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Assist could not complete this request");
         problem.setDetail(ex.getMessage());
         enrich(problem, "ASSIST_MODEL_FAILED");
+        return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_GATEWAY, request);
+    }
+
+    /** The agency's site did not hand over its own form; the person can retry or upload the copy they have. */
+    @ExceptionHandler(io.github.vihuynh72.brownie.api.form.FormFetchException.class)
+    public ResponseEntity<Object> handleFormFetch(io.github.vihuynh72.brownie.api.form.FormFetchException ex, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+        problem.setTitle("The form could not be downloaded");
+        problem.setDetail(ex.getMessage());
+        enrich(problem, "FORM_FETCH_FAILED");
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.BAD_GATEWAY, request);
     }
 
