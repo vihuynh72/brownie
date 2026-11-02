@@ -1385,7 +1385,7 @@ async function moveToTrash(): Promise<void> {
   background: none;
   padding: 0;
   font-size: var(--font-size-sm);
-  color: var(--color-cocoa);
+  color: var(--color-cocoa-strong);
   text-decoration: underline;
   cursor: pointer;
 }
