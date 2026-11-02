@@ -227,6 +227,11 @@ export function getWelcome(): Promise<WelcomeResponse> {
 }
 
 /** Asks for an invitation on the free-allowance workspace's behalf; the note is optional and at most 500 characters. */
+/** The name the person gave themselves; also mirrors it into their saved details. */
+export function saveName(givenName: string, familyName: string): Promise<MeResponse> {
+  return request<MeResponse>('/api/v1/me/name', { method: 'PUT', body: { givenName, familyName } })
+}
+
 export function requestInvitation(note?: string): Promise<void> {
   return request<void>('/api/v1/me/invitation-request', { method: 'POST', body: { note } })
 }

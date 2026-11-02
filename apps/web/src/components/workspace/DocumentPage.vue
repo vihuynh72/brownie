@@ -58,7 +58,7 @@ const props = defineProps<{
   selected: { fieldId: string; rowIndex: number | null } | null
   /** Places Brownie found itself that the person has not yet said are right; each is marked as a place Brownie found. */
   foundFieldIds?: ReadonlySet<string>
-  /** New fill spots can be added to this page: "Add a fill spot", and "Fill in here" on its text. */
+  /** New fill spots can be added to this page: "Add a place", and "Fill in here" on its text. */
   canAddSpots?: boolean
   /** A dialog about a new fill spot is over the page, so the "Fill in here" bar stands down. */
   fillHereHidden?: boolean
@@ -529,7 +529,7 @@ function isFilled(place: Place): boolean {
 const progressText = computed(() => {
   const total = places.value.length
   const filled = places.value.filter(isFilled).length
-  return `${filled} of ${total} ${total === 1 ? 'fill spot' : 'fill spots'} filled`
+  return `${filled} of ${total} ${total === 1 ? 'place' : 'places'} filled`
 })
 
 /**
@@ -715,7 +715,7 @@ watch(
     <h2 :id="headingId" class="visually-hidden">Document</h2>
     <p v-if="!layout && layoutState === 'unavailable'" class="document-page__notice" role="status">
       <AppIcon name="info" :size="16" />
-      <span>{{ layoutProblem ? `${layoutProblem} Its fill spots are listed instead.` : "Brownie could not draw this template's layout, so its fill spots are listed instead." }}</span>
+      <span>{{ layoutProblem ? `${layoutProblem} Its places are listed instead.` : "Brownie could not draw this template's layout, so its places are listed instead." }}</span>
     </p>
 
     <div v-if="places.length > 0 || canAddSpots" class="document-page__status">
@@ -736,10 +736,10 @@ watch(
       </div>
       <span class="document-page__status-actions">
         <button v-if="canAddSpots" type="button" class="button button--secondary button--small" @click="emit('add-spot')">
-          <AppIcon name="plus" :size="16" />Add a fill spot
+          <AppIcon name="plus" :size="16" />Add a place
         </button>
         <button v-if="hasEmptyTarget" type="button" class="button button--secondary button--small" @click="focusNextEmpty">
-          <AppIcon name="chevron-down" :size="16" />Next empty spot
+          <AppIcon name="chevron-down" :size="16" />Next empty place
         </button>
       </span>
     </div>
@@ -754,7 +754,7 @@ watch(
       <div ref="sheet" class="document-page__sheet" :style="sheetCss" @contextmenu="onContextMenu" @pointerdown="onPointerDown">
         <p v-if="sections.length === 0" class="document-page__quiet" :role="layoutState === 'loading' ? 'status' : undefined">
           <span v-if="layoutState === 'loading'" class="activity-indicator" aria-hidden="true"></span>
-          {{ layoutState === 'loading' ? 'Loading the page…' : 'This document has no fill spots.' }}
+          {{ layoutState === 'loading' ? 'Loading the page…' : 'This document has no places.' }}
         </p>
         <template v-for="section in sections" :key="section.key">
           <div
@@ -763,7 +763,7 @@ watch(
             :class="{ 'document-page__list--others': layout !== null }"
           >
             <template v-if="layout">
-              <h3 class="document-page__list-heading">Other fill spots</h3>
+              <h3 class="document-page__list-heading">Other places</h3>
               <p class="field-hint">The template has no marked place for these.</p>
             </template>
             <p v-for="spot in section.list.scalars" :key="spot.key" class="document-page__paragraph">

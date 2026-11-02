@@ -92,6 +92,9 @@ function signedIn(): void {
     issuer: 'x',
     subject: 'y',
     displayName: 'Vi Huynh',
+    givenName: 'Vi',
+    familyName: 'Huynh',
+    nameConfirmed: true,
     allowance: 'FULL',
     invitationRequested: false,
     memberships: [{ workspaceId: 7, role: 'OWNER' }],
@@ -107,6 +110,7 @@ const timeOf = (date: Date) => new Intl.DateTimeFormat(undefined, { timeStyle: '
 describe('HomeView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    sessionStorage.clear()
     vi.mocked(listDocuments).mockReset()
     vi.mocked(searchForms).mockReset().mockResolvedValue([])
     vi.mocked(startForm).mockReset()
@@ -311,7 +315,7 @@ describe('HomeView', () => {
     const wrapper = await mountWithRouter()
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('What’s on your mind today, Vi?')
+    expect(wrapper.get('h1').text()).toBe('What form are we filling, Vi?')
   })
 
   it('groups recent documents by the day they were made, newest first, with the time beside each', async () => {
@@ -441,7 +445,7 @@ describe('HomeView', () => {
       'Step 3 Check and export',
     ])
     expect(how.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
-    expect(how.text()).toContain('A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.')
+    expect(how.text()).toContain('Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.')
     expect(how.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
     // Nothing to continue from yet.
     expect(wrapper.find('.home__resume').exists()).toBe(false)

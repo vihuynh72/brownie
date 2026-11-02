@@ -273,7 +273,7 @@ function nextSteps(plan: Plan): string[] {
   return [
     plan.file
       ? 'I start the document and read the file you attached.'
-      : 'I start the document. You can add notes or a transcript there, and I read them.',
+      : 'I start the document. You can add notes or a document there, and I read them.',
     'I ask you about anything missing or unclear.',
     'I show you what I found. Nothing is filled until you approve it.',
   ]
@@ -759,7 +759,7 @@ async function focusFailure(): Promise<void> {
           <p class="msg__who">Brownie</p>
           <div class="msg__body">
             <p>
-              Tell me what you need filled in. Attach notes or a transcript with +, and I will show you a plan before I
+              Tell me what you need filled in. Attach notes or a document with +, and I will show you a plan before I
               start anything.
             </p>
             <p v-if="noTemplates">
@@ -969,7 +969,7 @@ async function focusFailure(): Promise<void> {
             @click="chooseFile"
           >
             <AppIcon name="plus" :size="24" />
-            <span class="visually-hidden">Attach notes or a transcript</span>
+            <span class="visually-hidden">Attach notes or a document</span>
           </button>
           <VoiceMicButton
             v-if="voiceEnabled"

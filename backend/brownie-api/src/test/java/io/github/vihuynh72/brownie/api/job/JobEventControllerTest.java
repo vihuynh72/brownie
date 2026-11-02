@@ -127,7 +127,7 @@ class JobEventControllerTest {
                 events,
                 new WorkspaceAuthorizationService(new FixedWorkspaceRepository(hasWorkspaceAccess)),
                 new FixedIdentityRepository(new UserIdentity(
-                        7L, "https://issuer.example", "subject-7", null, null, null, null, null)),
+                        7L, "https://issuer.example", "subject-7", null, null, null, null, null, null, null, null)),
                 executor);
     }
 
@@ -190,6 +190,11 @@ class JobEventControllerTest {
         @Override
         public UserIdentity recordLogin(String issuer, String subject, String email, String displayName) {
             throw new UnsupportedOperationException("not needed by this test");
+        }
+
+        @Override
+        public UserIdentity recordName(long userId, String givenName, String familyName) {
+            throw new UnsupportedOperationException();
         }
 
         @Override
