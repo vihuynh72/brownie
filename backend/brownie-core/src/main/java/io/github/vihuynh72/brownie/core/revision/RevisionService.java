@@ -125,7 +125,7 @@ public class RevisionService {
         DocumentContentValidator.validate(initialContent, templateVersion.fieldDefinitions());
         DocumentContentValidator.validateEvidence(initialContent, initialEvidence);
         Map<FieldItemRef, FieldState> initialFieldStates = computeFieldStates(
-                Map.of(), initialContent, initialContent.fields().keySet(), initialEvidence, authorship);
+                Map.of(), initialContent, initialContent.fields().keySet(), initialEvidence, authorship, Set.of());
         return documentRepository.createIdempotently(
                 workspaceId,
                 userId,
@@ -246,6 +246,21 @@ public class RevisionService {
             long proposalId,
             long expectedRevisionId,
             String editReason) {
+        return acceptPatch(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, proposalId, expectedRevisionId, editReason,
+                false);
+    }
+
+    public PatchAcceptanceResult acceptPatch(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long proposalId,
+            long expectedRevisionId,
+            String editReason,
+            boolean acceptEvidencedValues) {
         // A proposal is found by its own id, so the document is checked
         // first: one that is in the trash has no proposals to accept, and
         // must say so as "not found" rather than fail halfway through the
@@ -277,10 +292,16 @@ public class RevisionService {
                 editEvidence.put(fieldId, spanIds);
             }
         }
+        // When the caller approves once, a field Brownie clearly took from
+        // what the person gave it -- the proposal's own evidence for it --
+        // comes out ACCEPTED in the same revision; a field with no evidence
+        // is Brownie's own guess and stays UNREVIEWED for the person to look at.
+        Set<String> acceptedFieldIds =
+                acceptEvidencedValues ? Set.copyOf(editEvidence.keySet()) : Set.of();
 
         DocumentMutationResult mutation = applyTypedEdits(
                 workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, edits, editEvidence,
-                Authorship.AI_COMPOSED, editReason);
+                Authorship.AI_COMPOSED, acceptedFieldIds, editReason);
         patchProposalRepository.markAccepted(workspaceId, userId, documentId, proposalId);
         return new PatchAcceptanceResult(comparison, Optional.of(mutation));
     }
@@ -767,6 +788,23 @@ public class RevisionService {
             Map<String, List<Long>> editEvidence,
             Authorship authorshipForTouched,
             String editReason) {
+        return applyTypedEdits(
+                workspaceId, userId, idempotencyKey, requestHash, documentId, expectedRevisionId, edits, editEvidence,
+                authorshipForTouched, Set.of(), editReason);
+    }
+
+    private DocumentMutationResult applyTypedEdits(
+            long workspaceId,
+            long userId,
+            IdempotencyKey idempotencyKey,
+            CanonicalRequestHash requestHash,
+            long documentId,
+            long expectedRevisionId,
+            List<DocumentFieldEdit> edits,
+            Map<String, List<Long>> editEvidence,
+            Authorship authorshipForTouched,
+            Set<String> acceptedFieldIds,
+            String editReason) {
         Optional<DocumentMutationResult> existing = documentRepository.findMutationResult(
                 workspaceId,
                 userId,
@@ -790,8 +828,8 @@ public class RevisionService {
                 current.content(), edits, templateVersion.fieldDefinitions());
         Map<String, List<Long>> nextEvidence = mergeEvidenceAfterEdits(current.evidence(), edits, editEvidence);
         DocumentContentValidator.validateEvidence(nextContent, nextEvidence);
-        Map<FieldItemRef, FieldState> nextFieldStates =
-                computeFieldStates(current.fieldStates(), nextContent, touchedFieldIds, nextEvidence, authorshipForTouched);
+        Map<FieldItemRef, FieldState> nextFieldStates = computeFieldStates(
+                current.fieldStates(), nextContent, touchedFieldIds, nextEvidence, authorshipForTouched, acceptedFieldIds);
         return documentRepository.appendRevisionIdempotently(
                 workspaceId,
                 userId,
@@ -860,7 +898,8 @@ public class RevisionService {
             DocumentContent content,
             Set<String> touchedFieldIds,
             Map<String, List<Long>> evidence,
-            Authorship authorshipForTouched) {
+            Authorship authorshipForTouched,
+            Set<String> acceptedFieldIds) {
         Map<FieldItemRef, FieldState> next = new LinkedHashMap<>();
         content.fields().forEach((fieldId, value) -> {
             boolean touched = touchedFieldIds.contains(fieldId);
@@ -873,7 +912,7 @@ public class RevisionService {
                             authorshipForTouched,
                             hasEvidence ? EvidenceSupport.DIRECT : EvidenceSupport.MISSING,
                             ValidationState.NOT_RUN,
-                            ReviewState.UNREVIEWED,
+                            acceptedFieldIds.contains(fieldId) ? ReviewState.ACCEPTED : ReviewState.UNREVIEWED,
                             preservedLock));
                 } else {
                     next.put(ref, previous != null ? previous : FieldState.freshlyUserAuthored(hasEvidence));
