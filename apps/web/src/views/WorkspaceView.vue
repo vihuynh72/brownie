@@ -3156,13 +3156,19 @@ const reviewList = computed<ReviewEntry[]>(() =>
     ? reviewEntries(reviewFilledIds.value, document.value.currentRevision.fields, labelOf, answeredByField.value, chatFieldOrder.value)
     : [],
 )
-/** Entries still needing a look: what Brownie guessed, which nothing the person gave backs. */
-const reviewGuesses = computed(() => reviewList.value.filter((entry) => entry.review !== 'ACCEPTED'))
-/** Entries Brownie filled from what the person gave it, already accepted with the proposal. */
-const reviewFromYou = computed(() => reviewList.value.filter((entry) => entry.review === 'ACCEPTED'))
+/** Entries Brownie guessed at: none of their fields carries a span from what the person gave. Accepting one does not move it -- it is still a guess. */
+const reviewGuesses = computed(() =>
+  reviewList.value.filter((entry) => entry.fieldIds.every((fieldId) => evidenceSpanIdsOf(fieldId).length === 0)),
+)
+/** Entries whose value carries a span from what the person gave it: "accepted from what you said". */
+const reviewFromYou = computed(() =>
+  reviewList.value.filter((entry) => entry.fieldIds.some((fieldId) => evidenceSpanIdsOf(fieldId).length > 0)),
+)
+/** Entries the person has accepted, whichever side of the two they sit on: the "N of M accepted" count. */
+const reviewAccepted = computed(() => reviewList.value.filter((entry) => entry.review === 'ACCEPTED'))
 const reviewAcceptedOpen = ref(false)
 /** "0 of 6 accepted": it follows the document, so every decision recorded moves it. */
-const reviewHeading = computed(() => `${reviewFromYou.value.length} of ${reviewList.value.length} accepted`)
+const reviewHeading = computed(() => `${reviewAccepted.value.length} of ${reviewList.value.length} accepted`)
 /** The entry whose fill spot is the one selected on the page, drawn as open. */
 const reviewOpenKey = computed(() => {
   const open = selected.value?.fieldId
@@ -4744,6 +4750,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       <span class="tag" :class="stateTagClass(entry.reviewTag)">
                         <AppIcon v-if="entry.reviewTag.icon" :name="entry.reviewTag.icon" :size="16" />{{ entry.reviewTag.text }}
                       </span>
+                      <span v-if="entry.review === 'ACCEPTED'" class="proposal-review__by-you">Accepted by you</span>
                       <button type="button" class="proposal-review__go" @click="goToReviewEntry(entry)">
                         {{ entry.key === reviewOpenKey ? 'Open' : 'Go to' }}<span class="visually-hidden">{{ ` ${entry.label}` }}</span>
                       </button>
@@ -6617,6 +6624,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* A guess the person accepted keeps its "Brownie's guess" provenance; this says who accepted it. */
+.proposal-review__by-you {
+  color: var(--color-text-quiet);
+  font-size: var(--font-size-small);
 }
 
 .proposal-review__row {
