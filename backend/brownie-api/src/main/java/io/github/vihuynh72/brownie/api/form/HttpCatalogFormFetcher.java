@@ -38,6 +38,10 @@ public final class HttpCatalogFormFetcher implements CatalogFormFetcher {
 
     @Override
     public byte[] fetch(FormLibraryCatalog.Entry entry) throws IOException {
+        // One wall-clock deadline for the whole trip -- the headers, the
+        // redirects and the body -- since a request timeout only reaches
+        // the response's first bytes.
+        long deadline = System.nanoTime() + TIMEOUT.toNanos();
         URI uri = URI.create(entry.url());
         for (int redirects = 0; ; redirects++) {
             requireAllowed(uri);
@@ -55,6 +59,7 @@ public final class HttpCatalogFormFetcher implements CatalogFormFetcher {
             }
             int status = response.statusCode();
             if (status >= 300 && status < 400) {
+                closeQuietly(response.body());
                 if (redirects >= MAX_REDIRECTS) {
                     throw new IOException("Fetching " + entry.id() + " kept redirecting");
                 }
@@ -64,13 +69,15 @@ public final class HttpCatalogFormFetcher implements CatalogFormFetcher {
                 continue;
             }
             if (status != 200) {
+                closeQuietly(response.body());
                 throw new IOException("Fetching " + entry.id() + " answered " + status);
             }
             long declared = response.headers().firstValueAsLong("Content-Length").orElse(-1);
             if (declared > MAX_BYTES) {
+                closeQuietly(response.body());
                 throw new IOException("Fetching " + entry.id() + " offered " + declared + " bytes, over the cap");
             }
-            return readCapped(response.body(), entry.id());
+            return readCapped(response.body(), entry.id(), deadline);
         }
     }
 
@@ -85,12 +92,23 @@ public final class HttpCatalogFormFetcher implements CatalogFormFetcher {
         }
     }
 
-    private static byte[] readCapped(InputStream body, String id) throws IOException {
+    private static void closeQuietly(InputStream body) {
+        try {
+            body.close();
+        } catch (IOException ignored) {
+            // The redirect or refusal matters, not whether its body closed cleanly.
+        }
+    }
+
+    private static byte[] readCapped(InputStream body, String id, long deadline) throws IOException {
         try (InputStream in = body) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
             long total = 0;
             for (int n; (n = in.read(chunk)) != -1; ) {
+                if (System.nanoTime() > deadline) {
+                    throw new IOException("Fetching " + id + " ran out of its " + TIMEOUT.toSeconds() + " seconds mid-body");
+                }
                 total += n;
                 if (total > MAX_BYTES) {
                     throw new IOException("Fetching " + id + " sent more than the " + MAX_BYTES + "-byte cap");
