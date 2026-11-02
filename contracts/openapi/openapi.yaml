@@ -155,6 +155,56 @@ paths:
         "401":
           description: Not logged in.
 
+  /api/v1/me/details/learn:
+    post:
+      operationId: learnDetails
+      summary: >
+        Learns the answers a person approved on a form into their saved
+        details. Bulk fills are skipped, sensitive keys are never saved
+        automatically, and a form that reads as someone else's is left
+        alone. The X-XSRF-TOKEN header is required like every other
+        mutation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LearnDetailsRequest"
+      responses:
+        "200":
+          description: What the run decided and saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningResponse"
+        "401":
+          description: Not logged in.
+        "404":
+          description: The document or revision is not the caller's.
+
+  /api/v1/me/details/learnings/{id}/undo:
+    post:
+      operationId: undoLearning
+      summary: >
+        Undoes one learn run: restores what it replaced and deletes what
+        it added, but only where the current value is still the one it
+        wrote. Idempotent. The X-XSRF-TOKEN header is required like every
+        other mutation.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "204":
+          description: Undone.
+        "401":
+          description: Not logged in.
+        "404":
+          description: No such learning run for this person.
+
   /api/v1/me/details/{key}:
     put:
       operationId: saveDetail
@@ -4178,6 +4228,51 @@ components:
         confirmedAt:
           type: string
           format: date-time
+
+    LearnDetailsRequest:
+      type: object
+      required: [documentId, revisionId]
+      properties:
+        documentId:
+          type: integer
+          format: int64
+        revisionId:
+          type: integer
+          format: int64
+
+    LearnedKey:
+      type: object
+      required: [key, label]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+
+    LearningResponse:
+      type: object
+      required: [subject, saved, replaced]
+      properties:
+        learningId:
+          type: integer
+          format: int64
+          nullable: true
+          description: The run's id, for undo; null when nothing was written.
+        subject:
+          type: string
+          enum: [SELF, OTHER, UNSURE, SKIPPED]
+        saved:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnedKey"
+        replaced:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnedKey"
+        reason:
+          type: string
+          nullable: true
+          description: Why nothing was saved (OTHER, UNSURE or SKIPPED).
 
     InvitationRequestBody:
       type: object

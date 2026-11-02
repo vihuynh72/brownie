@@ -133,6 +133,7 @@ class AssistIntegrationTest {
         long workspaceId = ensureWorkspace("subject-assist-owner").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-owner").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode flowing = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                         .andExpect(status().isOk())
@@ -242,6 +243,7 @@ class AssistIntegrationTest {
         long workspaceId = ensureWorkspace("subject-assist-spots").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-spots").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode flowing = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                         .andExpect(status().isOk())
@@ -300,6 +302,7 @@ class AssistIntegrationTest {
         long workspaceId = ensureWorkspace("subject-assist-answers").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-assist-answers").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode flowing = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                         .andExpect(status().isOk())
