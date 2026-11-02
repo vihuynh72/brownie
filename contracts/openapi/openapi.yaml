@@ -77,6 +77,43 @@ paths:
         "401":
           description: Not logged in.
 
+  /api/v1/me/invitation-request:
+    post:
+      operationId: requestInvitation
+      summary: >
+        Records the signed-in person's request for an invitation, or
+        changes its note. The first requested_at is kept when they ask
+        again. The X-XSRF-TOKEN header is required like every other
+        mutation.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationRequestBody"
+      responses:
+        "204":
+          description: Recorded.
+        "400":
+          description: The note is longer than 500 characters.
+        "401":
+          description: Not logged in.
+
+  /api/v1/welcome:
+    get:
+      operationId: getWelcome
+      summary: >
+        What the landing page can say before anyone signs in: which
+        sign-up mode this deployment is in, and where a chat app would
+        point. Answered without a session.
+      responses:
+        "200":
+          description: Always.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WelcomeResponse"
+
   /logout:
     post:
       operationId: logout
@@ -3856,7 +3893,7 @@ components:
   schemas:
     MeResponse:
       type: object
-      required: [userId, issuer, subject, memberships]
+      required: [userId, issuer, subject, allowance, invitationRequested, memberships]
       properties:
         userId:
           type: integer
@@ -3869,10 +3906,33 @@ components:
           type: string
         displayName:
           type: string
+        allowance:
+          type: string
+          enum: [FULL, FREE_DAILY]
+        invitationRequested:
+          type: boolean
         memberships:
           type: array
           items:
             $ref: "#/components/schemas/MembershipResponse"
+
+    InvitationRequestBody:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+
+    WelcomeResponse:
+      type: object
+      required: [signUp]
+      properties:
+        signUp:
+          type: string
+          enum: [OPEN, OPEN_WITH_DAILY_ALLOWANCE, INVITATION_ONLY]
+        mcpServerUrl:
+          type: string
+          nullable: true
 
     MembershipResponse:
       type: object

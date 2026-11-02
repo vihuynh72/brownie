@@ -22,6 +22,8 @@ describe('session store', () => {
       userId: 1,
       issuer: 'https://issuer',
       subject: 'subject',
+      allowance: 'FULL',
+      invitationRequested: false,
       memberships: [{ workspaceId: 42, role: 'OWNER' }],
     })
 
@@ -82,7 +84,7 @@ describe('session store', () => {
     const first = store.loadIdentity()
     const second = store.loadIdentity()
     expect(store.status).toBe('loading')
-    answer({ userId: 1, issuer: 'i', subject: 's', memberships: [{ workspaceId: 42, role: 'OWNER' }] } as never)
+    answer({ userId: 1, issuer: 'i', subject: 's', allowance: 'FULL', invitationRequested: false, memberships: [{ workspaceId: 42, role: 'OWNER' }] } as never)
     await Promise.all([first, second])
 
     expect(getCurrentIdentity).toHaveBeenCalledTimes(1)
@@ -90,7 +92,7 @@ describe('session store', () => {
   })
 
   it('becomes signed out when some other request finds the session has ended', async () => {
-    vi.mocked(getCurrentIdentity).mockResolvedValue({ userId: 1, issuer: 'i', subject: 's', memberships: [{ workspaceId: 42, role: 'OWNER' }] })
+    vi.mocked(getCurrentIdentity).mockResolvedValue({ userId: 1, issuer: 'i', subject: 's', allowance: 'FULL', invitationRequested: false, memberships: [{ workspaceId: 42, role: 'OWNER' }] })
     const store = useSessionStore()
     await store.loadIdentity()
 
@@ -111,6 +113,8 @@ describe('session store', () => {
       userId: 1,
       issuer: 'https://issuer',
       subject: 'subject',
+      allowance: 'FULL',
+      invitationRequested: false,
       memberships: [{ workspaceId: 42, role: 'OWNER' }],
     })
     await store.loadIdentity()
@@ -123,6 +127,8 @@ describe('session store', () => {
       userId: 1,
       issuer: 'https://issuer',
       subject: 'subject',
+      allowance: 'FULL',
+      invitationRequested: false,
       memberships: [{ workspaceId: 42, role: 'OWNER' }],
     })
     vi.mocked(logout).mockResolvedValue({ redirectUrl: 'https://idp.example/logout?post_logout_redirect_uri=http://localhost' })
@@ -142,6 +148,8 @@ describe('session store', () => {
       userId: 1,
       issuer: 'https://issuer',
       subject: 'subject',
+      allowance: 'FULL',
+      invitationRequested: false,
       memberships: [{ workspaceId: 42, role: 'OWNER' }],
     })
     vi.mocked(logout).mockRejectedValue(new ApiRequestError(403, undefined))

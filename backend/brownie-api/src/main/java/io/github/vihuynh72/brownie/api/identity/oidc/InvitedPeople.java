@@ -1,5 +1,6 @@
 package io.github.vihuynh72.brownie.api.identity.oidc;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -35,14 +36,33 @@ import java.util.Set;
 @Component
 public class InvitedPeople {
 
+    /** What kind of person a sign-in may let in. */
+    public enum Access {
+        /** The full allowance, either because invitations are not asked for or because this address has one. */
+        FULL,
+        /** Anyone may sign in; their workspace shares the open allowance instead. */
+        OPEN,
+        /** Not invited, and open sign-up is off. */
+        REFUSED
+    }
+
     private final boolean required;
+    private final boolean openSignUp;
     private final Set<String> addresses;
 
+    @Autowired
     public InvitedPeople(
             @Value("${brownie.invitations.required:false}") boolean required,
-            @Value("${brownie.invitations.addresses:}") String addresses) {
+            @Value("${brownie.invitations.addresses:}") String addresses,
+            @Value("${brownie.invitations.open-sign-up:false}") boolean openSignUp) {
         this.required = required;
+        this.openSignUp = openSignUp;
         this.addresses = normalize(addresses);
+    }
+
+    /** What a test that does not care about open sign-up can build: the gate with it off. */
+    InvitedPeople(boolean required, String addresses) {
+        this(required, addresses, false);
     }
 
     private static Set<String> normalize(String configured) {
@@ -56,18 +76,31 @@ public class InvitedPeople {
                 .collect(LinkedHashSet::new, Set::add, Set::addAll);
     }
 
-    /** True when no invitation is asked for, or when this address has one. */
-    public boolean mayUseBrownie(String email) {
+    /**
+     * Who this sign-in is. A missing or blank address can never be FULL
+     * when invitations are asked for, since there is nothing to match an
+     * invitation against, and guessing in the person's favour would open
+     * the gate to anyone whose provider omits the claim; it is OPEN when
+     * open sign-up is on and REFUSED when it is not.
+     */
+    public Access accessFor(String email) {
         if (!required) {
-            return true;
+            return Access.FULL;
         }
-        if (email == null || email.isBlank()) {
-            // Without an address there is nothing to match an invitation
-            // against, and guessing in the person's favour would open the
-            // gate to anyone whose provider omits the claim.
-            return false;
+        if (email != null && !email.isBlank() && addresses.contains(email.strip().toLowerCase(Locale.ROOT))) {
+            return Access.FULL;
         }
-        return addresses.contains(email.strip().toLowerCase(Locale.ROOT));
+        return openSignUp ? Access.OPEN : Access.REFUSED;
+    }
+
+    /** True when no invitation is asked for, or when this address has one, or when open sign-up lets anyone in. */
+    public boolean mayUseBrownie(String email) {
+        return accessFor(email) != Access.REFUSED;
+    }
+
+    /** Whether people who are not invited may still sign in on the open allowance. */
+    public boolean openSignUp() {
+        return openSignUp;
     }
 
     public boolean required() {

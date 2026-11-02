@@ -272,7 +272,7 @@ beforeEach(() => {
   }
   const session = useSessionStore()
   session.status = 'authenticated'
-  session.identity = { userId: 1, issuer: 'x', subject: 'y', memberships: [{ workspaceId: 7, role: 'OWNER' }] }
+  session.identity = { userId: 1, issuer: 'x', subject: 'y', allowance: 'FULL', invitationRequested: false, memberships: [{ workspaceId: 7, role: 'OWNER' }] }
 })
 
 afterEach(() => {

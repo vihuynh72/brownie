@@ -78,6 +78,11 @@ class SecurityConfig {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/oauth2/**", "/login/**", "/logout", "/error", "/test-support/**")
                         .permitAll()
+                        // What the landing page can say before anyone signs
+                        // in: which sign-up mode the deployment is in, and no
+                        // personal data in it.
+                        .requestMatchers("/api/v1/welcome")
+                        .permitAll()
                         // A chat-app download link is its own one-time
                         // credential, claimed in the database itself; the
                         // route exists only while MCP is on, and it does

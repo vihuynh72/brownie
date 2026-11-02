@@ -5,6 +5,7 @@ import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -63,5 +64,27 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
                 issuer,
                 subject);
         return results.stream().findFirst();
+    }
+
+    @Override
+    @Transactional
+    public void recordInvitationRequest(long userId, String note) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        jdbcTemplate.update(
+                """
+                INSERT INTO invitation_request (user_id, note)
+                VALUES (?, ?)
+                ON CONFLICT (user_id) DO UPDATE SET note = EXCLUDED.note
+                """,
+                userId,
+                note);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean hasInvitationRequest(long userId) {
+        TenantContext.setCurrentUser(jdbcTemplate, userId);
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM invitation_request WHERE user_id = ?)", Boolean.class, userId));
     }
 }

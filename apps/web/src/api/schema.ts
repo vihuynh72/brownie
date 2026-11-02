@@ -55,6 +55,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/invitation-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Records the signed-in person's request for an invitation, or changes its note. The first requested_at is kept when they ask again. The X-XSRF-TOKEN header is required like every other mutation. */
+        post: operations["requestInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/welcome": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the landing page can say before anyone signs in: which sign-up mode this deployment is in, and where a chat app would point. Answered without a session. */
+        get: operations["getWelcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/logout": {
         parameters: {
             query?: never;
@@ -1777,7 +1811,18 @@ export interface components {
             subject: string;
             email?: string;
             displayName?: string;
+            /** @enum {string} */
+            allowance: "FULL" | "FREE_DAILY";
+            invitationRequested: boolean;
             memberships: components["schemas"]["MembershipResponse"][];
+        };
+        InvitationRequestBody: {
+            note?: string;
+        };
+        WelcomeResponse: {
+            /** @enum {string} */
+            signUp: "OPEN" | "OPEN_WITH_DAILY_ALLOWANCE" | "INVITATION_ONLY";
+            mcpServerUrl?: string | null;
         };
         MembershipResponse: {
             /** Format: int64 */
@@ -3823,6 +3868,62 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    requestInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["InvitationRequestBody"];
+            };
+        };
+        responses: {
+            /** @description Recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The note is longer than 500 characters. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWelcome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Always. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WelcomeResponse"];
+                };
             };
         };
     };

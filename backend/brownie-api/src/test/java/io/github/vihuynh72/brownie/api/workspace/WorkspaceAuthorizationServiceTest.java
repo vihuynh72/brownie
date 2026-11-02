@@ -50,6 +50,16 @@ class WorkspaceAuthorizationServiceTest {
             public Optional<WorkspaceRole> findRole(long workspaceId, long userId) {
                 return Optional.ofNullable(rolesByWorkspaceId.get(workspaceId));
             }
+
+            @Override
+            public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
+
+            @Override
+            public java.util.Optional<Boolean> findOpenAllowance(long userId) {
+                throw new UnsupportedOperationException("not needed by this test");
+            }
         };
     }
 }

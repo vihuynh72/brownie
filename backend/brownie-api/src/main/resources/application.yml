@@ -214,6 +214,9 @@ brownie:
     # quiet and permanent.
     required: ${BROWNIE_INVITATIONS_REQUIRED:false}
     addresses: ${BROWNIE_INVITED_ADDRESSES:}
+    # Whether people who are not on the list may still sign in on the free
+    # daily allowance; off means only invited people get in at all.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
   support:
     # Who people are told to ask about their data: an address, a name, a
     # link. Shown as written. Left empty, the page says nobody has been named.
@@ -476,6 +479,9 @@ brownie:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.
     required: ${BROWNIE_INVITATIONS_REQUIRED:true}
+    # Whether strangers sign in on the free allowance; off keeps the
+    # hosted default invited-only too.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
 logging:
   level:
     io.github.vihuynh72.brownie: INFO
@@ -515,6 +521,9 @@ brownie:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.
     required: ${BROWNIE_INVITATIONS_REQUIRED:true}
+    # Whether strangers sign in on the free allowance; off keeps the
+    # hosted default invited-only too.
+    open-sign-up: ${BROWNIE_OPEN_SIGN_UP:false}
 logging:
   level:
     io.github.vihuynh72.brownie: WARN

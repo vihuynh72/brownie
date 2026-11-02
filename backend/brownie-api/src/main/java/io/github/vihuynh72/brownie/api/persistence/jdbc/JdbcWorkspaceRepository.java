@@ -99,6 +99,26 @@ class JdbcWorkspaceRepository implements WorkspaceRepository {
         return roles.stream().findFirst().map(WorkspaceRole::valueOf);
     }
 
+    @Override
+    @Transactional
+    public boolean setOpenAllowance(long workspaceId, long userId, boolean open) {
+        setCurrentUser(userId);
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+                "SELECT set_workspace_open_allowance(?, ?)", Boolean.class, workspaceId, open));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Boolean> findOpenAllowance(long userId) {
+        setCurrentUser(userId);
+        return jdbcTemplate.query(
+                        "SELECT open_allowance FROM workspace WHERE owner_user_id = ? AND is_personal",
+                        (rs, rowNum) -> rs.getBoolean(1),
+                        userId)
+                .stream()
+                .findFirst();
+    }
+
     private void setCurrentUser(long userId) {
         TenantContext.setCurrentUser(jdbcTemplate, userId);
     }
