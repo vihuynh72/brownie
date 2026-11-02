@@ -48,7 +48,7 @@ class FillSpotControllerTest {
     @Test
     void aCorrectionNeedsTheRightToChangeTemplatesAndAMoveDoesNot() {
         when(identities.findByIssuerAndSubject(ISSUER, "subject")).thenReturn(Optional.of(
-                new UserIdentity(USER_ID, ISSUER, "subject", null, null, null, null, null)));
+                new UserIdentity(USER_ID, ISSUER, "subject", null, null, null, null, null, null, null, null)));
         doThrow(new AccessDeniedException("Role does not grant MANAGE_TEMPLATES."))
                 .when(authorization).requireCapability(USER_ID, WORKSPACE_ID, WorkspaceCapability.MANAGE_TEMPLATES);
 

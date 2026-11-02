@@ -12,6 +12,7 @@ vi.mock('@/api/client', async () => {
   return {
     ...actual,
     listDocuments: vi.fn(),
+    saveName: vi.fn(),
     trashDocument: vi.fn(),
     getCapabilities: vi.fn(),
     getWelcome: vi.fn(),
@@ -29,6 +30,7 @@ import {
   getWelcome,
   listBatches,
   listDocuments,
+  saveName,
   trashDocument,
   type CapabilitiesResponse,
   type DeletionResponse,
@@ -88,6 +90,9 @@ function signedIn(): void {
     issuer: 'x',
     subject: 'y',
     displayName: 'Vi Huynh',
+    givenName: 'Vi',
+    familyName: 'Huynh',
+    nameConfirmed: true,
     allowance: 'FULL',
     invitationRequested: false,
     memberships: [{ workspaceId: 7, role: 'OWNER' }],
@@ -103,7 +108,9 @@ const timeOf = (date: Date) => new Intl.DateTimeFormat(undefined, { timeStyle: '
 describe('HomeView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    sessionStorage.clear()
     vi.mocked(listDocuments).mockReset()
+    vi.mocked(saveName).mockReset()
     vi.mocked(trashDocument).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
@@ -191,6 +198,81 @@ describe('HomeView', () => {
     expect(alert.text()).not.toContain('not_invited')
     expect(alert.find('a').exists()).toBe(false)
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /**
+   * A person who has never confirmed their name gets the one-step card,
+   * prefilled from what the provider called them.
+   */
+  it('asks for a name when none was confirmed, prefilled from the provider', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = {
+      userId: 1, issuer: 'x', subject: 'y', displayName: 'Daniel Ortiz',
+      givenName: null, familyName: null, nameConfirmed: false,
+      allowance: 'FULL', invitationRequested: false,
+      memberships: [{ workspaceId: 7, role: 'OWNER' }],
+    }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    const card = wrapper.get('.home__name')
+    expect(card.get('h2').text()).toBe('What’s your name?')
+    const inputs = card.findAll('input')
+    expect((inputs[0].element as HTMLInputElement).value).toBe('Daniel')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('Ortiz')
+    expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  /** Save sends both parts, replaces the session's identity, and the card goes. */
+  it('saves the name and greets with it', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(saveName).mockResolvedValue({
+      userId: 1, issuer: 'x', subject: 'y', displayName: 'Daniel Ortiz',
+      givenName: 'Daniel', familyName: 'Ortiz', nameConfirmed: true,
+      allowance: 'FULL', invitationRequested: false,
+      memberships: [{ workspaceId: 7, role: 'OWNER' }],
+    } as never)
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = {
+      userId: 1, issuer: 'x', subject: 'y', displayName: 'Daniel Ortiz',
+      givenName: null, familyName: null, nameConfirmed: false,
+      allowance: 'FULL', invitationRequested: false,
+      memberships: [{ workspaceId: 7, role: 'OWNER' }],
+    }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    await wrapper.get('.home__name form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(saveName).toHaveBeenCalledWith('Daniel', 'Ortiz')
+    expect(wrapper.find('.home__name').exists()).toBe(false)
+    expect(wrapper.get('.home__greeting').text()).toContain('Daniel')
+  })
+
+  /** Skip takes the card away for the rest of this browser session. */
+  it('hides the name card for the session once skipped', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const session = useSessionStore()
+    session.status = 'authenticated'
+    session.identity = {
+      userId: 1, issuer: 'x', subject: 'y', displayName: 'Daniel Ortiz',
+      givenName: null, familyName: null, nameConfirmed: false,
+      allowance: 'FULL', invitationRequested: false,
+      memberships: [{ workspaceId: 7, role: 'OWNER' }],
+    }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__name .link-button').trigger('click')
+
+    expect(wrapper.find('.home__name').exists()).toBe(false)
+    expect(sessionStorage.getItem('brownie-name-skip')).toBe('1')
   })
 
   it('greets a signed-in person by their first name only', async () => {
@@ -587,6 +669,7 @@ describe('HomeView: uploading a form', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(listDocuments).mockReset().mockResolvedValue([])
+    vi.mocked(saveName).mockReset()
     vi.mocked(learnFormAndStartDocument).mockReset()
     vi.mocked(getCapabilities).mockReset().mockResolvedValue(capabilities('RULES'))
     resetCapabilitiesCache()
