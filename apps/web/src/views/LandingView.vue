@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
-import { getWelcome, type WelcomeResponse } from '@/api/client'
+import { getWelcome, searchForms, type FormEntry, type WelcomeResponse } from '@/api/client'
 import { installTargets, type InstallTargetId } from '@/landing/installTargets'
 
 /**
@@ -22,6 +22,38 @@ onMounted(async () => {
     // where the address lives whenever chat apps are offered at all.
     welcome.value = { signUp: 'INVITATION_ONLY', mcpServerUrl: `${window.location.origin}/mcp` }
   }
+})
+
+// ---- Official forms ---------------------------------------------------------------------------------------------
+
+/**
+ * The form library, offered before sign-in: the same search Home uses, capped at eight, each with a
+ * "Sign in to start" link. A failed catalog call takes the whole section away rather than promising
+ * a library that is not there.
+ */
+const formQuery = ref('')
+const formResults = ref<FormEntry[]>([])
+const formLibraryFailed = ref(false)
+let formSearchTimer: ReturnType<typeof setTimeout> | undefined
+
+async function runFormSearch(): Promise<void> {
+  try {
+    const found = await searchForms(formQuery.value.trim())
+    formResults.value = found.slice(0, 8)
+  } catch {
+    formLibraryFailed.value = true
+  }
+}
+
+onMounted(() => void runFormSearch())
+
+function onFormQueryInput(): void {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  formSearchTimer = setTimeout(() => void runFormSearch(), 250)
+}
+
+onBeforeUnmount(() => {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
 })
 
 const signUp = computed(() => welcome.value?.signUp ?? null)
@@ -165,6 +197,34 @@ const TESTED_FORMS = [
         </div>
         <p v-if="accessNote" class="hero__note">{{ accessNote }}</p>
       </div>
+    </section>
+
+    <section v-if="!formLibraryFailed" class="landing-forms" aria-labelledby="landing-forms-title">
+      <div class="landing-forms__head">
+        <h2 id="landing-forms-title" class="landing__h2">Start from an official form</h2>
+        <p class="landing__lede">
+          Tax, immigration, veterans and health forms, downloaded from the agency that publishes them.
+        </p>
+      </div>
+      <input
+        v-model="formQuery"
+        class="landing-forms__search"
+        type="search"
+        placeholder="W-9, I-9, passport, VA…"
+        aria-label="Find an official form"
+        @input="onFormQueryInput"
+      />
+      <p v-if="!formQuery.trim()" class="landing-forms__popular">Popular forms</p>
+      <ul v-if="formResults.length" class="landing-forms__list">
+        <li v-for="entry in formResults" :key="entry.id" class="landing-forms__row">
+          <div class="landing-forms__text">
+            <p class="landing-forms__title">{{ entry.title }}</p>
+            <p class="landing-forms__agency">{{ entry.agency }}</p>
+          </div>
+          <a class="button button--small landing-forms__start" :href="SIGN_IN_HREF">Sign in to start</a>
+        </li>
+      </ul>
+      <p v-else-if="formQuery.trim()" class="landing-forms__empty">No match. You can always upload your own copy.</p>
     </section>
 
     <section id="install" class="install" aria-labelledby="install-title">
@@ -560,6 +620,75 @@ const TESTED_FORMS = [
 }
 
 /* ---------- Where to use it ---------- */
+
+.landing-forms {
+  padding-block: clamp(var(--space-8), 6vw, 6rem);
+}
+
+.landing-forms > * {
+  max-inline-size: var(--landing-max);
+  margin-inline: auto;
+  padding-inline: clamp(var(--space-4), 4vw, var(--space-10));
+}
+
+.landing-forms__search {
+  display: block;
+  margin-block-start: var(--space-4);
+  max-inline-size: 28rem;
+  inline-size: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.landing-forms__popular {
+  margin: var(--space-4) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-faint);
+}
+
+.landing-forms__list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.landing-forms__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.landing-forms__title {
+  margin: 0;
+  font-weight: 500;
+}
+
+.landing-forms__agency {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.landing-forms__start {
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+.landing-forms__empty {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-muted);
+}
 
 .install {
   background: var(--color-surface);
