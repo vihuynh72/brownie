@@ -52,6 +52,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void everyToolIsListedAndTheReadOnesAnswer() throws Exception {
         Browser browser = signIn("subject-mcp-surface", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
 
         McpSyncClient client = mcpClient(token.token());
@@ -75,6 +76,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void startDocumentThenGetDocumentRoundTripWithLabels() throws Exception {
         Browser browser = signIn("subject-mcp-start", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
 
@@ -97,6 +99,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void addTextSourceStoresTheTextAsAPlainTextSource() throws Exception {
         Browser browser = signIn("subject-mcp-source", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());
@@ -124,7 +127,9 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
         Browser owner = signIn("subject-mcp-xw-owner", ISSUER);
         Browser intruder = signIn("subject-mcp-xw-intruder", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(owner.workspaceId(), owner.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(owner.workspaceId(), owner.userId());
         builtInTemplateProvisioningService.ensureBuiltInTemplates(intruder.workspaceId(), intruder.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(intruder.workspaceId(), intruder.userId());
 
         IssuedToken ownerToken = issueToken(owner, "owner", "[\"read\",\"fill\",\"export\"]");
         IssuedToken intruderToken = issueToken(intruder, "intruder", "[\"read\",\"fill\",\"export\"]");
@@ -177,6 +182,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void aSourceThatNamesToolsStaysInertData() throws Exception {
         Browser browser = signIn("subject-mcp-injection", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());
@@ -200,6 +206,7 @@ class McpToolSurfaceIntegrationTest extends McpIntegrationTestSupport {
     void refusalsAndCallsAreRecordedInTheDocumentsHistory() throws Exception {
         Browser browser = signIn("subject-mcp-history", ISSUER);
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         IssuedToken token = issueToken(browser, "full", "[\"read\",\"fill\",\"export\"]");
         McpSyncClient client = mcpClient(token.token());
         long documentId = startDocument(client, browser.workspaceId());

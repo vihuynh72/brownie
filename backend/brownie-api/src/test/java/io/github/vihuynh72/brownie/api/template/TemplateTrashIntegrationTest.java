@@ -247,13 +247,15 @@ class TemplateTrashIntegrationTest {
         long tableLed = findTemplate(session, workspaceId, TABLE_LED)[0];
         trash(session, workspaceId, flowing).andExpect(status().isOk());
 
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
 
         assertThat(ids(listTemplates(session, workspaceId, ""))).containsExactly(tableLed);
 
         // Nor is a workspace whose every template is in the Trash Bin taken for one that has none.
         trash(session, workspaceId, tableLed).andExpect(status().isOk());
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
 
         assertThat(ids(listTemplates(session, workspaceId, ""))).isEmpty();
         assertThat(ids(listTemplates(session, workspaceId, "?trashed=true"))).containsExactly(tableLed, flowing);

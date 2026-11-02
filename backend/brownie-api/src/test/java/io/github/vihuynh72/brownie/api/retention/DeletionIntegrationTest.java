@@ -860,7 +860,8 @@ class DeletionIntegrationTest {
         Cookie session = newSession(subject);
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
         return new Owner(session, workspaceId, userId);
     }
 

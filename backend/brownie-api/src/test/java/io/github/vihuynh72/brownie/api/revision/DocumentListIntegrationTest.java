@@ -98,7 +98,8 @@ class DocumentListIntegrationTest {
         Cookie ownerSession = loginAndGetSessionCookie("subject-doc-list-owner");
         long ownerWorkspaceId = ensureWorkspace("subject-doc-list-owner").id();
         long ownerUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-doc-list-owner").orElseThrow().id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(ownerWorkspaceId, ownerUserId);
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
         long[] templateAndVersion = findFlowingTemplateAndActiveVersion(ownerSession, ownerWorkspaceId);
 
         long firstDocumentId = createMinimalDocument(ownerSession, ownerWorkspaceId, templateAndVersion[0], templateAndVersion[1], "Weekly Sync 1");

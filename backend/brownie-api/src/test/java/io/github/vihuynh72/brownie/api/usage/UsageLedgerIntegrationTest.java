@@ -586,7 +586,8 @@ class UsageLedgerIntegrationTest {
         userIdentityRepository.recordLogin(ISSUER, subject, null, null);
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow().id();
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(userId).id();
-        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(        );
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(        );
         OidcIdToken idToken = OidcIdToken.withTokenValue("test-token")
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))

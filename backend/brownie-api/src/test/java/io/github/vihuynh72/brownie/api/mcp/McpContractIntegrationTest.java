@@ -347,6 +347,7 @@ class McpContractIntegrationTest {
         Browser owner = signIn("subject-mcp-xdoc-owner");
         Browser caller = signIn("subject-mcp-xdoc-caller");
         builtInTemplateProvisioningService.ensureBuiltInTemplates(owner.workspaceId(), owner.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(owner.workspaceId(), owner.userId());
 
         // Mint a real document in the owner's workspace over MCP itself.
         JsonNode ownerGrant = readJson(postJson(
@@ -448,6 +449,7 @@ class McpContractIntegrationTest {
     void everyToolResultCarriesItsDataAsJsonText() throws Exception {
         Browser browser = signIn("subject-mcp-text-json");
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         JsonNode issued = readJson(postJson(
                 browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
                 "{\"name\":\"Text only\",\"scopes\":[\"read\"]}", 201));
@@ -568,6 +570,7 @@ class McpContractIntegrationTest {
     void toolResultsLeadWithTheirJson() throws Exception {
         Browser browser = signIn("subject-mcp-json-first");
         builtInTemplateProvisioningService.ensureBuiltInTemplates(browser.workspaceId(), browser.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(browser.workspaceId(), browser.userId());
         JsonNode issued = readJson(postJson(
                 browser, "/api/v1/workspaces/" + browser.workspaceId() + "/mcp/personal-tokens",
                 "{\"name\":\"Json first\",\"scopes\":[\"read\"]}", 201));
