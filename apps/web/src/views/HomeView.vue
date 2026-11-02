@@ -87,7 +87,7 @@ const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string
 
 // A typographer's apostrophe, as the rest of the interface sets it.
 const greeting = computed(() =>
-  session.firstName ? `What’s on your mind today, ${session.firstName}?` : 'What’s on your mind today?',
+  session.firstName ? `What form are we filling, ${session.firstName}?` : 'What form are we filling today?',
 )
 
 async function loadDocuments(): Promise<void> {
@@ -162,14 +162,18 @@ const authenticated = computed(() => session.status === 'authenticated')
 // nothing is claimed that it did not say.
 const namingByModel = ref(false)
 const uploadLimit = ref<string | null>(null)
+// "or a photo" is claimed only while the server lists an image type for a form, the same shape the upload takes.
+const acceptsPhoto = ref(false)
 async function loadCapabilityNotes(): Promise<void> {
   try {
     const capabilities = await loadCapabilities()
     namingByModel.value = capabilities.fillSpotNaming === 'MODEL'
     uploadLimit.value = capabilities.maxUploadBytes > 0 ? formatBytes(capabilities.maxUploadBytes) : null
+    acceptsPhoto.value = (capabilities.formFileTypes ?? []).some((type) => type.mediaType.startsWith('image/'))
   } catch {
     namingByModel.value = false
     uploadLimit.value = null
+    acceptsPhoto.value = false
   }
 }
 onMounted(() => {
@@ -178,7 +182,8 @@ onMounted(() => {
 
 /** The kinds of file the button takes, and how large one may be where the server said. */
 const kindsLine = computed(
-  () => `Word, PDF, Pages, OpenDocument or RTF${uploadLimit.value ? `, up to ${uploadLimit.value}` : ''}`,
+  () =>
+    `Word, PDF, Pages, OpenDocument${acceptsPhoto.value ? ', RTF or a photo' : ' or RTF'}${uploadLimit.value ? `, up to ${uploadLimit.value}` : ''}`,
 )
 // Where the AI service names the places in an uploaded form, the form's text goes to it, and the person is told so
 // before they choose a file. While a form is being learned there is no file left to choose, so the note waits.
@@ -438,7 +443,7 @@ const HOW_BROWNIE_WORKS: readonly { icon: IconName; title: string; text: string 
   {
     icon: 'document-text',
     title: 'Add your notes',
-    text: 'A transcript, notes, a calendar event or a Google Doc. Brownie reads only what you add.',
+    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
   },
   {
     icon: 'document-check',

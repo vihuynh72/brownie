@@ -435,7 +435,7 @@ export function findingWords(detail: string, fieldName: (fieldId: string) => str
     case 'UNSUPPORTED_CHARACTER':
       return label ? `${label} has a character the PDF cannot show` : 'a value has a character the PDF cannot show'
     case 'CHANGE_OUTSIDE_FILL_SPOTS':
-      return 'the page changed outside its fill spots'
+      return 'the page changed outside its places'
     case 'PROTECTED_REGION_MODIFIED':
     case 'LAYOUT_PROTECTED_REGION_CHANGE':
       return 'a part of the form that must not change was changed'

@@ -48,8 +48,8 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   await expect(page.locator('.source-card').getByText('transcript.txt', { exact: true })).toBeVisible({ timeout: 15_000 })
 
   // Asked in words, as the owner's design has it: Brownie reads the transcript.
-  await page.getByLabel('How may I help you?').fill('fill this from the transcript')
-  await page.getByLabel('How may I help you?').press('Enter')
+  await page.getByLabel('Tell me what to fill').fill('fill this from the transcript')
+  await page.getByLabel('Tell me what to fill').press('Enter')
   // Stop appears once the server has accepted the reading, so it exists before the reload below.
   await expect(page.getByRole('button', { name: 'Stop reading' })).toBeVisible({ timeout: 15_000 })
 
@@ -69,7 +69,7 @@ test('a real document goes from empty to a real, exported DOCX/PDF through the a
   await expect(proposal.getByText(/wiring.*practice robot/i)).toBeVisible()
 
   await page.getByRole('button', { name: /I approve, fill it in/ }).click()
-  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in \d+ fill spots?\./)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('region', { name: 'Conversation with Brownie' }).getByText(/^Filled in \d+ places?\./)).toBeVisible({ timeout: 15_000 })
   await expect(page.getByLabel(/^Meeting title/)).toHaveValue(/Weekly Robotics Club Sync/i)
 
   // A value Brownie filled carries its evidence: the bar about the fill spot opens the cited passage.

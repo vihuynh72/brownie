@@ -226,8 +226,8 @@ function noticeSentence(notice: { code: string; count: number; detail?: string |
       return spotsFoundSentence(count, form.spots.filter((spot) => spot.origin === 'FOUND_BY_BROWNIE').length, form.kind)
     case 'NO_SPOTS_FOUND':
       return form.kind === 'PDF'
-        ? 'Brownie did not find any blanks. Choose Add a fill spot, or draw a box wherever something should be filled in.'
-        : 'Brownie did not find any blanks. Choose Add a fill spot, or select a place on the page and choose Fill in here.'
+        ? 'Brownie did not find any blanks. Choose Add a place, or draw a box wherever something should be filled in.'
+        : 'Brownie did not find any blanks. Choose Add a place, or select a place on the page and choose Fill in here.'
     case 'TRACKED_CHANGES_AND_COMMENTS':
       return "Brownie's copy has the tracked changes accepted and the comments left out; your original file is unchanged."
     case 'MACROS_REMOVED':

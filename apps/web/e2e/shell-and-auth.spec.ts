@@ -139,5 +139,5 @@ test('Chat sends you to where a document is started', async ({ page }) => {
   // The sidebar has its own "Home" link, so what proves this page loaded is something only the
   // Chat page itself renders: its message box is there whether or not this workspace already has
   // templates or documents, unlike the "Upload a form on Home" link that only appears without one.
-  await expect(page.getByRole('textbox', { name: 'How may I help you?' })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Tell me what to fill' })).toBeVisible()
 })

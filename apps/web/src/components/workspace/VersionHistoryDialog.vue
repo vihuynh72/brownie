@@ -661,7 +661,7 @@ async function confirmRestore(revision: DocumentRevisionResponse): Promise<void>
               <div v-if="shownRows.length > 0" class="compare-table" role="table" :aria-labelledby="compareHeadingId">
                 <div class="compare-table__head" role="rowgroup">
                   <div class="compare-row compare-row--head" role="row">
-                    <div class="compare-cell" role="columnheader">Fill spot</div>
+                    <div class="compare-cell" role="columnheader">Place</div>
                     <div class="compare-cell" role="columnheader">Version {{ compareRevision.revisionNumber }}</div>
                     <div class="compare-cell" role="columnheader">Now (version {{ currentRevision.revisionNumber }})</div>
                     <div class="compare-cell" role="columnheader"><span class="visually-hidden">Status</span></div>
@@ -696,7 +696,7 @@ async function confirmRestore(revision: DocumentRevisionResponse): Promise<void>
                 {{
                   compareRows.length === 0
                     ? 'Neither version has any values filled in.'
-                    : 'Nothing is different: every fill spot is the same as now.'
+                    : 'Nothing is different: every place is the same as now.'
                 }}
               </p>
 
@@ -715,7 +715,7 @@ async function confirmRestore(revision: DocumentRevisionResponse): Promise<void>
               <p :id="questionId(confirmingRevision)" class="restore-card__question" tabindex="-1">
                 Restore version {{ confirmingRevision.revisionNumber }}? Your current version stays in the history.
               </p>
-              <p v-if="showLockedHint" class="field-hint">Locked fill spots keep their current values.</p>
+              <p v-if="showLockedHint" class="field-hint">Locked places keep their current values.</p>
               <p v-if="restoreError" class="field-error" role="alert">{{ restoreError }}</p>
               <div class="restore-card__actions">
                 <button
