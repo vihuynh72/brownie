@@ -143,9 +143,9 @@ function reset(next: PdfSpotDialogMode): void {
   }
 }
 
-/** `beside` is the box a size question is about, when it is on the page: the card hangs off it. */
-function open(next: PdfSpotDialogMode, beside: HTMLElement | null = null): void {
-  if (!isOpen.value) opener = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null
+/** `beside` is the box a size question is about, when it is on the page: the card hangs off it. `returnTo` is the element focus goes back to on close, when the opener's own focus is already gone -- the "More" button, when the question came out of the menu. */
+function open(next: PdfSpotDialogMode, beside: HTMLElement | null = null, returnTo: HTMLElement | null = null): void {
+  if (!isOpen.value) opener = returnTo ?? (window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null)
   anchor = beside
   reset(next)
   isOpen.value = true

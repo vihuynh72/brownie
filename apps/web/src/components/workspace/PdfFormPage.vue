@@ -728,9 +728,9 @@ async function placeNewBox(page: PdfPageModel, drawn: PdfBox | null, point: PdfP
   openDialog({ kind: 'add', pageNumber: page.pageNumber, box, style: suggestion?.style ?? null, labelGuess: suggestion?.labelGuess ?? null })
 }
 
-function openDialog(next: PdfSpotDialogMode, beside: HTMLElement | null = null): void {
+function openDialog(next: PdfSpotDialogMode, beside: HTMLElement | null = null, returnTo: HTMLElement | null = null): void {
   problem.value = null
-  dialogRef.value?.open(next, beside)
+  dialogRef.value?.open(next, beside, returnTo)
 }
 
 /** The box laid over a place on the page, which a question about that place is asked beside; null when it is not on a page. */
@@ -944,8 +944,8 @@ function isFormField(fieldId: string): boolean | null {
   return spot ? spot.formField : null
 }
 
-function openRename(fieldId: string): void {
-  openDialog({ kind: 'rename', fieldId, label: labelOf(fieldId) })
+function openRename(fieldId: string, returnTo: HTMLElement | null = null): void {
+  openDialog({ kind: 'rename', fieldId, label: labelOf(fieldId) }, null, returnTo)
 }
 
 function openRestyle(fieldId: string): void {

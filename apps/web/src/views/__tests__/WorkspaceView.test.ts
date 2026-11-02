@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { RouterView, createRouter, createWebHistory, type Router } from 'vue-router'
@@ -673,7 +673,11 @@ function norm(value: string): string {
  */
 function buttonsNamed(page: Page, name: string, within = ''): DOMWrapper<HTMLButtonElement>[] {
   const squash = (words: string) => words.replace(/\s+/g, '')
-  return page.findAll<HTMLButtonElement>(`${within} button`.trim()).filter((button) => squash(accessibleName(button.element)) === squash(name))
+  /* The bar's "More" menu teleports to the body, so a button inside it is not in the page's own tree. */
+  const all = within === '.selection-more-menu'
+    ? Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button')).map((element) => new DOMWrapper(element))
+    : page.findAll<HTMLButtonElement>(`${within} button`.trim())
+  return all.filter((button) => squash(accessibleName(button.element)) === squash(name))
 }
 
 function buttonNamed(page: Page, name: string, within = ''): DOMWrapper<HTMLButtonElement> | undefined {
@@ -714,7 +718,7 @@ async function pressMore(page: Page, name: string, _within = ''): Promise<void> 
 async function hasButtonMore(page: Page, name: string, _within = ''): Promise<boolean> {
   if (!hasButton(page, 'More', 'section.selection-bar')) return false
   await openMore(page)
-  return hasButton(page, name)
+  return hasButton(page, name, '.selection-more-menu')
 }
 
 /** A control the bar gathered under "More": the menu is opened first so the button is there to find. */
@@ -1658,7 +1662,7 @@ describe('WorkspaceView: the bar about the selected place', () => {
     ])
     // The quieter controls gathered under "More": the place's own, and a row's when there is one.
     await openMore(page)
-    expect(selectionBar(page).findAll('.selection-more-menu [role="menuitem"]').map((item) => accessibleName(item.element))).toEqual([
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('.selection-more-menu [role="menuitem"]')).map((element) => new DOMWrapper(element)).map((item) => accessibleName(item.element))).toEqual([
       'Ask Brownie for Meeting title',
       'Lock Meeting title',
       'Rename… Meeting title',
@@ -1669,7 +1673,7 @@ describe('WorkspaceView: the bar about the selected place', () => {
 
     await selectSpot(page, 'edit-action.item.task-0')
     await openMore(page)
-    expect(selectionBar(page).findAll('.selection-more-menu [role="menuitem"]').map((item) => accessibleName(item.element))).toEqual(
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('.selection-more-menu [role="menuitem"]')).map((element) => new DOMWrapper(element)).map((item) => accessibleName(item.element))).toEqual(
       ['Lock row 1', 'Rename… Action item task', 'Move up row 1', 'Move down row 1', 'Remove row 1', 'Text style and rules'],
     )
   })
@@ -1684,7 +1688,10 @@ describe('WorkspaceView: the bar about the selected place', () => {
     more.element.focus()
     await more.trigger('keydown', { key: 'ArrowDown' })
 
-    const menu = () => selectionBar(page).find('.selection-more-menu')
+    const menu = () => { const found = document.body.querySelector('.selection-more-menu'); return found ? new DOMWrapper(found) : new DOMWrapper(document.createElement('div')) }
+    const menuOpen = () => document.body.querySelector('.selection-more-menu') !== null
+    /* The menu is on the body, not inside the bar's own scroll, so the bar never clips it. */
+    expect(selectionBar(page).find('.selection-more-menu').exists()).toBe(false)
     expect(menu().exists()).toBe(true)
     const items = menu().findAll('[role="menuitem"]')
     expect(items.length).toBeGreaterThan(1)
@@ -1696,7 +1703,7 @@ describe('WorkspaceView: the bar about the selected place', () => {
     expect(window.document.activeElement).toBe(items[0].element)
 
     await items[0].trigger('keydown', { key: 'Escape' })
-    expect(menu().exists()).toBe(false)
+    expect(menuOpen()).toBe(false)
     expect(window.document.activeElement).toBe(more.element)
   })
 
@@ -1706,11 +1713,17 @@ describe('WorkspaceView: the bar about the selected place', () => {
 
     await selectSpot(page, 'edit-meeting.title')
     await openMore(page)
-    const fieldNames = selectionBar(page).findAll('button').map((button) => accessibleName(button.element))
+    const fieldNames = [
+      ...selectionBar(page).findAll('button').map((button) => accessibleName(button.element)),
+      ...Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button')).map((button) => accessibleName(button)),
+    ]
     expect(fieldNames).toEqual(expect.arrayContaining(['Accept Meeting title', 'Reject Meeting title', 'Ask Brownie for Meeting title', 'Lock Meeting title']))
 
     await selectSpot(page, 'edit-action.item.task-0')
-    const rowNames = selectionBar(page).findAll('button').map((button) => accessibleName(button.element))
+    const rowNames = [
+      ...selectionBar(page).findAll('button').map((button) => accessibleName(button.element)),
+      ...Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button')).map((button) => accessibleName(button)),
+    ]
     expect(rowNames).toEqual(expect.arrayContaining(['Accept row 1', 'Reject row 1', 'Lock row 1', 'Move up row 1', 'Remove row 1']))
   })
 
@@ -1762,12 +1775,12 @@ describe('WorkspaceView: the bar about the selected place', () => {
     await selectSpot(page, 'edit-action.item.owner-0')
     await openMore(page)
 
-    const toggle = selectionBar(page)
-      .findAll('button')
-      .find((button) => /^(Lock|Unlock)/.test(accessibleName(button.element)))!
-    const says = accessibleName(toggle.element).startsWith('Unlock') ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
-    toggle.element.focus()
-    await toggle.trigger('click')
+    const toggle = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button'))
+      .find((button) => /^(Lock|Unlock)/.test(accessibleName(button)))!
+    const toggleWrap = new DOMWrapper(toggle)
+    const says = accessibleName(toggle).startsWith('Unlock') ? 'EDITABLE' : 'EXPLICITLY_LOCKED'
+    toggle.focus()
+    await toggleWrap.trigger('click')
     await flushPromises()
 
     expect(vi.mocked(setFieldLock).mock.calls.map((call) => call[4])).toEqual([says, says, says])
