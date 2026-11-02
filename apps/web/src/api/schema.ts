@@ -1865,9 +1865,9 @@ export interface components {
             email?: string;
             displayName?: string;
             /** @description The name the person gave themselves; null until they confirm it. */
-            givenName?: string;
+            givenName?: string | null;
             /** @description The family name the person gave themselves; null until they confirm it. */
-            familyName?: string;
+            familyName?: string | null;
             /** @description True once the person has saved their name themselves. */
             nameConfirmed?: boolean;
             /** @enum {string} */

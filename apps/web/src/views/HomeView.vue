@@ -39,7 +39,16 @@ const loadError = ref('')
 // The name card: on first sign-in (nameConfirmed false) Brownie asks for
 // the name once, prefilled from the provider's display name. Skip hides it
 // for this browser session only.
-const nameSkipped = ref(sessionStorage.getItem('brownie-name-skip') === '1')
+// sessionStorage can be blocked (private modes, strict cookie settings); a refused read
+// just means the card shows, and a refused write means it comes back next visit.
+function readNameSkipped(): boolean {
+  try {
+    return sessionStorage.getItem('brownie-name-skip') === '1'
+  } catch {
+    return false
+  }
+}
+const nameSkipped = ref(readNameSkipped())
 const showNameCard = computed(
   () => authenticated.value && session.identity?.nameConfirmed === false && !nameSkipped.value,
 )
@@ -65,7 +74,11 @@ async function submitName(): Promise<void> {
 }
 
 function skipName(): void {
-  sessionStorage.setItem('brownie-name-skip', '1')
+  try {
+    sessionStorage.setItem('brownie-name-skip', '1')
+  } catch {
+    // Blocked storage keeps the card until the visit ends, which the ref already says.
+  }
   nameSkipped.value = true
 }
 

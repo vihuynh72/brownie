@@ -4016,9 +4016,11 @@ components:
         givenName:
           description: The name the person gave themselves; null until they confirm it.
           type: string
+          nullable: true
         familyName:
           description: The family name the person gave themselves; null until they confirm it.
           type: string
+          nullable: true
         nameConfirmed:
           description: True once the person has saved their name themselves.
           type: boolean
