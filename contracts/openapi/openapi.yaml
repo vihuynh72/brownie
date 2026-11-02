@@ -6801,6 +6801,11 @@ components:
           type: string
           nullable: true
           description: Defaults to a fixed reason when blank or omitted.
+        acceptEvidencedValues:
+          type: boolean
+          description: >-
+            When true, every applied field Brownie backed with evidence comes out accepted in the same revision;
+            a field with no evidence stays unreviewed. Defaults to false.
 
     PatchAcceptResponse:
       type: object
