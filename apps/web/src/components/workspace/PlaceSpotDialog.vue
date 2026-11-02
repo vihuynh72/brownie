@@ -317,7 +317,7 @@ const whereSummary = computed(() => {
 })
 
 /** The new spot as the preview draws it: its name in square brackets, as an empty fill spot reads on the page. */
-const markerWords = computed(() => `[${label.value.trim() || 'Fill spot'}]`)
+const markerWords = computed(() => `[${label.value.trim() || 'Place'}]`)
 
 /** How a date value reads once exported, so the Date choice shows what it will look like. */
 const DATE_EXAMPLE = formatDateLikeExport('2026-10-13')
@@ -387,7 +387,7 @@ const stepTitle = computed(() => (step.value === 1 ? 'Which paragraph?' : step.v
 </script>
 
 <template>
-  <SpotDialogShell ref="shell" caption="Add a fill spot" :title="stepTitle" :step="step" :steps="3" :busy="busy" :status="status" :error="error">
+  <SpotDialogShell ref="shell" caption="Add a place" :title="stepTitle" :step="step" :steps="3" :busy="busy" :status="status" :error="error">
     <!-- Step 1: which line. A list to move through with the arrow keys, narrowed by the words typed above it. -->
     <div v-if="step === 1" class="place-spot__body">
       <div>
@@ -427,7 +427,7 @@ const stepTitle = computed(() => (step.value === 1 ? 'Which paragraph?' : step.v
           <span v-if="candidate.where" class="place-spot__line-where">{{ candidate.where }}</span>
         </li>
       </ul>
-      <p v-else class="field-hint" role="status">{{ lines.length === 0 ? 'This form has no paragraph a fill spot can go in.' : 'No paragraph has those words.' }}</p>
+      <p v-else class="field-hint" role="status">{{ lines.length === 0 ? 'This form has no paragraph a place can go in.' : 'No paragraph has those words.' }}</p>
     </div>
 
     <!-- Step 2: where in the line. -->
@@ -480,7 +480,7 @@ const stepTitle = computed(() => (step.value === 1 ? 'Which paragraph?' : step.v
             :aria-describedby="labelError ? `${ids}-label-error ${ids}-label-hint` : `${ids}-label-hint`"
             @input="onLabelInput"
           />
-          <p :id="`${ids}-label-hint`" class="field-hint">What the fill spot is called, such as Company. Up to {{ MAX_SPOT_LABEL }} characters.</p>
+          <p :id="`${ids}-label-hint`" class="field-hint">What the place is called, such as Company. Up to {{ MAX_SPOT_LABEL }} characters.</p>
           <p v-if="labelError" :id="`${ids}-label-error`" class="field-error place-spot__label-error" role="alert">{{ labelError }}</p>
         </div>
 
@@ -544,7 +544,7 @@ const stepTitle = computed(() => (step.value === 1 ? 'Which paragraph?' : step.v
         <div class="place-spot__finish">
           <button type="button" class="button button--secondary" :aria-disabled="busy ? 'true' : undefined" @click="!busy && shell?.close()">Cancel</button>
           <button type="submit" class="button button--primary" :form="formId" :aria-disabled="busy ? 'true' : undefined">
-            <AppIcon name="plus" :size="18" />{{ busy ? 'Adding…' : 'Add the fill spot' }}
+            <AppIcon name="plus" :size="18" />{{ busy ? 'Adding…' : 'Add the place' }}
           </button>
         </div>
       </template>

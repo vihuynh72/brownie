@@ -226,6 +226,11 @@ export function getWelcome(): Promise<WelcomeResponse> {
   return request<WelcomeResponse>('/api/v1/welcome')
 }
 
+/** Asks for an invitation on the free-allowance workspace's behalf; the note is optional and at most 500 characters. */
+export function requestInvitation(note?: string): Promise<void> {
+  return request<void>('/api/v1/me/invitation-request', { method: 'POST', body: { note } })
+}
+
 /**
  * Ends the server session. A CSRF-checked POST like every other mutation
  * (the header is added by `request`); asking for JSON makes the server
@@ -641,10 +646,11 @@ export function acceptPatchProposal(
   proposalId: number,
   expectedRevisionId: number,
   idempotencyKey: string,
+  acceptEvidencedValues = false,
 ): Promise<PatchAcceptResponse> {
   return request(`/api/v1/workspaces/${workspaceId}/documents/${documentId}/patch-proposals/${proposalId}/accept`, {
     method: 'POST',
-    body: { expectedRevisionId },
+    body: { expectedRevisionId, acceptEvidencedValues },
     headers: { 'Idempotency-Key': idempotencyKey },
   })
 }

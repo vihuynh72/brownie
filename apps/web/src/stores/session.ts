@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ApiRequestError, getCurrentIdentity, logout, type MeResponse } from '@/api/client'
+import { ApiRequestError, getCurrentIdentity, logout, requestInvitation, type MeResponse } from '@/api/client'
 import { describeCommonFailure } from '@/api/failures'
 
 interface SessionState {
@@ -54,6 +54,16 @@ export const useSessionStore = defineStore('session', {
      * the @, otherwise nothing -- the greeting drops the name rather than
      * addressing someone as their whole email address or as "unknown".
      */
+    /** Which allowance the deployment gave this workspace: the full one, or the free daily one everyone new starts on. */
+    allowance(state): MeResponse['allowance'] | undefined {
+      return state.identity?.allowance
+    },
+
+    /** Whether this workspace has already asked for an invitation, so the ask is offered once, not again and again. */
+    invitationRequested(state): boolean {
+      return state.identity?.invitationRequested ?? false
+    },
+
     firstName(state): string | null {
       const fromName = state.identity?.displayName?.trim().split(/\s+/)[0]
       if (fromName) return fromName
@@ -88,6 +98,15 @@ export const useSessionStore = defineStore('session', {
           describeCommonFailure(error, 'a way to confirm who is signed in') ??
           'Brownie could not confirm your sign-in. Try again in a moment.'
       }
+    },
+
+    /**
+     * Asks for an invitation on this workspace's behalf, then records it so the ask is
+     * not offered again. The request is the server's to refuse; the flag only follows a success.
+     */
+    async requestInvitation(note?: string): Promise<void> {
+      await requestInvitation(note)
+      if (this.identity) this.identity = { ...this.identity, invitationRequested: true }
     },
 
     /** Some request found that the server no longer recognises this session; nothing is sent. */

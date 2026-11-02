@@ -72,6 +72,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The signed-in person's saved details ("Your details"), ordered by group then by declaration order. A sensitive row's value is null and it carries only its four-character hint. */
+        get: operations["listSavedDetails"];
+        put?: never;
+        post?: never;
+        /** Deletes every saved detail the person has ("Delete all saved details"). The X-XSRF-TOKEN header is required like every other mutation. */
+        delete: operations["deleteSavedDetails"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/details/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** A manual save of one detail. Sensitive values are sealed before they are stored and the response carries only the hint. The X-XSRF-TOKEN header is required like every other mutation. */
+        put: operations["saveDetail"];
+        post?: never;
+        /** Deletes one saved detail; 204 whether or not a row existed. The X-XSRF-TOKEN header is required like every other mutation. */
+        delete: operations["deleteSavedDetail"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/welcome": {
         parameters: {
             query?: never;
@@ -1815,6 +1851,40 @@ export interface components {
             allowance: "FULL" | "FREE_DAILY";
             invitationRequested: boolean;
             memberships: components["schemas"]["MembershipResponse"][];
+            /** @description The person's saved details, masked: a non-sensitive value is its plain text; a sensitive row carries only its four-character hint. */
+            savedDetails?: components["schemas"]["SavedDetailResponse"][];
+        };
+        DetailsResponse: {
+            details: components["schemas"]["SavedDetailResponse"][];
+            /** @description Whether this Brownie can seal sensitive details. */
+            sealingAvailable: boolean;
+        };
+        SaveDetailRequest: {
+            value: string;
+        };
+        DetailSource: {
+            /** Format: int64 */
+            documentId?: number | null;
+            label?: string | null;
+            title?: string | null;
+        };
+        SavedDetailResponse: {
+            key: string;
+            label: string;
+            /** @enum {string} */
+            group: "IDENTITY" | "CONTACT" | "ADDRESS" | "WORK" | "INCOME" | "EDUCATION" | "HOUSEHOLD" | "EMERGENCY" | "SENSITIVE";
+            sensitive: boolean;
+            /** @description Null for a sensitive row. */
+            value?: string | null;
+            /** @description The last four characters, only for a sensitive row. */
+            hint?: string | null;
+            /** @enum {string} */
+            origin: "AUTO" | "MANUAL";
+            source?: components["schemas"]["DetailSource"];
+            /** Format: date-time */
+            savedAt: string;
+            /** Format: date-time */
+            confirmedAt: string;
         };
         InvitationRequestBody: {
             note?: string;
@@ -2068,6 +2138,8 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description The person-facing reason a FAILED or DEAD job ended, from the latest safe job event. Null in every other state. */
+            failureMessage: string | null;
         };
         EventResponse: {
             /** Format: int64 */
@@ -2209,10 +2281,10 @@ export interface components {
             }[];
             recoveryActions: string[];
             /**
-             * @description Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH is this workspace's own monthly allowance, which starts again next calendar month; GLOBAL_MONTH is the allowance every workspace shares, which only whoever runs the service can raise.
+             * @description Present only when code is USAGE_LIMIT_REACHED. WORKSPACE_MONTH is this workspace's own monthly allowance, which starts again next calendar month; GLOBAL_MONTH is the allowance every workspace shares, which only whoever runs the service can raise; OPEN_DAY is the free allowance a not-yet-invited workspace has each day, which starts again at midnight UTC; OPEN_MONTH is the free allowance every such workspace shares this month.
              * @enum {string}
              */
-            limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH";
+            limit?: "WORKSPACE_MONTH" | "GLOBAL_MONTH" | "OPEN_DAY" | "OPEN_MONTH";
             /** @description Present only for some codes: with CONNECTOR_RESOURCE_UNAVAILABLE, GONE or CANCELLED for an event, and GONE, ACCESS_LOST, TRASHED, DOWNLOAD_RESTRICTED or CHANGED_DURING_COPY for a Drive file; with CONNECTOR_RESOURCE_UNSUPPORTED, TYPE or NOT_UTF8 for a Drive file (a calendar entry has none); with CONNECTION_RECONNECT_REQUIRED, TOKEN_REJECTED, TOKEN_UNREADABLE or PERMISSION_MISSING; with CONNECTOR_RESOURCE_REFUSED, the copy's rejection code from the same checks an upload meets; with ACTION_NOT_PROPOSABLE, NO_EXPORT, EXPORT_STALE, FORMAT_NOT_EXPORTED, FILE_TOO_LARGE, HIDDEN_CHARACTERS, TIME_SKIPPED or INVALID; with UNSUPPORTED_MEDIA_TYPE, why the file was refused: NOT_A_DOCUMENT, SPREADSHEET, PRESENTATION, PASSWORD_PROTECTED, RIGHTS_PROTECTED, REMOTE_CONTENT (it asks whoever opens it to fetch something from a network) or DAMAGED; with FILLABLE_FORM_FAILED, CANNOT_OPEN, DAMAGED or TIMED_OUT. */
             reason?: string;
             /**
@@ -3098,6 +3170,8 @@ export interface components {
             expectedRevisionId: number;
             /** @description Defaults to a fixed reason when blank or omitted. */
             editReason?: string | null;
+            /** @description When true, every applied field Brownie backed with evidence comes out accepted in the same revision; a field with no evidence stays unreviewed. Defaults to false. */
+            acceptEvidencedValues?: boolean;
         };
         PatchAcceptResponse: {
             applied: boolean;
@@ -3893,6 +3967,139 @@ export interface operations {
             };
             /** @description The note is longer than 500 characters. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSavedDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetailsResponse"];
+                };
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteSavedDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveDetailRequest"];
+            };
+        };
+        responses: {
+            /** @description The saved row. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedDetailResponse"];
+                };
+            };
+            /** @description The value is blank or past the length the key allows. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The key is not a canonical saved-detail key. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This Brownie has no sealing key, so a sensitive detail cannot be saved. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteSavedDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };

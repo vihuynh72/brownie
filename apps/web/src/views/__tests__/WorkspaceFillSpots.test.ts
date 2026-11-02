@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { RouterView, createRouter, createWebHistory } from 'vue-router'
@@ -261,7 +261,11 @@ function accessibleName(element: Element): string {
 }
 
 function buttonNamed(page: Page, name: string, within = ''): DOMWrapper<HTMLButtonElement> | undefined {
-  return page.findAll<HTMLButtonElement>(`${within} button`.trim()).find((button) => accessibleName(button.element) === name)
+  /* The bar's "More" menu teleports to the body, so a button inside it is not in the page's own tree. */
+  const buttons = within === '.selection-more-menu'
+    ? Array.from(document.body.querySelectorAll<HTMLButtonElement>('.selection-more-menu button')).map((element) => new DOMWrapper(element))
+    : page.findAll<HTMLButtonElement>(`${within} button`.trim())
+  return buttons.find((button) => accessibleName(button.element) === name)
 }
 
 async function press(page: Page, name: string, within = ''): Promise<void> {
@@ -272,11 +276,25 @@ async function press(page: Page, name: string, within = ''): Promise<void> {
   await settle()
 }
 
+/** The bar's "More" menu, opened for a press on one of its items. */
+async function openMore(page: Page): Promise<void> {
+  const more = buttonNamed(page, 'More', 'section.selection-bar')
+  if (!more) throw new Error('No More button on the selection bar.')
+  if (more.attributes('aria-expanded') === 'true') return
+  await more.trigger('click')
+}
+
+/** A press on a control the bar gathered under "More". */
+async function pressMore(page: Page, name: string, _within = ''): Promise<void> {
+  if (buttonNamed(page, name, '.selection-more-menu') === undefined) await openMore(page)
+  await press(page, name, '.selection-more-menu')
+}
+
 const byId = (page: Page, id: string) => page.find(`[id="${id}"]`)
 const dialogs = (page: Page) => page.findAll('dialog.spot-dialog').filter((dialog) => dialog.attributes('open') !== undefined)
 const openDialog = (page: Page) => dialogs(page)[0]!
 const liveRegion = (page: Page) => page.get('.workspace > [aria-live="polite"][aria-atomic="true"]')
-/** What Brownie said, line by line: its own lines, and the cards that report a change made to the fill spots. */
+/** What Brownie said, line by line: its own lines, and the cards that report a change made to the places. */
 const chatLines = (page: Page) =>
   page
     .findAll('.chat-line:not(.msg--user)')
@@ -289,7 +307,7 @@ async function selectSpot(page: Page, id: string): Promise<void> {
 
 /** Adds the spot for Company through the keyboard route, up to the name, which it leaves as suggested. */
 async function addCompanyFromTheList(page: Page): Promise<void> {
-  await press(page, 'Add a fill spot')
+  await press(page, 'Add a place')
   const dialog = openDialog(page)
   await dialog.get('input[type="search"]').setValue('company')
   await press(page, 'Next', 'dialog[open]')
@@ -303,7 +321,7 @@ async function submitDialog(page: Page): Promise<void> {
 
 // =================================================================================================
 
-describe('WorkspaceView: adding a fill spot', () => {
+describe('WorkspaceView: adding a place', () => {
   it('adds one from the list of lines: the change, the status while it is made, the chat line, and focus on the new spot', async () => {
     let finish!: (response: FillSpotsResponse) => void
     vi.mocked(changeFillSpots).mockImplementation(() => new Promise((resolve) => (finish = resolve)))
@@ -313,7 +331,7 @@ describe('WorkspaceView: adding a fill spot', () => {
     const name = openDialog(page).get('input[type="text"]')
     expect((name.element as HTMLInputElement).value).toBe('Company')
     await submitDialog(page)
-    expect(norm(openDialog(page).get('[role="status"]').text())).toBe('Adding the fill spot… Brownie is checking the form still prints correctly.')
+    expect(norm(openDialog(page).get('[role="status"]').text())).toBe('Adding the place… Brownie is checking the form still prints correctly.')
     expect(changeFillSpots).toHaveBeenCalledWith(
       7,
       1,
@@ -337,12 +355,12 @@ describe('WorkspaceView: adding a fill spot', () => {
     expect(dialogs(page)).toHaveLength(0)
     expect(getTemplateLayout).toHaveBeenLastCalledWith(7, 1, 5)
     expect(window.document.activeElement?.id).toBe('edit-company')
-    expect(chatLines(page).at(-1)).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
-    expect(liveRegion(page).text()).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
+    expect(chatLines(page).at(-1)).toBe('Added a place for Company in place of "________". New documents from this form will have it too.')
+    expect(liveRegion(page).text()).toBe('Added a place for Company in place of "________". New documents from this form will have it too.')
     expect(buttonNamed(page, 'Undo adding Company')).toBeDefined()
     // Said as one card with its Undo inside it, not as a line of Brownie's with a button under it.
     const card = page.get('.chat-line--done')
-    expect(norm(card.get('p').text())).toBe('Added a fill spot for Company in place of "________". New documents from this form will have it too.')
+    expect(norm(card.get('p').text())).toBe('Added a place for Company in place of "________". New documents from this form will have it too.')
     expect(norm(card.get('button').text())).toBe('Undo adding Company')
     expect(card.find('.msg__who').exists()).toBe(false)
   })
@@ -408,15 +426,15 @@ describe('WorkspaceView: adding a fill spot', () => {
   it.each([
     [refusal(409, 'FILL_SPOT_ANCHOR_STALE'), 'The page changed; select the place again.', true],
     [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'HEADER_FOOTER' }), 'Brownie fills only the body of the form, not its header or footer.', false],
-    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'REPEATING_REGION' }), 'This part of the form repeats for each row, so a single fill spot cannot go here.', false],
-    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'INSIDE_LINK' }), 'Brownie cannot put a fill spot inside a link. Choose a place next to it.', false],
-    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'INSIDE_FIELD_CODE' }), 'Brownie cannot put a fill spot inside a page number or another Word field.', false],
+    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'REPEATING_REGION' }), 'This part of the form repeats for each row, so a single place cannot go here.', false],
+    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'INSIDE_LINK' }), 'Brownie cannot put a place inside a link. Choose a place next to it.', false],
+    [refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'INSIDE_FIELD_CODE' }), 'Brownie cannot put a place inside a page number or another Word field.', false],
     [refusal(409, 'TEMPLATE_VERSION_MOVED_ON'), 'This form changed while you were working, so it was reloaded. Try again.', true],
     [refusal(412, 'STALE_REVISION'), 'This document changed since you loaded it, so it was reloaded. Try again on the current version.', true],
     [refusal(409, 'FILL_SPOT_LOCKED', { fieldId: 'report.title' }), 'Unlock Title first; its value would be lost.', false],
     [
       refusal(422, 'FILL_SPOT_WOULD_NOT_PRINT'),
-      'Brownie could not add the fill spot, because the form would not print correctly with it. Nothing was changed.',
+      'Brownie could not add the place, because the form would not print correctly with it. Nothing was changed.',
       false,
     ],
   ])('says why it was refused (%s), in the dialog, and loads the page again only when it changed', async (error, words, reloads) => {
@@ -434,10 +452,11 @@ describe('WorkspaceView: adding a fill spot', () => {
   it('offers no way to add a spot to a page Brownie could not draw', async () => {
     vi.mocked(getTemplateLayout).mockRejectedValue(refusal(422, 'TEMPLATE_LAYOUT_UNAVAILABLE'))
     const page = await mountPage()
-    expect(buttonNamed(page, 'Add a fill spot')).toBeUndefined()
+    expect(buttonNamed(page, 'Add a place')).toBeUndefined()
     // Nor from Brownie's first words, which still offer what does not depend on the page.
-    expect(buttonNamed(page, 'Add a fill spot to this form', 'ul[aria-label="Ways to begin"]')).toBeUndefined()
-    expect(buttonNamed(page, 'Add notes or a transcript', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+    expect(buttonNamed(page, 'Add a place to this form', 'ul[aria-label="Ways to begin"]')).toBeUndefined()
+    expect(buttonNamed(page, 'Add a document', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+    expect(buttonNamed(page, 'Type my details', 'ul[aria-label="Ways to begin"]')).toBeDefined()
   })
 
   it('offers the same way in from Brownie’s first words, until something has been said', async () => {
@@ -446,27 +465,27 @@ describe('WorkspaceView: adding a fill spot', () => {
     const starters = 'ul[aria-label="Ways to begin"]'
 
     // Named a little more fully than the button over the page, so the two are never mistaken for one another.
-    expect(buttonNamed(page, 'Add a fill spot', starters)).toBeUndefined()
-    await press(page, 'Add a fill spot to this form', starters)
+    expect(buttonNamed(page, 'Add a place', starters)).toBeUndefined()
+    await press(page, 'Add a place to this form', starters)
     expect(dialogs(page)).toHaveLength(1)
     expect(openDialog(page).find('input[type="search"]').exists()).toBe(true)
     await press(page, 'Cancel', 'dialog[open]')
 
     const box = page.get('#assist-composer')
-    await box.setValue('add a fill spot for Company here')
+    await box.setValue('add a place for Company here')
     await box.trigger('keydown', { key: 'Enter' })
     await settle()
     expect(page.find(starters).exists()).toBe(false)
   })
 })
 
-describe('WorkspaceView: renaming and removing a fill spot', () => {
+describe('WorkspaceView: renaming and removing a place', () => {
   it('renames the selected spot from the bar about it, and gives focus back there', async () => {
     const renamed = version(5, [{ ...TITLE_FIELD, label: 'Report title' }])
     vi.mocked(changeFillSpots).mockResolvedValue(added({ fieldIds: ['report.title'], templateVersion: renamed }))
     const page = await mountPage()
     await selectSpot(page, 'edit-report.title')
-    await press(page, 'Rename… Title', 'section.selection-bar')
+    await pressMore(page, 'Rename… Title', 'section.selection-bar')
 
     const dialog = openDialog(page)
     expect(dialog.get('h2').text()).toBe('Rename Title')
@@ -478,8 +497,8 @@ describe('WorkspaceView: renaming and removing a fill spot', () => {
     await settle()
 
     expect(vi.mocked(changeFillSpots).mock.calls[0]![4]).toEqual([{ kind: 'RENAME', fieldId: 'report.title', label: 'Report title' }])
-    expect(chatLines(page).at(-1)).toBe('Renamed the fill spot Title to Report title. New documents from this form will use the new name too.')
-    expect(accessibleName(window.document.activeElement!)).toBe('Rename… Report title')
+    expect(chatLines(page).at(-1)).toBe('Renamed the place Title to Report title. New documents from this form will use the new name too.')
+    expect(accessibleName(window.document.activeElement!)).toBe('More')
   })
 
   it('keeps a place Brownie found once the person renames it, so its mark goes', async () => {
@@ -493,7 +512,7 @@ describe('WorkspaceView: renaming and removing a fill spot', () => {
     expect(page.findAll('.fill-spot__found')).toHaveLength(1)
     expect(page.find('.form-strip').exists()).toBe(true)
     await selectSpot(page, 'edit-report.title')
-    await press(page, 'Rename… Title', 'section.selection-bar')
+    await pressMore(page, 'Rename… Title', 'section.selection-bar')
     await openDialog(page).get('input').setValue('Report title')
     vi.mocked(getDocument).mockResolvedValue(ON_5)
     await openDialog(page).get('form').trigger('submit')
@@ -502,29 +521,29 @@ describe('WorkspaceView: renaming and removing a fill spot', () => {
     expect(keepFillSpot).toHaveBeenCalledWith(7, 1, 'report.title')
     expect(page.findAll('.fill-spot__found')).toHaveLength(0)
     expect(page.find('.form-strip').exists()).toBe(false)
-    expect(chatLines(page).at(-1)).toBe('Renamed the fill spot Title to Report title. New documents from this form will use the new name too.')
+    expect(chatLines(page).at(-1)).toBe('Renamed the place Title to Report title. New documents from this form will use the new name too.')
   })
 
   it('asks before removing a spot the form had, then removes it and moves focus to the document', async () => {
     vi.mocked(changeFillSpots).mockResolvedValue(added({ fieldIds: ['report.title'], templateVersion: version(5, [COMPANY_FIELD]) }))
     const page = await mountPage()
     await selectSpot(page, 'edit-report.title')
-    await press(page, 'Remove… Title', 'section.selection-bar')
+    await pressMore(page, 'Remove… Title', 'section.selection-bar')
 
     const dialog = openDialog(page)
     expect(dialog.findAll('.spot-remove__line').map((line) => line.text())).toEqual([
-      'Remove the fill spot Title? Its value stays in the version history.',
+      'Remove the place Title? Its value stays in the version history.',
       'The form keeps its own box; Brownie just stops filling it.',
     ])
     expect(window.document.activeElement?.textContent?.trim()).toBe('Cancel')
-    await press(page, 'Remove the fill spot', 'dialog[open]')
+    await press(page, 'Remove the place', 'dialog[open]')
 
     expect(vi.mocked(changeFillSpots).mock.calls[0]![4]).toEqual([{ kind: 'REMOVE', fieldId: 'report.title' }])
-    expect(chatLines(page).at(-1)).toBe('Removed the fill spot Title. Its value stays in the version history. New documents from this form will not have it.')
+    expect(chatLines(page).at(-1)).toBe('Removed the place Title. Its value stays in the version history. New documents from this form will not have it.')
     expect(window.document.activeElement?.id).toBe('document-pane')
   })
 
-  it('offers no Rename or Remove on a document from a server that cannot change fill spots', async () => {
+  it('offers no Rename or Remove on a document from a server that cannot change places', async () => {
     // A server older than this page sends no newest version of the form at all; the new one sends null when it has none.
     const older: DocumentResponse = { ...ON_4 }
     delete older.templateLatestVersionId
@@ -539,21 +558,22 @@ describe('WorkspaceView: renaming and removing a fill spot', () => {
     vi.mocked(getDocument).mockResolvedValue({ ...ON_4, templateLatestVersionId: null })
     const current = await mountPage()
     await selectSpot(current, 'edit-report.title')
-    expect(buttonNamed(current, 'Rename… Title', 'section.selection-bar')).toBeDefined()
+    await openMore(current)
+    expect(buttonNamed(current, 'Rename… Title', '.selection-more-menu')).toBeDefined()
   })
 
   it('says a locked value would be lost, in the dialog', async () => {
     vi.mocked(changeFillSpots).mockRejectedValue(refusal(409, 'FILL_SPOT_LOCKED', { fieldId: 'report.title' }))
     const page = await mountPage()
     await selectSpot(page, 'edit-report.title')
-    await press(page, 'Remove… Title', 'section.selection-bar')
-    await press(page, 'Remove the fill spot', 'dialog[open]')
+    await pressMore(page, 'Remove… Title', 'section.selection-bar')
+    await press(page, 'Remove the place', 'dialog[open]')
 
     expect(norm(openDialog(page).get('[role="alert"]').text())).toBe('Unlock Title first; its value would be lost.')
   })
 })
 
-describe('WorkspaceView: undoing a fill spot change', () => {
+describe('WorkspaceView: undoing a place change', () => {
   it('puts the version before the change back from the chat line, and says so', async () => {
     vi.mocked(changeFillSpots).mockResolvedValue(added())
     const page = await mountPage()
@@ -565,8 +585,8 @@ describe('WorkspaceView: undoing a fill spot change', () => {
     vi.mocked(getDocument).mockResolvedValue(documentOn(revision(12, 4), 4))
     await press(page, 'Undo adding Company')
 
-    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 10, 11, expect.any(String), 'Undid a fill spot change.')
-    expect(chatLines(page).at(-1)).toBe('Undone: Company is no longer a fill spot.')
+    expect(restoreRevision).toHaveBeenCalledWith(7, 1, 10, 11, expect.any(String), 'Undid a place change.')
+    expect(chatLines(page).at(-1)).toBe('Undone: Company is no longer a place.')
     const done = buttonNamed(page, 'Undone adding Company')!
     expect(done.attributes('aria-disabled')).toBe('true')
     expect(byId(page, 'edit-company').exists()).toBe(false)
@@ -582,7 +602,7 @@ describe('WorkspaceView: undoing a fill spot change', () => {
     vi.mocked(restoreRevision).mockResolvedValue({ revision: r12, keptLockedFieldIds: [] })
     vi.mocked(getDocument).mockResolvedValue(documentOn(r12, 4))
     await press(page, 'Undo adding Company')
-    expect(restoreRevision).toHaveBeenLastCalledWith(7, 1, 10, 11, expect.any(String), 'Undid a fill spot change.')
+    expect(restoreRevision).toHaveBeenLastCalledWith(7, 1, 10, 11, expect.any(String), 'Undid a place change.')
 
     // Version 1 read differently; 2 is where the chat's Undo went back to, 3 added Company, and 4 took it back.
     const r9 = revision(9, 4, { contentHash: HASH_B, revisionNumber: 1 })
@@ -612,7 +632,7 @@ describe('WorkspaceView: undoing a fill spot change', () => {
   })
 })
 
-describe('WorkspaceView: fill spots from the chat', () => {
+describe('WorkspaceView: places from the chat', () => {
   async function ask(page: Page, words: string): Promise<void> {
     const box = page.get('#assist-composer')
     await box.setValue(words)
@@ -621,12 +641,12 @@ describe('WorkspaceView: fill spots from the chat', () => {
   }
 
   it('sends the place selected on the page with a request that says "here", and shows the change with Undo', async () => {
-    vi.mocked(interpretAssist).mockResolvedValue({ kind: 'ADD_FILL_SPOT', summary: 'Add a fill spot for Company at the place you selected.', executable: true, usesModel: false, help: [] })
+    vi.mocked(interpretAssist).mockResolvedValue({ kind: 'ADD_FILL_SPOT', summary: 'Add a place for Company at the place you selected.', executable: true, usesModel: false, help: [] })
     vi.mocked(executeAssist).mockImplementation(async () => {
       serveVersion5()
       return {
         kind: 'ADD_FILL_SPOT',
-        summary: 'Added a fill spot for Company at the place you selected in the line "Company: ________". Forms you start from this template will have it too.',
+        summary: 'Added a place for Company at the place you selected in the line "Company: ________". Forms you start from this template will have it too.',
         help: [],
         spotChange: { fieldId: 'company', label: 'Company', lineText: 'Company: ________', previousRevisionId: 10, templateVersionId: 5 },
       }
@@ -639,16 +659,16 @@ describe('WorkspaceView: fill spots from the chat', () => {
     document.dispatchEvent(new Event('selectionchange'))
     await settle()
 
-    await page.get('#assist-composer').setValue('add a fill spot for Company here')
+    await page.get('#assist-composer').setValue('add a place for Company here')
     expect(page.get('#assist-composer-here').text()).toBe('"Here" is the place you chose on the page, in the paragraph "Company: ________".')
     expect(page.get('#assist-composer').attributes('aria-describedby')).toBe('assist-composer-here')
-    await ask(page, 'add a fill spot for Company here')
+    await ask(page, 'add a place for Company here')
 
     const anchor = { part: 'MAIN_DOCUMENT', paragraphNodeId: 'p1', placement: 'REPLACE', start: 9, end: 17, anchorTextHash: 'hash-p1', parserVersion: PARSER, controlNodeId: null }
-    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company here', anchor)
-    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company here', 10, anchor)
+    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a place for Company here', anchor)
+    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a place for Company here', 10, anchor)
     expect(chatLines(page).at(-1)).toBe(
-      'Added a fill spot for Company at the place you selected in the line "Company: ________". Forms you start from this template will have it too.',
+      'Added a place for Company at the place you selected in the line "Company: ________". Forms you start from this template will have it too.',
     )
     // The box's hint went with the text; what "here" meant stays under the line in the conversation.
     expect(page.find('#assist-composer-here').exists()).toBe(false)
@@ -660,11 +680,11 @@ describe('WorkspaceView: fill spots from the chat', () => {
   it('sends no place when none was chosen on the page', async () => {
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'NONE', summary: 'Select the place on the page first, then ask again.', executable: false, usesModel: false, help: [] })
     const page = await mountPage()
-    await page.get('#assist-composer').setValue('add a fill spot for Company here')
+    await page.get('#assist-composer').setValue('add a place for Company here')
     expect(page.get('#assist-composer-here').text()).toBe('To say where "here" is, select the place on the page first.')
-    await ask(page, 'add a fill spot for Company here')
+    await ask(page, 'add a place for Company here')
 
-    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company here')
+    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a place for Company here')
     expect(chatLines(page).at(-1)).toBe('Select the place on the page first, then ask again.')
     // No place was meant, so nothing is said under the line about one.
     expect(page.find('.chat-line__here').exists()).toBe(false)
@@ -676,7 +696,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
     vi.mocked(interpretAssist)
       .mockResolvedValueOnce({
         kind: 'ADD_FILL_SPOT',
-        summary: 'The words "Application" are on 2 lines. Choose the line the fill spot goes on.',
+        summary: 'The words "Application" are on 2 lines. Choose the line the place goes on.',
         executable: false,
         usesModel: false,
         help: [],
@@ -687,26 +707,26 @@ describe('WorkspaceView: fill spots from the chat', () => {
       })
       .mockResolvedValueOnce({ kind: 'NONE', summary: 'Not now.', executable: false, usesModel: false, help: [] })
     const page = await mountPage()
-    await ask(page, 'add a fill spot for Ref after "Application"')
+    await ask(page, 'add a place for Ref after "Application"')
 
-    const choices = page.get('[role="group"][aria-label="The paragraph the fill spot goes in"]')
+    const choices = page.get('[role="group"][aria-label="The paragraph the place goes in"]')
     expect(choices.findAll('button').map((button) => norm(button.text()))).toEqual(['1Application', '2Title: Application'])
     await choices.findAll('button')[1]!.trigger('click')
     await settle()
 
-    expect(interpretAssist).toHaveBeenLastCalledWith(7, 1, 'add a fill spot for Ref after "Application"', second)
-    expect(page.find('[aria-label="The paragraph the fill spot goes in"]').exists()).toBe(false)
+    expect(interpretAssist).toHaveBeenLastCalledWith(7, 1, 'add a place for Ref after "Application"', second)
+    expect(page.find('[aria-label="The paragraph the place goes in"]').exists()).toBe(false)
     expect(page.findAll('.msg--user').map((line) => norm(line.text())).at(-1)).toBe('You said: Title: Application')
   })
 
-  it('saves what was typed before the chat changes a fill spot, and asks against the version the save made', async () => {
+  it('saves what was typed before the chat changes a place, and asks against the version the save made', async () => {
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'ADD_FILL_SPOT', summary: 's', executable: true, usesModel: false, help: [] })
     vi.mocked(patchDocumentContent).mockResolvedValue(revision(11, 4, { contentHash: HASH_B }))
     vi.mocked(executeAssist).mockImplementation(async () => {
       vi.mocked(getDocument).mockResolvedValue(documentOn(revision(12, 5, { contentHash: HASH_B }), 5))
       return {
         kind: 'ADD_FILL_SPOT',
-        summary: 'Added a fill spot for Company after "Company:".',
+        summary: 'Added a place for Company after "Company:".',
         help: [],
         spotChange: { fieldId: 'company', label: 'Company', lineText: 'Company: ________', previousRevisionId: 11, templateVersionId: 5 },
       }
@@ -714,15 +734,15 @@ describe('WorkspaceView: fill spots from the chat', () => {
     const page = await mountPage()
     await byId(page, 'edit-report.title').setValue('Annual report 2026')
     vi.mocked(getDocument).mockResolvedValue(documentOn(revision(11, 4, { contentHash: HASH_B }), 4))
-    await ask(page, 'add a fill spot for Company after "Company:"')
+    await ask(page, 'add a place for Company after "Company:"')
 
     expect(patchDocumentContent).toHaveBeenCalledTimes(1)
     expect(vi.mocked(patchDocumentContent).mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(executeAssist).mock.invocationCallOrder[0]!)
-    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company after "Company:"', 11)
-    expect(chatLines(page).at(-1)).toBe('Added a fill spot for Company after "Company:".')
+    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a place for Company after "Company:"', 11)
+    expect(chatLines(page).at(-1)).toBe('Added a place for Company after "Company:".')
   })
 
-  it('says why, and sends nothing, when what was typed cannot be saved before a fill spot change', async () => {
+  it('says why, and sends nothing, when what was typed cannot be saved before a place change', async () => {
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'RENAME_FILL_SPOT', summary: 's', executable: true, usesModel: false, help: [] })
     vi.mocked(patchDocumentContent).mockRejectedValue(refusal(503, 'DATABASE_UNAVAILABLE'))
     const page = await mountPage()
@@ -736,7 +756,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
     expect((page.get('#assist-composer').element as HTMLTextAreaElement).value).toBe('rename Title to Report title')
   })
 
-  it('holds autosave while the chat changes a fill spot, and saves what was typed meanwhile once the page shows the new version', async () => {
+  it('holds autosave while the chat changes a place, and saves what was typed meanwhile once the page shows the new version', async () => {
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'ADD_FILL_SPOT', summary: 's', executable: true, usesModel: false, help: [] })
     let finish!: () => void
     vi.mocked(executeAssist).mockImplementation(
@@ -746,7 +766,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
             serveVersion5()
             resolve({
               kind: 'ADD_FILL_SPOT',
-              summary: 'Added a fill spot for Company after "Company:".',
+              summary: 'Added a place for Company after "Company:".',
               help: [],
               spotChange: { fieldId: 'company', label: 'Company', lineText: 'Company: ________', previousRevisionId: 10, templateVersionId: 5 },
             })
@@ -755,8 +775,8 @@ describe('WorkspaceView: fill spots from the chat', () => {
     )
     vi.mocked(patchDocumentContent).mockResolvedValue(revision(12, 5, { contentHash: HASH_B }))
     const page = await mountPage()
-    await ask(page, 'add a fill spot for Company after "Company:"')
-    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a fill spot for Company after "Company:"', 10)
+    await ask(page, 'add a place for Company after "Company:"')
+    expect(executeAssist).toHaveBeenCalledWith(7, 1, 'add a place for Company after "Company:"', 10)
 
     // The person keeps typing on the page while the form's new version is made.
     vi.useFakeTimers()
@@ -785,7 +805,7 @@ describe('WorkspaceView: fill spots from the chat', () => {
       serveVersion5()
       return {
         kind: 'RENAME_FILL_SPOT',
-        summary: 'Renamed the fill spot Title to Report title.',
+        summary: 'Renamed the place Title to Report title.',
         help: [],
         spotChange: { fieldId: 'report.title', label: 'Report title', lineText: null, previousRevisionId: 10, templateVersionId: 5 },
       }
@@ -801,9 +821,9 @@ describe('WorkspaceView: fill spots from the chat', () => {
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'ADD_FILL_SPOT', summary: 's', executable: true, usesModel: false, help: [] })
     vi.mocked(executeAssist).mockRejectedValue(refusal(422, 'FILL_SPOT_PLACE_NOT_ALLOWED', { reason: 'INSIDE_LINK' }))
     const page = await mountPage()
-    await ask(page, 'add a fill spot for Company after "Company:"')
+    await ask(page, 'add a place for Company after "Company:"')
 
-    expect(norm(page.findAll('.msg--brownie .field-error').at(-1)!.text())).toBe('Brownie cannot put a fill spot inside a link. Choose a place next to it.')
+    expect(norm(page.findAll('.msg--brownie .field-error').at(-1)!.text())).toBe('Brownie cannot put a place inside a link. Choose a place next to it.')
   })
 })
 
@@ -819,7 +839,7 @@ describe('WorkspaceView: a newer version of the form', () => {
     const page = await mountPage()
 
     const banner = page.get('.version-banner')
-    expect(norm(banner.get('[role="status"]').text())).toBe('This form has a newer version. It adds the fill spot "Company".')
+    expect(norm(banner.get('[role="status"]').text())).toBe('This form has a newer version. It adds the place "Company".')
     expect(await axe(page.element)).toHaveNoViolations()
     await press(page, 'Move this document to it')
 
@@ -840,7 +860,7 @@ describe('WorkspaceView: a newer version of the form', () => {
     await press(page, 'Move this document to it')
 
     expect(chatLines(page).at(-1)).toBe(
-      'Moved this document to the newest version of its form. Title has no fill spot in it, so its value was dropped. It stays in the version history.',
+      'Moved this document to the newest version of its form. Title has no place in it, so its value was dropped. It stays in the version history.',
     )
   })
 
@@ -861,7 +881,7 @@ describe('WorkspaceView: a newer version of the form', () => {
     vi.mocked(getDocument).mockResolvedValue(BEHIND)
     const page = await mountPage()
     await press(page, 'Not now')
-    await press(page, 'Add a fill spot')
+    await press(page, 'Add a place')
 
     expect(dialogs(page)).toHaveLength(0)
     expect(page.find('.version-banner').exists()).toBe(true)
@@ -875,7 +895,7 @@ describe('WorkspaceView: a newer version of the form', () => {
     const page = await mountPage()
     await press(page, 'Not now')
     const box = page.get('#assist-composer')
-    await box.setValue('add a fill spot for Company after "Company:"')
+    await box.setValue('add a place for Company after "Company:"')
     await box.trigger('keydown', { key: 'Enter' })
     await settle()
 
@@ -886,7 +906,7 @@ describe('WorkspaceView: a newer version of the form', () => {
   })
 
   it("offers the move again after \"Not now\" when the chat answers that the document must move first", async () => {
-    const olderVersion = 'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.'
+    const olderVersion = 'This document is on an older version of its form. Move it to the newest version first, then change its places.'
     vi.mocked(getDocument).mockResolvedValue(BEHIND)
     // What the server answers for a spot change on a document behind its form: read, but not to be done.
     vi.mocked(interpretAssist).mockResolvedValue({ kind: 'RENAME_FILL_SPOT', summary: olderVersion, executable: false, usesModel: false, help: [] })
@@ -907,11 +927,11 @@ describe('WorkspaceView: a newer version of the form', () => {
   it('asks for the move before a spot is added to a document on an older version', async () => {
     vi.mocked(getDocument).mockResolvedValue(BEHIND)
     const page = await mountPage()
-    await press(page, 'Add a fill spot')
+    await press(page, 'Add a place')
 
     expect(dialogs(page)).toHaveLength(0)
     expect(norm(page.get('.workspace-notices [role="alert"]').text())).toBe(
-      'This document is on an older version of its form. Move it to the newest version first, then change its fill spots.',
+      'This document is on an older version of its form. Move it to the newest version first, then change its places.',
     )
     expect(accessibleName(window.document.activeElement!)).toBe('Move this document to it')
   })

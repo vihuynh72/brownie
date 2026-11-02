@@ -2,6 +2,7 @@ package io.github.vihuynh72.brownie.api.identity;
 
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
+import io.github.vihuynh72.brownie.core.detail.SavedDetailRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,9 +28,15 @@ class MeController {
     private final UserIdentityRepository userIdentityRepository;
     private final WorkspaceRepository workspaceRepository;
 
-    MeController(UserIdentityRepository userIdentityRepository, WorkspaceRepository workspaceRepository) {
+    private final SavedDetailRepository savedDetailRepository;
+
+    MeController(
+            UserIdentityRepository userIdentityRepository,
+            WorkspaceRepository workspaceRepository,
+            SavedDetailRepository savedDetailRepository) {
         this.userIdentityRepository = userIdentityRepository;
         this.workspaceRepository = workspaceRepository;
+        this.savedDetailRepository = savedDetailRepository;
     }
 
     @GetMapping
@@ -41,9 +48,22 @@ class MeController {
         String allowance = workspaceRepository.findOpenAllowance(identity.id()).orElse(false)
                 ? "FREE_DAILY"
                 : "FULL";
+        List<io.github.vihuynh72.brownie.api.detail.SavedDetailResponse> details =
+                savedDetailRepository.list(identity.id()).stream()
+                        .map(detail -> new io.github.vihuynh72.brownie.api.detail.SavedDetailResponse(
+                                detail.key(), detail.label(),
+                                io.github.vihuynh72.brownie.core.detail.DetailKey.find(detail.key())
+                                        .map(each -> each.group().name()).orElse("SENSITIVE"),
+                                detail.sensitive(), detail.valueText(), detail.valueHint(), detail.origin().name(),
+                                detail.sourceDocumentId() == null && detail.sourceLabel() == null && detail.sourceTitle() == null
+                                        ? null
+                                        : new io.github.vihuynh72.brownie.api.detail.DetailSource(
+                                                detail.sourceDocumentId(), detail.sourceLabel(), detail.sourceTitle()),
+                                detail.savedAt(), detail.confirmedAt(), 0, 0))
+                        .toList();
         return new MeResponse(identity.id(), identity.issuer(), identity.subject(), identity.email(),
                 identity.displayName(), allowance, userIdentityRepository.hasInvitationRequest(identity.id()),
-                memberships);
+                memberships, details);
     }
 
     /** An uninvited person's one way to ask: remembered, not answered here. */
@@ -70,7 +90,8 @@ class MeController {
 
     record MeResponse(long userId, String issuer, String subject, String email, String displayName,
                        String allowance, boolean invitationRequested,
-                       List<MembershipResponse> memberships) {
+                       List<MembershipResponse> memberships,
+                       List<io.github.vihuynh72.brownie.api.detail.SavedDetailResponse> savedDetails) {
     }
 
     record MembershipResponse(long workspaceId, String role) {
