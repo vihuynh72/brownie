@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
 import type { FieldStateResponse } from '@/api/client'
@@ -93,8 +93,27 @@ const description = computed(() => {
 const descriptionId = computed(() => `${props.inputId}-state`)
 const describedBy = computed(() => [description.value ? descriptionId.value : null, props.keysHintId ?? null].filter(Boolean).join(' ') || undefined)
 
-/** An empty spot shows the template's own placeholder, in brackets, so it reads as a gap and not as a value. */
+/** The control element, measured so a placeholder too small to read is dropped rather than drawn. */
+const controlRef = useTemplateRef<HTMLTextAreaElement | HTMLInputElement>('control')
+const placeholderTooSmall = ref(false)
+let placeholderObserver: ResizeObserver | null = null
+onMounted(() => {
+  const el = controlRef.value
+  if (!el) return
+  const measure = () => {
+    placeholderTooSmall.value = Number.parseFloat(getComputedStyle(el).fontSize) < 10
+  }
+  measure()
+  if (typeof ResizeObserver !== 'undefined') {
+    placeholderObserver = new ResizeObserver(measure)
+    placeholderObserver.observe(el)
+  }
+})
+onBeforeUnmount(() => placeholderObserver?.disconnect())
+
+/** An empty spot shows the template's own placeholder, in brackets, so it reads as a gap and not as a value. A gap the spot draws under 10px is unreadable: the box alone says it is a place, and the tap names it. */
 const shownPlaceholder = computed(() => {
+  if (placeholderTooSmall.value) return ''
   const own = props.placeholder?.trim()
   if (!own) return `[${props.label}]`
   return own.startsWith('[') && own.endsWith(']') ? own : `[${own}]`
@@ -213,6 +232,7 @@ function onInput(event: Event): void {
       </span>
       <textarea
         v-if="type === 'TEXT'"
+        ref="control"
         :id="inputId"
         class="fill-spot__control fill-spot__control--text fill-spot__box"
         rows="1"
