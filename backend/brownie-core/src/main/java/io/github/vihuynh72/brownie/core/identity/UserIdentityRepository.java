@@ -17,6 +17,9 @@ public interface UserIdentityRepository {
      */
     UserIdentity recordLogin(String issuer, String subject, String email, String displayName);
 
+    /** The name the person typed themselves; {@code name_confirmed_at} moves to the save time. */
+    UserIdentity recordName(long userId, String givenName, String familyName);
+
     Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject);
 
     /**

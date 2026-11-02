@@ -33,7 +33,7 @@ class MeControllerTest {
     @Test
     void reportsIdentityAndWorkspaceMemberships() {
         UserIdentity identity =
-                new UserIdentity(7L, "https://issuer-z", "subject-z", "z@example.com", "Z Name", null, null, null);
+                new UserIdentity(7L, "https://issuer-z", "subject-z", "z@example.com", "Z Name", null, null, null, null, null, null);
         StubUserIdentityRepository identityRepository = new StubUserIdentityRepository(identity);
         StubWorkspaceRepository workspaceRepository = new StubWorkspaceRepository(
                 List.of(new WorkspaceMember(42L, 7L, WorkspaceRole.OWNER, WorkspaceMemberState.ACTIVE, null)));
@@ -50,7 +50,7 @@ class MeControllerTest {
     @Test
     void reportsTheOpenAllowanceAsFreeDaily() {
         UserIdentity identity =
-                new UserIdentity(8L, "https://issuer-o", "subject-o", "o@example.com", "O Name", null, null, null);
+                new UserIdentity(8L, "https://issuer-o", "subject-o", "o@example.com", "O Name", null, null, null, null, null, null);
         MeController controller = new MeController(
                 new StubUserIdentityRepository(identity, true),
                 new StubWorkspaceRepository(List.of(), true), new StubSavedDetailRepository());
@@ -64,7 +64,7 @@ class MeControllerTest {
     @Test
     void aLongInvitationRequestNoteIsRefused() {
         UserIdentity identity =
-                new UserIdentity(9L, "https://issuer-n", "subject-n", "n@example.com", "N Name", null, null, null);
+                new UserIdentity(9L, "https://issuer-n", "subject-n", "n@example.com", "N Name", null, null, null, null, null, null);
         MeController controller = new MeController(
                 new StubUserIdentityRepository(identity), new StubWorkspaceRepository(List.of()),
                 new StubSavedDetailRepository());
@@ -76,6 +76,47 @@ class MeControllerTest {
                 .hasMessageContaining("500");
     }
 
+    @Test
+    void savingANameConfirmsItAndWritesTheThreePersonDetails() {
+        UserIdentity identity =
+                new UserIdentity(7L, "https://issuer-z", "subject-z", "z@example.com", "Z Name", null, null, null, null, null, null);
+        StubSavedDetailRepository details = new StubSavedDetailRepository();
+        MeController controller = new MeController(
+                new StubUserIdentityRepository(identity), new StubWorkspaceRepository(List.of()), details);
+
+        MeController.MeResponse response = controller.saveName(
+                oidcUserWith("https://issuer-z", "subject-z"),
+                new MeController.SaveNameRequest("  Daniel  ", " Ortiz "));
+
+        assertThat(response.givenName()).isEqualTo("Daniel");
+        assertThat(response.familyName()).isEqualTo("Ortiz");
+        assertThat(response.nameConfirmed()).isTrue();
+        assertThat(details.writes).containsExactly(
+                new String[]{"person.first_name", "Daniel", "MANUAL"},
+                new String[]{"person.last_name", "Ortiz", "MANUAL"},
+                new String[]{"person.full_name", "Daniel Ortiz", "MANUAL"});
+    }
+
+    @Test
+    void aBlankOrOverLongNamePartIsRefused() {
+        UserIdentity identity =
+                new UserIdentity(7L, "https://issuer-z", "subject-z", "z@example.com", "Z Name", null, null, null, null, null, null);
+        MeController controller = new MeController(
+                new StubUserIdentityRepository(identity), new StubWorkspaceRepository(List.of()),
+                new StubSavedDetailRepository());
+
+        assertThatThrownBy(() -> controller.saveName(
+                        oidcUserWith("https://issuer-z", "subject-z"),
+                        new MeController.SaveNameRequest("   ", "Ortiz")))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("givenName");
+        assertThatThrownBy(() -> controller.saveName(
+                        oidcUserWith("https://issuer-z", "subject-z"),
+                        new MeController.SaveNameRequest("Daniel", "x".repeat(101))))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("familyName");
+    }
+
     private static OidcUser oidcUserWith(String issuer, String subject) {
         OidcIdToken idToken = new OidcIdToken(
                 "fake-token-value",
@@ -85,9 +126,15 @@ class MeControllerTest {
         return new DefaultOidcUser(List.of(), idToken);
     }
 
-    private record StubUserIdentityRepository(UserIdentity identity, boolean invitationRequested) implements UserIdentityRepository {
+    private record StubUserIdentityRepository(UserIdentity identity, boolean invitationRequested,
+                                              java.util.concurrent.atomic.AtomicReference<UserIdentity> named)
+            implements UserIdentityRepository {
         StubUserIdentityRepository(UserIdentity identity) {
-            this(identity, false);
+            this(identity, false, new java.util.concurrent.atomic.AtomicReference<>());
+        }
+
+        StubUserIdentityRepository(UserIdentity identity, boolean invitationRequested) {
+            this(identity, invitationRequested, new java.util.concurrent.atomic.AtomicReference<>());
         }
 
         @Override
@@ -96,8 +143,16 @@ class MeControllerTest {
         }
 
         @Override
+        public UserIdentity recordName(long userId, String givenName, String familyName) {
+            named.set(new UserIdentity(identity.id(), identity.issuer(), identity.subject(), identity.email(),
+                    identity.displayName(), identity.createdAt(), identity.lastLoginAt(), identity.disabledAt(),
+                    givenName, familyName, java.time.OffsetDateTime.now()));
+            return named.get();
+        }
+
+        @Override
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
-            return Optional.of(identity);
+            return Optional.of(named.get() != null ? named.get() : identity);
         }
 
         @Override
@@ -119,7 +174,8 @@ class MeControllerTest {
 
         @Override
         public Workspace ensurePersonalWorkspace(long ownerUserId) {
-            throw new UnsupportedOperationException("not needed by this test");
+            return new Workspace(42L, ownerUserId, null, null, io.github.vihuynh72.brownie.core.workspace.WorkspaceStatus.ACTIVE,
+                    1, null, true, java.time.OffsetDateTime.now());
         }
 
         @Override
@@ -143,9 +199,11 @@ class MeControllerTest {
         }
     }
 
-    /** No details in these tests: the response just carries an empty list. */
+    /** Records each upsert so a test can see which details a save wrote. */
     private static final class StubSavedDetailRepository
             implements io.github.vihuynh72.brownie.core.detail.SavedDetailRepository {
+        final java.util.List<String[]> writes = new java.util.ArrayList<>();
+
         @Override
         public java.util.List<io.github.vihuynh72.brownie.core.detail.SavedDetail> list(long ownerUserId) {
             return java.util.List.of();
@@ -156,7 +214,8 @@ class MeControllerTest {
                 long ownerUserId, long workspaceId, String key, String label, String valueText, byte[] valueSealed,
                 String valueHint, boolean sensitive, io.github.vihuynh72.brownie.core.detail.DetailOrigin origin,
                 Long sourceDocumentId, String sourceLabel, String sourceTitle) {
-            throw new UnsupportedOperationException();
+            writes.add(new String[]{key, valueText, origin.name()});
+            return null;
         }
 
         @Override

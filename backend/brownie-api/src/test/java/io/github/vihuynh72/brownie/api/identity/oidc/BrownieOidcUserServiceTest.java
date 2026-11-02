@@ -247,7 +247,12 @@ class BrownieOidcUserServiceTest {
             this.subject = subject;
             this.email = email;
             this.displayName = displayName;
-            return new UserIdentity(1L, issuer, subject, email, displayName, null, null, null);
+            return new UserIdentity(1L, issuer, subject, email, displayName, null, null, null, null, null, null);
+        }
+
+        @Override
+        public UserIdentity recordName(long userId, String givenName, String familyName) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

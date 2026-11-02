@@ -77,6 +77,34 @@ paths:
         "401":
           description: Not logged in.
 
+  /api/v1/me/name:
+    put:
+      operationId: saveName
+      summary: >
+        The name the person gave themselves. Each part is 1-100
+        characters after trimming. Saving also writes person.first_name,
+        person.last_name and person.full_name into their saved details
+        (origin MANUAL), and marks the name confirmed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveNameRequest"
+      responses:
+        "200":
+          description: Saved; answers the same payload as GET /api/v1/me.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "400":
+          description: A part is blank or longer than 100 characters.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/me/invitation-request:
     post:
       operationId: requestInvitation
@@ -3985,6 +4013,17 @@ components:
           type: string
         displayName:
           type: string
+        givenName:
+          description: The name the person gave themselves; null until they confirm it.
+          type: string
+          nullable: true
+        familyName:
+          description: The family name the person gave themselves; null until they confirm it.
+          type: string
+          nullable: true
+        nameConfirmed:
+          description: True once the person has saved their name themselves.
+          type: boolean
         allowance:
           type: string
           enum: [FULL, FREE_DAILY]
@@ -4003,6 +4042,18 @@ components:
           items:
             $ref: "#/components/schemas/SavedDetailResponse"
 
+    SaveNameRequest:
+      type: object
+      required: [givenName, familyName]
+      properties:
+        givenName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        familyName:
+          type: string
+          minLength: 1
+          maxLength: 100
     DetailsResponse:
       type: object
       required: [details, sealingAvailable]
