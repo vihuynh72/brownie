@@ -72,6 +72,9 @@ public interface BatchRepository {
     /** CREATED-row counts for every batch in the workspace, for the list. */
     Map<Long, Integer> createdCounts(long workspaceId, long userId);
 
+    /** Whether this document came from a batch row: bulk fills never teach anything. */
+    boolean documentIsInBatch(long workspaceId, long userId, long documentId);
+
     /** The document ids a batch's rows produced, in row order. */
     List<Long> createdDocumentIds(long workspaceId, long userId, long batchId);
 

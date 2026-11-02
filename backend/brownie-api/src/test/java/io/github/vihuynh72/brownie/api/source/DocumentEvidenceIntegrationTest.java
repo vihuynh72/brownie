@@ -100,6 +100,7 @@ class DocumentEvidenceIntegrationTest {
         long workspaceId = ensureWorkspace("subject-evidence-owner").id();
         long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-evidence-owner").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
         JsonNode flowing = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
                         .andExpect(status().isOk())
@@ -146,6 +147,7 @@ class DocumentEvidenceIntegrationTest {
         long intruderWorkspaceId = ensureWorkspace("subject-evidence-intruder").id();
         long intruderUserId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-evidence-intruder").orElseThrow().id();
         builtInTemplateProvisioningService.ensureBuiltInTemplates(intruderWorkspaceId, intruderUserId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(intruderWorkspaceId, intruderUserId);
         JsonNode intruderTemplate = findByDisplayName(
                 readJson(mockMvc.perform(get("/api/v1/workspaces/" + intruderWorkspaceId + "/templates").cookie(intruderSession))
                         .andExpect(status().isOk())
