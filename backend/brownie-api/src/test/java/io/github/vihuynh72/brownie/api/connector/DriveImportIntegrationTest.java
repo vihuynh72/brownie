@@ -756,6 +756,7 @@ class DriveImportIntegrationTest {
 
     private long createDocument(Member member) throws Exception {
         builtInTemplateProvisioningService.ensureBuiltInTemplates(member.workspaceId(), member.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(member.workspaceId(), member.userId());
         JsonNode templates = JSON.readTree(mockMvc.perform(MockMvcRequestBuilders.get("/api/v1/workspaces/" + member.workspaceId() + "/templates")
                         .cookie(member.session()))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());

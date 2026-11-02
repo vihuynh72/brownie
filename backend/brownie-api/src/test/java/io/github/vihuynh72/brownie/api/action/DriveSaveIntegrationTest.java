@@ -642,6 +642,7 @@ class DriveSaveIntegrationTest {
     /** A document of the built-in minutes template, validated, approved for export in {@code format}, and exported. */
     private Exported exportedDocument(Member member, String format) throws Exception {
         builtInTemplateProvisioningService.ensureBuiltInTemplates(member.workspaceId(), member.userId());
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(member.workspaceId(), member.userId());
         JsonNode templates = read(mockMvc.perform(MockMvcRequestBuilders.get("/api/v1/workspaces/" + member.workspaceId() + "/templates")
                 .cookie(member.session())).andExpect(status().isOk()).andReturn());
         JsonNode template = null;
