@@ -2949,6 +2949,7 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
     interpretation = anchor ? await interpretAssist(workspaceId, props.documentId, text, anchor) : await interpretAssist(workspaceId, props.documentId, text)
   } catch (error) {
     assistStage.value = 'failed'
+    openLimitError.value = isOpenLimitRefusal(error)
     say({
       from: 'brownie',
       tone: 'error',
@@ -3074,6 +3075,7 @@ async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor 
       say({ from: 'brownie', tone: 'error', text: message })
       return
     }
+    openLimitError.value = isOpenLimitRefusal(error)
     say({
       from: 'brownie',
       tone: 'error',
@@ -4443,7 +4445,20 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     <p class="msg__who">Brownie</p>
                     <div class="msg__body">
                       <blockquote v-if="line.quote" class="chat-line__quote"><p>{{ line.text }}</p></blockquote>
-                      <p v-else :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                      <template v-else>
+                        <p :class="{ 'field-error': line.tone === 'error' }">{{ line.text }}</p>
+                        <template v-if="line.tone === 'error' && openLimitError">
+                          <button
+                            v-if="!session.invitationRequested && !invitationSent"
+                            type="button"
+                            class="button"
+                            @click="invitationDialog?.open()"
+                          >
+                            Ask for an invitation
+                          </button>
+                          <p v-else class="field-hint">Invitation requested</p>
+                        </template>
+                      </template>
                       <ul v-if="line.help && line.help.length > 0" class="chat-suggestions" aria-label="What you can ask">
                         <li v-for="item in line.help" :key="item">
                           <button type="button" class="chat-suggestion" @click="useSuggestion(item)">{{ item }}</button>

@@ -781,6 +781,25 @@ describe('AppSidebar', () => {
     expect(wrapper.emitted('close')).toHaveLength(2)
   })
 
+  /** Escape inside a modal dialog belongs to the dialog, not the drawer behind it. */
+  it('leaves the drawer open when Escape is pressed inside a dialog over it', async () => {
+    wrapper = await mountWithTemplates([CLUB], { open: true, docked: false })
+    session_allowance('FREE_DAILY', false)
+    await wrapper.vm.$nextTick()
+
+    // The invitation dialog sits over the drawer; Escape must close the dialog, not the drawer.
+    const ask = wrapper.findAll('button').find((b) => b.text() === 'Ask for an invitation')!
+    await ask.trigger('click')
+    const dialog = wrapper.find('dialog').element as HTMLDialogElement
+    expect(dialog).toBeTruthy()
+
+    dialog.querySelector<HTMLElement>('textarea, button')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    )
+
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
   /** Docked it is ordinary page furniture: Escape belongs to whatever else is open, and a link goes nowhere special. */
   it('does not answer Escape, or close itself on a link, while it is docked', async () => {
     wrapper = await mountSidebar({ open: true, docked: true })

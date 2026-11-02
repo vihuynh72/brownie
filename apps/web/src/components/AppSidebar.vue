@@ -193,6 +193,9 @@ function focusableItems(): HTMLElement[] {
  */
 function onKeydown(event: KeyboardEvent): void {
   if (!trapping.value) return
+  // A dialog owns Escape while it sits over the page -- let it close the
+  // dialog, never the drawer behind it.
+  if (event.target instanceof Element && event.target.closest('dialog')) return
   if (event.key === 'Escape') {
     event.preventDefault()
     close()

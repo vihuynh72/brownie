@@ -1104,6 +1104,51 @@ describe('WorkspaceView: editing by hand', () => {
     expect(chipsOf(page)).toContain('Typed by you')
   })
 
+  it('offers an invitation under a chat error when the free allowance runs out', async () => {
+    useSessionStore().identity!.allowance = 'FREE_DAILY'
+    vi.mocked(interpretAssist).mockRejectedValue(
+      new ApiRequestError(429, {
+        status: 429,
+        title: 'Refused',
+        code: 'USAGE_LIMIT',
+        limit: 'OPEN_DAY',
+        detail: "Today's free allowance is used up. Ask for an invitation to keep going.",
+        correlationId: 'c',
+        fields: [],
+        recoveryActions: [],
+      }),
+    )
+    const page = await mountPage()
+
+    await send(page, 'fill it in')
+
+    expect(chatLog(page).text()).toContain("Today's free allowance is used up. Ask for an invitation to keep going.")
+    expect(chatLog(page).findAll('button').map((b) => b.text())).toContain('Ask for an invitation')
+  })
+
+  it('says "Invitation requested" under a chat error once the request was sent', async () => {
+    useSessionStore().identity!.allowance = 'FREE_DAILY'
+    useSessionStore().identity!.invitationRequested = true
+    vi.mocked(interpretAssist).mockRejectedValue(
+      new ApiRequestError(429, {
+        status: 429,
+        title: 'Refused',
+        code: 'USAGE_LIMIT',
+        limit: 'OPEN_MONTH',
+        detail: "This month's free allowance is used up.",
+        correlationId: 'c',
+        fields: [],
+        recoveryActions: [],
+      }),
+    )
+    const page = await mountPage()
+
+    await send(page, 'fill it in')
+
+    expect(chatLog(page).text()).toContain('Invitation requested')
+    expect(chatLog(page).findAll('button').map((b) => b.text())).not.toContain('Ask for an invitation')
+  })
+
   it('says Saving while a save is on its way, and ignores a second press of Save now', async () => {
     const save = deferred<DocumentRevisionResponse>()
     vi.mocked(patchDocumentContent).mockReturnValue(save.promise)
