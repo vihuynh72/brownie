@@ -380,6 +380,19 @@ describe('HomeView', () => {
     expect(wrapper.get('h1').text()).toBe('What form are we filling, Vi?')
   })
 
+  it('greets with "today" when only an email is known, never the email prefix', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+    const session = useSessionStore()
+    session.identity = { ...session.identity!, givenName: undefined, familyName: undefined, displayName: undefined, email: 'dotcainha@example.com' }
+
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+
+    expect(wrapper.get('h1').text()).toBe('What form are we filling today?')
+    expect(wrapper.get('h1').text()).not.toContain('dotcainha')
+  })
+
   it('groups recent documents by the day they were made, newest first, with the time beside each', async () => {
     const today = new Date()
     const earlier = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)

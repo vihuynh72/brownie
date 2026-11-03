@@ -69,8 +69,7 @@ export const useSessionStore = defineStore('session', {
       if (given) return given
       const fromName = state.identity?.displayName?.trim().split(/\s+/)[0]
       if (fromName) return fromName
-      const fromEmail = state.identity?.email?.split('@')[0]?.trim()
-      return fromEmail || null
+      return null
     },
   },
   actions: {

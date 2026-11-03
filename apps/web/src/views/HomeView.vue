@@ -763,11 +763,11 @@ const showHowItWorks = computed(
       <form class="home__name-form" @submit.prevent="submitName">
         <label class="home__name-field">
           <span>First</span>
-          <input v-model="nameGiven" type="text" autocomplete="given-name" maxlength="100" required />
+          <input v-model="nameGiven" class="text-field" type="text" autocomplete="given-name" maxlength="100" required />
         </label>
         <label class="home__name-field">
           <span>Last</span>
-          <input v-model="nameFamily" type="text" autocomplete="family-name" maxlength="100" required />
+          <input v-model="nameFamily" class="text-field" type="text" autocomplete="family-name" maxlength="100" required />
         </label>
         <div class="home__name-actions">
           <button type="submit" class="button button--primary button--small" :disabled="nameBusy">
@@ -1721,4 +1721,125 @@ const showHowItWorks = computed(
     text-wrap: balance;
   }
 }
+
+/* ---------- Name card ---------- */
+
+.home__name {
+  padding: 1rem 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.home__name-heading {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+.home__name-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.home__name-field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.home__name-field > span {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.home__name-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* ---------- Form library ---------- */
+
+.home__library {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.home__library-heading {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+.home__library-search {
+  width: 100%;
+}
+
+.home__library-popular {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.home__library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.home__library-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.home__library-text {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.home__library-title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+  margin: 0;
+}
+
+.home__library-agency {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.home__library-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.home__library-start {
+  flex: none;
+}
+
+.home__library-empty {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
 </style>
