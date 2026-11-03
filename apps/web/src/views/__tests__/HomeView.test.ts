@@ -184,6 +184,13 @@ describe('HomeView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
+  it('points a refused Google sign-in back at the email code', async () => {
+    const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied&provider=google')
+    const googleAlert = wrapper.get('[role="alert"]')
+    expect(googleAlert.text()).toContain('Google sign-in is in early access')
+    expect(googleAlert.get('a').attributes('href')).toBe('/oauth2/authorization/entra')
+  })
+
   /**
    * The one refusal that must not say "try again": an account that was not
    * invited will be refused every time, and a link inviting the person to

@@ -11,6 +11,7 @@ vi.mock('@/api/client', async () => {
 
 const MCP_URL = 'https://api.example.com/mcp'
 const SIGN_IN = '/oauth2/authorization/entra'
+const GOOGLE_SIGN_IN = '/oauth2/authorization/google'
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
@@ -253,6 +254,46 @@ describe('LandingView', () => {
     const wrapper = await mountLanding()
 
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+it('points every sign-in action at Google when the deployment runs it', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['google', 'entra'],
+    })
+    const wrapper = await mountLanding()
+
+    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
+    expect(tryIt?.attributes('href')).toBe(GOOGLE_SIGN_IN)
+    const signIn = wrapper.findAll('a').find((a) => a.text() === 'Sign in')
+    expect(signIn?.attributes('href')).toBe(GOOGLE_SIGN_IN)
+
+    const emailCode = wrapper.get('a.landing__email-code')
+    expect(emailCode.attributes('href')).toBe(SIGN_IN)
+    expect(emailCode.text()).toContain('Use an email code instead')
+  })
+
+  it('keeps the email-code button primary with Google as a small early-access link', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['entra', 'google'],
+    })
+    const wrapper = await mountLanding()
+
+    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
+    expect(tryIt?.attributes('href')).toBe(SIGN_IN)
+    const emailCode = wrapper.get('a.landing__email-code')
+    expect(emailCode.attributes('href')).toBe(GOOGLE_SIGN_IN)
+    expect(emailCode.text()).toContain('Continue with Google (early access)')
+  })
+
+  it('keeps the single email-code action when Google is not enabled', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['entra'],
+    })
+    const wrapper = await mountLanding()
+
+    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
+    expect(tryIt?.attributes('href')).toBe(SIGN_IN)
+    expect(wrapper.find('a.landing__email-code').exists()).toBe(false)
   })
 })
 

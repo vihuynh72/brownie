@@ -9,6 +9,10 @@ import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRole;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceStatus;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.OAuth2AccessToken;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
 import org.springframework.security.oauth2.core.oidc.OidcIdToken;
@@ -213,6 +217,92 @@ class BrownieOidcUserServiceTest {
         assertThat(service.loadUser(null)).isSameAs(fakeOidcUser);
     }
 
+    private static OidcUserRequest googleRequest() {
+        ClientRegistration registration = ClientRegistration.withRegistrationId("google")
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .clientId("x").redirectUri("{baseUrl}/login/oauth2/code/google")
+                .authorizationUri("https://accounts.google.com/o/oauth2/v2/auth")
+                .tokenUri("https://oauth2.googleapis.com/token")
+                .build();
+        return new OidcUserRequest(registration,
+                new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "v", Instant.now(), Instant.now().plusSeconds(60)),
+                new OidcIdToken("id", Instant.now(), Instant.now().plusSeconds(60),
+                        Map.of(IdTokenClaimNames.ISS, "https://accounts.google.com", IdTokenClaimNames.SUB, "s")));
+    }
+
+    private static OidcUser googleUserWith(String email, boolean verified, String given, String family) {
+        return new DefaultOidcUser(List.of(), new OidcIdToken(
+                "fake-token-value",
+                Instant.now(),
+                Instant.now().plusSeconds(300),
+                Map.of(
+                        IdTokenClaimNames.ISS, "https://accounts.google.com",
+                        IdTokenClaimNames.SUB, "google-subject",
+                        StandardClaimNames.EMAIL, email,
+                        StandardClaimNames.EMAIL_VERIFIED, verified,
+                        StandardClaimNames.GIVEN_NAME, given,
+                        StandardClaimNames.FAMILY_NAME, family)));
+    }
+
+    @Test
+    void aGoogleSignInWithAVerifiedAddressIsInvited() {
+        OidcUser fake = googleUserWith("invited@example.com", true, "Ada", "Lovelace");
+        RecordingUserIdentityRepository identities = new RecordingUserIdentityRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fake, identities, new RecordingWorkspaceRepository(), noOpProvisioning(),
+                new InvitedPeople(true, "invited@example.com", false));
+
+        assertThat(service.loadUser(googleRequest())).isSameAs(fake);
+    }
+
+    @Test
+    void aGoogleSignInWithAVerifiedAddressGetsTheOpenAllowance() {
+        OidcUser fake = googleUserWith("stranger@example.com", true, "Grace", "Hopper");
+        RecordingWorkspaceRepository workspaces = new RecordingWorkspaceRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fake, new RecordingUserIdentityRepository(), workspaces, noOpProvisioning(),
+                new InvitedPeople(true, "someone-else@example.com", true));
+
+        assertThat(service.loadUser(googleRequest())).isSameAs(fake);
+    }
+
+    @Test
+    void aGoogleSignInWithoutAVerifiedAddressIsNotInvited() {
+        OidcUser fake = googleUserWith("invited@example.com", false, "Ada", "Lovelace");
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fake, new RecordingUserIdentityRepository(), new RecordingWorkspaceRepository(), noOpProvisioning(),
+                new InvitedPeople(true, "invited@example.com", false));
+
+        assertThatThrownBy(() -> service.loadUser(googleRequest()))
+                .isInstanceOf(OAuth2AuthenticationException.class);
+    }
+
+    @Test
+    void aGoogleSignInPrefillsTheNameCardFromTheProvidersNames() {
+        OidcUser fake = googleUserWith("ada@example.com", true, "Ada", "Lovelace");
+        RecordingUserIdentityRepository identities = new RecordingUserIdentityRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fake, identities, new RecordingWorkspaceRepository(), noOpProvisioning(),
+                new InvitedPeople(false, "", false));
+
+        service.loadUser(googleRequest());
+        assertThat(identities.prefilledGiven).isEqualTo("Ada");
+        assertThat(identities.prefilledFamily).isEqualTo("Lovelace");
+    }
+
+    @Test
+    void anEntraSignInLeavesItsNamesAlone() {
+        OidcUser fakeOidcUser = oidcUserWith("https://issuer-x", "subject-x", "person@example.com", "Person Name");
+        RecordingUserIdentityRepository identities = new RecordingUserIdentityRepository();
+        BrownieOidcUserService service = new BrownieOidcUserService(
+                (request) -> fakeOidcUser, identities, new RecordingWorkspaceRepository(), noOpProvisioning(),
+                new InvitedPeople(false, "", false));
+
+        service.loadUser(null);
+        assertThat(identities.prefilledGiven).isNull();
+        assertThat(identities.prefilledFamily).isNull();
+    }
+
     private static BuiltInTemplateProvisioningService noOpProvisioning() {
         return new BuiltInTemplateProvisioningService(null, null, null, null, null, null) {
             @Override
@@ -253,6 +343,16 @@ class BrownieOidcUserServiceTest {
         @Override
         public UserIdentity recordName(long userId, String givenName, String familyName) {
             throw new UnsupportedOperationException();
+        }
+
+        private String prefilledGiven;
+        private String prefilledFamily;
+
+        @Override
+        public UserIdentity prefillNames(long userId, String givenName, String familyName) {
+            this.prefilledGiven = givenName;
+            this.prefilledFamily = familyName;
+            return new UserIdentity(1L, issuer, subject, email, displayName, null, null, null, givenName, familyName, null);
         }
 
         @Override

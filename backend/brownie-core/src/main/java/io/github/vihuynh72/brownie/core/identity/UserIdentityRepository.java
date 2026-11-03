@@ -20,6 +20,14 @@ public interface UserIdentityRepository {
     /** The name the person typed themselves; {@code name_confirmed_at} moves to the save time. */
     UserIdentity recordName(long userId, String givenName, String familyName);
 
+    /**
+     * The name the provider already knows, used only to prefill the name
+     * card: it fills still-empty parts and never touches one the person
+     * confirmed themselves, since that card is the moment their own
+     * spelling wins.
+     */
+    UserIdentity prefillNames(long userId, String givenName, String familyName);
+
     Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject);
 
     /**

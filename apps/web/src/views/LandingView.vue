@@ -11,7 +11,15 @@ import { installTargets, type InstallTargetId } from '@/landing/installTargets'
  * the chat-app address both come from the welcome answer.
  */
 
-const SIGN_IN_HREF = '/oauth2/authorization/entra'
+/** The sign-in start for whatever providers this deployment runs: Google when it is enabled, the Entra email code otherwise. */
+const signInHref = computed(() =>
+  welcome.value?.signInProviders?.[0] === 'google'
+    ? '/oauth2/authorization/google'
+    : '/oauth2/authorization/entra')
+const EMAIL_CODE_HREF = '/oauth2/authorization/entra'
+const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
+const googleSecondary = computed(
+  () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
 const welcome = ref<WelcomeResponse | null>(null)
 onMounted(async () => {
@@ -165,9 +173,9 @@ const TESTED_FORMS = [
       <nav class="landing__nav" aria-label="Brownie">
         <a href="#how">How it works</a>
         <a href="#install">Install</a>
-        <a :href="SIGN_IN_HREF">Sign in</a>
+        <a :href="signInHref">Sign in</a>
       </nav>
-      <a class="button button--primary landing__bar-action" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+      <a class="button button--primary landing__bar-action" :href="signInHref">{{ primaryLabel }}</a>
     </header>
 
     <section class="hero" aria-labelledby="landing-title">
@@ -196,7 +204,16 @@ const TESTED_FORMS = [
           Brownie fills your forms from what you tell it. You make the calls.
         </h1>
         <div class="hero__actions">
-          <a class="button button--primary hero__action" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+          <a class="button button--primary hero__action" :href="signInHref">{{ primaryLabel }}</a>
+          <a v-if="googlePrimary" :href="EMAIL_CODE_HREF" class="landing__email-code">Use an email code instead</a>
+          <a v-else-if="googleSecondary" href="/oauth2/authorization/google" class="landing__email-code">
+            <svg class="landing__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
+              <path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09Z"/>
+              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"/>
+            </svg>
+            Continue with Google (early access)</a>
           <a class="button hero__action" href="#install" @click="openChatAppTab">Add to Claude or ChatGPT</a>
         </div>
         <p v-if="accessNote" class="hero__note">{{ accessNote }}</p>
@@ -225,7 +242,7 @@ const TESTED_FORMS = [
             <p class="landing-forms__title">{{ entry.title }}</p>
             <p class="landing-forms__agency">{{ entry.agency }}</p>
           </div>
-          <a class="button button--small landing-forms__start" :href="SIGN_IN_HREF">Sign in to start</a>
+          <a class="button button--small landing-forms__start" :href="signInHref">Sign in to start</a>
         </li>
       </ul>
       <p v-else-if="formQuery.trim()" class="landing-forms__empty">No match. You can always upload your own copy.</p>
@@ -277,7 +294,7 @@ const TESTED_FORMS = [
         </div>
         <div v-else class="install__line-box install__line-box--browser">
           <p class="install__browser">Nothing to install. Brownie runs right here.</p>
-          <a class="button button--primary" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+          <a class="button button--primary" :href="signInHref">{{ primaryLabel }}</a>
         </div>
         <ol class="install__steps">
           <li v-for="(step, index) in active.steps" :key="index">{{ step }}</li>
@@ -369,7 +386,7 @@ const TESTED_FORMS = [
         <span>Brownie</span>
       </span>
       <span class="landing__footer-line">Fills your forms from what you tell it.</span>
-      <a :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+      <a :href="signInHref">{{ primaryLabel }}</a>
     </footer>
   </div>
 </template>

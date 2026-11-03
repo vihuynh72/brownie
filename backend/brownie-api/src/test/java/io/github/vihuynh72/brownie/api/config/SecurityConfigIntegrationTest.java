@@ -240,7 +240,7 @@ class SecurityConfigIntegrationTest {
         assertThat(callback.headers().firstValue("Location"))
                 .hasValueSatisfying(location -> assertThat(location)
                         .startsWith("http://")
-                        .endsWith("/?signin=failed&reason=access_denied"));
+                        .endsWith("/?signin=failed&reason=access_denied&provider=entra"));
     }
 
     /** A callback with no sign-in pending for it (a stale tab, a forged request) is still a failure with a real destination, never a 404. */
@@ -255,7 +255,7 @@ class SecurityConfigIntegrationTest {
         assertThat(callback.statusCode()).isEqualTo(302);
         assertThat(callback.headers().firstValue("Location"))
                 .hasValueSatisfying(location -> assertThat(location)
-                        .endsWith("/?signin=failed&reason=authorization_request_not_found"));
+                        .endsWith("/?signin=failed&reason=authorization_request_not_found&provider=entra"));
     }
 
     private static String queryParameter(String url, String name) {

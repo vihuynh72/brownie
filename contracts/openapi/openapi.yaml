@@ -4328,6 +4328,11 @@ components:
         mcpServerUrl:
           type: string
           nullable: true
+        signInProviders:
+          type: array
+          items:
+            type: string
+            enum: [google, entra]
 
     MembershipResponse:
       type: object

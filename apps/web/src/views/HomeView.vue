@@ -56,6 +56,8 @@ watch(
 // people only, and nothing the person does at the sign-in page changes that.
 // Telling them to try again would be false, and would send them round a loop.
 const signInRefusedAsUninvited = computed(() => signInFailureReason.value === 'not_invited')
+const signInGoogleEarlyAccess = computed(
+  () => signInFailureReason.value === 'access_denied' && route.query.provider === 'google')
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
@@ -714,6 +716,10 @@ const showHowItWorks = computed(
         That sign-in had expired or was started twice. Sign in again.
         <a href="/oauth2/authorization/entra">Sign in again</a>
       </p>
+      <p v-else-if="signInGoogleEarlyAccess" class="card home__signin-error" role="alert">
+        Google sign-in is in early access.
+        <a href="/oauth2/authorization/entra">Use an email code instead</a>
+      </p>
       <p v-else class="card home__signin-error" role="alert">
         Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again;
         if it keeps failing, pass that reason on to whoever runs this Brownie.
@@ -725,6 +731,10 @@ const showHowItWorks = computed(
     <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
       This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
       should be, ask whoever invited you; signing in again with the same account will not change it.
+    </p>
+    <p v-else-if="signInGoogleEarlyAccess && signInFailed" class="card home__signin-error" role="alert">
+      Google sign-in is in early access.
+      <a href="/oauth2/authorization/entra">Use an email code instead</a>
     </p>
     <p v-else-if="signInFailed" class="card home__signin-error" role="alert">
       Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again; if

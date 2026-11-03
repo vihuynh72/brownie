@@ -36,6 +36,9 @@
 #                                    lets people pick Google Drive files, once
 #                                    the API can read them, and only with a
 #                                    Google client id
+#   BROWNIE_GOOGLE_SIGN_IN_PRIMARY   optional, true or false (the default);
+#                                    makes Google the big sign-in button rather
+#                                    than the email code
 #   BROWNIE_MCP_ENABLED              optional, true or false (the default);
 #                                    lets chat apps reach the MCP endpoint,
 #                                    and then one more secret is read from
@@ -114,6 +117,13 @@ if [ -n "${BROWNIE_GOOGLE_CLIENT_ID:-}" ]; then
     "BROWNIE_CONNECTOR_TOKEN_KEY=${connector_token_key}")
   if [ -n "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" ]; then
     google_settings+=("BROWNIE_GOOGLE_DRIVE_OFFERED=${BROWNIE_GOOGLE_DRIVE_OFFERED}")
+  fi
+  case "${BROWNIE_GOOGLE_SIGN_IN_PRIMARY:-}" in
+    ''|true|false) ;;
+    *) fail "BROWNIE_GOOGLE_SIGN_IN_PRIMARY must be true or false." ;;
+  esac
+  if [ -n "${BROWNIE_GOOGLE_SIGN_IN_PRIMARY:-}" ]; then
+    google_settings+=("BROWNIE_GOOGLE_SIGN_IN_PRIMARY=${BROWNIE_GOOGLE_SIGN_IN_PRIMARY}")
   fi
 elif [ "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" = true ]; then
   log "BROWNIE_GOOGLE_DRIVE_OFFERED is set but Google is not; Drive stays off."

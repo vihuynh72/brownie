@@ -2031,6 +2031,7 @@ export interface components {
             /** @enum {string} */
             signUp: "OPEN" | "OPEN_WITH_DAILY_ALLOWANCE" | "INVITATION_ONLY";
             mcpServerUrl?: string | null;
+            signInProviders?: ("google" | "entra")[];
         };
         MembershipResponse: {
             /** Format: int64 */

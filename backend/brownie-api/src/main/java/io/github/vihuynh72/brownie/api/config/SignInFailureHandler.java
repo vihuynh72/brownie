@@ -64,7 +64,23 @@ final class SignInFailureHandler implements AuthenticationFailureHandler {
             redirectStrategy.sendRedirect(request, response, webOrigin + "/");
             return;
         }
-        redirectStrategy.sendRedirect(request, response, webOrigin + "/?signin=failed&reason=" + code);
+        String provider = providerOf(request.getRequestURI());
+        String target = webOrigin + "/?signin=failed&reason=" + code + (provider != null ? "&provider=" + provider : "");
+        redirectStrategy.sendRedirect(request, response, target);
+    }
+
+    /**
+     * Which provider's callback this was, from the callback's own path --
+     * the only place the registration id still lives once the login has
+     * failed. Anything that is not a /login/oauth2/code/<id> URI leaves it
+     * out rather than guess.
+     */
+    private static String providerOf(String uri) {
+        if (uri != null && uri.startsWith("/login/oauth2/code/")) {
+            String id = uri.substring("/login/oauth2/code/".length());
+            return SAFE_CODE.matcher(id).matches() ? id : null;
+        }
+        return null;
     }
 
     /**
