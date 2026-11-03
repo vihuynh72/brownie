@@ -475,6 +475,11 @@ server:
         http-only: true
         same-site: lax
 brownie:
+  sign-in:
+    # Whether Google is the big button: while its consent app is still in
+    # Google's testing queue it stays a small early-access link, so the
+    # email code remains the way almost everyone signs in.
+    google-primary: ${BROWNIE_GOOGLE_SIGN_IN_PRIMARY:false}
   invitations:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.
@@ -517,6 +522,11 @@ server:
         http-only: true
         same-site: lax
 brownie:
+  sign-in:
+    # Whether Google is the big button: while its consent app is still in
+    # Google's testing queue it stays a small early-access link, so the
+    # email code remains the way almost everyone signs in.
+    google-primary: ${BROWNIE_GOOGLE_SIGN_IN_PRIMARY:false}
   invitations:
     # On by default wherever this is reachable from outside a laptop. The
     # addresses are given per deployment; with none, nobody signs in.

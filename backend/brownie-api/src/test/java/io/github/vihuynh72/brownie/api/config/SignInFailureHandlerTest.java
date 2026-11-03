@@ -42,6 +42,34 @@ class SignInFailureHandlerTest {
     }
 
     @Test
+    void aGoogleCallbackNamesGoogleAsTheProvider() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/login/oauth2/code/google");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.onAuthenticationFailure(
+                request, response,
+                new OAuth2AuthenticationException(new OAuth2Error("access_denied", "not a test user", null)));
+
+        assertThat(response.getRedirectedUrl())
+                .isEqualTo("http://localhost:5173/?signin=failed&reason=access_denied&provider=google");
+    }
+
+    @Test
+    void anEntraCallbackNamesEntraAsTheProvider() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/login/oauth2/code/entra");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.onAuthenticationFailure(
+                request, response,
+                new OAuth2AuthenticationException(new OAuth2Error("access_denied", "the person said no", null)));
+
+        assertThat(response.getRedirectedUrl())
+                .isEqualTo("http://localhost:5173/?signin=failed&reason=access_denied&provider=entra");
+    }
+
+    @Test
     void aStaleCallbackOnAnAnonymousSessionStillCarriesItsReason() throws Exception {
         MockHttpServletResponse response = new MockHttpServletResponse();
 

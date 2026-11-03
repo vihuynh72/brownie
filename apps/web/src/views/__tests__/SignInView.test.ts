@@ -58,6 +58,23 @@ describe('SignInView', () => {
     expect(wrapper.findAll('a')).toHaveLength(1)
   })
 
+  it('keeps the email code as the big action with Google as a small early-access link', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['entra', 'google'],
+    })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+
+    const action = wrapper.get('a.signin__action')
+    expect(action.attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(action.text()).toContain('Sign in or sign up')
+
+    const google = wrapper.get('a.signin__google-secondary')
+    expect(google.attributes('href')).toBe('/oauth2/authorization/google')
+    expect(google.text()).toContain('Continue with Google (early access)')
+    expect(google.find('svg.signin__google-mark').exists()).toBe(true)
+  })
+
   it('offers Google as the one big action, with the email code as a small backup', async () => {
     vi.mocked(getWelcome).mockResolvedValue({
       signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google', 'entra'],

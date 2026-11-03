@@ -21,15 +21,18 @@ class WelcomeController {
     private final InvitedPeople invitedPeople;
     private final String mcpServerUrl;
     private final ClientRegistrationRepository clientRegistrationRepository;
+    private final boolean googlePrimary;
 
     WelcomeController(
             InvitedPeople invitedPeople,
             ClientRegistrationRepository clientRegistrationRepository,
             @Value("${brownie.mcp.enabled:false}") boolean mcpEnabled,
-            @Value("${brownie.public-origin:}") String publicOrigin) {
+            @Value("${brownie.public-origin:}") String publicOrigin,
+            @Value("${brownie.sign-in.google-primary:false}") boolean googlePrimary) {
         this.invitedPeople = invitedPeople;
         this.clientRegistrationRepository = clientRegistrationRepository;
         this.mcpServerUrl = mcpEnabled ? publicOrigin + "/mcp" : null;
+        this.googlePrimary = googlePrimary;
     }
 
     @GetMapping("/api/v1/welcome")
@@ -42,9 +45,9 @@ class WelcomeController {
         } else {
             signUp = "INVITATION_ONLY";
         }
-        // Google first: it is the one big button, and the order is the
-        // order the page draws its choices in.
-        List<String> providers = List.of("google", "entra").stream()
+        // The first provider is the big button: Google while it carries
+        // that flag, the email code otherwise and always as the backup.
+        List<String> providers = (googlePrimary ? List.of("google", "entra") : List.of("entra", "google")).stream()
                 .filter(id -> clientRegistrationRepository.findByRegistrationId(id) != null)
                 .toList();
         return new WelcomeResponse(signUp, mcpServerUrl, providers);

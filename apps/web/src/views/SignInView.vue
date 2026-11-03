@@ -36,8 +36,10 @@ onMounted(async () => {
   }
 })
 
-/** Whether this deployment signs people in through Google; without it the single Entra action stays. */
-const googleSignIn = computed(() => welcome.value?.signInProviders?.includes('google') ?? false)
+/** Google as the big button only while it carries the flag; otherwise it is a small early-access link. */
+const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
+const googleSecondary = computed(
+  () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
 /**
  * What the deployment says about sign-up before anyone is in: a free daily allowance, an open
@@ -121,7 +123,7 @@ function keepDestination(): void {
       <p class="page-lede signin__lede">{{ lede }}</p>
     </header>
 
-    <a v-if="googleSignIn" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
+    <a v-if="googlePrimary" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
       <svg class="signin__google-mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
         <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
         <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
@@ -130,12 +132,21 @@ function keepDestination(): void {
       </svg>
       <span>Continue with Google</span>
     </a>
-    <a v-if="googleSignIn" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="googlePrimary" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
       Use an email code instead
     </a>
-    <a v-if="!googleSignIn" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="!googlePrimary" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
       <span>Sign in or sign up</span>
       <AppIcon name="sign-in" :size="22" />
+    </a>
+    <a v-if="googleSecondary" class="signin__email-code signin__google-secondary" href="/oauth2/authorization/google" @click="keepDestination">
+      <svg class="signin__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+        <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
+        <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
+        <path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09Z"/>
+        <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"/>
+      </svg>
+      <span>Continue with Google (early access)</span>
     </a>
 
     <p class="signin__note">

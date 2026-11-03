@@ -15,7 +15,7 @@ class WelcomeControllerTest {
 
     @Test
     void invitationsNotRequiredIsOpen() {
-        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), false, "");
+        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), false, "", false);
 
         assertThat(controller.welcome().signUp()).isEqualTo("OPEN");
         assertThat(controller.welcome().mcpServerUrl()).isNull();
@@ -23,14 +23,14 @@ class WelcomeControllerTest {
 
     @Test
     void invitationsRequiredAndOpenSignUpIsOpenWithADailyAllowance() {
-        WelcomeController controller = new WelcomeController(new InvitedPeople(true, "a@example.com", true), emptyRegistrations(), false, "");
+        WelcomeController controller = new WelcomeController(new InvitedPeople(true, "a@example.com", true), emptyRegistrations(), false, "", false);
 
         assertThat(controller.welcome().signUp()).isEqualTo("OPEN_WITH_DAILY_ALLOWANCE");
     }
 
     @Test
     void invitationsRequiredAndNoOpenSignUpIsInvitationOnly() {
-        WelcomeController controller = new WelcomeController(new InvitedPeople(true, "a@example.com", false), emptyRegistrations(), false, "");
+        WelcomeController controller = new WelcomeController(new InvitedPeople(true, "a@example.com", false), emptyRegistrations(), false, "", false);
 
         assertThat(controller.welcome().signUp()).isEqualTo("INVITATION_ONLY");
     }
@@ -39,23 +39,32 @@ class WelcomeControllerTest {
     void theProvidersTheDeploymentRunsAreListedGoogleFirst() {
         InMemoryClientRegistrationRepository repo = new InMemoryClientRegistrationRepository(
                 registration("entra"), registration("google"));
-        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, false, "");
+        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, false, "", true);
 
         assertThat(controller.welcome().signInProviders()).containsExactly("google", "entra");
     }
 
     @Test
+    void theEmailCodeIsPrimaryUntilGoogleIs() {
+        InMemoryClientRegistrationRepository repo = new InMemoryClientRegistrationRepository(
+                registration("entra"), registration("google"));
+        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, false, "", false);
+
+        assertThat(controller.welcome().signInProviders()).containsExactly("entra", "google");
+    }
+
+    @Test
     void anEntraOnlyDeploymentOffersOnlyTheEmailCode() {
         InMemoryClientRegistrationRepository repo = new InMemoryClientRegistrationRepository(registration("entra"));
-        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, false, "");
+        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, false, "", false);
 
         assertThat(controller.welcome().signInProviders()).containsExactly("entra");
     }
 
     @Test
     void theChatAppUrlOnlyShowsWhileMcpIsOn() {
-        WelcomeController withMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), true, "https://api.example.com");
-        WelcomeController withoutMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), false, "https://api.example.com");
+        WelcomeController withMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), true, "https://api.example.com", false);
+        WelcomeController withoutMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), false, "https://api.example.com", false);
 
         assertThat(withMcp.welcome().mcpServerUrl()).isEqualTo("https://api.example.com/mcp");
         assertThat(withoutMcp.welcome().mcpServerUrl()).isNull();
