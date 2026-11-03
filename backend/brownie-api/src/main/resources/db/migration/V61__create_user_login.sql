@@ -6,7 +6,7 @@ CREATE TABLE user_login (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     issuer      TEXT NOT NULL,
     subject     TEXT NOT NULL,
-    user_id     BIGINT NOT NULL REFERENCES user_identity (id),
+    user_id     BIGINT NOT NULL REFERENCES user_identity (id) ON DELETE CASCADE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT user_login_issuer_subject_key UNIQUE (issuer, subject)
 );
