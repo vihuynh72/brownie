@@ -3,6 +3,7 @@ package io.github.vihuynh72.brownie.api.form;
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
 import io.github.vihuynh72.brownie.core.revision.DocumentMutationResult;
+import io.github.vihuynh72.brownie.core.form.CatalogReadyRepository;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.job.IdempotencyKey;
@@ -35,6 +36,7 @@ class FormsController {
 
     private final FormLibraryCatalog catalog;
     private final CatalogFormFetcher fetcher;
+    private final CatalogReadyService catalogReadyService;
     private final FormIntakeService intakeService;
     private final RevisionService revisionService;
     private final CanonicalRequestHasher canonicalRequestHasher;
@@ -44,6 +46,7 @@ class FormsController {
     FormsController(
             FormLibraryCatalog catalog,
             CatalogFormFetcher fetcher,
+            CatalogReadyService catalogReadyService,
             FormIntakeService intakeService,
             RevisionService revisionService,
             CanonicalRequestHasher canonicalRequestHasher,
@@ -51,6 +54,7 @@ class FormsController {
             WorkspaceRepository workspaceRepository) {
         this.catalog = catalog;
         this.fetcher = fetcher;
+        this.catalogReadyService = catalogReadyService;
         this.intakeService = intakeService;
         this.revisionService = revisionService;
         this.canonicalRequestHasher = canonicalRequestHasher;
@@ -66,14 +70,28 @@ class FormsController {
     @PostMapping("/{id}/start")
     StartResponse start(@PathVariable String id, @AuthenticationPrincipal OidcUser oidcUser) throws IOException {
         FormLibraryCatalog.Entry entry = catalog.find(id).orElseThrow(() -> new FormLibraryNotFoundException(id));
-        byte[] pdf;
-        try {
-            pdf = fetcher.fetch(entry);
-        } catch (IOException | IllegalStateException e) {
-            throw new FormFetchException(entry.agency(), e instanceof IOException ? e : new IOException(e));
-        }
         UserIdentity identity = identityOf(oidcUser);
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(identity.id()).id();
+        // Kept agency bytes skip the download while they are fresh; the take-in
+        // below replays the kept preparation, so a second start only stores the
+        // file and builds the template -- the read and the naming do not run again.
+        byte[] pdf;
+        java.util.Optional<CatalogReadyRepository.ReadyForm> fresh = catalogReadyService.fresh(id);
+        if (fresh.isPresent()) {
+            pdf = fresh.get().sourceBytes();
+        } else {
+            try {
+                pdf = fetcher.fetch(entry);
+            } catch (IOException | IllegalStateException e) {
+                throw new FormFetchException(entry.agency(), e instanceof IOException ? e : new IOException(e));
+            }
+            java.util.Optional<CatalogReadyRepository.ReadyForm> stale = catalogReadyService.find(id);
+            if (stale.isPresent() && catalogReadyService.sameBytes(stale.get(), pdf)) {
+                catalogReadyService.restamp(id);
+            } else {
+                catalogReadyService.remember(id, pdf);
+            }
+        }
         FormIntakeService.IntakeResult taken =
                 intakeService.takeIn(workspaceId, identity.id(), entry.title(), new ByteArrayInputStream(pdf));
         DocumentMutationResult mutation = revisionService.createDocument(

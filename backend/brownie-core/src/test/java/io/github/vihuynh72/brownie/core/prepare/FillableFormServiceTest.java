@@ -57,7 +57,7 @@ class FillableFormServiceTest {
     private final PdfForms pdfForms = new PdfForms();
 
     private final FillableFormService service = new FillableFormService(artifacts, extractions, new Extractor(), converter, preparer,
-            forms, namer, editor, verifier, derivations, pdfForms, bytes -> bytes);
+            forms, namer, editor, verifier, derivations, pdfForms, bytes -> bytes, new NoPrepareCache());
 
     @Test
     void aWordUploadIsMadeIntoAStoredCopyWithNamedSpotsAndRecorded() {
@@ -487,6 +487,17 @@ class FillableFormServiceTest {
             return new FillableForm(FillableForm.Kind.PDF, artifactId, artifactId, SupportedMediaType.PDF, false,
                     new FillableForm.Extraction(9, ExtractionStatus.COMPLETE.name(), "form-reader", List.of()), List.of(), List.of(),
                     NamingSource.RULES, SpotNaming.NO_CANDIDATES, true);
+        }
+    }
+
+    private static final class NoPrepareCache implements io.github.vihuynh72.brownie.core.prepare.PrepareCacheRepository {
+        @Override
+        public java.util.Optional<CachedPreparation> find(String sourceSha256, String recipeVersion) {
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public void remember(CachedPreparation prepared) {
         }
     }
 
