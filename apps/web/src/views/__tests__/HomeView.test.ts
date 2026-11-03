@@ -384,7 +384,7 @@ describe('HomeView', () => {
     vi.mocked(listDocuments).mockResolvedValue([])
     signedIn()
     const session = useSessionStore()
-    session.identity = { ...session.identity!, givenName: null, familyName: null, displayName: null, email: 'dotcainha@example.com' }
+    session.identity = { ...session.identity!, givenName: undefined, familyName: undefined, displayName: undefined, email: 'dotcainha@example.com' }
 
     const wrapper = await mountWithRouter()
     await flushPromises()
