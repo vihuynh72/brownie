@@ -3280,7 +3280,7 @@ async function learnApprovedDetails(revisionId: number): Promise<void> {
   try {
     const result = await learnDetails(props.documentId, revisionId)
     if (result.subject === 'SELF') {
-      learnNote.value = { learningId: result.learningId ?? null, count: result.saved.length, reason: null, undone: false }
+      learnNote.value = { learningId: result.learningId ?? null, count: result.saved.length + result.replaced.length, reason: null, undone: false }
     } else if (result.subject !== 'SKIPPED') {
       learnNote.value = { learningId: null, count: 0, reason: result.reason ?? null, undone: false }
     }
@@ -3297,7 +3297,8 @@ async function undoLearnedDetails(): Promise<void> {
     await undoLearning(note.learningId)
     learnNote.value = { ...note, undone: true }
   } catch {
-    learnNote.value = { ...note, undone: true }
+    // A refused undo leaves the saved details where they were, so the offer stays open.
+    learnNote.value = { ...note, undone: false, reason: 'The undo did not go through. Try again.' }
   }
 }
 
