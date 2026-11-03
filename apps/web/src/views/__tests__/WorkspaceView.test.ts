@@ -12,6 +12,8 @@ vi.mock('@/api/client', async () => {
   return {
     ...actual,
     acceptPatchProposal: vi.fn(),
+    learnDetails: vi.fn(),
+    undoLearning: vi.fn(),
     allocateUpload: vi.fn(),
     answerQuestion: vi.fn(),
     applyGenerationResult: vi.fn(),
@@ -74,6 +76,8 @@ vi.mock('@/components/PdfPreview.vue', () => ({
 import {
   ApiRequestError,
   acceptPatchProposal,
+  learnDetails,
+  undoLearning,
   allocateUpload,
   answerQuestion,
   applyGenerationResult,
@@ -2733,6 +2737,43 @@ describe('WorkspaceView: previewing what Brownie proposes', () => {
     await page.find('.single-pane-strip__action').trigger('click')
 
     expect(acceptPatchProposal).toHaveBeenCalledTimes(1)
+  })
+
+  it("learns the approved fill's details and offers to review or undo them", async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    vi.mocked(learnDetails).mockResolvedValue({
+      learningId: 9, subject: 'SELF',
+      saved: [{ key: 'person.first_name', label: 'First name' }], replaced: [],
+    })
+    const page = await mountWithFindings()
+
+    await page.find('.single-pane-strip__action').trigger('click')
+    await flushPromises()
+
+    expect(learnDetails).toHaveBeenCalledWith(
+      DOCUMENT_WITH_A_SCALAR_FIELD.id,
+      expect.any(Number),
+    )
+    expect(page.text()).toContain('Saved 1 detail to')
+    expect(page.text()).toContain('Your details')
+
+    await page.findAll('button').find((b) => b.text() === 'Undo')?.trigger('click')
+    await flushPromises()
+    expect(undoLearning).toHaveBeenCalledWith(9)
+  })
+
+  it('says nothing extra when the approval taught nothing', async () => {
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    vi.mocked(learnDetails).mockResolvedValue({ learningId: null, subject: 'SKIPPED', saved: [], replaced: [] })
+    const page = await mountWithFindings()
+
+    await page.find('.single-pane-strip__action').trigger('click')
+    await flushPromises()
+
+    expect(learnDetails).toHaveBeenCalled()
+    expect(page.find('.proposal-review__learn-note').exists()).toBe(false)
   })
 
   it('the strip "See details" switches to the Brownie pane', async () => {

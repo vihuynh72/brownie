@@ -803,6 +803,10 @@ async function moveToTrash(): Promise<void> {
           <AppIcon name="shield-check" :size="24" />
           <span>Your data</span>
         </RouterLink>
+        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/details" @click="closeIfDrawer">
+          <AppIcon name="document-text" :size="24" />
+          <span>Your details</span>
+        </RouterLink>
 
         <!-- A line with nothing under it would only mark an empty place, as it is until it is known who is here. -->
         <hr v-if="session.status === 'authenticated' || session.status === 'anonymous'" class="sidebar__rule sidebar__rule--foot" />

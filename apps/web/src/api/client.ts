@@ -226,6 +226,40 @@ export function getWelcome(): Promise<WelcomeResponse> {
   return request<WelcomeResponse>('/api/v1/welcome')
 }
 
+// ---- Saved details ("Your details") ------------------------------------------------------
+
+export type SavedDetailResponse = components['schemas']['SavedDetailResponse']
+export type DetailsResponse = components['schemas']['DetailsResponse']
+export type LearningResponse = components['schemas']['LearningResponse']
+
+/** The person's saved details, in the page's own group order. */
+export function listDetails(): Promise<DetailsResponse> {
+  return request<DetailsResponse>('/api/v1/me/details')
+}
+
+/** Saves one detail by hand -- the only way a sensitive one is added. */
+export function saveDetail(key: string, value: string): Promise<SavedDetailResponse> {
+  return request<SavedDetailResponse>(`/api/v1/me/details/${encodeURIComponent(key)}`, { method: 'PUT', body: { value } })
+}
+
+export function deleteDetail(key: string): Promise<void> {
+  return request<void>(`/api/v1/me/details/${encodeURIComponent(key)}`, { method: 'DELETE' })
+}
+
+export function deleteAllDetails(): Promise<void> {
+  return request<void>('/api/v1/me/details', { method: 'DELETE' })
+}
+
+/** Learns the approved answers of one fill as saved details. Never throws to the caller's flow. */
+export function learnDetails(documentId: number, revisionId: number): Promise<LearningResponse> {
+  return request<LearningResponse>('/api/v1/me/details/learn', { method: 'POST', body: { documentId, revisionId } })
+}
+
+/** Undoes one learn run: restores what it replaced and deletes what it saved. */
+export function undoLearning(id: number): Promise<void> {
+  return request<void>(`/api/v1/me/details/learnings/${id}/undo`, { method: 'POST' })
+}
+
 /** Asks for an invitation on the free-allowance workspace's behalf; the note is optional and at most 500 characters. */
 /** The name the person gave themselves; also mirrors it into their saved details. */
 export function saveName(givenName: string, familyName: string): Promise<MeResponse> {
