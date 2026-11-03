@@ -247,10 +247,7 @@ public class GenerationOrchestrationService {
                             workspaceId, userId, documentId, detailsArtifact.id(), SourceKind.SAVED_DETAILS,
                             new SourceOrigin(0, 0, "saved-details", "1", null, "Your details", null, null),
                             java.time.Instant.now())
-                    .ifPresent(detailsSnapshot -> {
-                        documentSourceRepository.link(workspaceId, userId, documentId, detailsSnapshot.id());
-                        excerpts.addAll(extractionService.segmentAndCiteSource(workspaceId, userId, detailsSnapshot));
-                    });
+                    .ifPresent(detailsSnapshot -> excerpts.addAll(extractionService.segmentAndCiteSource(workspaceId, userId, detailsSnapshot)));
         }
         List<String> composableFieldIds = templateVersion.fieldDefinitions().stream()
                 .map(FieldDefinition::fieldId)

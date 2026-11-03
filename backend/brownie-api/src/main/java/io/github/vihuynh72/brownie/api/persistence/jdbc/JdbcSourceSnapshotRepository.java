@@ -145,16 +145,20 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
             // Deleted for good while the copy was being made: undone with everything above.
             throw new DocumentNotFoundException(documentId);
         }
-        jdbcTemplate.update(
-                """
-                INSERT INTO document_source (workspace_id, document_id, source_snapshot_id, attached_by_user_id)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (workspace_id, document_id, source_snapshot_id) DO NOTHING
-                """,
-                workspaceId,
-                documentId,
-                snapshot.id(),
-                userId);
+        /* A source the person picked for the document is a document_source they can pick again; a saved-details
+           snapshot exists only for the run that made it, never in the document's own source list. */
+        if (kind != SourceKind.SAVED_DETAILS) {
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO document_source (workspace_id, document_id, source_snapshot_id, attached_by_user_id)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (workspace_id, document_id, source_snapshot_id) DO NOTHING
+                    """,
+                    workspaceId,
+                    documentId,
+                    snapshot.id(),
+                    userId);
+        }
         return Optional.of(snapshot);
     }
 
