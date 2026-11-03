@@ -94,6 +94,8 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ vars.BROWNIE_GOOGLE_CLIENT_ID }}
           GOOGLE_DRIVE_OFFERED: ${{ vars.BROWNIE_GOOGLE_DRIVE_OFFERED }}
           GOOGLE_SIGN_IN_PRIMARY: ${{ vars.BROWNIE_GOOGLE_SIGN_IN_PRIMARY }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.BROWNIE_GOOGLE_CLIENT_SECRET }}
+          CONNECTOR_TOKEN_KEY: ${{ secrets.BROWNIE_CONNECTOR_TOKEN_KEY }}
           MCP_ENABLED: ${{ vars.BROWNIE_MCP_ENABLED }}
         run: |
           set -euo pipefail
@@ -135,6 +137,8 @@ jobs:
             printf 'export BROWNIE_GOOGLE_CLIENT_ID=%q\n' "$GOOGLE_CLIENT_ID"
             printf 'export BROWNIE_GOOGLE_DRIVE_OFFERED=%q\n' "$GOOGLE_DRIVE_OFFERED"
             if [ -n "$GOOGLE_SIGN_IN_PRIMARY" ]; then printf 'export BROWNIE_GOOGLE_SIGN_IN_PRIMARY=%q\n' "$GOOGLE_SIGN_IN_PRIMARY"; fi
+            if [ -n "$GOOGLE_CLIENT_SECRET" ]; then printf 'export BROWNIE_GOOGLE_CLIENT_SECRET=%q\n' "$GOOGLE_CLIENT_SECRET"; fi
+            if [ -n "$CONNECTOR_TOKEN_KEY" ]; then printf 'export BROWNIE_CONNECTOR_TOKEN_KEY=%q\n' "$CONNECTOR_TOKEN_KEY"; fi
             printf 'export BROWNIE_MCP_ENABLED=%q\n' "$MCP_ENABLED"
             printf 'export BROWNIE_COMPOSE_B64=%q\n' "$(base64 -w0 infra/azure/host/compose.yaml)"
             printf 'bash /tmp/brownie-deploy.sh\n'
