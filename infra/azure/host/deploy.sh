@@ -108,9 +108,18 @@ case "${BROWNIE_GOOGLE_DRIVE_OFFERED:-}" in
   *) fail "BROWNIE_GOOGLE_DRIVE_OFFERED must be true or false." ;;
 esac
 if [ -n "${BROWNIE_GOOGLE_CLIENT_ID:-}" ]; then
-  log "Reading the two secrets Google connections need."
-  google_client_secret="$(secret google-client-secret)"
-  connector_token_key="$(secret connector-token-key)"
+  # The client secret and the token key can come from the deployment
+  # environment, which the workflow fills from the repository's secrets;
+  # otherwise they are read from the vault like the rest.
+  google_client_secret="${BROWNIE_GOOGLE_CLIENT_SECRET:-}"
+  if [ -z "$google_client_secret" ]; then
+    log "Reading the two secrets Google connections need."
+    google_client_secret="$(secret google-client-secret)"
+  fi
+  connector_token_key="${BROWNIE_CONNECTOR_TOKEN_KEY:-}"
+  if [ -z "$connector_token_key" ]; then
+    connector_token_key="$(secret connector-token-key)"
+  fi
   google_settings=(
     "BROWNIE_GOOGLE_CLIENT_ID=${BROWNIE_GOOGLE_CLIENT_ID}"
     "BROWNIE_GOOGLE_CLIENT_SECRET=${google_client_secret}"
