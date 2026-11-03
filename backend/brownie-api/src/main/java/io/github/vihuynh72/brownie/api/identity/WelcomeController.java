@@ -2,8 +2,12 @@ package io.github.vihuynh72.brownie.api.identity;
 
 import io.github.vihuynh72.brownie.api.identity.oidc.InvitedPeople;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * What the landing page can say before anyone signs in: whether this
@@ -16,12 +20,15 @@ class WelcomeController {
 
     private final InvitedPeople invitedPeople;
     private final String mcpServerUrl;
+    private final ClientRegistrationRepository clientRegistrationRepository;
 
     WelcomeController(
             InvitedPeople invitedPeople,
+            ClientRegistrationRepository clientRegistrationRepository,
             @Value("${brownie.mcp.enabled:false}") boolean mcpEnabled,
             @Value("${brownie.public-origin:}") String publicOrigin) {
         this.invitedPeople = invitedPeople;
+        this.clientRegistrationRepository = clientRegistrationRepository;
         this.mcpServerUrl = mcpEnabled ? publicOrigin + "/mcp" : null;
     }
 
@@ -35,9 +42,14 @@ class WelcomeController {
         } else {
             signUp = "INVITATION_ONLY";
         }
-        return new WelcomeResponse(signUp, mcpServerUrl);
+        // Google first: it is the one big button, and the order is the
+        // order the page draws its choices in.
+        List<String> providers = List.of("google", "entra").stream()
+                .filter(id -> clientRegistrationRepository.findByRegistrationId(id) != null)
+                .toList();
+        return new WelcomeResponse(signUp, mcpServerUrl, providers);
     }
 
-    record WelcomeResponse(String signUp, String mcpServerUrl) {
+    record WelcomeResponse(String signUp, String mcpServerUrl, List<String> signInProviders) {
     }
 }

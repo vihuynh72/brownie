@@ -80,10 +80,16 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
     @Override
     public OidcUser loadUser(OidcUserRequest userRequest) {
         OidcUser oidcUser = delegate.loadUser(userRequest);
-        Access access = accessOf(oidcUser);
+        String registrationId = userRequest != null && userRequest.getClientRegistration() != null
+                ? userRequest.getClientRegistration().getRegistrationId()
+                : null;
+        Access access = accessOf(oidcUser, registrationId);
         OidcIdToken idToken = oidcUser.getIdToken();
         UserIdentity identity = userIdentityRepository.recordLogin(
                 idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser));
+        if ("google".equals(registrationId)) {
+            prefillProviderNames(identity.id(), oidcUser);
+        }
         Workspace workspace = workspaceRepository.ensurePersonalWorkspace(identity.id());
         setOpenAllowanceOrRefuse(workspace.id(), identity.id(), access);
         ensureBuiltInTemplatesWithoutBreakingLogin(workspace.id(), identity.id());
@@ -99,8 +105,15 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
      * application log is one more copy of somebody's personal information in
      * a place nobody thought about.
      */
-    private Access accessOf(OidcUser oidcUser) {
-        Access access = invitedPeople.accessFor(oidcUser.getEmail());
+    private Access accessOf(OidcUser oidcUser, String registrationId) {
+        // Google's own verification is the only claim worth trusting for a
+        // match against the invitation list: an address the provider never
+        // confirmed belongs to the person is no address at all, so the
+        // sign-in is judged exactly like one that came with none.
+        String email = "google".equals(registrationId) && !Boolean.TRUE.equals(oidcUser.getEmailVerified())
+                ? null
+                : oidcUser.getEmail();
+        Access access = invitedPeople.accessFor(email);
         if (access != Access.REFUSED) {
             return access;
         }
@@ -146,6 +159,20 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
                         "Brownie could not set up your free allowance. Try signing in again.",
                         null),
                 "Brownie could not set up your free allowance. Try signing in again.");
+    }
+
+    /**
+     * Google's given and family names only ever fill the card's blank
+     * fields: the person may already have typed one of the two, and a
+     * confirmed name is never rewritten by what a provider calls them.
+     */
+    private void prefillProviderNames(long userId, OidcUser oidcUser) {
+        String given = oidcUser.getGivenName();
+        String family = oidcUser.getFamilyName();
+        if ((given == null || given.isBlank()) && (family == null || family.isBlank())) {
+            return;
+        }
+        userIdentityRepository.prefillNames(userId, given, family);
     }
 
     /**

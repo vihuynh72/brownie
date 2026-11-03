@@ -36,6 +36,9 @@ onMounted(async () => {
   }
 })
 
+/** Whether this deployment signs people in through Google; without it the single Entra action stays. */
+const googleSignIn = computed(() => welcome.value?.signInProviders?.includes('google') ?? false)
+
 /**
  * What the deployment says about sign-up before anyone is in: a free daily allowance, an open
  * door, or invitation only. A welcome answer that never comes says the quiet thing, which is
@@ -118,7 +121,19 @@ function keepDestination(): void {
       <p class="page-lede signin__lede">{{ lede }}</p>
     </header>
 
-    <a class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="googleSignIn" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
+      <svg class="signin__google-mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
+        <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
+        <path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09Z"/>
+        <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"/>
+      </svg>
+      <span>Continue with Google</span>
+    </a>
+    <a v-if="googleSignIn" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
+      Use an email code instead
+    </a>
+    <a v-if="!googleSignIn" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
       <span>Sign in or sign up</span>
       <AppIcon name="sign-in" :size="22" />
     </a>
@@ -211,6 +226,39 @@ function keepDestination(): void {
   text-align: start;
   /* On a narrow screen the sentence breaks into even lines, not a full one and a stray word. */
   text-wrap: balance;
+}
+
+/* Google's button keeps the white it comes in: the brand mark only reads on light, and a tinted primary would be a different brand. */
+.signin__google {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin: 0 auto;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-md);
+  background: #fff;
+  border: 1px solid var(--color-hairline);
+  color: #1f1f1f;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.signin__google:hover {
+  background: #f8f9fa;
+}
+
+.signin__google-mark {
+  flex-shrink: 0;
+}
+
+.signin__email-code {
+  display: block;
+  margin: 0.75rem auto 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-secondary);
+  text-align: center;
 }
 
 .signin__notice > svg {

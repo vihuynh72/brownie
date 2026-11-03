@@ -58,6 +58,23 @@ describe('SignInView', () => {
     expect(wrapper.findAll('a')).toHaveLength(1)
   })
 
+  it('offers Google as the one big action, with the email code as a small backup', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google', 'entra'],
+    })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+
+    const google = wrapper.get('a.signin__google')
+    expect(google.attributes('href')).toBe('/oauth2/authorization/google')
+    expect(google.text()).toContain('Continue with Google')
+    expect(google.find('svg.signin__google-mark').exists()).toBe(true)
+
+    const emailCode = wrapper.get('a.signin__email-code')
+    expect(emailCode.attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(emailCode.text()).toContain('Use an email code instead')
+  })
+
   /** Being interrupted on the way somewhere should say where, so the page does not read like an unprompted demand. */
   it('names what the sign-in is for when it interrupted something', async () => {
     const wrapper = await mountAt('/signin?next=%2F')

@@ -102,6 +102,11 @@ class GenerationControllerTest {
         }
 
         @Override
+        public UserIdentity prefillNames(long userId, String givenName, String familyName) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
             return Optional.of(identity);
         }

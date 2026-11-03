@@ -76,6 +76,22 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
     }
 
     @Override
+    public UserIdentity prefillNames(long userId, String givenName, String familyName) {
+        return jdbcTemplate.queryForObject(
+                """
+                UPDATE user_identity
+                SET given_name = COALESCE(given_name, ?), family_name = COALESCE(family_name, ?)
+                WHERE id = ? AND name_confirmed_at IS NULL
+                RETURNING id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at,
+                    given_name, family_name, name_confirmed_at
+                """,
+                ROW_MAPPER,
+                givenName,
+                familyName,
+                userId);
+    }
+
+    @Override
     public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
         List<UserIdentity> results = jdbcTemplate.query(
                 "SELECT id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at, "

@@ -11,7 +11,12 @@ import { installTargets, type InstallTargetId } from '@/landing/installTargets'
  * the chat-app address both come from the welcome answer.
  */
 
-const SIGN_IN_HREF = '/oauth2/authorization/entra'
+/** The sign-in start for whatever providers this deployment runs: Google when it is enabled, the Entra email code otherwise. */
+const signInHref = computed(() =>
+  welcome.value?.signInProviders?.includes('google')
+    ? '/oauth2/authorization/google'
+    : '/oauth2/authorization/entra')
+const EMAIL_CODE_HREF = '/oauth2/authorization/entra'
 
 const welcome = ref<WelcomeResponse | null>(null)
 onMounted(async () => {
@@ -165,9 +170,9 @@ const TESTED_FORMS = [
       <nav class="landing__nav" aria-label="Brownie">
         <a href="#how">How it works</a>
         <a href="#install">Install</a>
-        <a :href="SIGN_IN_HREF">Sign in</a>
+        <a :href="signInHref">Sign in</a>
       </nav>
-      <a class="button button--primary landing__bar-action" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+      <a class="button button--primary landing__bar-action" :href="signInHref">{{ primaryLabel }}</a>
     </header>
 
     <section class="hero" aria-labelledby="landing-title">
@@ -196,7 +201,8 @@ const TESTED_FORMS = [
           Brownie fills your forms from what you tell it. You make the calls.
         </h1>
         <div class="hero__actions">
-          <a class="button button--primary hero__action" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+          <a class="button button--primary hero__action" :href="signInHref">{{ primaryLabel }}</a>
+          <a v-if="welcome?.signInProviders?.includes('google')" :href="EMAIL_CODE_HREF" class="landing__email-code">Use an email code instead</a>
           <a class="button hero__action" href="#install" @click="openChatAppTab">Add to Claude or ChatGPT</a>
         </div>
         <p v-if="accessNote" class="hero__note">{{ accessNote }}</p>
@@ -225,7 +231,7 @@ const TESTED_FORMS = [
             <p class="landing-forms__title">{{ entry.title }}</p>
             <p class="landing-forms__agency">{{ entry.agency }}</p>
           </div>
-          <a class="button button--small landing-forms__start" :href="SIGN_IN_HREF">Sign in to start</a>
+          <a class="button button--small landing-forms__start" :href="signInHref">Sign in to start</a>
         </li>
       </ul>
       <p v-else-if="formQuery.trim()" class="landing-forms__empty">No match. You can always upload your own copy.</p>
@@ -277,7 +283,7 @@ const TESTED_FORMS = [
         </div>
         <div v-else class="install__line-box install__line-box--browser">
           <p class="install__browser">Nothing to install. Brownie runs right here.</p>
-          <a class="button button--primary" :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+          <a class="button button--primary" :href="signInHref">{{ primaryLabel }}</a>
         </div>
         <ol class="install__steps">
           <li v-for="(step, index) in active.steps" :key="index">{{ step }}</li>
@@ -369,7 +375,7 @@ const TESTED_FORMS = [
         <span>Brownie</span>
       </span>
       <span class="landing__footer-line">Fills your forms from what you tell it.</span>
-      <a :href="SIGN_IN_HREF">{{ primaryLabel }}</a>
+      <a :href="signInHref">{{ primaryLabel }}</a>
     </footer>
   </div>
 </template>
