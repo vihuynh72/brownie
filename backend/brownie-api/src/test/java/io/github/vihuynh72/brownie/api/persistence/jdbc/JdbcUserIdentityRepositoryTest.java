@@ -4,6 +4,7 @@ import io.github.vihuynh72.brownie.api.testinfra.DockerTest;
 import io.github.vihuynh72.brownie.api.testinfra.SharedContainers;
 import io.github.vihuynh72.brownie.api.testinfra.TestDatabase;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
+import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,9 @@ class JdbcUserIdentityRepositoryTest {
     @Autowired
     private UserIdentityRepository repository;
 
+    @Autowired
+    private WorkspaceRepository workspaceRepository;
+
     @Test
     void firstLoginCreatesTheIdentity() {
         UserIdentity created = repository.recordLogin("https://issuer-a", "subject-1", "a@example.com", "Ada");
@@ -95,6 +99,44 @@ class JdbcUserIdentityRepositoryTest {
         UserIdentity fromIssuerD = repository.recordLogin("https://issuer-d", "shared-subject", null, null);
 
         assertThat(fromIssuerC.id()).isNotEqualTo(fromIssuerD.id());
+    }
+
+    @Test
+    void aVerifiedEmailThatMatchesOnePersonLinksTheNewLoginToThem() {
+        UserIdentity entra = repository.recordLogin("https://issuer-entra", "subject-entra", "maya@example.com", "Maya");
+        UserIdentity google = repository.recordLogin("https://accounts.google.com", "google-subject-verified", "maya@example.com", "Maya", true);
+
+        assertThat(google.id()).isEqualTo(entra.id());
+        assertThat(repository.findByIssuerAndSubject("https://accounts.google.com", "google-subject-verified")).map(UserIdentity::id).contains(entra.id());
+    }
+
+    @Test
+    void anUnverifiedEmailNeverLinksTheLogin() {
+        repository.recordLogin("https://issuer-entra", "subject-entra", "maya@example.com", "Maya");
+        UserIdentity unverified = repository.recordLogin("https://accounts.google.com", "google-subject-unverified", "maya@example.com", "Maya", false);
+
+        assertThat(unverified.id()).isNotEqualTo(repository.findByIssuerAndSubject("https://issuer-entra", "subject-entra").orElseThrow().id());
+    }
+
+    @Test
+    void aVerifiedEmailMatchingTwoPeopleLinksToNeither() {
+        repository.recordLogin("https://issuer-a", "subject-a", "shared@example.com", "A");
+        repository.recordLogin("https://issuer-b", "subject-b", "shared@example.com", "B");
+        UserIdentity third = repository.recordLogin("https://accounts.google.com", "google-subject-ambiguous", "shared@example.com", "C", true);
+
+        // The ambiguous match must not land on either: a third, separate person is created.
+        assertThat(third.issuer()).isEqualTo("https://accounts.google.com");
+        assertThat(repository.findByIssuerAndSubject("https://issuer-a", "subject-a")).isPresent();
+        assertThat(repository.findByIssuerAndSubject("https://issuer-b", "subject-b")).isPresent();
+    }
+
+    @Test
+    void aLinkedGoogleLoginKeepsThePersonsOwnWorkspace() {
+        UserIdentity entra = repository.recordLogin("https://issuer-entra", "subject-entra", "mayaw@example.com", "Maya");
+        long entraWorkspaceId = workspaceRepository.ensurePersonalWorkspace(entra.id()).id();
+        UserIdentity google = repository.recordLogin("https://accounts.google.com", "google-subject-workspace", "mayaw@example.com", "Maya", true);
+
+        assertThat(workspaceRepository.ensurePersonalWorkspace(google.id()).id()).isEqualTo(entraWorkspaceId);
     }
 
     @Test

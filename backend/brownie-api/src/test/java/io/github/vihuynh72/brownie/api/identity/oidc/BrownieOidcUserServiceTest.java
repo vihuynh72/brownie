@@ -341,6 +341,11 @@ class BrownieOidcUserServiceTest {
         }
 
         @Override
+        public UserIdentity recordLogin(String issuer, String subject, String email, String displayName, boolean emailVerified) {
+            return recordLogin(issuer, subject, email, displayName);
+        }
+
+        @Override
         public UserIdentity recordName(long userId, String givenName, String familyName) {
             throw new UnsupportedOperationException();
         }

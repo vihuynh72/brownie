@@ -40,10 +40,45 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
 
     @Override
     public UserIdentity recordLogin(String issuer, String subject, String email, String displayName) {
+        return recordLogin(issuer, subject, email, displayName, false);
+    }
+
+    @Override
+    @Transactional
+    public UserIdentity recordLogin(String issuer, String subject, String email, String displayName, boolean emailVerified) {
+        /* A provider sign-in is a login to a person, not a new person. When (issuer, subject) is already a known
+           login, or the provider vouches for an email that names exactly one person, the sign-in lands on them;
+           anything else is a brand-new person, with this login as its only one so far. */
+        Long userId = findUserIdByLogin(issuer, subject);
+        if (userId == null && emailVerified && email != null && !email.isBlank()) {
+            List<Long> matches = jdbcTemplate.queryForList(
+                    "SELECT id FROM user_identity WHERE lower(email) = lower(?)", Long.class, email);
+            if (matches.size() == 1) {
+                userId = matches.get(0);
+                jdbcTemplate.update(
+                        "INSERT INTO user_login (issuer, subject, user_id) VALUES (?, ?, ?) ON CONFLICT (issuer, subject) DO NOTHING",
+                        issuer, subject, userId);
+            }
+        }
+        if (userId != null) {
+            TenantContext.setCurrentUser(jdbcTemplate, userId);
+            return jdbcTemplate.queryForObject(
+                    """
+                    UPDATE user_identity
+                    SET email = COALESCE(?, email), display_name = COALESCE(?, display_name), last_login_at = now()
+                    WHERE id = ?
+                    RETURNING id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at,
+                        given_name, family_name, name_confirmed_at
+                    """,
+                    ROW_MAPPER,
+                    email,
+                    displayName,
+                    userId);
+        }
         // ON CONFLICT makes first-login-creates / later-logins-update a single
         // atomic statement, safe under concurrent logins from the same
         // identity racing each other, rather than a separate check-then-write.
-        return jdbcTemplate.queryForObject(
+        UserIdentity created = jdbcTemplate.queryForObject(
                 """
                 INSERT INTO user_identity (issuer, subject, email, display_name)
                 VALUES (?, ?, ?, ?)
@@ -57,6 +92,16 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
                 subject,
                 email,
                 displayName);
+        jdbcTemplate.update(
+                "INSERT INTO user_login (issuer, subject, user_id) VALUES (?, ?, ?) ON CONFLICT (issuer, subject) DO NOTHING",
+                issuer, subject, created.id());
+        return created;
+    }
+
+    private Long findUserIdByLogin(String issuer, String subject) {
+        List<Long> hits = jdbcTemplate.queryForList(
+                "SELECT user_id FROM user_login WHERE issuer = ? AND subject = ?", Long.class, issuer, subject);
+        return hits.isEmpty() ? null : hits.get(0);
     }
 
     @Override
@@ -103,9 +148,10 @@ class JdbcUserIdentityRepository implements UserIdentityRepository {
     @Override
     public Optional<UserIdentity> findByIssuerAndSubject(String issuer, String subject) {
         List<UserIdentity> results = jdbcTemplate.query(
-                "SELECT id, issuer, subject, email, display_name, created_at, last_login_at, disabled_at, "
-                        + "given_name, family_name, name_confirmed_at "
-                        + "FROM user_identity WHERE issuer = ? AND subject = ?",
+                "SELECT ui.id, ui.issuer, ui.subject, ui.email, ui.display_name, ui.created_at, ui.last_login_at, ui.disabled_at, "
+                        + "ui.given_name, ui.family_name, ui.name_confirmed_at "
+                        + "FROM user_identity ui JOIN user_login ul ON ul.user_id = ui.id "
+                        + "WHERE ul.issuer = ? AND ul.subject = ?",
                 ROW_MAPPER,
                 issuer,
                 subject);

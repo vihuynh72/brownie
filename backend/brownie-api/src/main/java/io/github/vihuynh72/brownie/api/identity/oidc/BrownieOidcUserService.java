@@ -86,7 +86,8 @@ public class BrownieOidcUserService implements OAuth2UserService<OidcUserRequest
         Access access = accessOf(oidcUser, registrationId);
         OidcIdToken idToken = oidcUser.getIdToken();
         UserIdentity identity = userIdentityRepository.recordLogin(
-                idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser));
+                idToken.getIssuer().toString(), idToken.getSubject(), oidcUser.getEmail(), displayNameOf(oidcUser),
+                Boolean.TRUE.equals(oidcUser.getEmailVerified()));
         if ("google".equals(registrationId)) {
             prefillProviderNames(identity.id(), oidcUser);
         }

@@ -17,6 +17,16 @@ public interface UserIdentityRepository {
      */
     UserIdentity recordLogin(String issuer, String subject, String email, String displayName);
 
+    /**
+     * The same, plus whether the provider swore to the email: when it did and
+     * that email already names exactly one person, the sign-in lands on them
+     * and the new (issuer, subject) becomes a login for them too. Unverified
+     * or ambiguous emails never link -- a second, separate person is created.
+     */
+    default UserIdentity recordLogin(String issuer, String subject, String email, String displayName, boolean emailVerified) {
+        return recordLogin(issuer, subject, email, displayName);
+    }
+
     /** The name the person typed themselves; {@code name_confirmed_at} moves to the save time. */
     UserIdentity recordName(long userId, String givenName, String familyName);
 
