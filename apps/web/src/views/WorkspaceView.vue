@@ -10,6 +10,8 @@ const PdfFormPage = defineAsyncComponent(() => import('@/components/workspace/Pd
 import {
   ApiRequestError,
   acceptPatchProposal,
+  learnDetails,
+  undoLearning,
   allocateUpload,
   answerQuestion,
   applyGenerationResult,
@@ -668,6 +670,8 @@ const applyStage = ref<ApplyStage>('idle')
 const applyError = ref<string | null>(null)
 const patchProposal = ref<PatchProposalResponse | null>(null)
 const acceptResult = ref<PatchAcceptResponse | null>(null)
+/** What learning the approved fill's details came back with: saved N (with Undo), or the reason it saved nothing. */
+const learnNote = ref<{ learningId: number | null; count: number; reason: string | null; undone: boolean } | null>(null)
 /** The first line Brownie says about a proposal: where its values came from, or the change asked for. */
 const proposalIntro = ref('')
 /** The reading whose values the proposal on screen holds; null for a proposal from a request. */
@@ -3233,6 +3237,8 @@ async function acceptProposal(): Promise<void> {
     )
     applyStage.value = 'accepted'
     await loadDocument()
+    const learned = acceptResult.value.revision?.id ?? document.value?.currentRevision.id
+    if (learned !== undefined && learned !== null) void learnApprovedDetails(learned)
     const statuses = Object.entries(acceptResult.value.fieldStatuses)
     const filled = statuses.filter(([, status]) => status === 'CLEAN').map(([fieldId]) => fieldId)
     // A table's columns are one fill spot, as the page counts them.
@@ -3262,6 +3268,41 @@ async function acceptProposal(): Promise<void> {
     }
     applyError.value = describeCommonFailure(error, 'a way to accept proposed changes') ?? 'Could not fill these in. Try again.'
   }
+}
+
+/**
+ * After a fill is approved, its answers may teach "Your details". The learning is a quiet note,
+ * never a thing in the way of the fill itself: a server refusal or a learn that saved nothing but
+ * had a reason both just say so and move on, and SKIPPED says nothing at all.
+ */
+async function learnApprovedDetails(revisionId: number): Promise<void> {
+  learnNote.value = null
+  try {
+    const result = await learnDetails(props.documentId, revisionId)
+    if (result.subject === 'SELF') {
+      learnNote.value = { learningId: result.learningId ?? null, count: result.saved.length, reason: null, undone: false }
+    } else if (result.subject !== 'SKIPPED') {
+      learnNote.value = { learningId: null, count: 0, reason: result.reason ?? null, undone: false }
+    }
+  } catch {
+    // A failed learn never turns into a failed approval: the fill already went through.
+    learnNote.value = null
+  }
+}
+
+async function undoLearnedDetails(): Promise<void> {
+  const note = learnNote.value
+  if (!note?.learningId) return
+  try {
+    await undoLearning(note.learningId)
+    learnNote.value = { ...note, undone: true }
+  } catch {
+    learnNote.value = { ...note, undone: true }
+  }
+}
+
+function dismissLearnNote(): void {
+  learnNote.value = null
 }
 
 /** Not now: the proposal is set aside on this page; nothing on the document changed, and nothing is sent. */
@@ -4835,6 +4876,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   </ul>
                 </details>
               </section>
+              <!-- What the approved fill taught "Your details": a quiet line, never a card in the way. -->
+              <p v-if="learnNote && line.slot === 'review' && line.id === reviewSlotId" class="proposal-review__learn-note" role="status">
+                <template v-if="learnNote.undone">Details restored to what they were.</template>
+                <template v-else-if="learnNote.count > 0">
+                  Saved {{ learnNote.count }} {{ learnNote.count === 1 ? 'detail' : 'details' }} to
+                  <RouterLink to="/details">Your details</RouterLink>&nbsp;&middot;
+                  <button type="button" class="proposal-review__learn-undo" @click="undoLearnedDetails">Undo</button>&nbsp;&middot;
+                  <button type="button" class="proposal-review__learn-undo" @click="dismissLearnNote">Dismiss</button>
+                </template>
+                <template v-else-if="learnNote.reason">{{ learnNote.reason }}</template>
+              </p>
             </template>
             <div v-if="assistStage === 'interpreting' || assistStage === 'executing'" class="msg--brownie">
               <p class="msg__who">Brownie</p>
@@ -7058,5 +7110,23 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     inline-size: 2.75rem;
     block-size: 2.75rem;
   }
+}
+
+.proposal-review__learn-note {
+  margin: var(--space-2, 0.5rem) 0 0;
+  font-size: var(--font-sm, 0.85rem);
+  color: var(--color-text-muted, #8a745f);
+}
+.proposal-review__learn-undo {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--color-accent, #8a5a2b);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.proposal-review__learn-undo:hover {
+  color: var(--color-text, #3d2b1f);
 }
 </style>

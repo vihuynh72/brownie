@@ -41,6 +41,12 @@ const router = createRouter({
       meta: { requiresSession: true },
     },
     {
+      path: '/details',
+      name: 'details',
+      component: () => import('@/views/DetailsView.vue'),
+      meta: { requiresSession: true },
+    },
+    {
       // A chat app's one-time upload link. No session: the token in the
       // address is the whole credential.
       path: '/upload/:token',
