@@ -97,6 +97,7 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
         String grantType = switch (kind) {
             case GOOGLE_CALENDAR -> "CALENDAR";
             case GOOGLE_DRIVE -> "DRIVE_FILE";
+            case SAVED_DETAILS -> null;
             case ARTIFACT -> throw new IllegalArgumentException("An upload has no origin elsewhere.");
         };
         TenantContext.setCurrentUser(jdbcTemplate, userId);
@@ -106,31 +107,35 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
                 rs -> null,
                 origin.grantId(),
                 origin.externalId());
-        // The connection, and then the choice, must be open, and stay so until this transaction ends.
-        boolean connected = !jdbcTemplate
-                .queryForList(
-                        "SELECT id FROM connector_connection WHERE workspace_id = ? AND id = ? AND state <> 'DISCONNECTED' FOR SHARE",
-                        Long.class,
-                        workspaceId,
-                        origin.connectionId())
-                .isEmpty();
-        if (!connected) {
-            return Optional.empty();
+        if (grantType != null) {
+            // The connection, and then the choice, must be open, and stay so until this transaction ends.
+            boolean connected = !jdbcTemplate
+                    .queryForList(
+                            "SELECT id FROM connector_connection WHERE workspace_id = ? AND id = ? AND state <> 'DISCONNECTED' FOR SHARE",
+                            Long.class,
+                            workspaceId,
+                            origin.connectionId())
+                    .isEmpty();
+            if (!connected) {
+                return Optional.empty();
+            }
+            boolean open = !jdbcTemplate
+                    .queryForList(
+                            "SELECT id FROM connector_resource_grant"
+                                    + " WHERE workspace_id = ? AND id = ? AND connection_id = ? AND resource_type = ? AND revoked_at IS NULL"
+                                    + " FOR SHARE",
+                            Long.class,
+                            workspaceId,
+                            origin.grantId(),
+                            origin.connectionId(),
+                            grantType)
+                    .isEmpty();
+            if (!open) {
+                return Optional.empty();
+            }
         }
-        boolean open = !jdbcTemplate
-                .queryForList(
-                        "SELECT id FROM connector_resource_grant"
-                                + " WHERE workspace_id = ? AND id = ? AND connection_id = ? AND resource_type = ? AND revoked_at IS NULL"
-                                + " FOR SHARE",
-                        Long.class,
-                        workspaceId,
-                        origin.grantId(),
-                        origin.connectionId(),
-                        grantType)
-                .isEmpty();
-        if (!open) {
-            return Optional.empty();
-        }
+        /* A source copied from something of the person's own -- their saved details -- has no connection or
+           choice to keep open, so the checks above only run for a provider-backed kind. */
         SourceSnapshot snapshot = findImportedInTransaction(workspaceId, origin.grantId(), origin.externalId(), origin.revision())
                 .orElseGet(() -> insertImported(workspaceId, userId, artifactId, kind, origin, fetchedAt));
         boolean documentExists = !jdbcTemplate
@@ -166,14 +171,16 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
                 artifactId,
                 kind.name(),
                 fetchedAt.atOffset(ZoneOffset.UTC),
-                origin.connectionId(),
-                origin.grantId(),
-                origin.externalId(),
-                origin.revision(),
-                origin.modifiedAt(),
-                origin.title(),
-                origin.link(),
-                origin.conversion() == null ? null : origin.conversion().name());
+                /* A connector-less kind carries no origin: the shape check requires every origin column to be
+                   null, so a saved-details snapshot says only its kind. */
+                kind == SourceKind.SAVED_DETAILS ? null : origin.connectionId(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.grantId(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.externalId(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.revision(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.modifiedAt(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.title(),
+                kind == SourceKind.SAVED_DETAILS ? null : origin.link(),
+                kind == SourceKind.SAVED_DETAILS ? null : (origin.conversion() == null ? null : origin.conversion().name()));
         if (inserted == 0) {
             throw new IllegalStateException("Artifact " + artifactId + " is already a source; a copy is always a new artifact.");
         }
@@ -182,8 +189,7 @@ class JdbcSourceSnapshotRepository implements SourceSnapshotRepository {
         // Which connection and choice, never what it was called: an audit row names no titles.
         AuditWriter.append(
                 jdbcTemplate, workspaceId, userId, "SOURCE_IMPORTED", "source-snapshot", saved.id(),
-                "{\"kind\":\"" + kind.name() + "\",\"connectionId\":" + origin.connectionId() + ",\"grantId\":" + origin.grantId()
-                        + ",\"conversion\":" + (origin.conversion() == null ? "null" : "\"" + origin.conversion().name() + "\"") + "}");
+                "{\"kind\":\"" + kind.name() + "\",\"conversion\":" + (origin.conversion() == null ? "null" : "\"" + origin.conversion().name() + "\"") + "}");
         return saved;
     }
 

@@ -44,7 +44,13 @@ import io.github.vihuynh72.brownie.core.revision.FieldValue;
 import io.github.vihuynh72.brownie.core.revision.PatchProposal;
 import io.github.vihuynh72.brownie.core.revision.RevisionService;
 import io.github.vihuynh72.brownie.core.source.DocumentSourceRepository;
+import io.github.vihuynh72.brownie.core.detail.SavedDetail;
+import io.github.vihuynh72.brownie.core.detail.SavedDetailRepository;
+import io.github.vihuynh72.brownie.core.source.SourceConversion;
+import io.github.vihuynh72.brownie.core.source.SourceKind;
+import io.github.vihuynh72.brownie.core.source.SourceOrigin;
 import io.github.vihuynh72.brownie.core.source.SourceService;
+import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import io.github.vihuynh72.brownie.core.source.SourceSnapshot;
 import io.github.vihuynh72.brownie.core.template.FieldCardinality;
 import io.github.vihuynh72.brownie.core.template.FieldDefinition;
@@ -143,6 +149,8 @@ public class GenerationOrchestrationService {
     private final ObjectMapper bundleMapper;
     private final TransactionTemplate transactionTemplate;
     private final UsageService usageService;
+    private final SavedDetailRepository savedDetailRepository;
+    private final WorkspaceRepository workspaceRepository;
     private final String modelName;
     /** The least a run's first request can hold at the configured model's price: one input token and the most an extraction may write back. */
     private final BigDecimal smallestFirstRequestUsd;
@@ -163,6 +171,8 @@ public class GenerationOrchestrationService {
             ObjectMapper objectMapper,
             TransactionTemplate transactionTemplate,
             UsageService usageService,
+            SavedDetailRepository savedDetailRepository,
+            WorkspaceRepository workspaceRepository,
             ModelPricing modelPricing,
             @Value("${brownie.ai.openai.model}") String modelName) {
         this.revisionService = revisionService;
@@ -183,6 +193,8 @@ public class GenerationOrchestrationService {
                 .build();
         this.transactionTemplate = transactionTemplate;
         this.usageService = usageService;
+        this.savedDetailRepository = savedDetailRepository;
+        this.workspaceRepository = workspaceRepository;
         this.modelName = modelName;
         this.smallestFirstRequestUsd = modelPricing.estimateCost(1, ExtractionService.MAX_OUTPUT_TOKENS);
     }
@@ -214,7 +226,32 @@ public class GenerationOrchestrationService {
                 .orElseGet(DocumentContent::empty);
         SourceSnapshot snapshot = sourceService.attachSnapshot(workspaceId, userId, sourceArtifactId);
         documentSourceRepository.link(workspaceId, userId, documentId, snapshot.id());
-        List<LabeledExcerpt> excerpts = extractionService.segmentAndCiteSource(workspaceId, userId, snapshot);
+        List<LabeledExcerpt> excerpts = new ArrayList<>(extractionService.segmentAndCiteSource(workspaceId, userId, snapshot));
+        List<SavedDetail> fillableDetails = document.workspaceId() == workspaceRepository.ensurePersonalWorkspace(userId).id()
+                ? savedDetailRepository.list(userId).stream()
+                        .filter(detail -> !detail.sensitive() && detail.valueText() != null && !detail.valueText().isBlank())
+                        .toList()
+                : List.of();
+        if (!fillableDetails.isEmpty()) {
+            /* The details are frozen into their own snapshot, so a fill can cite one exactly the way it cites a
+               line of the source the person handed it: "From Your details". Only the owner's own workspace
+               reaches this -- a shared workspace's fill never sees another person's details, and a batch run
+               takes a different path entirely. */
+            StringBuilder block = new StringBuilder();
+            for (SavedDetail detail : fillableDetails) {
+                block.append(detail.label()).append(": ").append(detail.valueText())
+                        .append(" (saved ").append(detail.savedAt()).append(")\n");
+            }
+            var detailsArtifact = artifactService.storeGenerated(workspaceId, userId, "your-details.txt", block.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            sourceService.attachImportedSnapshot(
+                            workspaceId, userId, documentId, detailsArtifact.id(), SourceKind.SAVED_DETAILS,
+                            new SourceOrigin(0, 0, "saved-details", "1", null, "Your details", null, null),
+                            java.time.Instant.now())
+                    .ifPresent(detailsSnapshot -> {
+                        documentSourceRepository.link(workspaceId, userId, documentId, detailsSnapshot.id());
+                        excerpts.addAll(extractionService.segmentAndCiteSource(workspaceId, userId, detailsSnapshot));
+                    });
+        }
         List<String> composableFieldIds = templateVersion.fieldDefinitions().stream()
                 .map(FieldDefinition::fieldId)
                 .filter(COMPOSABLE_FIELD_IDS::contains)

@@ -14,5 +14,7 @@ public enum SourceKind {
     /** An event on the person's own Google calendar, written out as text when it was copied. */
     GOOGLE_CALENDAR,
     /** A file the person picked in their Google Drive: a Google Doc as its text, or a plain-text file as it is. */
-    GOOGLE_DRIVE
+    GOOGLE_DRIVE,
+    /** The person's own saved details, written out as one line each when a fill starts so a value can cite them. */
+    SAVED_DETAILS
 }
