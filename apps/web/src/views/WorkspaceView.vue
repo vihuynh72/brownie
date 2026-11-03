@@ -372,6 +372,7 @@ function sourceName(source: DocumentSourceResponse | null | undefined): string {
 function sourceKindWords(source: DocumentSourceResponse): string {
   if (source.origin?.conversion === 'CALENDAR_EVENT_AS_TEXT') return 'Calendar event'
   if (source.origin?.conversion === 'GOOGLE_DOC_AS_TEXT') return 'Google Doc'
+  if (source.kind === 'SAVED_DETAILS') return 'Your details'
   return 'Text file'
 }
 

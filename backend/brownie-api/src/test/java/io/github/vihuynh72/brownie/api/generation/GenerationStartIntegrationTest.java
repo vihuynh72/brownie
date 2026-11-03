@@ -11,6 +11,8 @@ import io.github.vihuynh72.brownie.core.generation.GenerationJobTypes;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
 import io.github.vihuynh72.brownie.core.question.QuestionService;
 import io.github.vihuynh72.brownie.core.workspace.Workspace;
+import io.github.vihuynh72.brownie.core.detail.DetailOrigin;
+import io.github.vihuynh72.brownie.core.detail.SavedDetailRepository;
 import io.github.vihuynh72.brownie.core.workspace.WorkspaceRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
@@ -108,6 +110,9 @@ class GenerationStartIntegrationTest {
     @Autowired
     private QuestionService questionService;
 
+    @Autowired
+    private SavedDetailRepository savedDetailRepository;
+
     @Test
     void startingExtractionQueuesARealJobAndStagesARealReadableBundle() throws Exception {
         Cookie session = loginAndGetSessionCookie("subject-generation-start");
@@ -169,6 +174,46 @@ class GenerationStartIntegrationTest {
         assertThat(bundle.get("excerpts")).isNotEmpty();
         String allExcerptText = String.join(" ", excerptTexts(bundle));
         assertThat(allExcerptText).contains("Priya Rao").contains("Alex Chen");
+    }
+
+    @Test
+    void aPersonalExtractionReadsTheOwnersSavedDetailsButNeverTheirSensitiveOnes() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-generation-details");
+        long workspaceId = ensureWorkspace("subject-generation-details").id();
+        long userId = userIdentityRepository.findByIssuerAndSubject(ISSUER, "subject-generation-details").orElseThrow().id();
+        builtInTemplateProvisioningService.ensureBuiltInTemplates(workspaceId, userId);
+        builtInTemplateProvisioningService.ensureRetiredBuiltInTemplates(workspaceId, userId);
+        // A detail the person would want carried into the next fill, and a sensitive one that must never be.
+        savedDetailRepository.upsert(userId, workspaceId, "person.first_name", "First name", "Maya", null, null, false,
+                DetailOrigin.MANUAL, null, null, null);
+        savedDetailRepository.upsert(userId, workspaceId, "sensitive.ssn", "Social security number", null, new byte[]{1},
+                "\u2022\u2022\u2022\u20226789", true, DetailOrigin.MANUAL, null, null, null);
+
+        JsonNode templates = readJson(mockMvc.perform(get("/api/v1/workspaces/" + workspaceId + "/templates").cookie(session))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode flowing = findByDisplayName(templates, "Flowing meeting minutes");
+        long documentId = createMinimalDocument(session, workspaceId, flowing.get("id").asLong(),
+                flowing.get("currentActiveVersionId").asLong());
+        long sourceArtifactId = uploadAndFinalize(session, workspaceId, "The meeting was called to order.");
+
+        JsonNode started = readJson(mockMvc.perform(post(generationsPath(workspaceId, documentId))
+                        .cookie(session)
+                        .with(csrf())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content("{\"sourceArtifactId\":" + sourceArtifactId + "}"))
+                .andExpect(status().isAccepted())
+                .andReturn());
+        String bundleHash = jdbcJobColumn(workspaceId, userId, started.get("jobId").asLong(), "processing_configuration_hash");
+        String objectKey = GenerationJobTypes.inputBundleObjectKey(workspaceId, bundleHash);
+        JsonNode bundle;
+        try (InputStream content = blobStore.openStream(objectKey)) {
+            bundle = OBJECT_MAPPER.readTree(content);
+        }
+        String allExcerptText = String.join(" ", excerptTexts(bundle));
+        assertThat(allExcerptText).contains("First name: Maya");
+        assertThat(allExcerptText).doesNotContain("123-45-6789");
     }
 
     @Test

@@ -20,7 +20,10 @@ public record SourceSnapshot(long id, long workspaceId, long artifactId, SourceK
 
     public SourceSnapshot {
         Objects.requireNonNull(kind, "kind");
-        if ((kind == SourceKind.ARTIFACT) != (origin == null)) {
+        /* An origin names a provider the snapshot was copied through: the connector-backed kinds carry one,
+           and the source's own kinds -- an upload, a saved-details block -- carry none. */
+        boolean copied = kind == SourceKind.GOOGLE_CALENDAR || kind == SourceKind.GOOGLE_DRIVE;
+        if (copied != (origin != null)) {
             throw new IllegalArgumentException("A " + kind + " snapshot " + (origin == null ? "needs" : "cannot have") + " an origin.");
         }
     }
