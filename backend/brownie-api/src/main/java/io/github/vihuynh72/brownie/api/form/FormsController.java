@@ -93,7 +93,7 @@ class FormsController {
             }
         }
         FormIntakeService.IntakeResult taken =
-                intakeService.takeIn(workspaceId, identity.id(), entry.title(), new ByteArrayInputStream(pdf));
+                intakeService.takeIn(workspaceId, identity.id(), entry.title(), new ByteArrayInputStream(pdf), true);
         DocumentMutationResult mutation = revisionService.createDocument(
                 workspaceId,
                 identity.id(),

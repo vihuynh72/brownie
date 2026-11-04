@@ -473,7 +473,7 @@ class FillableFormServiceTest {
         final List<Long> prepared = new ArrayList<>();
 
         @Override
-        public FillableForm prepare(long workspaceId, long userId, long artifactId) {
+        public FillableForm prepare(long workspaceId, long userId, long artifactId, boolean shared) {
             prepared.add(artifactId);
             return form(artifactId);
         }

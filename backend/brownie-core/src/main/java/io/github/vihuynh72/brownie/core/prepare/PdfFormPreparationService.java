@@ -126,6 +126,16 @@ public class PdfFormPreparationService {
      * @throws NotPdfArtifactException when the artifact is not a PDF
      */
     public PdfFormPreparation prepare(long workspaceId, long userId, long artifactId) {
+        return prepare(workspaceId, userId, artifactId, false);
+    }
+
+    /**
+     * {@code shared} when the bytes are everyone's -- a library form's, never a
+     * person's upload: only a shared file's prepared answer is kept in the
+     * across-workspace cache, so nothing one person owns outlives their
+     * workspace.
+     */
+    public PdfFormPreparation prepare(long workspaceId, long userId, long artifactId, boolean shared) {
         // The same file taken in before answers from the kept preparation --
         // the places it found and named are the same, whoever starts it. The
         // reading still happens per upload: the copy the template pins is this
@@ -221,7 +231,9 @@ public class PdfFormPreparationService {
             notices.add(new PreparationNotice(PreparationNotice.SPOTS_SKIPPED, skipped, null));
         }
         notices.addAll(naming.notices());
-        remember(sourceSha256, spots, notices, naming.source(), naming.rulesOnlyReason());
+        if (shared && !FillableFormService.transientNaming(naming.rulesOnlyReason())) {
+            remember(sourceSha256, spots, notices, naming.source(), naming.rulesOnlyReason());
+        }
         return new PdfFormPreparation(artifactId, reading.id(), spots, notices, naming.source(), naming.rulesOnlyReason());
     }
 

@@ -122,14 +122,24 @@ public class FillableFormService {
      * missing converter.
      */
     public FillableForm prepare(long workspaceId, long userId, long artifactId) {
+        return prepare(workspaceId, userId, artifactId, false);
+    }
+
+    /**
+     * {@code shared} when the bytes are everyone's -- a library form's, never a
+     * person's upload: only a shared file's prepared answer is kept in the
+     * across-workspace cache, so nothing one person owns outlives their
+     * workspace. A shared answer is still read for any upload of the same file.
+     */
+    public FillableForm prepare(long workspaceId, long userId, long artifactId, boolean shared) {
         Artifact source = sourceOf(workspaceId, userId, artifactId);
         SupportedMediaType mediaType = source.detectedMediaType();
         if (mediaType == SupportedMediaType.PDF) {
-            return pdfFormPreparer.prepare(workspaceId, userId, artifactId);
+            return pdfFormPreparer.prepare(workspaceId, userId, artifactId, shared);
         }
         if (mediaType == SupportedMediaType.JPEG || mediaType == SupportedMediaType.PNG) {
             Artifact pdf = imageToPdf(workspaceId, userId, source);
-            return pdfFormPreparer.prepare(workspaceId, userId, pdf.id());
+            return pdfFormPreparer.prepare(workspaceId, userId, pdf.id(), shared);
         }
         // A workbook is a thing a batch reads as a table, not a form to fill;
         // it is refused as a spreadsheet, like any upload that is one.
@@ -145,7 +155,7 @@ public class FillableFormService {
         if (existing.isPresent()) {
             return formOf(workspaceId, userId, existing.get(), false);
         }
-        return make(workspaceId, userId, source);
+        return make(workspaceId, userId, source, shared);
     }
 
     /**
@@ -159,7 +169,7 @@ public class FillableFormService {
         return word.isPresent() ? word : pdfFormPreparer.find(workspaceId, userId, artifactId);
     }
 
-    private FillableForm make(long workspaceId, long userId, Artifact source) {
+    private FillableForm make(long workspaceId, long userId, Artifact source, boolean shared) {
         long artifactId = source.id();
         byte[] original = readAll(workspaceId, userId, artifactId);
         List<PreparationNotice> notices = new ArrayList<>();
@@ -237,9 +247,11 @@ public class FillableFormService {
         ArtifactDerivation derivation = derivations.insertOrGet(workspaceId, userId, artifactId, output.id(),
                 ArtifactDerivation.PREPARED, recipeVersion(), source.detectedMediaType().name(), converter, spotNaming,
                 rulesOnlyReason, spots, notices);
-        prepareCache.remember(new PrepareCacheRepository.CachedPreparation(
-                sourceSha256, recipeVersion(), source.detectedMediaType().name(), made.docxBytes(), spots, notices,
-                converter, spotNaming, rulesOnlyReason));
+        if (shared && !transientNaming(rulesOnlyReason)) {
+            prepareCache.remember(new PrepareCacheRepository.CachedPreparation(
+                    sourceSha256, recipeVersion(), source.detectedMediaType().name(), made.docxBytes(), spots, notices,
+                    converter, spotNaming, rulesOnlyReason));
+        }
         return formOf(workspaceId, userId, derivation, derivation.outputArtifactId() == output.id());
     }
 
@@ -341,6 +353,17 @@ public class FillableFormService {
                 derivation.spotNaming(),
                 derivation.rulesOnlyReason(),
                 created);
+    }
+
+    /**
+     * Whether the rules named the places only because the model could not be
+     * asked -- a spent allowance or an outage, not a real answer. Such a
+     * preparation is never kept: the next take-in of the same file should try
+     * the model again, not replay the fallback forever.
+     */
+    static boolean transientNaming(String rulesOnlyReason) {
+        return SpotNaming.ALLOWANCE_USED_UP.equals(rulesOnlyReason)
+                || SpotNaming.MODEL_UNAVAILABLE.equals(rulesOnlyReason);
     }
 
     private static String sha256(byte[] bytes) {
