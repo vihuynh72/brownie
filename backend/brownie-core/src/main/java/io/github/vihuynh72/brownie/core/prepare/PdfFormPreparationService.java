@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -102,15 +103,22 @@ public class PdfFormPreparationService {
     private final PdfFormExtractionVersionRepository readings;
     private final SpotNamer spotNamer;
     private final VisionSpotFinder visionSpotFinder;
+    private final PrepareCacheRepository prepareCache;
 
     public PdfFormPreparationService(
             ArtifactService artifactService, PdfFormReader reader, PdfFormExtractionVersionRepository readings, SpotNamer spotNamer,
-            VisionSpotFinder visionSpotFinder) {
+            VisionSpotFinder visionSpotFinder, PrepareCacheRepository prepareCache) {
         this.artifactService = artifactService;
         this.reader = reader;
         this.readings = readings;
         this.spotNamer = spotNamer;
         this.visionSpotFinder = visionSpotFinder;
+        this.prepareCache = prepareCache;
+    }
+
+    /** The cache key this service keeps its answers under -- the same recipe name {@link PdfFillableForms} uses. */
+    private String recipeVersion() {
+        return PdfFillableForms.RECIPE + "/" + reader.parserVersion();
     }
 
     /**
@@ -118,9 +126,35 @@ public class PdfFormPreparationService {
      * @throws NotPdfArtifactException when the artifact is not a PDF
      */
     public PdfFormPreparation prepare(long workspaceId, long userId, long artifactId) {
+        return prepare(workspaceId, userId, artifactId, false);
+    }
+
+    /**
+     * {@code shared} when the bytes are everyone's -- a library form's, never a
+     * person's upload: only a shared file's prepared answer is kept in the
+     * across-workspace cache, so nothing one person owns outlives their
+     * workspace.
+     */
+    public PdfFormPreparation prepare(long workspaceId, long userId, long artifactId, boolean shared) {
+        // The same file taken in before answers from the kept preparation --
+        // the places it found and named are the same, whoever starts it. The
+        // reading still happens per upload: the copy the template pins is this
+        // workspace's own.
+        byte[] pdf = readPdf(workspaceId, userId, artifactId);
+        String sourceSha256 = sha256(pdf);
         PdfFormExtractionVersion reading = readOnce(workspaceId, userId, artifactId);
         if (reading.status() != ExtractionStatus.COMPLETE) {
             throw new UnusablePdfFormException(reading.unsupportedReason(), reading.unsupportedDetail());
+        }
+        Optional<PrepareCacheRepository.CachedPreparation> cached =
+                prepareCache.find(sourceSha256, recipeVersion());
+        if (cached.isPresent()) {
+            PrepareCacheRepository.CachedPreparation kept = cached.get();
+            List<PreparedPdfSpot> keptSpots = kept.spots().stream()
+                    .map(spot -> new PreparedPdfSpot(spot.field(), spot.namedBy(), spot.requiredHint()))
+                    .toList();
+            return new PdfFormPreparation(
+                    artifactId, reading.id(), keptSpots, kept.notices(), kept.spotNaming(), kept.rulesOnlyReason());
         }
         PdfFormGraph graph = reading.graph();
         Found found = candidates(graph);
@@ -197,7 +231,29 @@ public class PdfFormPreparationService {
             notices.add(new PreparationNotice(PreparationNotice.SPOTS_SKIPPED, skipped, null));
         }
         notices.addAll(naming.notices());
+        if (shared && !FillableFormService.transientNaming(naming.rulesOnlyReason())) {
+            remember(sourceSha256, spots, notices, naming.source(), naming.rulesOnlyReason());
+        }
         return new PdfFormPreparation(artifactId, reading.id(), spots, notices, naming.source(), naming.rulesOnlyReason());
+    }
+
+    private void remember(String sourceSha256, List<PreparedPdfSpot> spots, List<PreparationNotice> notices,
+            NamingSource spotNaming, String rulesOnlyReason) {
+        prepareCache.remember(new PrepareCacheRepository.CachedPreparation(
+                sourceSha256, recipeVersion(), SupportedMediaType.PDF.name(), null,
+                spots.stream()
+                        .map(spot -> new FillableForm.Spot(spot.definition(), spot.namedBy(), spot.requiredHint(), null, null))
+                        .toList(),
+                notices, null, spotNaming, rulesOnlyReason));
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** The kept reading of this file under the current reader, reading and keeping it first when there is none. */

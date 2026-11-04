@@ -57,12 +57,12 @@ public class PdfFillableForms implements PdfFormPreparer {
     }
 
     @Override
-    public FillableForm prepare(long workspaceId, long userId, long artifactId) {
+    public FillableForm prepare(long workspaceId, long userId, long artifactId, boolean shared) {
         Optional<FillableForm> kept = find(workspaceId, userId, artifactId);
         if (kept.isPresent()) {
             return kept.get();
         }
-        PdfFormPreparation prepared = preparation.prepare(workspaceId, userId, artifactId);
+        PdfFormPreparation prepared = preparation.prepare(workspaceId, userId, artifactId, shared);
         List<FillableForm.Spot> spots = prepared.spots().stream()
                 .map(spot -> new FillableForm.Spot(spot.definition(), spot.namedBy(), spot.requiredHint(), null, null))
                 .toList();

@@ -102,10 +102,12 @@ class FillableFormConfig {
             FillableCopyVerifier fillableCopyVerifier,
             ArtifactDerivationRepository artifactDerivationRepository,
             PdfFormPreparer pdfFormPreparer,
-            ImageToPdf imageToPdf) {
+            ImageToPdf imageToPdf,
+            io.github.vihuynh72.brownie.core.prepare.PrepareCacheRepository prepareCacheRepository) {
         return new FillableFormService(
                 artifactService, documentExtractionService, docxStructuralExtractor, documentConverter, workingCopyPreparer, wordForms,
-                spotNamer, fillSpotEditor, fillableCopyVerifier, artifactDerivationRepository, pdfFormPreparer, imageToPdf);
+                spotNamer, fillSpotEditor, fillableCopyVerifier, artifactDerivationRepository, pdfFormPreparer, imageToPdf,
+                prepareCacheRepository);
     }
 
     @Bean

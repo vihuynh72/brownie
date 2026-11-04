@@ -39,6 +39,16 @@ public class FormIntakeService {
     }
 
     public IntakeResult takeIn(long workspaceId, long userId, String fileName, InputStream content) {
+        return takeIn(workspaceId, userId, fileName, content, false);
+    }
+
+    /**
+     * {@code shared} when the bytes are everyone's -- a library form's, so the
+     * prepared answer may be kept for the next start anywhere. An upload or an
+     * MCP claim passes {@code false}: nothing a person owns leaves their
+     * workspace's own stores.
+     */
+    public IntakeResult takeIn(long workspaceId, long userId, String fileName, InputStream content, boolean shared) {
         Artifact artifact = artifactService.initiateUpload(workspaceId, userId, fileName);
         artifact = artifactService.receiveContent(workspaceId, userId, artifact.id(), content);
         artifact = artifactService.finalizeUpload(workspaceId, userId, artifact.id());
@@ -50,7 +60,7 @@ public class FormIntakeService {
         // the field it becomes; the origin goes to FOUND_BY_BROWNIE the way
         // a person's "Keep all" over the found spots would leave it.
         io.github.vihuynh72.brownie.core.prepare.FillableForm form =
-                fillableFormService.prepare(workspaceId, userId, artifact.id());
+                fillableFormService.prepare(workspaceId, userId, artifact.id(), shared);
         Template template = templateService.createDraft(workspaceId, userId, fileName,
                 form.templateSourceArtifactId(),
                 form.kind() == io.github.vihuynh72.brownie.core.prepare.FillableForm.Kind.PDF

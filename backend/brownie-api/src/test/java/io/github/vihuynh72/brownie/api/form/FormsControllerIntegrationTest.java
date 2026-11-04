@@ -89,12 +89,14 @@ class FormsControllerIntegrationTest {
 
     static final class StubFetcher implements CatalogFormFetcher {
         boolean fail;
+        int fetches;
 
         @Override
         public byte[] fetch(FormLibraryCatalog.Entry entry) throws IOException {
             if (fail) {
                 throw new IOException("the agency is down");
             }
+            fetches++;
             try (var in = getClass().getResourceAsStream("/w9.pdf")) {
                 return in.readAllBytes();
             }
@@ -115,6 +117,18 @@ class FormsControllerIntegrationTest {
 
     @Autowired
     private io.github.vihuynh72.brownie.core.template.TemplateService templateService;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @org.junit.jupiter.api.BeforeEach
+    void clearKeptCopies() {
+        // Each test owns the kept-bytes and prepared-answer caches: a row another
+        // test left could serve a start that should have fetched, or skip a
+        // prepare that should have run.
+        jdbcTemplate.update("DELETE FROM catalog_form_source");
+        jdbcTemplate.update("DELETE FROM prepare_cache");
+    }
 
     @Test
     void theCatalogAnswersWithoutASession() throws Exception {
@@ -158,6 +172,28 @@ class FormsControllerIntegrationTest {
                         document.get("templateId").asLong(), document.get("templateVersionId").asLong())
                 .orElseThrow();
         assertThat(version.fieldDefinitions().size()).isGreaterThan(10);
+    }
+
+    @Test
+    void aSecondStartUsesTheReadyCopyAndDoesNotFetchAgain() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-forms-ready");
+        STUB.fail = false;
+        int before = STUB.fetches;
+
+        mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk());
+        JsonNode second = readJson(mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                        .cookie(session)
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        // The first start fetched and prepared; the second cloned the ready copy, so the
+        // fetcher ran only once even though a fresh document was made each time.
+        assertThat(STUB.fetches).isEqualTo(before + 1);
+        assertThat(second.get("documentId").asLong()).isPositive();
     }
 
     @Test

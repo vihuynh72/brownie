@@ -545,7 +545,7 @@ class PdfFormPreparationServiceTest {
 
         PdfFormPreparationService service() {
             ArtifactService artifacts = new ArtifactService(new OneArtifact(this), new OneBlob(), null, 1_000_000, Duration.ofHours(1));
-            return new PdfFormPreparationService(artifacts, reader, readings, namer, null);
+            return new PdfFormPreparationService(artifacts, reader, readings, namer, null, new NoPrepareCache());
         }
 
         PdfFillableForms forms() {
@@ -743,6 +743,17 @@ class PdfFormPreparationServiceTest {
         @Override
         public void delete(String objectKey) {
             throw new UnsupportedOperationException();
+        }
+    }
+
+    private static final class NoPrepareCache implements io.github.vihuynh72.brownie.core.prepare.PrepareCacheRepository {
+        @Override
+        public java.util.Optional<CachedPreparation> find(String sourceSha256, String recipeVersion) {
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public void remember(CachedPreparation prepared) {
         }
     }
 }

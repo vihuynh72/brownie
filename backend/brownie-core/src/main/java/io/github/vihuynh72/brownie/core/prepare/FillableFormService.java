@@ -75,6 +75,7 @@ public class FillableFormService {
     private final ArtifactDerivationRepository derivations;
     private final PdfFormPreparer pdfFormPreparer;
     private final ImageToPdf imageToPdf;
+    private final PrepareCacheRepository prepareCache;
 
     public FillableFormService(
             ArtifactService artifactService,
@@ -88,7 +89,8 @@ public class FillableFormService {
             FillableCopyVerifier verifier,
             ArtifactDerivationRepository derivations,
             PdfFormPreparer pdfFormPreparer,
-            ImageToPdf imageToPdf) {
+            ImageToPdf imageToPdf,
+            PrepareCacheRepository prepareCache) {
         this.artifactService = artifactService;
         this.documentExtractionService = documentExtractionService;
         this.docxExtractor = docxExtractor;
@@ -101,6 +103,7 @@ public class FillableFormService {
         this.derivations = derivations;
         this.pdfFormPreparer = pdfFormPreparer;
         this.imageToPdf = imageToPdf;
+        this.prepareCache = prepareCache;
     }
 
     /** The recipe version stored with every copy this code makes. */
@@ -119,14 +122,24 @@ public class FillableFormService {
      * missing converter.
      */
     public FillableForm prepare(long workspaceId, long userId, long artifactId) {
+        return prepare(workspaceId, userId, artifactId, false);
+    }
+
+    /**
+     * {@code shared} when the bytes are everyone's -- a library form's, never a
+     * person's upload: only a shared file's prepared answer is kept in the
+     * across-workspace cache, so nothing one person owns outlives their
+     * workspace. A shared answer is still read for any upload of the same file.
+     */
+    public FillableForm prepare(long workspaceId, long userId, long artifactId, boolean shared) {
         Artifact source = sourceOf(workspaceId, userId, artifactId);
         SupportedMediaType mediaType = source.detectedMediaType();
         if (mediaType == SupportedMediaType.PDF) {
-            return pdfFormPreparer.prepare(workspaceId, userId, artifactId);
+            return pdfFormPreparer.prepare(workspaceId, userId, artifactId, shared);
         }
         if (mediaType == SupportedMediaType.JPEG || mediaType == SupportedMediaType.PNG) {
             Artifact pdf = imageToPdf(workspaceId, userId, source);
-            return pdfFormPreparer.prepare(workspaceId, userId, pdf.id());
+            return pdfFormPreparer.prepare(workspaceId, userId, pdf.id(), shared);
         }
         // A workbook is a thing a batch reads as a table, not a form to fill;
         // it is refused as a spreadsheet, like any upload that is one.
@@ -142,7 +155,7 @@ public class FillableFormService {
         if (existing.isPresent()) {
             return formOf(workspaceId, userId, existing.get(), false);
         }
-        return make(workspaceId, userId, source);
+        return make(workspaceId, userId, source, shared);
     }
 
     /**
@@ -156,10 +169,33 @@ public class FillableFormService {
         return word.isPresent() ? word : pdfFormPreparer.find(workspaceId, userId, artifactId);
     }
 
-    private FillableForm make(long workspaceId, long userId, Artifact source) {
+    private FillableForm make(long workspaceId, long userId, Artifact source, boolean shared) {
         long artifactId = source.id();
         byte[] original = readAll(workspaceId, userId, artifactId);
         List<PreparationNotice> notices = new ArrayList<>();
+
+        // The same bytes taken in before answer from the kept preparation: the
+        // worked copy, the spots, the notices -- the read and the naming never
+        // run twice for one file, whoever uploads it.
+        String sourceSha256 = sha256(original);
+        Optional<PrepareCacheRepository.CachedPreparation> cached =
+                prepareCache.find(sourceSha256, recipeVersion());
+        if (cached.isPresent()) {
+            PrepareCacheRepository.CachedPreparation kept = cached.get();
+            Artifact output = artifactService.storeGenerated(
+                    workspaceId, userId, workingCopyName(source), kept.outputBytes());
+            ExtractionVersion extraction =
+                    documentExtractionService.extractDocx(workspaceId, userId, output.id());
+            if (extraction.status() != ExtractionStatus.COMPLETE) {
+                throw new FillableFormFailedException(FillableFormFailedException.Reason.DAMAGED,
+                        "The working copy of artifact " + artifactId + " did not read as a complete document ("
+                                + extraction.status() + ").", null);
+            }
+            ArtifactDerivation derivation = derivations.insertOrGet(workspaceId, userId, artifactId, output.id(),
+                    ArtifactDerivation.PREPARED, recipeVersion(), kept.sourceFormat(), kept.converter(),
+                    kept.spotNaming(), kept.rulesOnlyReason(), kept.spots(), kept.notices());
+            return formOf(workspaceId, userId, derivation, derivation.outputArtifactId() == output.id());
+        }
 
         byte[] docx = original;
         PreparationMode mode = PreparationMode.UPLOAD;
@@ -211,6 +247,11 @@ public class FillableFormService {
         ArtifactDerivation derivation = derivations.insertOrGet(workspaceId, userId, artifactId, output.id(),
                 ArtifactDerivation.PREPARED, recipeVersion(), source.detectedMediaType().name(), converter, spotNaming,
                 rulesOnlyReason, spots, notices);
+        if (shared && !transientNaming(rulesOnlyReason)) {
+            prepareCache.remember(new PrepareCacheRepository.CachedPreparation(
+                    sourceSha256, recipeVersion(), source.detectedMediaType().name(), made.docxBytes(), spots, notices,
+                    converter, spotNaming, rulesOnlyReason));
+        }
         return formOf(workspaceId, userId, derivation, derivation.outputArtifactId() == output.id());
     }
 
@@ -312,6 +353,26 @@ public class FillableFormService {
                 derivation.spotNaming(),
                 derivation.rulesOnlyReason(),
                 created);
+    }
+
+    /**
+     * Whether the rules named the places only because the model could not be
+     * asked -- a spent allowance or an outage, not a real answer. Such a
+     * preparation is never kept: the next take-in of the same file should try
+     * the model again, not replay the fallback forever.
+     */
+    static boolean transientNaming(String rulesOnlyReason) {
+        return SpotNaming.ALLOWANCE_USED_UP.equals(rulesOnlyReason)
+                || SpotNaming.MODEL_UNAVAILABLE.equals(rulesOnlyReason);
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private Artifact sourceOf(long workspaceId, long userId, long artifactId) {

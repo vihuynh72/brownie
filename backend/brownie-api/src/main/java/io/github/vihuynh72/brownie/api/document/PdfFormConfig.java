@@ -44,8 +44,9 @@ class PdfFormConfig {
             PdfFormReader pdfFormReader,
             PdfFormExtractionVersionRepository pdfFormExtractionVersionRepository,
             SpotNamer spotNamer,
-            io.github.vihuynh72.brownie.core.prepare.VisionSpotFinder visionSpotFinder) {
-        return new PdfFormPreparationService(artifactService, pdfFormReader, pdfFormExtractionVersionRepository, spotNamer, visionSpotFinder);
+            io.github.vihuynh72.brownie.core.prepare.VisionSpotFinder visionSpotFinder,
+            io.github.vihuynh72.brownie.core.prepare.PrepareCacheRepository prepareCacheRepository) {
+        return new PdfFormPreparationService(artifactService, pdfFormReader, pdfFormExtractionVersionRepository, spotNamer, visionSpotFinder, prepareCacheRepository);
     }
 
     /** Filling and then checking a PDF template, the one way compiling, qualifying and validating one all do it. */
