@@ -38,6 +38,7 @@ onMounted(async () => {
 
 /** Google as the big button only while it carries the flag; otherwise it is a small early-access link. */
 const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
+const emailCodeAvailable = computed(() => welcome.value?.signInProviders?.includes('entra') ?? true)
 const googleSecondary = computed(
   () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
@@ -132,7 +133,7 @@ function keepDestination(): void {
       </svg>
       <span>Continue with Google</span>
     </a>
-    <a v-if="googlePrimary" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="googlePrimary && emailCodeAvailable" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
       Use an email code instead
     </a>
     <a v-if="!googlePrimary" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">

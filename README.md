@@ -3,6 +3,152 @@
 Brownie is a personal project for building and reviewing source-backed
 documents.
 
+## Vercel and Railway deployment
+
+The public origin is `https://brownie.up.railway.app`; MCP uses
+`https://brownie.up.railway.app/mcp`. Vercel's existing Brownie project
+builds the Vue frontend. Direct visits to its public alias redirect to
+Railway, where an NGINX gateway serves those public frontend files and
+routes API, login, MCP and OAuth discovery requests to the private API.
+The gateway's `X-Brownie-Gateway: 1` header prevents a frontend redirect
+loop; it is not a credential. Browser cookies and authorization headers
+are never forwarded to Vercel. Rate limits currently use the observed
+Railway edge peer rather than trusting caller-supplied forwarded headers;
+users behind one edge can share a limit until a verified trusted-proxy
+policy is configured.
+
+Migration checks on 2026-11-14 restored all 69 public database tables,
+including 74 documents, with every table's row count and canonical JSON
+hash matching the frozen source. All 246 files (33,950,406 bytes) were
+copied under their original keys and verified by SHA-256 readback. All
+three database application roles retain their restricted role flags.
+The source API and worker were stopped for the final copy. The Azure VM
+was deallocated and PostgreSQL is stopped. Azure publishing,
+deployment and scheduled-start workflows are disabled. Azure resources
+have **not** been deleted, and residual storage/network/registry charges
+remain until retirement is complete. Azure PostgreSQL restarts itself
+after seven stopped days unless retired.
+
+### Runtime and configuration
+
+| Railway service | Source | Private runtime port | Readiness port/path |
+| --- | --- | --- | --- |
+| gateway | `infra/railway/gateway/Dockerfile` | 8080 (public edge) | 8080 `/healthz` |
+| api | `backend/brownie-api/Dockerfile` | 8081 | 8090 `/actuator/health/readiness` |
+| worker | `backend/brownie-worker/Dockerfile` | No application endpoint | 8091 `/actuator/health/readiness` |
+| renderer | `infra/railway/renderer/Dockerfile` | 8080 | 8080 `/healthz` |
+| clamav | `clamav/clamav-debian:1.4` | 3310 | API/worker scanner health |
+| Postgres | Railway PostgreSQL template | 5432 | Railway database service |
+
+Keep API, worker, renderer, scanner and database off public domains. The
+API's `PORT=8090` and worker's `PORT=8091` tell Railway where readiness
+checks run; they do not change the API's private application port. Set
+`RAILWAY_DOCKERFILE_PATH` to the source above for each source-built service.
+Use the repository root as build context. After local checks, upload the
+working tree explicitly, for example:
+
+```sh
+railway up . --path-as-root --service api --detach
+railway up . --path-as-root --service worker --detach
+```
+
+An upload is not a successful deployment. Inspect the latest deployment
+and logs (`railway logs --service api --latest --lines 50`) and verify
+readiness before switching traffic. `redeploy` may reuse a previous
+artifact; it does not upload source changes. The API owns migrations and
+must be ready before the worker serves new work.
+
+Both Java services select Railway storage with
+`BROWNIE_STORAGE_PROVIDER=s3`. Use the two separately credentialed
+`BROWNIE_S3_*` and `BROWNIE_ARCHIVE_S3_*` configurations in `.env.example`.
+Live tests verified create-only writes refuse replacement with HTTP 412,
+oversized uploads preserve the existing object, and each bucket's
+credentials receive HTTP 403 from the other bucket. Files and the deletion
+archive must never be restored together. Railway does not currently offer
+object versioning or object locks: Azure's provider-level 180-day deletion
+archive immutability is not reproduced by a Railway bucket. The adapter
+retains create-only archive writes and replay semantics; do not describe
+this bucket as WORM storage. Keep independently recoverable backups and
+replay recorded deletions before restoring access to a restored database.
+
+The API uses Google-only sign-in with `BROWNIE_ENTRA_SIGN_IN_ENABLED=false`,
+its existing Google credentials, and both public/web origins set to the
+Railway origin. Drive, Docs and Calendar APIs are enabled in the existing
+Google project. Its existing client now permits these callbacks:
+
+- `https://brownie.up.railway.app/login/oauth2/code/google`
+- `https://brownie.up.railway.app/api/v1/connectors/google/callback`
+
+Old callbacks remain for rollback. Google OAuth is In production with the
+existing `drive.file`, `calendar.events.owned.readonly` and
+`calendar.events.owned` scopes declared. Calendar-scope verification is
+still outstanding; Google's unverified-app screen and 100-user cap may
+apply until approved. Workspace administrators may independently restrict
+consent. Offering Drive/Calendar actions does not grant access or execute
+an action: each person must connect, and existing payload-hash approval
+and reconciliation checks still control writes. Existing connector
+encryption and MCP token keys are preserved.
+
+### Isolated document conversion
+
+Ordinary Railway containers cannot provide Brownie's Docker socket or
+host bind mounts. The private Node renderer broker creates a fresh
+Railway Sandbox from checkpoint `brownie-renderer-20261115` for each job,
+runs the pinned renderer image inside Docker, reads its checked output,
+and destroys the VM. No database, storage or provider credentials are
+passed into the job VM. The checkpoint contains only the renderer image,
+not registry credentials or application configuration.
+
+The API needs `BROWNIE_RENDER_SERVICE_URL`, `BROWNIE_RENDER_SERVICE_TOKEN`
+and `BROWNIE_RENDER_EXPECTED_IMAGE_ID`. The broker needs the same service
+token/image, `BROWNIE_RENDER_CHECKPOINT`, and an environment-scoped
+`RAILWAY_TOKEN`. Keep the token exclusively in the broker's secret
+variables. Rebuild a checkpoint when the renderer image changes; never
+install LibreOffice for every request or snapshot real user input.
+
+Live probes verified DOCX-to-PDF and RTF-to-DOCX in about 14 to 16 seconds,
+plus nonroot UID 10001, 512 MiB memory, 128 processes, one CPU, no effective
+capabilities, read-only root and no external network routes. The broker
+bounds concurrency, body/output size and runtime, and destroys jobs on
+success, failure and disconnect. A two-minute idle expiry is the fallback
+if provider teardown is unavailable. Railway labels Sandboxes experimental;
+this runtime was explicitly accepted for this deployment. Local Docker
+rendering remains available when remote settings are absent.
+
+### Backups and MCP cutover
+
+The encrypted final source backup and restore/hash proof are saved in the
+private operator folder `~/brownie-scratch/backups/2026-11-15-azure-exit`.
+The encrypted bundle also exists in the independent Railway
+`migration-backup` bucket. Keep the decryption key private and separate
+from the cloud copy. Do not delete the Azure source until the replacement
+and its sign-in, connector and MCP flows have passed live checks.
+
+Website MCP install instructions use the server URL returned by the new
+backend's welcome/capabilities routes. A failed welcome request no longer
+invents a connector URL. Existing OAuth clients may need reconnection
+because their issuer/resource origin changes. The installed ChatGPT
+Brownie App's server URL is read-only in its current management UI; its
+App-backed package cannot change that binding. The replacement ChatGPT connection is now named Brownie and passed a
+read-only 40-template test; the preserved original is Brownie (old Azure).
+Local Codex OAuth was reconnected to the new URL. Already-loaded chats may
+retain the old server binding until a fresh session loads the configuration.
+Do not redirect bearer-authenticated MCP requests across origins.
+
+Live MCP verification created only synthetic document 75: template listing,
+model extraction, exact-hash confirmation, and both Word/PDF exports passed
+(receipt 22). Chrome showed the accepted fictional fields and a legible
+print preview. All six Railway services passed readiness, and a private
+HTTP broker probe produced a parsed PDF with the approved renderer image.
+A direct public-dummy model call also succeeded; the MCP fill test then
+proved the application's own orchestration. Google Drive's actual account
+consent remains pending; Calendar permissions and real external writes
+have not been granted or tested.
+
+References: [Railway Sandboxes](https://docs.railway.com/sandboxes),
+[Railway buckets](https://docs.railway.com/storage-buckets),
+[Railway domains](https://docs.railway.com/networking/domains/working-with-domains).
+
 ## Run
 
 Check the pinned local toolchain with:
@@ -113,9 +259,11 @@ The API listens on 8081, matching `BROWNIE_PUBLIC_ORIGIN` and the callback
 registered with the identity provider; health checks answer separately on
 8090 (`curl http://localhost:8090/actuator/health`).
 
-Login (`BROWNIE_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET`) requires an Entra
-External ID tenant and app registration that only the project owner can
-create. Until those three are set in `.env`,
+Default Entra login (`BROWNIE_OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET`) requires
+an External ID tenant and app registration that only the project owner can
+create. Google-only deployments instead set `BROWNIE_ENTRA_SIGN_IN_ENABLED=false`
+and supply the existing Google client credentials; no Entra registration
+or discovery is used. With default Entra login enabled, until its three settings are set in `.env`,
 `brownie-api` will fail to start on the `local` profile; the `test` profile
 used by `mvnw test`/`verify` does not need them. Once configured:
 
@@ -146,13 +294,12 @@ used by `mvnw test`/`verify` does not need them. Once configured:
 
 ## Identity
 
-Brownie authenticates one kind of principal: customers signing in through
-the Entra External ID tenant configured above. That is the only identity
-provider integration in this codebase --
-there is no separate staff or admin login path today, and every row in
-`user_identity` belongs to a customer. Connecting a Google account (below) is
-not a second way in: it is done from inside a signed-in session and lets
-Brownie read something on that person's behalf, nothing more.
+Brownie authenticates customers through the configured Google or Entra
+sign-in providers. There is no separate staff or admin login path, and
+every row in `user_identity` belongs to a customer. Google sign-in establishes
+the person's Brownie identity; connecting Drive or Calendar from inside
+the workspace is a separate consent that grants only that integration's
+permissions. Existing identity and workspace mapping rules are preserved.
 
 The Microsoft/Azure account used to administer that tenant (create the
 app registration, manage billing, deploy resources) is a different,
@@ -170,9 +317,9 @@ overwriting whatever else -- a stray `SPRING_PROFILES_ACTIVE` left in the
 environment, for instance -- might already be set. A production run
 can't end up with the `test` profile's placeholder OIDC credentials
 active alongside it, since only one profile is ever active, and
-`production`, `pilot`, and `local` all require `BROWNIE_OIDC_ISSUER` with
-no fallback value, so a missing real tenant fails startup outright
-instead of silently running against nothing.
+an enabled Entra provider requires a real issuer and credentials. A
+Google-only deployment requires both Google credentials and never discovers
+the disabled Entra provider. Missing required credentials fail startup.
 
 Stop Postgres, keeping its data for next time:
 
@@ -605,6 +752,10 @@ restarting: tokens encrypted with the old key can no longer be read, so each
 person's Google connection asks them to connect again, and nothing else breaks.
 
 ## Deploying it somewhere other than a laptop
+
+The instructions in this section describe the retained Azure pilot tooling.
+The current deployment follows the Vercel and Railway section above.
+Azure workflows are disabled; do not reactivate them during the cutover.
 
 Everything below is optional: Brownie runs locally with nothing deployed, and
 nothing here happens by itself. Publishing an image and deploying it are both

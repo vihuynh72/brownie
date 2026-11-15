@@ -45,8 +45,7 @@ class WelcomeController {
         } else {
             signUp = "INVITATION_ONLY";
         }
-        // The first provider is the big button: Google while it carries
-        // that flag, the email code otherwise and always as the backup.
+        // The first configured provider is the big button; a disabled provider is never advertised.
         List<String> providers = (googlePrimary ? List.of("google", "entra") : List.of("entra", "google")).stream()
                 .filter(id -> clientRegistrationRepository.findByRegistrationId(id) != null)
                 .toList();

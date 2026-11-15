@@ -67,25 +67,10 @@ spring:
   security:
     oauth2:
       client:
-        registration:
-          # Registration ID "entra" is load-bearing, not cosmetic: Spring's
-          # default redirect-uri template turns it into
-          # /login/oauth2/code/entra, which is the exact path registered
-          # with the identity provider.
-          entra:
-            client-id: ${BROWNIE_OIDC_CLIENT_ID:}
-            client-secret: ${BROWNIE_OIDC_CLIENT_SECRET:}
-            authorization-grant-type: authorization_code
-            scope: openid,profile,email
-            redirect-uri: "{baseUrl}/login/oauth2/code/entra"
         provider:
           entra:
-            # issuer-uri itself is deliberately NOT set here: Spring Boot
-            # treats a merely-empty value the same as a real one and still
-            # attempts (and fails) OIDC discovery against it, so it must be
-            # genuinely absent, not blank, wherever no real tenant exists
-            # yet -- see the "test" profile block below, and local/pilot/
-            # production further down, which each set the real thing.
+            # OidcClientRegistrations adds Entra only while enabled; Google-only
+            # deployments never map this provider or perform its discovery.
             user-name-attribute: sub
   session:
     # Lets a server session survive an API replica change and be revoked on
@@ -323,7 +308,7 @@ spring:
             # document states it -- the login.microsoftonline.com form of
             # the same tenant only signs in admin and workforce accounts,
             # and customer accounts get AADSTS500208 from it. See .env.example.
-            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+            issuer-uri: ${BROWNIE_OIDC_ISSUER:}
 # Local development listens on the loopback interface only, on both the
 # API and the management port. This profile also hosts the e2e
 # session-seeding route (see brownie.test-support.token below) and runs
@@ -377,6 +362,9 @@ spring:
           entra:
             client-id: test-client
             client-secret: test-secret
+            authorization-grant-type: authorization_code
+            scope: openid,profile,email
+            redirect-uri: "{baseUrl}/login/oauth2/code/entra"
         provider:
           entra:
             authorization-uri: http://localhost:65535/oauth2/authorize
@@ -454,7 +442,7 @@ spring:
       client:
         provider:
           entra:
-            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+            issuer-uri: ${BROWNIE_OIDC_ISSUER:}
 server:
   # Behind the proxy, so that the scheme, host and caller's address the
   # application sees are the browser's and not the proxy's. Without this the
@@ -501,7 +489,7 @@ spring:
       client:
         provider:
           entra:
-            issuer-uri: ${BROWNIE_OIDC_ISSUER}
+            issuer-uri: ${BROWNIE_OIDC_ISSUER:}
 server:
   # Behind the proxy, so that the scheme, host and caller's address the
   # application sees are the browser's and not the proxy's. Without this the

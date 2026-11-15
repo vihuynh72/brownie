@@ -93,6 +93,16 @@ describe('SignInView', () => {
   })
 
   /** Being interrupted on the way somewhere should say where, so the page does not read like an unprompted demand. */
+  it('does not offer an email code when only Google is available', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google'],
+    })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+    expect(wrapper.get('a.signin__google').attributes('href')).toBe('/oauth2/authorization/google')
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+  })
+
   it('names what the sign-in is for when it interrupted something', async () => {
     const wrapper = await mountAt('/signin?next=%2F')
 

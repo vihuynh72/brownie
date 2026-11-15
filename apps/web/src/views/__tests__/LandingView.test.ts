@@ -120,22 +120,16 @@ describe('LandingView', () => {
     expect(wrapper.text()).toContain('invited people')
   })
 
-  it('claims nothing it could not learn, and still offers the chat apps on this origin', async () => {
+  it('does not invent connection details when welcome fails', async () => {
     vi.mocked(getWelcome).mockRejectedValue(new Error('offline'))
     const wrapper = await mountLanding()
 
-    // No answer: behave as invitation-only, and point chat apps at this origin.
     const primary = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Sign in')
     expect(primary).toBeDefined()
-    expect(tabs(wrapper).map((t) => t.attributes('data-target'))).toEqual([
-      'browser',
-      'claude',
-      'chatgpt',
-      'claude-code',
-      'codex',
-    ])
-    await wrapper.get('#install-tab-claude').trigger('click')
-    expect(wrapper.get('.install__line').text()).toContain(`${window.location.origin}/mcp`)
+    expect(tabs(wrapper).map((t) => t.attributes('data-target'))).toEqual(['browser'])
+    expect(wrapper.text()).not.toContain('Add to Claude or ChatGPT')
+    expect(wrapper.text()).not.toContain('invited people')
+    expect(wrapper.get('[role="status"]').text()).toContain('Refresh the page to try again')
   })
 
   it('offers only the browser when the deployment serves no chat apps', async () => {
@@ -270,6 +264,16 @@ it('points every sign-in action at Google when the deployment runs it', async ()
     const emailCode = wrapper.get('a.landing__email-code')
     expect(emailCode.attributes('href')).toBe(SIGN_IN)
     expect(emailCode.text()).toContain('Use an email code instead')
+  })
+
+  it('does not offer an email code when only Google is available', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['google'],
+    })
+    const wrapper = await mountLanding()
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('code sent to your email')
+    expect(wrapper.text()).toContain('Sign in to Brownie.')
   })
 
   it('keeps the email-code button primary with Google as a small early-access link', async () => {

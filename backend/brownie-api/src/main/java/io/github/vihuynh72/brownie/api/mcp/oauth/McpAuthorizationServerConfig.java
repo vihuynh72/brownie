@@ -37,6 +37,7 @@ import org.springframework.security.oauth2.server.authorization.settings.Authori
 import org.springframework.security.oauth2.server.authorization.token.DelegatingOAuth2TokenGenerator;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenGenerator;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.core.OAuth2Token;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.web.SecurityFilterChain;
@@ -79,6 +80,7 @@ class McpAuthorizationServerConfig {
             OAuth2AuthorizationConsentService authorizationConsentService,
             OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator,
             UserIdentityRepository userIdentityRepository,
+            ClientRegistrationRepository clientRegistrations,
             McpSettings settings,
             ObjectProvider<RateLimiter> rateLimiter)
             throws Exception {
@@ -199,7 +201,8 @@ class McpAuthorizationServerConfig {
                 // stays the configurer's own bare 401 -- a machine client
                 // must never be handed a login redirect.
                 .exceptionHandling(exceptions -> exceptions.defaultAuthenticationEntryPointFor(
-                        new LoginUrlAuthenticationEntryPoint("/oauth2/authorization/entra"),
+                        new LoginUrlAuthenticationEntryPoint("/oauth2/authorization/"
+                                + (clientRegistrations.findByRegistrationId("entra") != null ? "entra" : "google")),
                         PathPatternRequestMatcher.withDefaults()
                                 .matcher(HttpMethod.GET, "/mcp-auth/oauth2/v1/authorize")));
         rateLimiter.ifAvailable(limiter -> http.addFilterBefore(

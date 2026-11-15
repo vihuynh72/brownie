@@ -60,6 +60,7 @@ final class IsolatedLibreOffice {
     /** A file name inside the sandbox is always one of the caller's own constants, never anything a file supplied. */
     private static final Pattern FIXED_FILE_NAME = Pattern.compile("[a-z0-9]+\\.[a-z0-9]+");
 
+    private final RailwayDocumentSandbox remote;
     private final String imageTag;
     private final String expectedImageId;
     private final Path stagingRoot;
@@ -72,6 +73,7 @@ final class IsolatedLibreOffice {
      * what the logs call the sandboxed program ("renderer", "converter").
      */
     IsolatedLibreOffice(String imageTag, String expectedImageId, Path stagingRoot, String label, String role) {
+        this.remote = RailwayDocumentSandbox.fromEnvironment(expectedImageId);
         this.imageTag = Objects.requireNonNull(imageTag, "imageTag");
         this.expectedImageId = expectedImageId;
         this.stagingRoot = stagingRoot;
@@ -187,6 +189,7 @@ final class IsolatedLibreOffice {
     }
 
     Output run(Job job) {
+        if (remote != null) return remote.run(job);
         Path jobDir;
         try {
             jobDir = stagingRoot == null

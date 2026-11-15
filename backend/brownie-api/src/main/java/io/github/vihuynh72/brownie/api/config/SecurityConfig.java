@@ -25,8 +25,7 @@ import java.util.regex.Pattern;
 /**
  * The browser and session boundary: an opaque server session cookie for
  * the browser, never a provider token; CSRF checked on every mutation; and
- * login/logout wired to the {@code entra} registration whose callback is
- * registered exactly as {@code /login/oauth2/code/entra}.
+ * login/logout wired to the deployment's configured OIDC providers.
  *
  * <p>Every route requires a session except the few that exist to obtain
  * or end one (login initiation and its callback, logout) and the two that

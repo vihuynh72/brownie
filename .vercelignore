@@ -1,0 +1,16 @@
+.git/
+.github/
+.vercel/
+.env*
+tmp/
+backend/
+contracts/
+fixtures/
+infra/
+scripts/
+spike/
+tooling/
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.env*
+apps/web/.vercel/

@@ -62,6 +62,15 @@ class WelcomeControllerTest {
     }
 
     @Test
+    void aGoogleOnlyDeploymentOffersGoogleWithoutTheEmailCode() {
+        InMemoryClientRegistrationRepository repo = new InMemoryClientRegistrationRepository(registration("google"));
+        WelcomeController controller = new WelcomeController(new InvitedPeople(false, "", false), repo, true, "https://brownie.up.railway.app", false);
+
+        assertThat(controller.welcome().signInProviders()).containsExactly("google");
+        assertThat(controller.welcome().mcpServerUrl()).isEqualTo("https://brownie.up.railway.app/mcp");
+    }
+
+    @Test
     void theChatAppUrlOnlyShowsWhileMcpIsOn() {
         WelcomeController withMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), true, "https://api.example.com", false);
         WelcomeController withoutMcp = new WelcomeController(new InvitedPeople(false, "", false), emptyRegistrations(), false, "https://api.example.com", false);
