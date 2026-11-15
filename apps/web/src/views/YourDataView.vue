@@ -459,7 +459,7 @@ watch(
               >
               <template v-else>Nothing is sent until you ask.</template>
             </li>
-            <li>Signing in is handled by Microsoft. Brownie receives who you are, never your password.</li>
+            <li>Brownie receives your account identity when you sign in, never your password.</li>
             <li>Every file you upload is scanned for viruses on Brownie's own server before anything reads it.</li>
             <li v-if="mentionsGoogle">
               If you connect a Google account, Brownie reads from Google only what you ask for (the days of your calendar you
