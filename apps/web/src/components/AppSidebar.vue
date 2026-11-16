@@ -617,7 +617,7 @@ async function moveToTrash(): Promise<void> {
   >
     <div class="sidebar__inner">
       <div class="sidebar__head">
-        <RouterLink v-if="!props.docked" class="sidebar__brand" to="/" @click="closeIfDrawer">Brownie</RouterLink>
+        <RouterLink class="sidebar__brand" to="/" aria-label="Brownie, home" aria-current-value="false" @click="closeIfDrawer">Brownie<span class="sidebar__brand-dot" aria-hidden="true">.</span></RouterLink>
         <button
           ref="closeButtonRef"
           type="button"
@@ -865,8 +865,7 @@ async function moveToTrash(): Promise<void> {
 /*
  * A column of quiet rows on the sidebar colour. The page the person is on, and any row under the pointer, takes a
  * cocoa-wash pill; labels are the main text colour and the icons beside them the same colour at 60%, so the words
- * carry the weight (3.7:1 on the sidebar and 3.5:1 on the wash, past the 3:1 a graphic needs). The edge is a soft
- * inset shadow rather than a border, so the panel reads as set into the page.
+ * carry the weight. A quiet border keeps the navigation distinct from the working page.
  */
 .sidebar {
   --sidebar-icon: color-mix(in srgb, var(--color-text) 60%, transparent);
@@ -877,6 +876,7 @@ async function moveToTrash(): Promise<void> {
   inset-block-start: 0;
   background: var(--color-sidebar);
   box-shadow: var(--shadow-sidebar);
+  border-inline-end: 1px solid var(--color-sidebar-border);
   /* The inner column keeps its own width while this box narrows, so collapsing
      slides the navigation out of view instead of squashing every label first. */
   overflow: hidden;
@@ -915,7 +915,7 @@ async function moveToTrash(): Promise<void> {
   block-size: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 0.5rem 0.625rem;
+  padding: 0.5rem 0.75rem 0.75rem;
   overflow-y: auto;
   color: var(--color-text-muted);
 }
@@ -962,16 +962,22 @@ async function moveToTrash(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-block-size: 3.1875rem;
-  margin-block-end: 0.125rem;
+  min-block-size: 3.75rem;
+  margin-block-end: var(--space-3);
 }
 
 .sidebar__brand {
   padding-inline: 0.40625rem;
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-family: var(--font-display);
+  font-size: 1.875rem;
+  font-weight: 400;
+  letter-spacing: -0.055em;
   color: var(--color-text);
   text-decoration: none;
+}
+
+.sidebar__brand-dot {
+  color: var(--color-cocoa-strong);
 }
 
 /* The glyph sits a hair inside the other icon buttons below, as a toggle at a panel's corner does. */
@@ -998,15 +1004,15 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 0.65625rem;
-  min-block-size: 2.25rem;
+  min-block-size: 2.75rem;
   padding-inline: 0.40625rem 0.5rem;
   border-radius: var(--radius);
   color: var(--color-text);
-  font-size: var(--font-size-lg);
+  font-size: var(--font-size-base);
   font-weight: var(--font-weight-medium);
   line-height: 1.5;
   text-decoration: none;
-  transition: background-color var(--motion-fast) var(--motion-ease);
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
 }
 
 .sidebar__link > svg {
@@ -1016,6 +1022,10 @@ async function moveToTrash(): Promise<void> {
 .sidebar__link:hover,
 .sidebar__link[aria-current='page'] {
   background: var(--color-cocoa-wash);
+}
+
+.sidebar__link[aria-current='page'] > svg {
+  color: var(--color-cocoa-strong);
 }
 
 /*
@@ -1045,7 +1055,7 @@ async function moveToTrash(): Promise<void> {
   block-size: 0;
   margin-inline: 0.9375rem 1.1875rem;
   border: 0;
-  border-block-start: 1px solid color-mix(in srgb, var(--color-text) 50%, transparent);
+  border-block-start: 1px solid var(--color-sidebar-border);
 }
 
 .sidebar__rule--nav {

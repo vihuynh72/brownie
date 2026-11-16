@@ -3,7 +3,7 @@
  * buttons, chips, dialogs and fields. This file holds fonts, tokens and base element rules; primitives.css, loaded
  * right after it, holds the classes listed here.
  *
- * TYPE   Rubik at 400 (reading text) and 500 (labels, buttons, headings) only; the interface never uses 600 or more.
+ * TYPE   Rubik at 400 (reading text) and 500 (labels, buttons, headings); display titles use the local serif stack.
  *        12px --font-size-xs: tags, hints, small print.   14px --font-size-sm: buttons, labels, fields, list rows.
  *        16px --font-size-base: reading text, chat.   24px --font-size-xl: dialog titles.   32px --font-size-2xl:
  *        compact page title.   48px --font-size-display: page titles.   Reading text sits on a 1.45 line height.
@@ -119,7 +119,7 @@
 
 :root {
   /* The page colour, a shade warmer than white so the white sheet and cards lift off it. */
-  --color-paper: #f1ece2;
+  --color-paper: #fcf9f2;
   /* The lightest inset: a quiet panel inside a card, a table's header row, a hovered choice row. */
   --color-paper-soft: #f6f2eb;
   /* A step deeper than paper: the track of a two-way switch, a number tile, a neutral tag, an empty send button. */
@@ -127,10 +127,9 @@
   --color-surface: #ffffff;
 
   --color-text: #2a2924;
-  /* Secondary text clears 4.5:1 on paper (4.53) and has almost no margin left; on the sidebar (4.12) and on the
-     cocoa wash a row takes on hover (3.72) it falls short, so quiet text there is --color-text-muted. */
+  /* Secondary text clears 4.5:1 on paper (5.07) and the sidebar (4.71), but the darker hover wash uses muted text. */
   --color-text-secondary: #6e6b61;
-  /* The same hue, darker: 5.68:1 on paper, 5.16 on the sidebar, 4.66 on the hover wash. Safe on every surface. */
+  /* The same hue, darker: 6.36:1 on paper, 5.90 on the sidebar, 4.66 on the hover wash. Safe on every surface. */
   --color-text-muted: #5f5c53;
   /* Placeholders and steps not reached yet. The lightest grey that still reads on white (5.06) and paper-soft (4.54). */
   --color-text-faint: #736e65;
@@ -165,7 +164,7 @@
      control, so this pale edge (1.47:1 on white) is never the only sign that something is there. */
   --color-outline: #d9d5cb;
   /* The edge of a text field, which is the one sign of where to type, and the ring of a step not reached yet: a
-     graphic that carries meaning, so 3.53:1 on white, 3.17 on paper-soft, 3.00 on paper. */
+     graphic that carries meaning, so 3.53:1 on white, 3.17 on paper-soft, 3.36 on paper. */
   --color-field-border: #8b8882;
   /* The track of the rail beside the page, and the thumb of a thin scroll bar. */
   --color-track: #e4ddd1;
@@ -176,7 +175,7 @@
 
   /* 4.80:1 against white: the action colour, safe for a white button label. */
   --color-cocoa: #96684a;
-  /* Hover and pressed depth for the same button, 6.41:1 against white; also cocoa-coloured text on paper (5.44) and paper-soft (5.74). */
+  /* Hover and pressed depth for the same button, 6.41:1 against white; also cocoa-coloured text on paper (6.09) and paper-soft (5.74). */
   --color-cocoa-strong: #7e5639;
   /* A lighter cocoa used only behind decorative glyphs (a white glyph on it is 3.53:1, above the 3:1 graphics need). */
   --color-cocoa-tile: #ac7f5e;
@@ -189,7 +188,7 @@
   /* The sidebar sits a shade deeper and rosier than paper so the two regions read apart
      without a hard divider. Its quieter text uses --color-text-muted, not
      --color-text-secondary, for the reason recorded on that token. */
-  --color-sidebar: #ede0d4;
+  --color-sidebar: #f6f0e7;
   --color-sidebar-border: #e2dcd0;
 
   --space-1: 0.25rem;
@@ -211,6 +210,8 @@
   --font-size-display: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
   /* Labels, buttons and headings are medium weight; reading text is regular. */
   --font-weight-medium: 500;
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+  --font-body: 'Rubik', system-ui, -apple-system, 'Segoe UI', sans-serif;
   /* Commands and addresses a person copies, and nothing else: the system's own monospace, so no font is downloaded. */
   --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
@@ -233,11 +234,7 @@
      lifted, so it reads as part of the page's own furniture rather than a menu floating above it. */
   --shadow-chip: 0 2px 8px rgb(0 0 0 / 0.08);
   --shadow-dialog: 0 18px 40px rgb(0 0 0 / 0.16);
-  /* The sidebar darkens softly toward its own edges, and a little more along the right one where it meets the page, so
-     it reads as a panel set into the page. Inset, so it is drawn inside the sidebar and needs no room around it. */
-  --shadow-sidebar:
-    inset 0 0 8px rgb(0 0 0 / 0.3),
-    inset -2px 0 10px rgb(0 0 0 / 0.25);
+  --shadow-sidebar: none;
   /* What covers the page behind a dialog. */
   --scrim: rgb(0 0 0 / 0.27);
 
@@ -249,6 +246,7 @@
      below, so a transition written once behaves correctly in both settings. */
   --motion-fast: 120ms;
   --motion-base: 220ms;
+  --motion-reveal: 480ms;
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* A solid ring the eye can find: the focus color itself at full strength (about 5.5:1 on white,
@@ -266,6 +264,7 @@
   :root {
     --motion-fast: 1ms;
     --motion-base: 1ms;
+    --motion-reveal: 1ms;
   }
 }
 
@@ -273,16 +272,16 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  overflow-x: clip;
+}
+
 body {
   margin: 0;
   background: var(--color-paper);
   color: var(--color-text);
-  font-family:
-    'Rubik',
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
+  font-family: var(--font-body);
   font-size: var(--font-size-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;

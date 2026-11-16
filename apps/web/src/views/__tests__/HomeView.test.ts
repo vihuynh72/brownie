@@ -156,7 +156,7 @@ describe('HomeView', () => {
     const wrapper = await mountWithRouter()
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('Brownie fills your forms from what you tell it. You make the calls.')
+    expect(wrapper.get('h1').text()).toBe('Paperwork, taken care of.')
     const signIn = wrapper.get('a.button--primary')
     expect(signIn.attributes('href')).toBe('/oauth2/authorization/entra')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
@@ -180,15 +180,15 @@ describe('HomeView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('Sign-in did not complete')
     expect(alert.text()).toContain('access_denied')
-    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
+    expect(alert.find('a[href="/signin"]').text()).toBe('Try again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-  it('points a refused Google sign-in back at the email code', async () => {
+  it('offers configured sign-in methods after Google sign-in is refused', async () => {
     const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied&provider=google')
     const googleAlert = wrapper.get('[role="alert"]')
     expect(googleAlert.text()).toContain('Google sign-in is in early access')
-    expect(googleAlert.get('a').attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(googleAlert.get('a').attributes('href')).toBe('/signin')
   })
 
   /**
@@ -235,7 +235,7 @@ describe('HomeView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('That sign-in had expired or was started twice.')
     expect(alert.text()).not.toContain('authorization_request_not_found')
-    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Sign in again')
+    expect(alert.find('a[href="/signin"]').text()).toBe('Sign in again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -304,6 +304,38 @@ describe('HomeView', () => {
     expect(searchForms).toHaveBeenLastCalledWith('w-9')
     vi.useRealTimers()
     await flushPromises()
+  })
+
+  it('ignores an old search response while a new query is waiting to run', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finishOld!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce([{ id: 'new', title: 'New result', agency: 'Agency', category: 'Tax', description: 'New.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    vi.useFakeTimers()
+    await wrapper.get('.home__library-search').setValue('new')
+    finishOld([{ id: 'old', title: 'Old result', agency: 'Agency', category: 'Tax', description: 'Old.' }])
+    await nextTick()
+    expect(wrapper.text()).not.toContain('Old result')
+    expect(wrapper.get('.home__library-popular').text()).toBe('Searching forms…')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.text()).toContain('New result')
+    expect(wrapper.get('.home__library-popular').text()).toBe('1 form shown')
+    vi.useRealTimers()
+  })
+
+  it('retries a failed document list without leaving home', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce([])
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__load-error button').trigger('click')
+    await flushPromises()
+    expect(listDocuments).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.home__load-error').exists()).toBe(false)
+    expect(wrapper.find('.home__empty').exists()).toBe(true)
   })
 
   /** Start brings the form in and the person lands on the document it became. */

@@ -890,7 +890,7 @@ describe('WorkspaceView: the page', () => {
     expect(page.get('#assistant-heading').text()).toBe('Chat with Brownie')
     expect(rulesCard(page).get('h3').text()).toBe('About this form')
     expect(norm(chatLog(page).text())).toContain(
-      'Tell me your details, typed or said, and I\'ll fill this form. Or add a document that has them with +. You can also type straight into the highlighted spots, and change anything I fill in.',
+      'Your form has 1 of 6 places filled. Check the answers, or ask me for a change.',
     )
     expect(page.get('label[for="assist-composer"]').text()).toBe('Tell me what to fill')
     expect(page.get('.assistant-disclaimer').text()).toBe('Brownie can make mistakes. Check each filled value before you export.')
@@ -1152,6 +1152,7 @@ describe('WorkspaceView: editing by hand', () => {
         recoveryActions: [],
       }),
     )
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'fill it in')
@@ -1175,6 +1176,7 @@ describe('WorkspaceView: editing by hand', () => {
         recoveryActions: [],
       }),
     )
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'fill it in')
@@ -3516,6 +3518,7 @@ describe('WorkspaceView: the message box', () => {
   it('waits while empty, sends once there is something to send, and says it is working while Brownie reads a request', async () => {
     const reading = deferred<AssistInterpretationResponse>()
     vi.mocked(interpretAssist).mockReturnValue(reading.promise)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     const box = page.get('#assist-composer')
 
@@ -3612,6 +3615,7 @@ describe('WorkspaceView: the chat', () => {
 
   it('names each speaker: Brownie above its lines, and the person in a bubble of their own', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'write me a poem')
 
@@ -3623,6 +3627,7 @@ describe('WorkspaceView: the chat', () => {
 
   it('answers a line it cannot act on with what it can do, and puts a suggestion in the message box rather than sending it', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'write me a poem')
@@ -3713,6 +3718,7 @@ describe('WorkspaceView: the chat', () => {
 
   it('sends on Enter but not on Shift+Enter, and clears the message box once sent', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     const box = page.get('#assist-composer')
 
@@ -3730,6 +3736,7 @@ describe('WorkspaceView: the chat', () => {
   it('says it is working while it reads a line, and does not send a second one meanwhile', async () => {
     const reading = deferred<AssistInterpretationResponse>()
     vi.mocked(interpretAssist).mockReturnValue(reading.promise)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'write me a poem')
@@ -3764,6 +3771,7 @@ describe('WorkspaceView: the chat', () => {
   it('sends what the person types on the last line of a proposal as a new request', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
@@ -3792,6 +3800,7 @@ describe('WorkspaceView: the chat', () => {
       help: [],
       explanation: 'The meeting date is empty; type it in the Meeting date field.',
     })
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'explain this finding')
@@ -3803,6 +3812,7 @@ describe('WorkspaceView: the chat', () => {
 
   it('cannot fill the document without a source, and starts reading one straight away when there is', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(DRAFT)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'fill it in')
     expect(chatLog(page).text()).toContain('Add your notes or a document with Add a source (+) first, then ask me again.')
@@ -3860,6 +3870,7 @@ describe('WorkspaceView: the chat', () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
     vi.mocked(acceptPatchProposal).mockRejectedValue(STALE)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
@@ -3896,6 +3907,7 @@ describe('WorkspaceView: the chat', () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
     vi.mocked(acceptPatchProposal).mockResolvedValue({ ...acceptedProposal({ 'meeting.title': 'CONFLICT' }), applied: false })
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
@@ -3910,6 +3922,7 @@ describe('WorkspaceView: the chat', () => {
 
   it('says Brownie could not be reached when a line cannot be read, and puts the words back to send again', async () => {
     vi.mocked(interpretAssist).mockRejectedValue(networkFailure())
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'change meeting title to Spring Planning')
@@ -3921,6 +3934,7 @@ describe('WorkspaceView: the chat', () => {
   it('says the document is gone when a request finds it in the trash', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockRejectedValue(DOCUMENT_GONE)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'change meeting title to Spring Planning')
@@ -3932,6 +3946,7 @@ describe('WorkspaceView: the chat', () => {
   it('says a server without the route, rather than its raw answer, when a request cannot run', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockRejectedValue(noSuchRoute('api/v1/workspaces/7/documents/1/assist/execute'))
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'change meeting title to Spring Planning')
@@ -3944,6 +3959,7 @@ describe('WorkspaceView: the chat', () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
     vi.mocked(acceptPatchProposal).mockRejectedValue(RATE_LIMITED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
@@ -3976,18 +3992,15 @@ describe('WorkspaceView: Brownie reading a source', () => {
     expect(document.activeElement).toBe(document.body)
   })
 
-  it('reads an uploaded source as soon as it is asked, asks its question, carries on once answered, and proposes what it found', async () => {
+  it('reads an uploaded source automatically, asks its question, carries on once answered, and proposes what it found', async () => {
     vi.mocked(startExtraction).mockResolvedValue(accepted())
     vi.mocked(getJob).mockResolvedValueOnce(jobResponse('WAITING_FOR_INPUT'))
     vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
     const page = await mountPage()
     await attachUpload(page)
     expect(sourceCards(page).map((card) => norm(card.get('.source-chip__name').text()))).toEqual(['minutes.txt'])
-    expect(liveRegion(page).text()).toBe('minutes.txt attached.')
-
-    await askToFill(page)
-
-    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'Fill this in from my notes')
+    expect(startExtraction).toHaveBeenCalledTimes(1)
+    expect(interpretAssist).not.toHaveBeenCalled()
     expect(startExtraction).toHaveBeenCalledWith(7, 1, 5, expect.any(String))
     expect(getGenerationQuestions).toHaveBeenCalledWith(7, 1, 42)
     const asked = norm(runStatus(page).text())
@@ -4615,6 +4628,7 @@ describe('WorkspaceView: the cards of a reading', () => {
   it('draws the typing line as a line of Brownie, with a ring beside the words', async () => {
     const reading = deferred<AssistInterpretationResponse>()
     vi.mocked(interpretAssist).mockReturnValue(reading.promise)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
 
     await send(page, 'write me a poem')
@@ -4776,7 +4790,7 @@ describe('WorkspaceView: the panel for adding a source', () => {
     expect(panel.attributes('aria-modal')).toBeUndefined()
     expect(panel.attributes('aria-labelledby')).toBe('add-source-title')
     expect(panel.get('#add-source-title').text()).toBe('Add a source')
-    expect(panel.get('.add-source__lede').text()).toBe('Brownie reads only what you add here, and only when you ask.')
+    expect(panel.get('.add-source__lede').text()).toContain('Uploading a notes file starts preparation')
     expect(norm(panel.get('.add-source__foot').text())).toBe(
       'A copied event or file is a text snapshot. Brownie never browses the rest of your calendar or Drive.',
     )
@@ -4827,46 +4841,145 @@ describe('WorkspaceView: the panel for adding a source', () => {
     await press(page, 'Add a source')
 
     const label = page.get('label[for="attach-source"]')
-    expect(accessibleName(label.element)).toBe('Choose a file to upload notes or a document')
+    expect(accessibleName(label.element)).toBe('Upload notes and prepare this form')
     expect(label.classes()).toContain('button')
     expect(page.get('#attach-source').classes()).toContain('visually-hidden')
   })
 
-  it('confirms a file just added as a small card in the panel, with no way to remove it, and forgets it once the panel is closed', async () => {
+  it('closes the source panel after attaching notes and shows the source in the conversation', async () => {
     const page = await mountPage()
     await attachUpload(page)
-
-    const cards = page.findAll('#add-source-panel .add-source__files li')
-    expect(cards).toHaveLength(1)
-    expect(cards[0]!.get('.source-chip__name').text()).toBe('minutes.txt')
-    // minutes.txt is the 5-byte file chooseSourceFile() makes by default (new File(['notes'], ...)).
-    expect(norm(cards[0]!.get('.source-chip__meta').text())).toBe('Text file · 5 bytes · added just now')
-    expect(cards[0]!.classes()).toContain('source-chip')
-    expect(hasButton(page, 'Remove', '#add-source-panel')).toBe(false)
-
-    await press(page, 'Close adding a source')
-    await press(page, 'Add a source')
-    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
+    expect(page.find('#add-source-panel').exists()).toBe(false)
+    expect(sourceCards(page).map((card) => norm(card.get('.source-chip__name').text()))).toContain('minutes.txt')
   })
 
-  it('shows the chip in place of the file chooser once a file is attached, not both at once', async () => {
+  it.each(['button', 'enter'])('prepares typed details through the source pipeline with %s', async (method) => {
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'Your notes.txt' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+    vi.mocked(attachDocumentSource).mockResolvedValue(ONE_SOURCE[0]!)
+    vi.mocked(startExtraction).mockResolvedValue(accepted())
+    vi.mocked(getJob).mockResolvedValue(jobResponse('WAITING_FOR_INPUT'))
+    vi.mocked(getGenerationQuestions).mockResolvedValue([CONFLICT_QUESTION])
+    const page = await mountPage()
+    await page.get('#assist-composer').setValue('A note without a recognized command')
+    expect(page.find('.composer__send').exists()).toBe(false)
+    if (method === 'button') await page.get('.composer__prepare').trigger('click')
+    else await page.get('#assist-composer').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(allocateUpload).toHaveBeenCalledTimes(1)
+    expect(uploadArtifactContent).toHaveBeenCalledTimes(1)
+    expect(interpretAssist).not.toHaveBeenCalled()
+    expect(startExtraction).toHaveBeenCalledTimes(1)
+    expect(acceptPatchProposal).not.toHaveBeenCalled()
+  })
+
+  it.each(['button', 'enter'])('routes a page-place request through chat with %s', async (method) => {
+    vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
+    const page = await mountPage()
+    const composer = page.get('#assist-composer')
+    await composer.setValue('add a place here')
+    expect(page.find('.composer__prepare').exists()).toBe(false)
+    if (method === 'button') await page.get('.composer__send').trigger('click')
+    else await composer.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(interpretAssist).toHaveBeenCalledWith(7, 1, 'add a place here')
+    expect(allocateUpload).not.toHaveBeenCalled()
+  })
+
+  it('keeps typed details when preparation cannot upload them', async () => {
+    vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
+    const page = await mountPage()
+    await page.get('#assist-composer').setValue('Details to keep')
+    await page.get('.composer__prepare').trigger('click')
+    await flushPromises()
+    expect((page.get('#assist-composer').element as HTMLTextAreaElement).value).toBe('Details to keep')
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('keeps saved notes visible and retries a failed preparation without uploading twice', async () => {
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'Your notes.txt' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status: 'COMPLETE' })
+    vi.mocked(attachDocumentSource).mockResolvedValue({ ...ONE_SOURCE[0]!, artifactId: 5, displayFilename: 'Your notes.txt' })
+    vi.mocked(startExtraction).mockRejectedValueOnce(networkFailure()).mockResolvedValueOnce(accepted())
+    vi.mocked(getJob).mockResolvedValue(jobResponse('WAITING_FOR_INPUT'))
+    vi.mocked(getGenerationQuestions).mockResolvedValue([])
+    const page = await mountPage()
+    await page.get('#assist-composer').setValue('Notes to keep when starting the model fails')
+    await page.get('.composer__prepare').trigger('click')
+    await flushPromises()
+    expect(chatLog(page).text()).toContain('Notes to keep when starting the model fails')
+    expect(runStatus(page).text()).toContain('Your notes are saved with this form.')
+    await press(page, 'Prepare again')
+    expect(allocateUpload).toHaveBeenCalledTimes(1)
+    expect(attachDocumentSource).toHaveBeenCalledTimes(1)
+    expect(startExtraction).toHaveBeenCalledTimes(2)
+    expect(acceptPatchProposal).not.toHaveBeenCalled()
+  })
+
+  it('stops an upload after leaving the document', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof allocateUpload>>>()
+    vi.mocked(allocateUpload).mockReturnValue(pending.promise)
+    const page = await mountPage()
+    await chooseSourceFile(page)
+    page.unmount()
+    pending.resolve({ id: 5, status: 'UPLOADING', displayFilename: 'notes.txt' })
+    await flushPromises()
+    expect(uploadArtifactContent).not.toHaveBeenCalled()
+    expect(attachDocumentSource).not.toHaveBeenCalled()
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('does not attach or start preparation after switching documents', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof extractArtifact>>>()
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING', displayFilename: 'notes.txt' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY' })
+    vi.mocked(extractArtifact).mockReturnValue(pending.promise)
+    const page = await mountPage()
+    await chooseSourceFile(page)
+    await router.push('/documents/2')
+    pending.resolve({ status: 'COMPLETE' })
+    await flushPromises()
+    expect(attachDocumentSource).not.toHaveBeenCalled()
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('does not restore failed typed details onto a different document', async () => {
+    let rejectUpload!: (error: Error) => void
+    vi.mocked(allocateUpload).mockReturnValue(new Promise((_, reject) => { rejectUpload = reject }))
+    const page = await mountPage()
+    await page.get('#assist-composer').setValue('Private details for the first form')
+    await page.get('.composer__prepare').trigger('click')
+    await router.push('/documents/2')
+    rejectUpload(new Error('offline'))
+    await flushPromises()
+    expect((page.get('#assist-composer').element as HTMLTextAreaElement).value).not.toContain('Private details for the first form')
+    expect(attachDocumentSource).not.toHaveBeenCalled()
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('does not start preparation when the upload is refused', async () => {
+    vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
+    const page = await mountPage()
+    await chooseSourceFile(page)
+    expect(startExtraction).not.toHaveBeenCalled()
+    expect(page.get('#add-source-panel [role="alert"]').text()).toContain('not attached')
+  })
+
+  it('prevents another notes upload while a preparation is in flight', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(listGenerationRuns).mockResolvedValue([generationRun('LEASED')])
+    vi.mocked(getJob).mockReturnValue(new Promise(() => {}))
     const page = await mountPage()
     await press(page, 'Add a source')
-    expect(page.find('label[for="attach-source"]').exists()).toBe(true)
-    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
-
-    await attachUpload(page)
-
-    // The chip replaces the chooser; it does not sit beside it.
-    expect(page.find('label[for="attach-source"]').exists()).toBe(false)
-    expect(page.find('#attach-source').exists()).toBe(false)
-    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(true)
-
-    // Closing and reopening the panel forgets the chip, so the chooser comes back for the next file.
-    await press(page, 'Close adding a source')
-    await press(page, 'Add a source')
-    expect(page.find('label[for="attach-source"]').exists()).toBe(true)
-    expect(page.find('#add-source-panel .add-source__files').exists()).toBe(false)
+    expect(page.get('#attach-source').attributes('disabled')).toBeDefined()
+    expect(page.get('#add-source-panel').text()).toContain('Finish or check the current preparation')
+    expect(allocateUpload).not.toHaveBeenCalled()
+    expect(startExtraction).not.toHaveBeenCalled()
   })
 
   it('says it is uploading while a file goes up, and keeps its picker from being pressed twice', async () => {
@@ -5921,6 +6034,7 @@ describe('WorkspaceView accessibility', () => {
   it('has no violations with a proposal open', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 

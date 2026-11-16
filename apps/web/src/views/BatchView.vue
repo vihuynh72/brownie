@@ -780,4 +780,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
   margin: 0;
   accent-color: var(--color-cocoa);
 }
+
+.batch__actions { padding-block: var(--space-3); border-block: 1px solid var(--color-hairline); }
+.batch__table-scroll { border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); background: var(--color-surface); }
+.batch__table caption { padding: var(--space-4); font-family: var(--font-display); font-size: 1.25rem; }
+.batch__table th { background: var(--color-paper-soft); }
 </style>

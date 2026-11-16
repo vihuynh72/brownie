@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
 import LandingView from '@/views/LandingView.vue'
+import { findForms } from '@/landing/findForms'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import {
@@ -11,7 +12,6 @@ import {
   listBatches,
   listDocuments,
   saveName,
-  searchForms,
   startForm,
   trashDocument,
   type DocumentSummaryResponse,
@@ -66,14 +66,18 @@ const loadError = ref('')
 const formQuery = ref('')
 const formResults = ref<FormEntry[]>([])
 const formSearchFailed = ref('')
+const formStartFailed = ref(false)
+const formSearching = ref(true)
 const formBusyId = ref<string | null>(null)
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
 let formSearchSeq = 0
 
 async function runFormSearch(): Promise<void> {
   const seq = ++formSearchSeq
+  formSearching.value = true
+  formStartFailed.value = false
   try {
-    const found = await searchForms(formQuery.value.trim())
+    const found = await findForms(formQuery.value.trim())
     if (seq !== formSearchSeq) return
     formResults.value = found.slice(0, 6)
     formSearchFailed.value = ''
@@ -84,10 +88,15 @@ async function runFormSearch(): Promise<void> {
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
         : 'Brownie could not reach the form library. Try again, or upload your copy below.'
+  } finally {
+    if (seq === formSearchSeq) formSearching.value = false
   }
 }
 
 watch(formQuery, () => {
+  formSearchSeq++
+  formSearching.value = true
+  formSearchFailed.value = ''
   if (formSearchTimer) clearTimeout(formSearchTimer)
   formSearchTimer = setTimeout(() => void runFormSearch(), 250)
 })
@@ -103,6 +112,7 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
       await router.push(`/documents/${started.documentId}`)
     }
   } catch (error) {
+    formStartFailed.value = true
     formSearchFailed.value =
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
@@ -273,7 +283,12 @@ const dropExplanation = computed(() => `${kindsLine.value}. Brownie makes a temp
 const announcement = computed(() => {
   if (dragging.value) return `${DROP_TITLE}. ${dropExplanation.value}`
   if (uploadStep.value) return learnStepWords(uploadStep.value.step, uploadStep.value.detail)
-  return finishedAnnouncement.value
+  if (finishedAnnouncement.value) return finishedAnnouncement.value
+  if (formQuery.value.trim()) {
+    if (formSearching.value) return 'Searching forms…'
+    if (!formSearchFailed.value) return `${formResults.value.length} ${formResults.value.length === 1 ? 'form' : 'forms'} shown`
+  }
+  return ''
 })
 
 // A form can finish while this page is showing but its upload began on an earlier visit, so nothing opens the
@@ -296,6 +311,8 @@ function finishedWords(fileName: string): string {
 let leftHome = false
 onBeforeUnmount(() => {
   leftHome = true
+  formSearchSeq++
+  if (formSearchTimer) clearTimeout(formSearchTimer)
   // A refusal already shown here is not said again on the next visit; one that comes while the person is away is.
   if (!uploading.value) uploadError.value = null
 })
@@ -714,16 +731,16 @@ const showHowItWorks = computed(
       </p>
       <p v-else-if="signInExpiredOrRestarted" class="card home__signin-error" role="alert">
         That sign-in had expired or was started twice. Sign in again.
-        <a href="/oauth2/authorization/entra">Sign in again</a>
+        <RouterLink to="/signin">Sign in again</RouterLink>
       </p>
       <p v-else-if="signInGoogleEarlyAccess" class="card home__signin-error" role="alert">
         Google sign-in is in early access.
-        <a href="/oauth2/authorization/entra">Use an email code instead</a>
+        <RouterLink to="/signin">Choose a sign-in method</RouterLink>
       </p>
       <p v-else class="card home__signin-error" role="alert">
         Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again;
         if it keeps failing, pass that reason on to whoever runs this Brownie.
-        <a href="/oauth2/authorization/entra">Try again</a>
+        <RouterLink to="/signin">Try again</RouterLink>
       </p>
     </template>
   </LandingView>
@@ -734,7 +751,7 @@ const showHowItWorks = computed(
     </p>
     <p v-else-if="signInGoogleEarlyAccess && signInFailed" class="card home__signin-error" role="alert">
       Google sign-in is in early access.
-      <a href="/oauth2/authorization/entra">Use an email code instead</a>
+      <RouterLink to="/signin">Choose a sign-in method</RouterLink>
     </p>
     <p v-else-if="signInFailed" class="card home__signin-error" role="alert">
       Sign-in did not complete<template v-if="signInFailureReason"> ({{ signInFailureReason }})</template>. Try again; if
@@ -779,12 +796,20 @@ const showHowItWorks = computed(
       </form>
     </section>
 
+    <p v-if="authenticated" class="home__eyebrow">YOUR WORKSPACE</p>
     <h1 class="page-title home__greeting">
       {{ authenticated ? greeting : 'Welcome to Brownie!' }}
     </h1>
 
     <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
-      <h2 id="home-library-heading" class="home__library-heading">Find an official form</h2>
+      <div class="home__library-intro">
+        <div>
+          <p class="home__library-kicker">START WITH A FORM</p>
+          <h2 id="home-library-heading" class="home__library-heading">Find an official form</h2>
+          <p class="home__library-hint">Search the library, or bring a form of your own.</p>
+        </div>
+        <span class="home__library-mark" aria-hidden="true"><AppIcon name="document-text" :size="28" /></span>
+      </div>
       <input
         v-model="formQuery"
         class="home__library-search"
@@ -792,9 +817,14 @@ const showHowItWorks = computed(
         placeholder="W-9, I-9, passport, VA…"
         aria-label="Find an official form"
       />
-      <p v-if="!formQuery.trim()" class="home__library-popular">Popular forms</p>
-      <p v-if="formSearchFailed" class="card home__signin-error" role="alert">{{ formSearchFailed }}</p>
-      <ul v-if="formResults.length" class="home__library-list">
+      <p class="home__library-popular">
+        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : formQuery.trim() ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
+      </p>
+      <div v-if="formSearchFailed" class="home__library-error" role="alert">
+        <p>{{ formSearchFailed }}</p>
+        <button v-if="!formStartFailed" type="button" class="link-button" @click="runFormSearch">Retry search</button>
+      </div>
+      <ul v-if="formResults.length && !formSearching" class="home__library-list">
         <li v-for="entry in formResults" :key="entry.id" class="home__library-row">
           <div class="home__library-text">
             <p class="home__library-title">{{ entry.title }}</p>
@@ -804,19 +834,20 @@ const showHowItWorks = computed(
           <button
             type="button"
             class="button button--small home__library-start"
-            :aria-disabled="formBusyId === entry.id ? 'true' : undefined"
+            :aria-disabled="formBusyId !== null ? 'true' : undefined"
             @click="startLibraryForm(entry)"
           >
             {{ formBusyId === entry.id ? 'Getting the form…' : 'Start' }}
           </button>
         </li>
       </ul>
-      <p v-else-if="formQuery.trim() && !formSearchFailed" class="home__library-empty">
+      <p v-else-if="formQuery.trim() && !formSearchFailed && !formSearching" class="home__library-empty">
         No match. Upload your own copy below.
       </p>
     </section>
 
     <div class="home__upload-area">
+      <p v-if="authenticated" class="home__upload-label">Have your own form?</p>
       <!--
         Signed in, the button opens the file chooser for the form to fill. Signed out it is a link
         to the sign-in page that brings the visitor back here, rather than a control that refuses.
@@ -957,9 +988,10 @@ const showHowItWorks = computed(
       <p v-if="trashError" ref="trashErrorElement" class="field-error home__problem" role="alert" tabindex="-1">{{ trashError }}</p>
 
       <p v-if="loadState === 'loading'" class="home__hint">Loading documents…</p>
-      <p v-else-if="loadState === 'error'" class="field-error home__problem" role="alert">
-        {{ loadError }}
-      </p>
+      <div v-else-if="loadState === 'error'" class="home__load-error" role="alert">
+        <p class="field-error home__problem">{{ loadError }}</p>
+        <button type="button" class="link-button" @click="loadDocuments">Try loading documents again</button>
+      </div>
       <!-- While a first form is being learned, this box would say there are no documents right under the card making one. -->
       <div v-else-if="documents.length === 0 && !(uploading && loadState === 'loaded')" class="home__empty">
         <AppIcon name="document-blank" :size="24" />
@@ -1049,7 +1081,7 @@ const showHowItWorks = computed(
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-block: clamp(var(--space-6), 13.1vh, 9rem) var(--space-8);
+  padding-block: clamp(var(--space-6), 6vh, 4rem) var(--space-8);
 }
 
 .home--wide {
@@ -1063,9 +1095,24 @@ const showHowItWorks = computed(
   border-color: var(--color-error);
 }
 
+.home__eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.1em;
+}
+
 .home__greeting {
+  font-family: var(--font-display, var(--font-body));
   text-align: center;
   text-wrap: balance;
+}
+
+.home__upload-label {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 /* The button, the quiet lines under it, and the live region, as one block. */
@@ -1764,8 +1811,50 @@ const showHowItWorks = computed(
 
 .home__library {
   display: grid;
-  gap: 0.625rem;
+  gap: 0.75rem;
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: var(--space-5);
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
+
+.home__library-intro {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.home__library-kicker {
+  margin: 0 0 var(--space-1);
+  color: var(--color-cocoa);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.08em;
+}
+
+.home__library-hint {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.home__library-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: 3rem;
+  block-size: 3rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-cocoa-soft);
+  color: var(--color-cocoa);
+}
+
+.home__library-error p { margin: 0 0 var(--space-2); }
+.home__load-error { margin-block-start: var(--space-3); }
+.home__load-error .home__problem { margin-block: 0 var(--space-2); }
 
 .home__library-heading {
   font-size: var(--font-size-lg);
@@ -1775,6 +1864,12 @@ const showHowItWorks = computed(
 
 .home__library-search {
   width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-paper);
+  color: var(--color-text);
 }
 
 .home__library-popular {
@@ -1800,9 +1895,9 @@ const showHowItWorks = computed(
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
-  background: var(--color-card-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  background: var(--color-paper);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
 }
 
 .home__library-text {

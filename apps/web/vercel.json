@@ -19,6 +19,6 @@
     }
   ],
   "rewrites": [
-    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+    { "source": "/((?!assets/|art/).*)", "destination": "/index.html" }
   ]
 }

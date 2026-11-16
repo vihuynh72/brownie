@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import LandingView from '@/views/LandingView.vue'
-import { getWelcome, searchForms } from '@/api/client'
+import { getWelcome } from '@/api/client'
+import { findForms } from '@/landing/findForms'
 import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
   return { ...actual, getWelcome: vi.fn(), searchForms: vi.fn() }
 })
+vi.mock('@/landing/findForms', () => ({ findForms: vi.fn() }))
 
 const MCP_URL = 'https://api.example.com/mcp'
 const SIGN_IN = '/oauth2/authorization/entra'
@@ -33,7 +35,7 @@ function tabs(wrapper: VueWrapper) {
 describe('LandingView', () => {
   beforeEach(() => {
     vi.mocked(getWelcome).mockReset()
-    vi.mocked(searchForms).mockReset().mockResolvedValue([])
+    vi.mocked(findForms).mockReset().mockResolvedValue([])
     document.body.innerHTML = ''
   })
 
@@ -45,13 +47,13 @@ describe('LandingView', () => {
   /** The library is offered before sign-in: the popular row first, a Sign-in link on each. */
   it('offers popular forms before the install choices, with a Sign in link on each', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
-    vi.mocked(searchForms).mockResolvedValue([
+    vi.mocked(findForms).mockResolvedValue([
       { id: 'irs-w9', title: 'Form W-9', agency: 'Internal Revenue Service', category: 'Tax', description: 'x' },
       { id: 'uscis-i9', title: 'Form I-9', agency: 'U.S. Citizenship and Immigration Services', category: 'Employment', description: 'x' },
     ])
     const wrapper = await mountLanding()
 
-    expect(wrapper.get('.landing-forms h2').text()).toBe('Start from an official form')
+    expect(wrapper.get('.landing-forms h2').text()).toBe('What form do you need?')
     expect(wrapper.get('.landing-forms__popular').text()).toBe('Popular forms')
     const rows = wrapper.findAll('.landing-forms__row')
     expect(rows).toHaveLength(2)
@@ -67,7 +69,7 @@ describe('LandingView', () => {
     const wrapper = await mountLanding()
     vi.useFakeTimers()
 
-    vi.mocked(searchForms).mockResolvedValue(
+    vi.mocked(findForms).mockResolvedValue(
       Array.from({ length: 10 }, (_, i) => ({
         id: `f${i}`, title: `Form ${i}`, agency: 'Agency', category: 'Tax', description: 'x',
       })),
@@ -77,19 +79,42 @@ describe('LandingView', () => {
     vi.useRealTimers()
     await flushPromises()
 
-    expect(searchForms).toHaveBeenLastCalledWith('va')
+    expect(findForms).toHaveBeenLastCalledWith('va')
     expect(wrapper.findAll('.landing-forms__row')).toHaveLength(8)
   })
 
-  /** No catalog, no section: a failure takes the whole thing away, not an empty shell. */
-  it('hides the forms section entirely when the catalog cannot be reached', async () => {
+  it('lets the visitor retry when the catalog cannot be reached', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
-    vi.mocked(searchForms).mockRejectedValue(new Error('down'))
+    vi.mocked(findForms).mockRejectedValue(new Error('down'))
     const wrapper = await mountLanding()
 
-    expect(wrapper.find('.landing-forms').exists()).toBe(false)
+    expect(wrapper.get('.landing-forms').text()).toContain('form library is unavailable')
+    vi.mocked(findForms).mockResolvedValue([{ id: 'w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'x' }])
+    await wrapper.get('.landing-forms__empty button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.landing-forms__row').text()).toContain('Form W-9')
     expect(wrapper.text()).toContain('Works where you already are')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('searches the real catalog when an example is chosen', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+    const wrapper = await mountLanding()
+    await wrapper.findAll('.landing-forms__suggestions button').find((button) => button.text() === 'passport')!.trigger('click')
+    expect(findForms).toHaveBeenLastCalledWith('passport')
+    expect((wrapper.get('.landing-forms__search').element as HTMLInputElement).value).toBe('passport')
+  })
+
+  it('submits a described task and labels the returned results as possible matches', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+    const wrapper = await mountLanding()
+    vi.mocked(findForms).mockResolvedValue([{ id: 'w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'x' }])
+    await wrapper.get('.landing-forms__search').setValue('self-employed tax form')
+    await wrapper.get('.landing-forms__composer').trigger('submit')
+    await flushPromises()
+    expect(findForms).toHaveBeenLastCalledWith('self-employed tax form')
+    expect(wrapper.text()).toContain('Possible matches for “self-employed tax form”')
+    expect(wrapper.text()).toContain('without personal details')
   })
 
   it('says the day is free when sign-up is open with a daily allowance', async () => {
@@ -274,6 +299,17 @@ it('points every sign-in action at Google when the deployment runs it', async ()
     expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('code sent to your email')
     expect(wrapper.text()).toContain('Sign in to Brownie.')
+  })
+
+  it('does not point at Entra while sign-in providers are still loading', async () => {
+    let resolveWelcome!: (value: Awaited<ReturnType<typeof getWelcome>>) => void
+    vi.mocked(getWelcome).mockReturnValue(new Promise((resolve) => { resolveWelcome = resolve }))
+    const wrapper = mount(LandingView, { attachTo: document.body })
+    mounted.push(wrapper)
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+    resolveWelcome({ signUp: 'OPEN', mcpServerUrl: MCP_URL, signInProviders: ['google'] })
+    await flushPromises()
+    expect(wrapper.get('.landing__nav a:last-child').attributes('href')).toBe(GOOGLE_SIGN_IN)
   })
 
   it('keeps the email-code button primary with Google as a small early-access link', async () => {

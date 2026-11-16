@@ -2275,19 +2275,32 @@ async function onSourceFileChosen(event: Event): Promise<void> {
   const file = input.files?.[0]
   input.value = ''
   if (workspaceId === undefined || !file) return
+  await attachAndPrepare(file)
+}
 
+const canPrepare = computed(() => !runUnderWay.value && extractionStage.value !== 'unconfirmed'
+  && !['applying', 'proposed', 'accepting'].includes(applyStage.value) && !assistBusy.value)
+
+async function attachAndPrepare(file: File, details?: string): Promise<boolean> {
+  const workspaceId = session.personalWorkspaceId
+  const documentId = props.documentId
+  if (pageLeft || workspaceId === undefined || sourceUploadState.value === 'uploading' || !canPrepare.value) return false
+  const stillHere = () => !pageLeft && props.documentId === documentId && session.personalWorkspaceId === workspaceId
   sourceUploadState.value = 'uploading'
   sourceUploadError.value = null
   try {
     const allocated = await allocateUpload(workspaceId, file.name)
+    if (!stillHere()) return false
     await uploadArtifactContent(workspaceId, allocated.id, file)
+    if (!stillHere()) return false
     const completed = await completeUpload(workspaceId, allocated.id)
+    if (!stillHere()) return false
     if (completed.status !== 'READY') {
       sourceUploadError.value = `That file was not attached: ${whyFileWasRefused(completed)}.`
       sourceUploadState.value = 'error'
       // A failure must stay visible even if the row was folded away while it was in flight.
       sourceUploadOpen.value = true
-      return
+      return false
     }
     // A spreadsheet is an accepted upload but never a readable source: the fill-many flow is its way in, so the
     // sentence points there rather than asking for a plain-text file the person may not have.
@@ -2297,10 +2310,12 @@ async function onSourceFileChosen(event: Event): Promise<void> {
         "open a template's menu and choose Fill from a spreadsheet."
       sourceUploadState.value = 'error'
       sourceUploadOpen.value = true
-      return
+      return false
     }
     await extractArtifact(workspaceId, allocated.id)
-    const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
+    if (!stillHere()) return false
+    const attached = await attachDocumentSource(workspaceId, documentId, allocated.id)
+    if (!stillHere()) return false
     sourcesAddedHere.add(attached.id)
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
     // The new source is the one read next, but a reading under way keeps the source it started with.
@@ -2310,14 +2325,32 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     // for as long as the chip above is showing.
     justAttachedSourceBytes.value = { ...justAttachedSourceBytes.value, [attached.id]: file.size }
     sourceUploadState.value = 'idle'
-    announce(`${sourceName(attached)} attached.`)
+    if (!canPrepare.value) {
+      sourceUploadError.value = 'Your notes are attached. Finish or check the current preparation before starting another.'
+      sourceUploadState.value = 'error'
+      sourceUploadOpen.value = true
+      return false
+    }
+    if (sourcesOpen.value) await closeSources()
+    if (!stillHere() || !canPrepare.value) return false
+    if (details) say({ from: 'person', text: details })
+    announce(`${sourceName(attached)} attached. Preparing your form.`)
+    await tryGroundedExtraction()
+    return true
   } catch (error) {
+    if (!stillHere()) return false
     sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
     // A failure must stay visible even if the row was folded away while it was in flight.
     sourceUploadOpen.value = true
+    return false
   }
 }
+
+watch(() => props.documentId, () => {
+  sourceUploadState.value = 'idle'
+  sourceUploadError.value = null
+})
 
 // Google's answer opened a picker by itself on this first visit only; after the panel closes, it
 // opens with every picker closed like any other time.
@@ -2374,13 +2407,16 @@ async function goToSources(): Promise<void> {
  */
 async function tryGroundedExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
+  const documentId = props.documentId
   const source = selectedSource.value
-  if (workspaceId === undefined || !source) return
+  if (pageLeft || workspaceId === undefined || !source) return
+  const stillHere = () => !pageLeft && props.documentId === documentId && session.personalWorkspaceId === workspaceId
 
   extractionStage.value = 'starting'
   extractionError.value = null
   // The last run's state must not describe this one, or offer to start it again, before its first status read.
   extractionJobState.value = null
+  extractionJobId.value = null
   extractionResultArtifactId.value = null
   extractionStalled.value = false
   cancellationRequested.value = false
@@ -2392,11 +2428,13 @@ async function tryGroundedExtraction(): Promise<void> {
   runSourceName.value = sourceName(source)
   placeInChat('run')
   try {
-    const receipt = await startExtraction(workspaceId, props.documentId, source.artifactId, crypto.randomUUID())
+    const receipt = await startExtraction(workspaceId, documentId, source.artifactId, crypto.randomUUID())
+    if (!stillHere()) return
     extractionJobId.value = receipt.jobId
     runFollowedHere.value = receipt.jobId
     extractionStage.value = 'running'
   } catch (error) {
+    if (!stillHere()) return
     extractionStage.value = 'failed'
     extractionError.value =
       describeCommonFailure(error, 'reading sources') ??
@@ -2927,8 +2965,32 @@ function onVoiceError(message: string) { voiceError.value = message }
  */
 const composerBusy = computed(() => assistBusy.value || ['starting', 'running', 'resuming'].includes(extractionStage.value))
 const composerStops = computed(() => ['running', 'resuming'].includes(extractionStage.value))
+const initialPrepare = computed(() => loadState.value === 'loaded' && fillCounts.value.total > 0
+  && fillCounts.value.filled === 0 && chat.value.length === 0 && attachedSources.value.length === 0
+  && hereHint.value === null)
+
+async function prepareFromText(): Promise<void> {
+  const text = composerText.value.trim()
+  if (!text || !canPrepare.value || sourceUploadState.value === 'uploading') return
+  const documentId = props.documentId
+  const workspaceId = session.personalWorkspaceId
+  composerText.value = ''
+  const prepared = await attachAndPrepare(new File([text], 'Your notes.txt', { type: 'text/plain' }), text)
+  if (pageLeft || props.documentId !== documentId || session.personalWorkspaceId !== workspaceId) return
+  if (!prepared && composerText.value === '') composerText.value = text
+  if (!prepared && sourceUploadError.value) {
+    sourcesOpen.value = true
+    sourceUploadOpen.value = true
+  }
+}
+
 function stopReadingFromComposer(): void {
   if (composerStops.value) void cancelExtraction()
+}
+
+function submitComposer(): void {
+  if (initialPrepare.value && !composerStops.value) void prepareFromText()
+  else void sendMessage()
 }
 
 function onComposerKeydown(event: KeyboardEvent): void {
@@ -2936,7 +2998,7 @@ function onComposerKeydown(event: KeyboardEvent): void {
   // input-method composition (Japanese, Chinese, Korean) is left to finish it.
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
   event.preventDefault()
-  void sendMessage()
+  submitComposer()
 }
 
 /**
@@ -2948,7 +3010,7 @@ function onComposerKeydown(event: KeyboardEvent): void {
 async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor | null; echo?: boolean } = {}): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const text = (given ?? composerText.value).trim()
-  if (workspaceId === undefined || text === '' || assistBusy.value || !document.value) return
+  if (workspaceId === undefined || text === '' || assistBusy.value || sourceUploadState.value === 'uploading' || !document.value) return
   // What "here" means in a line typed in the box is said under it in the conversation, since the box's hint goes with the text.
   const hereWords = given === undefined ? hereHint.value : null
   if (given === undefined) composerText.value = ''
@@ -4482,7 +4544,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <p class="msg__who">Brownie</p>
               <div class="msg__body">
                 <p>
-                  Tell me your details, typed or said, and I'll fill this form. Or add a document that has them with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template>
+                  <template v-if="patchProposal && applyStage === 'proposed'">Review Brownie's proposed answers before applying them.</template>
+                  <template v-else-if="fillCounts.total > 0 && fillCounts.accepted === fillCounts.total">Your answers are accepted. You can export this form or ask me for a change.</template>
+                  <template v-else-if="fillCounts.filled > 0">Your form has {{ fillCounts.filled }} of {{ fillCounts.total }} places filled. Check the answers, or ask me for a change.</template>
+                  <template v-else>Tell me your details, typed or said, and I'll fill this form. Or add a document that has them with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template></template>
                 </p>
               </div>
               <!-- Where to begin: offered until something has been said or a source attached. -->
@@ -4717,6 +4782,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                         {{ retryingRun ? 'Starting again…' : 'Try this reading again' }}
                       </button>
                     </div>
+                    <div v-else-if="extractionJobId === null && selectedSource" class="run-status__actions">
+                      <p class="run-status__note">Your notes are saved with this form.</p>
+                      <button class="button button--secondary button--small" type="button" :disabled="!canPrepare" @click="canPrepare && tryGroundedExtraction()">
+                        Prepare again
+                      </button>
+                    </div>
                   </template>
                   <p v-if="extractionError && extractionStage !== 'failed'" class="field-error">{{ extractionError }}</p>
                   <div v-if="extractionStalled" class="run-status__stalled">
@@ -4904,7 +4975,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <header class="add-source__head">
               <div>
                 <h3 id="add-source-title" class="add-source__title">Add a source</h3>
-                <p class="add-source__lede">Brownie reads only what you add here, and only when you ask.</p>
+                <p class="add-source__lede">Uploading a notes file starts preparation. Brownie reads it and offers answers for your review.</p>
               </div>
               <button type="button" class="icon-button add-source__close" @click="closeSources">
                 <AppIcon name="close" :size="20" />
@@ -4942,7 +5013,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       class="visually-hidden add-source__input"
                       type="file"
                       accept=".txt,text/plain"
-                      :disabled="sourceUploadState === 'uploading'"
+                      :disabled="sourceUploadState === 'uploading' || !canPrepare"
                       @change="onSourceFileChosen"
                     />
                     <label
@@ -4951,8 +5022,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       :class="{ 'add-source__choose--busy': sourceUploadState === 'uploading' }"
                     >
                       <AppIcon name="upload" :size="16" />
-                      Choose a file<span class="visually-hidden"> to upload notes or a document</span>
+                      Upload notes and prepare<span class="visually-hidden"> this form</span>
                     </label>
+                    <p v-if="!canPrepare" class="field-hint">Finish or check the current preparation before starting another.</p>
                     <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
                     <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
                   </template>
@@ -4992,7 +5064,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           </section>
         </div>
 
-        <form class="composer" @submit.prevent="sendMessage()">
+        <p class="workspace-next-action">{{ patchProposal && applyStage === 'proposed' ? 'Review the proposed answers.' : fillCounts.total > 0 && fillCounts.accepted === fillCounts.total ? 'Your answers are accepted. Continue to export when you are ready.' : fillCounts.filled === 0 ? 'Tell Brownie what belongs on this form.' : `${fillCounts.filled} of ${fillCounts.total} places filled. Check your answers before export.` }}</p>
+        <form class="composer" @submit.prevent="submitComposer()">
           <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
           <label class="visually-hidden" for="assist-composer">Tell me what to fill</label>
           <textarea
@@ -5010,7 +5083,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <AppIcon name="pointer" :size="14" />
             <span>{{ hereHint }}</span>
           </p>
+          <p v-if="initialPrepare" class="composer__prepare-hint">Brownie saves these details as a notes source and prepares answers for you to review.</p>
           <div class="composer__tools">
+            <button v-if="initialPrepare && !composerStops" type="submit" class="button button--primary button--small composer__prepare"
+              :disabled="!composerText.trim() || !canPrepare || sourceUploadState === 'uploading'">
+              Prepare my form
+            </button>
             <button
               ref="addSourceButtonRef"
               type="button"
@@ -5040,10 +5118,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             </label>
             <!-- Empty, it waits; ready, it sends; while Brownie reads a source it is the way to stop that reading. -->
             <button
+              v-if="!initialPrepare || composerStops"
               :type="composerStops ? 'button' : 'submit'"
               class="composer__send"
               :class="{ 'composer__send--busy': composerBusy }"
-              :aria-disabled="composerStops ? cancellationRequested : composerText.trim() === '' || assistBusy"
+              :aria-disabled="composerStops ? cancellationRequested : composerText.trim() === '' || assistBusy || sourceUploadState === 'uploading' || (initialPrepare && !canPrepare)"
               @click="composerStops && stopReadingFromComposer()"
             >
               <AppIcon name="arrow-up" :size="20" />
@@ -5093,6 +5172,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 </template>
 
 <style scoped>
+.workspace-next-action { margin: 0; padding: 0 var(--space-4) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.composer__prepare-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.rules-card__heading { font-family: var(--font-display, var(--font-body)); }
+
 /*
  * The page is two panes: the document, and Brownie's panel. They sit side by side only where both
  * keep a readable width -- the question is how wide this page's own region is, not the window,
@@ -5183,15 +5266,17 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  */
 .workspace-title {
   margin: 0.125rem 0 var(--space-5);
-  text-align: center;
-  line-height: 1.05;
+  font-family: var(--font-display, var(--font-body));
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  text-align: left;
+  line-height: 1.15;
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
 /* Never larger than the title already is (it is smaller than this on a phone), so a long name only ever shrinks. */
 .workspace-title--long {
-  font-size: min(var(--font-size-display), var(--font-size-2xl));
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
   line-height: 1.2;
 }
 

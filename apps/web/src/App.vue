@@ -252,6 +252,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-block-size: 100dvh;
+  background: var(--color-paper);
 }
 
 .shell__scrim {
@@ -305,8 +306,10 @@ onBeforeUnmount(() => {
 }
 
 .shell__brand {
-  font-weight: var(--font-weight-medium);
-  font-size: var(--font-size-lg);
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.625rem;
+  letter-spacing: -0.05em;
   color: var(--color-text);
   text-decoration: none;
 }

@@ -401,4 +401,11 @@ function savedWhen(savedAt: string): string {
 .details__notice {
   padding: var(--space-4, 1rem);
 }
+
+.details__group-title, .details__add-title, .details__danger-title { font-family: var(--font-display); font-size: 1.3rem; font-weight: 400; }
+.details__list { border-radius: var(--radius-lg); }
+.details__row { padding-block: var(--space-4); }
+.details__add { border-top: 3px solid var(--color-honey); }
+.details__edit, .details__confirm { flex-wrap: wrap; }
+.details__edit-input { min-width: min(12rem, 100%); }
 </style>

@@ -149,6 +149,26 @@ References: [Railway Sandboxes](https://docs.railway.com/sandboxes),
 [Railway buckets](https://docs.railway.com/storage-buckets),
 [Railway domains](https://docs.railway.com/networking/domains/working-with-domains).
 
+### Browser workflow
+
+On a blank form, the composer offers one **Prepare my form** action. Clicking
+it or pressing Enter stores the supplied details as a text source, scans and
+reads it, then prepares a proposal. Uploading a notes file through **Upload
+notes and prepare** follows the same path. A pending reading or unchecked
+proposal blocks another preparation. Questions, exact-hash approval and
+export checks still apply. Page-specific commands such as "fill here" retain
+their selected-page context. Preparation uses one source at a time; an
+attached file and a separate typed request are not silently combined.
+
+The landing and home form finders search the official catalog. When a full
+description has no direct match, they try up to three keyword searches and
+rank deduplicated candidates. This is catalog search, not model advice about
+which form applies. Search descriptions should not contain personal details.
+The public interactive demonstration is local to the browser: it does not
+call a model, create a document, or download an export. Original landing art
+is served from `apps/web/public/art/brownie-paper-world.webp`; motion respects
+the browser's reduced-motion preference.
+
 ## Run
 
 Check the pinned local toolchain with:

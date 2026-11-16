@@ -1000,4 +1000,8 @@ async function disconnect(): Promise<void> {
 .connections__back {
   display: flex;
 }
+
+.connections__grid { gap: var(--space-4); }
+.account { border-top: 3px solid var(--color-honey); }
+.account__title { font-family: var(--font-display); font-size: 1.35rem; font-weight: 400; }
 </style>

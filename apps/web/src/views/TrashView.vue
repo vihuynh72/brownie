@@ -722,4 +722,9 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
     margin-block-start: 0.625rem;
   }
 }
+
+.trash__subtitle { font-family: var(--font-display); font-size: 1.5rem; font-weight: 400; }
+.trash__list { overflow: hidden; }
+.trash__item { transition: background-color 160ms ease; }
+.trash__item:hover { background: var(--color-paper-soft); }
 </style>

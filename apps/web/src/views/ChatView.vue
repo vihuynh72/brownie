@@ -1305,4 +1305,9 @@ async function focusFailure(): Promise<void> {
   cursor: not-allowed;
   opacity: 0.4;
 }
+
+.chat__recent-title { font-family: var(--font-display); font-size: 1.4rem; font-weight: 400; }
+.chat__list { border-radius: var(--radius-lg); overflow: hidden; }
+.chat__row { transition: background-color 160ms ease; }
+.chat__row:focus-visible { outline: 2px solid var(--color-cocoa-strong); outline-offset: -2px; }
 </style>

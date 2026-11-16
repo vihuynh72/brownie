@@ -28,13 +28,17 @@ const PURPOSE: Record<string, string> = {
 const workspaceDeleted = computed(() => route.query.deleted === '1')
 
 const welcome = ref<WelcomeResponse | null>(null)
-onMounted(async () => {
+const welcomeState = ref<'loading' | 'loaded' | 'error'>('loading')
+async function loadWelcome(): Promise<void> {
+  welcomeState.value = 'loading'
   try {
     welcome.value = await getWelcome()
+    welcomeState.value = 'loaded'
   } catch {
-    welcome.value = null
+    welcomeState.value = 'error'
   }
-})
+}
+onMounted(loadWelcome)
 
 /** Google as the big button only while it carries the flag; otherwise it is a small early-access link. */
 const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
@@ -124,7 +128,12 @@ function keepDestination(): void {
       <p class="page-lede signin__lede">{{ lede }}</p>
     </header>
 
-    <a v-if="googlePrimary" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
+    <p v-if="welcomeState === 'loading'" class="signin__provider-status" role="status">Loading sign-in options…</p>
+    <div v-else-if="welcomeState === 'error'" class="signin__provider-status" role="alert">
+      <p>Sign-in options could not be loaded.</p>
+      <button type="button" class="button button--secondary button--small" @click="loadWelcome">Try again</button>
+    </div>
+    <a v-if="welcomeState === 'loaded' && googlePrimary" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
       <svg class="signin__google-mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
         <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
         <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
@@ -133,14 +142,14 @@ function keepDestination(): void {
       </svg>
       <span>Continue with Google</span>
     </a>
-    <a v-if="googlePrimary && emailCodeAvailable" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && googlePrimary && emailCodeAvailable" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
       Use an email code instead
     </a>
-    <a v-if="!googlePrimary" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && !googlePrimary && emailCodeAvailable" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
       <span>Sign in or sign up</span>
       <AppIcon name="sign-in" :size="22" />
     </a>
-    <a v-if="googleSecondary" class="signin__email-code signin__google-secondary" href="/oauth2/authorization/google" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && googleSecondary" class="signin__email-code signin__google-secondary" href="/oauth2/authorization/google" @click="keepDestination">
       <svg class="signin__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
         <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
         <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
@@ -150,7 +159,9 @@ function keepDestination(): void {
       <span>Continue with Google (early access)</span>
     </a>
 
-    <p class="signin__note">
+    <p v-if="welcomeState === 'loaded' && !googlePrimary && !emailCodeAvailable && !googleSecondary" class="signin__provider-status" role="status">No sign-in options are available. Contact whoever gave you access to Brownie.</p>
+
+    <p v-if="welcomeState === 'loaded'" class="signin__note">
       <AppIcon name="shield-check" :size="16" />
       {{ accessNote }}
     </p>
@@ -173,6 +184,13 @@ function keepDestination(): void {
 </template>
 
 <style scoped>
+.signin__provider-status {
+  margin: 0 auto;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.signin__provider-status p { margin: 0 0 var(--space-3); }
+
 /*
  * One block, centred in the room the shell gives the page, which with the sidebar docked is the window's middle line.
  * The shell keeps some room clear above the page (more when the sidebar button floats over its corner) and a
@@ -351,4 +369,9 @@ function keepDestination(): void {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.signin__wordmark { font-family: var(--font-display); font-size: 1.65rem; font-weight: 400; }
+.signin__steps li { border-top: 3px solid var(--color-honey); }
+.signin__step-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; }
+.signin__google { transition: background-color 160ms ease, border-color 160ms ease; }
 </style>

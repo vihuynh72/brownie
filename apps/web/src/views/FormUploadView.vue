@@ -194,4 +194,9 @@ onMounted(peek)
     transform: rotate(360deg);
   }
 }
+
+.form-upload__zone { min-height: 14rem; justify-content: center; border-color: var(--color-cocoa); border-radius: var(--radius-lg); background: var(--color-honey-soft); transition: background-color 160ms ease, border-color 160ms ease; }
+.form-upload__zone:hover, .form-upload__zone--over { background: var(--color-paper-soft); }
+.form-upload__zone:focus-within { outline: 2px solid var(--color-cocoa-strong); outline-offset: 3px; }
+.form-upload__call { font-family: var(--font-display); font-size: 1.4rem; }
 </style>

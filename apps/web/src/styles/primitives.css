@@ -54,7 +54,8 @@
   transition:
     background-color var(--motion-fast) var(--motion-ease),
     border-color var(--motion-fast) var(--motion-ease),
-    color var(--motion-fast) var(--motion-ease);
+    color var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
 }
 
 .button > svg {
@@ -70,6 +71,7 @@
 
 .button:active:not(:disabled):not([aria-disabled='true']) {
   background: var(--button-bg-active);
+  transform: translateY(1px);
 }
 
 .button--secondary {
@@ -856,9 +858,14 @@ textarea.text-field {
 
 .page-title {
   margin: 0;
+  font-family: var(--font-display);
+  font-style: normal;
   font-size: var(--font-size-display);
   font-weight: 400;
   line-height: 1.1;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .page-title--small {
