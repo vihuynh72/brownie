@@ -4,7 +4,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import BrownieDemo from '@/components/BrownieDemo.vue'
 import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type FormEntry, type WelcomeResponse } from '@/api/client'
-import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import { FORM_PURPOSES, findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
 import FormPurposePicker from '@/components/FormPurposePicker.vue'
 import { guidanceForQuery } from '@/landing/formGuidance'
 import { installTargets, type InstallTargetId } from '@/landing/installTargets'
@@ -45,6 +45,7 @@ onMounted(async () => {
  */
 const formQuery = ref('')
 const selectedPurpose = ref<FormPurposeId | null>(null)
+const purposeLabel = computed(() => FORM_PURPOSES.find((purpose) => purpose.id === selectedPurpose.value)?.label)
 const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
 const formGuidance = computed(() => guidanceForQuery(formQuery.value, drivingRequest.value ? 'driving' : selectedPurpose.value ?? undefined))
 const formResults = ref<FormEntry[]>([])
@@ -249,7 +250,7 @@ const TESTED_FORMS = [
       <div class="landing-forms__head">
         <h2 id="landing-forms-title" class="landing__h2">Search the form library.</h2>
         <p class="landing__lede">
-          Name a form, or tell Brownie what you need to do. Browse official U.S. forms by purpose below.
+          Official U.S. forms, by name or purpose.
         </p>
       </div>
       <form class="landing-forms__composer" role="search" @submit.prevent="submitFormSearch">
@@ -264,7 +265,7 @@ const TESTED_FORMS = [
       />
       <button type="submit">Search</button>
       </form>
-      <p class="landing-forms__hint">Describe the task, without personal details. Your search is sent to Brownie's form catalog.</p>
+      <p class="landing-forms__hint">Search by task, without personal details.</p>
       <p class="landing-forms__browse">Or browse by purpose</p>
       <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
       <div v-if="formGuidance" class="form-guidance" role="status">
@@ -284,7 +285,7 @@ const TESTED_FORMS = [
       <div v-else-if="formLibraryFailed" class="landing-forms__empty" role="status">The form library is unavailable right now. <button type="button" @click="runFormSearch">Try again</button></div>
       <template v-else>
       <p v-if="!formQuery.trim() && !selectedPurpose" class="landing-forms__popular">Popular forms</p>
-      <p v-else-if="formResults.length" class="landing-forms__popular">Possible matches for “{{ formQuery.trim() }}”</p>
+      <p v-else-if="formResults.length" class="landing-forms__popular">{{ formQuery.trim() ? `Possible matches for “${formQuery.trim()}”` : `Forms for ${purposeLabel}` }}</p>
       <ul v-if="formResults.length" class="landing-forms__list">
         <li v-for="entry in formResults" :key="entry.id" class="landing-forms__row">
           <div class="landing-forms__text">
@@ -1114,4 +1115,8 @@ const TESTED_FORMS = [
 @supports (animation-timeline: view()) { @media (prefers-reduced-motion: no-preference) { .landing-forms, .install, .how, .tested, .yours { animation: section-arrive linear both; animation-timeline: view(); animation-range: entry 0% entry 25%; } @keyframes section-arrive { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: none; } } } }
 .landing-forms__browse { margin-block: var(--space-5) var(--space-3); font-weight: 600; }
 .landing-forms .form-guidance { margin-block: var(--space-4); }
+@media (max-width: 35rem) {
+  .landing-forms__composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); padding: var(--space-2); }
+  .landing-forms__composer button { grid-column: 1 / -1; inline-size: 100%; }
+}
 </style>

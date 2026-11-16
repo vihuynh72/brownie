@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import LandingView from '@/views/LandingView.vue'
 import { getWelcome } from '@/api/client'
-import { findForms } from '@/landing/findForms'
+import { findForms, findFormsForPurpose } from '@/landing/findForms'
 import { axe } from '@/test/axe'
 
 vi.mock('@/api/client', async () => {
@@ -11,7 +11,7 @@ vi.mock('@/api/client', async () => {
 })
 vi.mock('@/landing/findForms', async () => {
   const actual = await vi.importActual<typeof import('@/landing/findForms')>('@/landing/findForms')
-  return { ...actual, findForms: vi.fn() }
+  return { ...actual, findForms: vi.fn(), findFormsForPurpose: vi.fn() }
 })
 
 const MCP_URL = 'https://api.example.com/mcp'
@@ -39,6 +39,7 @@ describe('LandingView', () => {
   beforeEach(() => {
     vi.mocked(getWelcome).mockReset()
     vi.mocked(findForms).mockReset().mockResolvedValue([])
+    vi.mocked(findFormsForPurpose).mockReset().mockResolvedValue([])
     document.body.innerHTML = ''
   })
 
@@ -66,7 +67,18 @@ describe('LandingView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-  /** Typing is its own search; an eight-row catalog shows at most eight. */
+  it('names the selected purpose instead of showing an empty search phrase', async () => {
+    vi.mocked(findFormsForPurpose).mockResolvedValue([
+      { id: 'state-ds11', title: 'Form DS-11', agency: 'State Department', category: 'Travel', description: 'First application.' },
+    ])
+    const wrapper = await mountLanding()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.attributes('aria-label') === 'Passports & travel')!.trigger('click')
+    await flushPromises()
+    expect(findFormsForPurpose).toHaveBeenCalledWith('travel')
+    expect(wrapper.get('.landing-forms__popular').text()).toBe('Forms for Passports & travel')
+  })
+
+  /** Typing exposes matching entries beyond the shorter popular row. */
   it('searches the library as the person types without cutting matches to eight', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()

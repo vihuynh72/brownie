@@ -824,7 +824,7 @@ const showHowItWorks = computed(
       <div class="home__library-intro">
         <div>
           <h2 id="home-library-heading" class="home__library-heading">Search the form library</h2>
-          <p class="home__library-hint">Find an official U.S. form by name, or tell Brownie what you need to do.</p>
+          <p class="home__library-hint">Official U.S. forms, by name or purpose.</p>
         </div>
         <img class="home__library-mascot" src="/art/brownie-mascot-v2.webp" alt="" width="88" height="88" />
       </div>
@@ -1969,6 +1969,11 @@ const showHowItWorks = computed(
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   line-height: 1.4;
+}
+
+@media (max-width: 35rem) {
+  .home__library-composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); }
+  .home__library-composer > .button { grid-column: 1 / -1; inline-size: 100%; }
 }
 
 </style>

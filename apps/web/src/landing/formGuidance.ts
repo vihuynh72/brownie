@@ -17,26 +17,26 @@ export function guidanceForQuery(query: string, purposeId?: FormPurposeId): Form
     title: 'Lost or stolen passport',
     description: 'The State Department explains how to report a lost or stolen passport and apply for a replacement.',
     url: 'https://travel.state.gov/en/passports/renew-replace/report-passport-lost-stolen.html',
-    linkLabel: 'See lost passport instructions',
+    linkLabel: 'Lost passport steps',
   }
   if (passport && /\b(?:renew\w*|expir\w*)\b/.test(text)) return {
     title: 'Renew or replace a passport',
     description: 'The right process depends on your circumstances. The State Department explains renewal and when a new application is needed.',
     url: 'https://travel.state.gov/en/passports/renew-replace.html',
-    linkLabel: 'See passport renewal options',
+    linkLabel: 'Renewal options',
     excludeFormIds: ['state-ds11'],
   }
   if (purposeId === 'driving' || /\b(?:dmv|driv(?:e|er|ers|ing)|vehicle|vehicles|real id)\b/.test(text)) return {
     title: 'Find your state motor vehicle agency',
     description: 'Driver licensing and vehicle services depend on your state or territory. Choose yours on USAGov to find the right agency.',
     url: 'https://www.usa.gov/state-motor-vehicle-services',
-    linkLabel: 'Choose your state or territory',
+    linkLabel: 'Choose your state',
   }
   if (purposeId === 'work' || /\b(?:job|employment|employee|contractor|freelance)\b/.test(text)) return {
     title: 'Employee or independent contractor?',
     description: 'Employment status affects which tax forms apply. Review the IRS guidance and check with the organization requesting the form.',
     url: 'https://www.irs.gov/pub/irs-pdf/p1779.pdf',
-    linkLabel: 'Read IRS worker classification guidance',
+    linkLabel: 'Check IRS guidance',
   }
   return undefined
 }
