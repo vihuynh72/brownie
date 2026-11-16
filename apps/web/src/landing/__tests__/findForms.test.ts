@@ -13,6 +13,14 @@ beforeEach(() => {
 })
 
 describe('catalog discovery', () => {
+  it('only offers HTTPS government source links without embedded credentials', async () => {
+    const { formSourceUrl } = await import('../findForms')
+    expect(formSourceUrl({ ...catalog[0]!, sourceUrl: 'https://www.irs.gov/pub/irs-pdf/fw9.pdf' })).toBe('https://www.irs.gov/pub/irs-pdf/fw9.pdf')
+    for (const sourceUrl of [undefined, 'javascript:alert(1)', 'http://www.irs.gov/form.pdf', 'https://irs.gov.example.com/form.pdf', 'https://user:secret@www.irs.gov/form.pdf', 'not a URL']) {
+      expect(formSourceUrl({ ...catalog[0]!, sourceUrl })).toBeUndefined()
+    }
+  })
+
   it('loads all catalog entries once, including the entry beyond the default limit', async () => {
     const { findForms } = await import('../findForms')
     const forms = await findForms('')

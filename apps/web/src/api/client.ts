@@ -291,8 +291,10 @@ export function searchForms(q: string): Promise<FormEntry[]> {
 }
 
 /** Starts a document from one catalog entry; the server fetches the form itself. */
-export function startForm(id: string): Promise<FormStartResponse> {
-  return request<FormStartResponse>(`/api/v1/forms/${encodeURIComponent(id)}/start`, { method: 'POST' })
+export function startForm(id: string, idempotencyKey: string): Promise<FormStartResponse> {
+  return request<FormStartResponse>(`/api/v1/forms/${encodeURIComponent(id)}/start`, {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey },
+  })
 }
 
 export function listDocuments(workspaceId: number): Promise<DocumentSummaryResponse[]> {

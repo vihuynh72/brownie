@@ -13,6 +13,14 @@ export const FORM_PURPOSES = [
 
 export type FormPurposeId = typeof FORM_PURPOSES[number]['id']
 
+/** The current library contains U.S. government PDFs only. */
+export function formSourceUrl(form: FormEntry): string | undefined {
+  try {
+    const url = new URL(form.sourceUrl ?? '')
+    return url.protocol === 'https:' && url.hostname.endsWith('.gov') && !url.username && !url.password ? url.href : undefined
+  } catch { return undefined }
+}
+
 export function matchesPurpose(form: FormEntry, purposeId: FormPurposeId): boolean {
   return (FORM_PURPOSES.find((purpose) => purpose.id === purposeId)?.formIds as readonly string[] | undefined)?.includes(form.id) ?? false
 }

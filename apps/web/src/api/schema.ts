@@ -202,7 +202,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Downloads the catalog entry's official form and runs it through the same intake a person's upload takes -- sniffing, scanning, the places read, the draft activated -- then starts a document from it and answers with the id the web opens. Requires a session and the X-XSRF-TOKEN header. */
+        /** Downloads the catalog entry's official form and runs it through the same intake a person's upload takes -- sniffing, scanning, the places read, the draft activated -- then starts a document from it and answers with the id the web opens. Requires a session and the X-XSRF-TOKEN header. Send the same Idempotency-Key when retrying an uncertain response to reopen the same document. */
         post: operations["startForm"];
         delete?: never;
         options?: never;
@@ -2021,6 +2021,12 @@ export interface components {
             category: string;
             /** @example Gives a business or client your taxpayer identification number so they can report what they pay you. */
             description: string;
+            /**
+             * Format: uri
+             * @description The catalog entry's public official PDF, for inspection before starting.
+             * @example https://www.irs.gov/pub/irs-pdf/fw9.pdf
+             */
+            sourceUrl?: string;
         };
         FormStartResponse: {
             /** Format: int64 */
@@ -4403,7 +4409,10 @@ export interface operations {
     startForm: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Opaque nonblank request key scoped to the actor and workspace. Reuse for retries of the same form; use a new key to deliberately start another document. Without this header every call starts a new document. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 id: string;
             };
@@ -4411,7 +4420,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The document the form started. */
+            /** @description The document the form started, or the prior result for this request key. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4420,8 +4429,18 @@ export interface operations {
                     "application/json": components["schemas"]["FormStartResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             /** @description No catalog entry has this id. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The same request key was already used for a different document creation. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

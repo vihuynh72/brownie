@@ -367,6 +367,8 @@ class ModuleBoundariesTest {
                 // for bytes, and its own allowlist means only a catalog host ever answers.
                 .and().doNotHaveFullyQualifiedName(
                         "io.github.vihuynh72.brownie.api.form.HttpCatalogFormFetcher")
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.form.HttpCatalogFormFetcher$CappedBody")
                 // The remote renderer posts to its configured broker and bounds its response.
                 .and().doNotHaveFullyQualifiedName(
                         "io.github.vihuynh72.brownie.api.document.render.RailwayDocumentSandbox")

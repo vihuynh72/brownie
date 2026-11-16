@@ -4,7 +4,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import BrownieDemo from '@/components/BrownieDemo.vue'
 import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type FormEntry, type WelcomeResponse } from '@/api/client'
-import { FORM_PURPOSES, findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import { formSourceUrl, FORM_PURPOSES, findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
 import FormPurposePicker from '@/components/FormPurposePicker.vue'
 import { guidanceForQuery } from '@/landing/formGuidance'
 import { decisionForQuery } from '@/landing/formDecision'
@@ -285,6 +285,7 @@ const TESTED_FORMS = [
             <p class="landing-forms__title">{{ entry.title }}</p>
             <p class="landing-forms__agency">{{ entry.agency }}</p>
             <p class="landing-forms__agency">{{ entry.description }}</p>
+            <a v-if="formSourceUrl(entry)" class="form-source-link" :href="formSourceUrl(entry)" target="_blank" rel="noopener noreferrer" :aria-label="`View the official PDF for ${entry.title} (opens in a new tab)`">View official PDF <AppIcon name="external" :size="14" /></a>
           </div>
           <a class="button button--small landing-forms__start" :href="`/signin?next=${encodeURIComponent(`/?form=${encodeURIComponent(entry.id)}`)}`">Choose form</a>
         </li>

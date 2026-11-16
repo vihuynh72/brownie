@@ -103,6 +103,15 @@
 .form-guidance a { color: var(--color-cocoa-strong); font-size: var(--font-size-sm); font-weight: 600; text-underline-offset: 0.2em; }
 .form-guidance a svg { display: inline; vertical-align: middle; }
 
+.form-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-block-size: 2.75rem;
+  inline-size: fit-content;
+  font-size: var(--font-size-sm);
+}
+
 .button--quiet {
   --button-bg: transparent;
   --button-border: transparent;

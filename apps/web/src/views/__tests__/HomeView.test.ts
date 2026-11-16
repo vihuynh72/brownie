@@ -326,7 +326,7 @@ describe('HomeView', () => {
     expect(startForm).not.toHaveBeenCalled()
     await wrapper.get('.home__library-start').trigger('click')
     await flushPromises()
-    expect(startForm).toHaveBeenCalledWith('state-ds11')
+    expect(startForm).toHaveBeenCalledWith('state-ds11', expect.any(String))
     expect(router.currentRoute.value.path).toBe('/documents/91')
   })
 
@@ -532,7 +532,7 @@ describe('HomeView', () => {
     expect(wrapper.get('.home__library-start').text()).toBe('Getting the form…')
     await flushPromises()
 
-    expect(startForm).toHaveBeenCalledWith('irs-w9')
+    expect(startForm).toHaveBeenCalledWith('irs-w9', expect.any(String))
     expect(router.currentRoute.value.path).toBe('/documents/42')
   })
 
@@ -566,6 +566,79 @@ describe('HomeView', () => {
     expect(startForm).toHaveBeenCalledTimes(2)
     expect(router.currentRoute.value.path).toBe('/documents/42')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('reuses an uncertain start after remounting and gives a deliberate new start a fresh key', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockRejectedValueOnce(new TypeError('connection lost'))
+      .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    signedIn()
+    const first = await mountWithRouter()
+    await flushPromises()
+    await first.get('.home__library-start').trigger('click')
+    await flushPromises()
+    const key = vi.mocked(startForm).mock.calls[0]![1]
+    first.unmount()
+
+    const retry = await mountWithRouter()
+    await flushPromises()
+    await retry.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[1]).toEqual(['irs-w9', key])
+    expect(router.currentRoute.value.path).toBe('/documents/42')
+    await router.push('/')
+    await retry.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[2]![1]).not.toBe(key)
+  })
+
+  it.each([400, 409])('replaces a rejected key after HTTP %i', async (status) => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockRejectedValueOnce(new ApiRequestError(status, undefined))
+      .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    const key = vi.mocked(startForm).mock.calls[0]![1]
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[1]![1]).not.toBe(key)
+  })
+
+  it('keeps retry keys in memory when session storage is blocked', async () => {
+    const blocked = ['getItem', 'setItem', 'removeItem'].map((method) =>
+      vi.spyOn(Storage.prototype, method as 'getItem').mockImplementation(() => { throw new Error('blocked') }))
+    try {
+      vi.mocked(listDocuments).mockResolvedValue([])
+      vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+      vi.mocked(startForm).mockRejectedValueOnce(new TypeError('connection lost'))
+        .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+      signedIn()
+      const wrapper = await mountWithRouter()
+      await flushPromises()
+      await wrapper.get('.home__library-start').trigger('click')
+      await flushPromises()
+      await wrapper.get('.home__library-start').trigger('click')
+      await flushPromises()
+      expect(vi.mocked(startForm).mock.calls[1]![1]).toBe(vi.mocked(startForm).mock.calls[0]![1])
+    } finally { blocked.forEach((spy) => spy.mockRestore()) }
+  })
+
+  it('lets a person inspect the official PDF without starting a document', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.', sourceUrl: 'https://www.irs.gov/pub/irs-pdf/fw9.pdf' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    const source = wrapper.get('.form-source-link')
+    expect(source.attributes('href')).toBe('https://www.irs.gov/pub/irs-pdf/fw9.pdf')
+    expect(source.attributes('target')).toBe('_blank')
+    expect(source.attributes('rel')).toContain('noopener')
+    expect(startForm).not.toHaveBeenCalled()
   })
 
   it('does not start the same form twice while the first request is pending', async () => {

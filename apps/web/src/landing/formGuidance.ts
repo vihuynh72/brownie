@@ -33,7 +33,7 @@ export function guidanceForQuery(query: string, purposeId?: FormPurposeId): Form
     linkLabel: 'Choose your state',
   }
   if (purposeId === 'work' || /\b(?:job|employment|employee|contractor|freelance)\b/.test(text)) return {
-    title: 'Employee or independent contractor?',
+    title: 'Work form requirements',
     description: 'Employment status affects which tax forms apply. Review the IRS guidance and check with the organization requesting the form.',
     url: 'https://www.irs.gov/pub/irs-pdf/p1779.pdf',
     linkLabel: 'Check IRS guidance',

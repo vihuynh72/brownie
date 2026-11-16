@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import LandingView from '@/views/LandingView.vue'
-import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import { formSourceUrl, findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
 import FormPurposePicker from '@/components/FormPurposePicker.vue'
 import { guidanceForQuery } from '@/landing/formGuidance'
 import { decisionForQuery } from '@/landing/formDecision'
@@ -81,6 +81,7 @@ const formSearching = ref(true)
 const formBusyId = ref<string | null>(null)
 const formStartErrorId = ref<string | null>(null)
 const formStartError = ref('')
+const formStartKeys = new Map<string, string>()
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
 let formSearchSeq = 0
 
@@ -163,18 +164,32 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
   formBusyId.value = entry.id
   formStartErrorId.value = null
   formStartError.value = ''
+  const storageKey = `brownie.formStart.${session.identity?.userId}.${session.personalWorkspaceId}.${entry.id}`
+  let key = formStartKeys.get(storageKey)
+  if (!key) {
+    try { key = sessionStorage.getItem(storageKey) ?? undefined } catch { /* Keep retries safe in memory when storage is blocked. */ }
+    if (!key || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)) key = crypto.randomUUID()
+    formStartKeys.set(storageKey, key)
+    try { sessionStorage.setItem(storageKey, key) } catch { /* The in-memory key still covers this visit. */ }
+  }
   try {
-    const started = await startForm(entry.id)
+    const started = await startForm(entry.id, key)
     // The download can outlast the visit: only open the document when Home is still the page.
     if (router.currentRoute.value.name === 'home') {
       await router.push(`/documents/${started.documentId}`)
     }
+    formStartKeys.delete(storageKey)
+    try { sessionStorage.removeItem(storageKey) } catch { /* Storage may be blocked. */ }
   } catch (error) {
+    if (error instanceof ApiRequestError && (error.status === 400 || error.status === 409)) {
+      formStartKeys.delete(storageKey)
+      try { sessionStorage.removeItem(storageKey) } catch { /* Storage may be blocked. */ }
+    }
     formStartErrorId.value = entry.id
     formStartError.value =
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
-        : 'Brownie could not start this form. Try again, or upload your copy above.'
+        : 'Brownie could not confirm that this form opened. Retry the same request, or upload your copy above.'
   } finally {
     formBusyId.value = null
   }
@@ -1052,6 +1067,7 @@ const showHowItWorks = computed(
             <p class="home__library-title">{{ entry.title }}</p>
             <p class="home__library-agency">{{ entry.agency }}</p>
             <p class="home__library-description">{{ entry.description }}</p>
+            <a v-if="formSourceUrl(entry)" class="form-source-link" :href="formSourceUrl(entry)" target="_blank" rel="noopener noreferrer" :aria-label="`View the official PDF for ${entry.title} (opens in a new tab)`">View official PDF <AppIcon name="external" :size="14" /></a>
           </div>
           <div class="home__library-action"><button
             type="button"
@@ -1061,7 +1077,9 @@ const showHowItWorks = computed(
             @click="startLibraryForm(entry)"
           >
             {{ formBusyId === entry.id ? 'Getting the form…' : formStartErrorId === entry.id ? 'Retry' : 'Start' }}
-          </button><p v-if="formStartErrorId === entry.id" class="home__library-error" role="alert">{{ formStartError }}</p></div>
+          </button>
+          <p v-if="formBusyId === entry.id" class="home__library-hint" role="status">Preparing the official form. It will open here when ready.</p>
+          <p v-if="formStartErrorId === entry.id" class="home__library-error" role="alert">{{ formStartError }}</p></div>
         </li>
       </ul>
       <p v-else-if="!requestedFormId && !formGuidance && !formDecision && !marketplaceRequest && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">

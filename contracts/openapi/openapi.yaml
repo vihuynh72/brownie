@@ -302,20 +302,40 @@ paths:
         the same intake a person's upload takes -- sniffing, scanning,
         the places read, the draft activated -- then starts a document
         from it and answers with the id the web opens. Requires a session
-        and the X-XSRF-TOKEN header.
+        and the X-XSRF-TOKEN header. Send the same Idempotency-Key when
+        retrying an uncertain response to reopen the same document.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >
+            Opaque nonblank request key scoped to the actor and workspace.
+            Reuse for retries of the same form; use a new key to deliberately
+            start another document. Without this header every call starts a new document.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
       responses:
         "200":
-          description: The document the form started.
+          description: The document the form started, or the prior result for this request key.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/FormStartResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The same request key was already used for a different document creation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: No catalog entry has this id.
           content:
@@ -4309,6 +4329,11 @@ components:
         description:
           type: string
           example: Gives a business or client your taxpayer identification number so they can report what they pay you.
+        sourceUrl:
+          type: string
+          format: uri
+          description: The catalog entry's public official PDF, for inspection before starting.
+          example: https://www.irs.gov/pub/irs-pdf/fw9.pdf
     FormStartResponse:
       type: object
       required: [documentId, title]

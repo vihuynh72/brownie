@@ -208,6 +208,16 @@ answers needing review. Notes upload is explicitly labeled as plain text.
 Per-answer approval, provenance, export blockers, conflict recovery, keyboard
 access and reduced-motion behavior remain part of the workflow.
 
+Catalog results link directly to their official PDF so it can be inspected before
+starting. The browser accepts only HTTPS government source links. Catalog Start
+accepts an optional `Idempotency-Key`; the browser retains its opaque attempt UUID
+in tab session storage across uncertain retries and clears it after success. The
+server replays the same actor/workspace request before fetching or intake, and
+rejects a key reused for another form. Missing headers retain the old fresh-start
+behavior. Concurrent first requests can still prepare extra templates before the
+existing document-creation reservation resolves them to one document. With blocked
+browser storage, retry keys survive only the current mounted page.
+
 The public demo uses fixed fictional source examples mapped to editable review
 fields. It makes no model request, parses no arbitrary visitor text, and creates
 no export. Connector setup remains available in a secondary disclosure. Form
