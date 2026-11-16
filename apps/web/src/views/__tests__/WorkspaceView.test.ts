@@ -1056,7 +1056,7 @@ describe('WorkspaceView: the page', () => {
 
     expect(page.find('.empty-hint').exists()).toBe(false)
     expect(page.get('.empty-state').text()).toContain('Nothing filled in yet.')
-    await press(page, 'Add a document')
+    await press(page, 'Add notes or a source')
     expect(document.activeElement?.id).toBe('attach-source')
   })
 
@@ -3599,8 +3599,8 @@ describe('WorkspaceView: the chat', () => {
     const starters = () => chatLog(page).findAll('ul[aria-label="Ways to begin"] button').map((button) => norm(button.text()))
 
     // A page with no line to put a new place on offers only notes; the place is tested with the pages that have lines.
-    expect(starters()).toEqual(['Type my details', 'Add a document'])
-    await press(page, 'Add a document', 'ul[aria-label="Ways to begin"]')
+    expect(starters()).toEqual(['Type my details', 'Add notes or a source'])
+    await press(page, 'Add notes or a source', 'ul[aria-label="Ways to begin"]')
     expect(page.find('#add-source-panel').exists()).toBe(true)
     expect(document.activeElement?.id).toBe('attach-source')
     expect(await axe(page.element)).toHaveNoViolations()
@@ -4820,31 +4820,12 @@ describe('WorkspaceView: the panel for adding a source', () => {
     expect(document.activeElement).toBe(buttonNamed(page, 'Add a source')!.element)
   })
 
-  it('folds the upload row away and opens it again, keeping its file picker in the page either way, and starts open every time', async () => {
+  it('offers the notes picker directly when the source panel opens', async () => {
     const page = await mountPage()
     await press(page, 'Add a source')
-    const toggle = () => buttonNamed(page, 'Upload notes or a document', '#add-source-panel')!
-    expect(toggle().attributes('aria-expanded')).toBe('true')
-    expect(toggle().attributes('aria-controls')).toBe('add-source-upload')
-
-    await toggle().trigger('click')
-    expect(toggle().attributes('aria-expanded')).toBe('false')
-    expect(page.get('#add-source-upload').attributes('style')).toContain('display: none')
-    expect(page.find('#attach-source').exists()).toBe(true)
-
-    await press(page, 'Close adding a source')
-    await press(page, 'Add a source')
-    expect(toggle().attributes('aria-expanded')).toBe('true')
-  })
-
-  it('names the file picker for what it does, with the button beside it as its label', async () => {
-    const page = await mountPage()
-    await press(page, 'Add a source')
-
-    const label = page.get('label[for="attach-source"]')
-    expect(accessibleName(label.element)).toBe('Upload notes and prepare this form')
-    expect(label.classes()).toContain('button')
+    expect(page.get('label[for="attach-source"]').text()).toBe('Add notes (.txt)')
     expect(page.get('#attach-source').classes()).toContain('visually-hidden')
+    expect(page.find('#attach-source').attributes('disabled')).toBeUndefined()
   })
 
   it('closes the source panel after attaching notes and shows the source in the conversation', async () => {
@@ -4992,21 +4973,26 @@ describe('WorkspaceView: the panel for adding a source', () => {
 
     expect(page.get('#add-source-panel .add-source__status').text()).toBe('Uploading…')
     expect(page.get('#attach-source').attributes('disabled')).toBeDefined()
-    expect(page.get('label[for="attach-source"]').classes()).toContain('add-source__choose--busy')
-    // Folding the row away mid-upload would hide that status with no way back, so its own toggle is out of use too.
-    expect(buttonNamed(page, 'Upload notes or a document', '#add-source-panel')!.attributes('disabled')).toBeDefined()
   })
 
-  it('opens the row again to show an error, even if the row had been folded away before the upload failed', async () => {
+  it('keeps the first source and shows an error when a later upload fails', async () => {
+    const page = await mountPage()
+    await attachUpload(page)
+    expect(sourceCards(page).map((card) => norm(card.get('.source-chip__name').text()))).toContain('minutes.txt')
+
+    vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
+    await chooseSourceFile(page, 'more-notes.txt')
+
+    expect(page.get('#add-source-panel [role="alert"]').text()).toContain('That file was not attached')
+    expect(sourceCards(page).map((card) => norm(card.get('.source-chip__name').text()))).toContain('minutes.txt')
+  })
+
+  it('shows an upload error beside the notes picker', async () => {
     const page = await mountPage()
     await press(page, 'Add a source')
-    await press(page, 'Upload notes or a document', '#add-source-panel')
-    expect(page.get('#add-source-upload').attributes('style')).toContain('display: none')
-
     vi.mocked(allocateUpload).mockRejectedValue(networkFailure())
     await chooseSourceFile(page)
 
-    expect(buttonNamed(page, 'Upload notes or a document', '#add-source-panel')!.attributes('aria-expanded')).toBe('true')
     expect(page.get('#add-source-panel [role="alert"]').text()).toBe(
       'That file was not attached. Brownie could not be reached. Check your connection, then try again.',
     )
@@ -5514,7 +5500,7 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Upload exceeds the maximum allowed size of 10485760 bytes.'))
       const page = await mountPage()
       await openAddSource(page)
-      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text (.txt). Brownie reads plain-text sources.')
+      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text. Uploading starts preparation.')
 
       await chooseSourceFile(page, 'notes.txt', 11 * 1024 * 1024)
 
@@ -5528,7 +5514,7 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       await openAddSource(page)
 
       expect(getCapabilities).toHaveBeenCalledTimes(1)
-      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text (.txt), up to 10 MB. Brownie reads plain-text sources.')
+      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text, up to 10 MB. Uploading starts preparation.')
     })
   })
 

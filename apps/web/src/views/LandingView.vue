@@ -21,11 +21,6 @@ const signInHref = computed(() =>
   !welcome.value ? '/signin' : welcome.value.signInProviders?.[0] === 'google'
     ? '/oauth2/authorization/google'
     : '/oauth2/authorization/entra')
-const EMAIL_CODE_HREF = '/oauth2/authorization/entra'
-const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
-const emailCodeAvailable = computed(() => welcome.value?.signInProviders?.includes('entra') ?? true)
-const googleSecondary = computed(
-  () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
 const welcome = ref<WelcomeResponse | null>(null)
 const welcomeFailed = ref(false)
@@ -135,11 +130,6 @@ async function choose(id: InstallTargetId, focus = false): Promise<void> {
   tabRefs.value.find((tab) => tab.dataset.target === id)?.focus()
 }
 
-/** The hero's chat-app button lands on the install section with Claude already chosen, when chat apps are offered. */
-function openChatAppTab(): void {
-  if (targets.value.some((target) => target.id === 'claude')) void choose('claude')
-}
-
 /** The arrow keys move along the tabs, as a tab list does everywhere else; Home and End jump to either end. */
 function onTabKey(event: KeyboardEvent): void {
   const ids = targets.value.map((target) => target.id)
@@ -209,11 +199,12 @@ const TESTED_FORMS = [
         <BrownieBrand />
       </a>
       <nav class="landing__nav" aria-label="Brownie">
+        <a href="#library">Form library</a>
         <a href="#how">How it works</a>
         <a href="#install">Install</a>
         <a :href="signInHref">Sign in</a>
       </nav>
-      <a class="button button--primary landing__bar-action" :href="signInHref">{{ primaryLabel }}</a>
+      <a class="button button--primary landing__bar-action" href="/signin?next=%2F">Start a form</a>
     </header>
 
     <section class="hero" aria-labelledby="landing-title">
@@ -226,19 +217,10 @@ const TESTED_FORMS = [
         </h1>
         <p class="hero__intro">Tell Brownie what you know. It prepares your form, and you make the final call.</p>
         <div class="hero__actions">
-          <a class="button button--primary hero__action" :href="signInHref">{{ primaryLabel }}</a>
-          <a v-if="googlePrimary && emailCodeAvailable" :href="EMAIL_CODE_HREF" class="landing__email-code">Use an email code instead</a>
-          <a v-else-if="googleSecondary" href="/oauth2/authorization/google" class="landing__email-code">
-            <svg class="landing__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-              <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
-              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
-              <path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09Z"/>
-              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"/>
-            </svg>
-            Continue with Google (early access)</a>
-          <a class="button hero__action" href="#demo">Try the demo</a>
-          <a v-if="targets.length > 1" class="hero__chat-link" href="#install" @click="openChatAppTab">Add to Claude or ChatGPT</a>
+          <a class="button button--primary hero__action" href="/signin?next=%2F">Start a form</a>
+          <a class="hero__chat-link" href="#library">Find a form</a>
         </div>
+        <p class="hero__note">You review every value before export.</p>
         <p v-if="accessNote" class="hero__note">{{ accessNote }}</p>
         <p v-if="welcomeFailed" class="hero__note" role="status">Connection details are unavailable. Refresh the page to try again.</p>
       </div>
@@ -246,7 +228,7 @@ const TESTED_FORMS = [
 
     <BrownieDemo />
 
-    <section class="landing-forms" aria-labelledby="landing-forms-title">
+    <section id="library" class="landing-forms" aria-labelledby="landing-forms-title">
       <div class="landing-forms__head">
         <h2 id="landing-forms-title" class="landing__h2">Search the form library.</h2>
         <p class="landing__lede">
@@ -292,7 +274,7 @@ const TESTED_FORMS = [
             <p class="landing-forms__title">{{ entry.title }}</p>
             <p class="landing-forms__agency">{{ entry.agency }}</p>
           </div>
-          <a class="button button--small landing-forms__start" :href="signInHref">Sign in to start</a>
+          <a class="button button--small landing-forms__start" :href="`/signin?next=${encodeURIComponent(`/?form=${encodeURIComponent(entry.id)}`)}`">Choose form</a>
         </li>
       </ul>
       <p v-else-if="!formGuidance && (formQuery.trim() || selectedPurpose)" class="landing-forms__empty">No match. You can always upload your own copy.</p>
@@ -308,6 +290,7 @@ const TESTED_FORMS = [
         </p>
       </div>
 
+      <details class="install__disclosure"><summary>Set up Brownie in an assistant or terminal</summary>
       <div class="install__tabs" role="tablist" aria-label="Where to use Brownie" @keydown="onTabKey">
         <button
           v-for="target in targets"
@@ -351,6 +334,7 @@ const TESTED_FORMS = [
           <li v-for="(step, index) in active.steps" :key="index">{{ step }}</li>
         </ol>
       </div>
+      </details>
     </section>
 
     <section id="how" class="how" aria-labelledby="how-title">
@@ -360,8 +344,7 @@ const TESTED_FORMS = [
           <span class="how__num" aria-hidden="true">1</span>
           <h3 class="how__title">Hand it the form</h3>
           <p>
-            Word, PDF, Pages, OpenDocument, RTF, or a photo of the paper. Brownie finds every blank, box and checkbox in
-            seconds, and keeps the form's own look.
+            Word, PDF, Pages, OpenDocument, RTF, or a photo of the paper. Brownie finds places to fill and keeps the form's own look.
           </p>
         </li>
         <li class="how__step">
@@ -501,7 +484,7 @@ const TESTED_FORMS = [
   text-decoration: underline;
 }
 
-@media (min-width: 48rem) {
+@media (min-width: 64rem) {
   .landing__nav {
     display: flex;
   }
@@ -677,7 +660,7 @@ const TESTED_FORMS = [
 
 .landing__h2 {
   margin: 0;
-  font-size: clamp(2rem, 1.2rem + 2.6vw, 3.25rem);
+  font-size: clamp(2rem, 1.2rem + 2vw, 2.75rem);
   font-weight: var(--font-weight-medium);
   line-height: 1.04;
   letter-spacing: -0.025em;
@@ -1081,12 +1064,12 @@ const TESTED_FORMS = [
 .landing__brand { font: 400 1.75rem/1 var(--font-display, Georgia, serif); letter-spacing: -.04em; white-space: nowrap; }
 .landing__brand-dot { color: var(--color-cocoa); }
 .landing__nav a { font-size: .9rem; font-weight: 500; padding-block: .75rem; }
-.hero { display: grid; position: relative; min-height: min(48rem, 78vh); max-width: none; padding: 0; overflow: hidden; }
+.hero { display: grid; position: relative; min-height: 0; max-width: none; padding: 0; overflow: hidden; }
 .hero__art { position: absolute; inset: 0; background: var(--color-paper) url('/art/brownie-paper-world.webp') center bottom / cover no-repeat; }
 .hero__art::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, var(--color-paper) 0%, transparent 70%); opacity: .45; }
 .hero__art-note { display: none; }
-.hero__foot { position: relative; z-index: 1; width: min(100%, 90rem); padding: clamp(4rem, 6vw, 6rem) var(--landing-gutter) 18rem; margin: auto; justify-items: center; text-align: center; }
-.hero__title { max-width: 14ch; font: 400 clamp(4rem, 6.5vw, 6.5rem)/.98 var(--font-display, Georgia, serif); letter-spacing: -.045em; overflow-wrap: anywhere; }
+.hero__foot { position: relative; z-index: 1; width: min(100%, 90rem); padding: clamp(4rem, 6vw, 6rem) var(--landing-gutter) 10rem; margin: auto; justify-items: center; text-align: center; }
+.hero__title { max-width: 14ch; font: 400 clamp(3rem, 5vw, 5rem)/.98 var(--font-display, Georgia, serif); letter-spacing: -.035em; overflow-wrap: anywhere; }
 .hero__intro { max-width: 30rem; margin: .5rem 0; font-size: clamp(1.1rem, 1.3vw, 1.3rem); line-height: 1.55; }
 .hero__actions { align-items: center; justify-content: center; margin-top: .5rem; }
 .hero__chat-link { color: var(--color-text); font-size: .9rem; text-underline-offset: .2em; }
@@ -1101,18 +1084,20 @@ const TESTED_FORMS = [
 .landing-forms__composer button { min-height: 2.75rem; padding: .6rem 1.2rem; border: 0; border-radius: var(--radius-control); background: var(--color-cocoa-strong); color: var(--color-surface); font: inherit; font-weight: 500; cursor: pointer; }
 .landing-forms__composer button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .landing-forms__hint { margin-block: .75rem 0; color: var(--color-text-muted); font-size: .85rem; }
-.landing-forms__list { max-width: var(--landing-max); grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; }
-.landing-forms__row { min-width: 0; align-items: flex-start; flex-direction: column; padding: 1.5rem; border-radius: 1.25rem; }
-.landing-forms__start { margin-top: auto; }
+.landing-forms__list { max-width: var(--landing-max); display: block; }
+.landing-forms__row { min-width: 0; padding: 1rem 0; border: 0; border-bottom: 1px solid var(--color-hairline); border-radius: 0; background: transparent; }
+.landing-forms__start { margin: 0; }
+.install__disclosure { margin-block-start: 1.5rem; }
+.install__disclosure summary { cursor: pointer; font-weight: 600; padding-block: .75rem; }
 .landing__h2 { font-family: var(--font-display, Georgia, serif); font-weight: 400; letter-spacing: -.04em; }
 .how { padding-block: clamp(5rem, 9vw, 9rem); }
 .how__num { font-family: Georgia, serif; }
 .tested { border-top: 1px solid var(--color-hairline); }
 .yours { padding-block: clamp(5rem, 9vw, 9rem); }
 @media (min-width: 64rem) { .hero { display: grid; grid-template-columns: 1fr; } .hero__foot { grid-column: 1; grid-row: 1; } }
-@media (max-width: 47.99rem) { .landing__bar { top: .5rem; } .hero { min-height: 43rem; } .hero__art { background-position: 60% center; } .hero__foot { align-content: start; padding-block: 4rem 17rem; } .hero__title { font-size: clamp(3.4rem, 13vw, 5.5rem); } }
+@media (max-width: 47.99rem) { .landing__bar { top: .5rem; } .hero { min-height: 0; } .hero__art { background-position: 60% center; } .hero__foot { align-content: start; padding-block: 3rem 9rem; } .hero__title { font-size: clamp(2.8rem, 11vw, 4.5rem); } }
 @media (prefers-reduced-motion: no-preference) { .hero__foot { animation: hero-arrive .7s ease both; } @keyframes hero-arrive { from { opacity: 0; transform: translateY(1rem); } } }
-@supports (animation-timeline: view()) { @media (prefers-reduced-motion: no-preference) { .landing-forms, .install, .how, .tested, .yours { animation: section-arrive linear both; animation-timeline: view(); animation-range: entry 0% entry 25%; } @keyframes section-arrive { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: none; } } } }
+
 .landing-forms__browse { margin-block: var(--space-5) var(--space-3); font-weight: 600; }
 .landing-forms .form-guidance { margin-block: var(--space-4); }
 @media (max-width: 35rem) {

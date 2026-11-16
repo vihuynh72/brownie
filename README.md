@@ -189,6 +189,28 @@ keyword match. Lost passports, worker classification and DMV requests also link
 to official guidance. DMV forms are not in the fillable catalog: the state selector
 opens USAGov, and a person can upload the form their state supplies.
 
+### Interface design contract
+
+Public pages use the original paper illustration and a restrained serif hero.
+The working app uses compact system sans type, a lighter neutral canvas and a
+small simplified Brownie mark. Ink-teal identifies the next action; ordinary
+layout uses spacing and rules rather than nested cards. Shared colors and type
+remain in `apps/web/src/styles/tokens.css`, controls in `primitives.css`.
+
+Home leads with a person's own form and recent work. The catalog opens on request;
+choosing a public catalog entry preserves its identifier through sign-in and
+returns to an explicit Start action. Template links are identified as starting
+points, with account settings grouped separately. The editor prioritizes the
+original document and a narrower assistant, with direct navigation through
+answers needing review. Notes upload is explicitly labeled as plain text.
+Per-answer approval, provenance, export blockers, conflict recovery, keyboard
+access and reduced-motion behavior remain part of the workflow.
+
+The public demo uses fixed fictional source examples mapped to editable review
+fields. It makes no model request, parses no arbitrary visitor text, and creates
+no export. Connector setup remains available in a secondary disclosure. Form
+search is catalog matching, not an eligibility determination.
+
 ## Run
 
 Check the pinned local toolchain with:

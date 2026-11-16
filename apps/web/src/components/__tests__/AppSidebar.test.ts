@@ -208,6 +208,19 @@ describe('AppSidebar', () => {
     expect(wrapper.find('a[href="/signin"]').exists()).toBe(false)
   })
 
+  it('names the template action and keeps account links behind Settings', async () => {
+    wrapper = await mountWithTemplates([CLUB])
+    expect(wrapper.get('#sidebar-templates-heading').text()).toBe('Start from a template')
+    const settings = wrapper.get('details.sidebar__settings')
+    expect(settings.attributes('open')).toBeUndefined()
+    expect(settings.get('summary').text()).toBe('Settings')
+    expect(wrapper.get('a[href="/trash"]').element.closest('details')).toBeNull()
+    await router.push('/your-data')
+    await flushPromises()
+    expect(settings.attributes('open')).toBeDefined()
+    expect(settings.get('a[href="/your-data"]').attributes('aria-current')).toBe('page')
+  })
+
   describe('the account row', () => {
     it('shows the first letter of the name in a disc beside it, with the name and a way to sign out', async () => {
       wrapper = await mountWithTemplates([CLUB])

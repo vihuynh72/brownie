@@ -385,7 +385,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
       No documents are in the trash.
     </p>
 
-    <ul v-if="trashed.length > 0" class="panel panel--flush trash__list" aria-label="Documents in the trash">
+    <ul v-if="trashed.length > 0" class="trash__list" aria-label="Documents in the trash">
       <li
         v-for="entry in trashed"
         :key="entry.id"
@@ -469,7 +469,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
         No templates are in the trash.
       </p>
 
-      <ul v-if="trashedTemplates.length > 0" class="panel panel--flush trash__list" aria-label="Templates in the trash">
+      <ul v-if="trashedTemplates.length > 0" class="trash__list" aria-label="Templates in the trash">
         <li v-for="template in trashedTemplates" :key="template.id" class="trash__item">
           <span class="doc-tile" aria-hidden="true"><AppIcon name="layout" :size="22" /></span>
           <div class="trash__text">
@@ -555,9 +555,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
   align-items: center;
   gap: 0.875rem;
   margin: 0;
-  padding: 1.125rem 1.25rem;
-  border: 1px dashed var(--color-outline);
-  border-radius: var(--radius-lg);
+  padding: var(--space-5) 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   line-height: 1.45;

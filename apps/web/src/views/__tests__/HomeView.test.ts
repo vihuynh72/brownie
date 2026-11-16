@@ -55,9 +55,9 @@ let router: Router
 // Every page mounted here listens to the window's drags until it is unmounted, so a test's drag must find only its own.
 const mounted = new Set<VueWrapper>()
 
-async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement } = '/') {
-  const path = typeof pathOrOptions === 'string' ? pathOrOptions : '/'
-  const mountOptions = typeof pathOrOptions === 'string' ? {} : pathOrOptions
+async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement; path?: string } = '/') {
+  const path = typeof pathOrOptions === 'string' ? pathOrOptions : pathOrOptions.path ?? '/'
+  const mountOptions = typeof pathOrOptions === 'string' ? {} : { attachTo: pathOrOptions.attachTo }
   router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -158,7 +158,7 @@ describe('HomeView', () => {
 
     expect(wrapper.get('h1').text()).toBe('Paperwork, taken care of.')
     const signIn = wrapper.get('a.button--primary')
-    expect(signIn.attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(signIn.attributes('href')).toBe('/signin?next=%2F')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('a.home__upload').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -285,6 +285,141 @@ describe('HomeView', () => {
     expect(rows[0].text()).toContain('Form 0')
     expect(rows[0].text()).toContain('Agency')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('keeps upload and continue before the closed form-library disclosure', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([summary(8, 'Club minutes', new Date().toISOString())])
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    const disclosure = wrapper.get('details.home__library')
+    expect(disclosure.attributes('open')).toBeUndefined()
+    expect(disclosure.get('summary').text()).toContain('Find a form')
+    const upload = wrapper.get('.home__upload-area').element
+    const resume = wrapper.get('.home__resume').element
+    expect(upload.compareDocumentPosition(resume) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(resume.compareDocumentPosition(disclosure.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('opens a catalog handoff on its exact entry and waits for an explicit Start', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const chosen = { id: 'state-ds11', title: 'Form DS-11', agency: 'Department of State', category: 'Travel', description: 'First passport.' }
+    vi.mocked(searchForms).mockResolvedValue([chosen, { ...chosen, id: 'state-other', title: 'Other passport form' }])
+    vi.mocked(startForm).mockResolvedValue({ documentId: 91, title: 'Passport' })
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    expect(searchForms).toHaveBeenCalledWith('ds11')
+    expect(wrapper.get('details.home__library').attributes('open')).toBeDefined()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(1)
+    expect(wrapper.get('.home__library-row').text()).toContain('Form DS-11')
+    expect(wrapper.get('.home__library-handoff').text()).toContain('Choose Start')
+    expect(startForm).not.toHaveBeenCalled()
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(startForm).toHaveBeenCalledWith('state-ds11')
+    expect(router.currentRoute.value.path).toBe('/documents/91')
+  })
+
+  it('focuses the compact handoff result and returns to ordinary search through Find another form', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter({ attachTo: document.body, path: '/?form=state-ds11' })
+    await flushPromises()
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('#home-library-heading').text()).toBe('Your selected form')
+    expect(document.activeElement).toBe(wrapper.get('.home__library-handoff').element)
+    expect(wrapper.find('.home__library-composer').exists()).toBe(false)
+    expect(wrapper.find('.purpose-picker').exists()).toBe(false)
+    expect(wrapper.find('.home__library-examples').exists()).toBe(false)
+    expect(wrapper.find('.home__library-popular').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
+    vi.mocked(searchForms).mockResolvedValue([])
+    await wrapper.get('.home__library-another').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.form).toBeUndefined()
+    expect(wrapper.get('#home-library-heading').text()).toBe('Search official forms')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.home__library-search').element)
+    expect(searchForms).toHaveBeenLastCalledWith('')
+  })
+
+  it('resolves a catalog handoff when authentication finishes after mount', async () => {
+    useSessionStore().status = 'anonymous'
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    const wrapper = await mountWithRouter('/?form=irs-w4')
+    await flushPromises()
+    vi.mocked(searchForms).mockClear()
+    signedIn()
+    await flushPromises()
+    expect(wrapper.get('details.home__library').attributes('open')).toBeDefined()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('handles an unknown catalog ID without starting another matching form', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    const wrapper = await mountWithRouter('/?form=irs-missing')
+    await flushPromises()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(wrapper.get('.home__library-handoff').text()).toContain('not in the library')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it.each(['%3Cscript%3E', 'irs-w4&form=state-ds11'])('rejects an invalid or repeated handoff ID (%s)', async (query) => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const wrapper = await mountWithRouter(`/?form=${query}`)
+    await flushPromises()
+    expect(searchForms).not.toHaveBeenCalled()
+    expect(wrapper.get('.home__library-handoff').text()).toContain('link is invalid')
+    expect(wrapper.get('.home__library-popular').text()).not.toBe('Searching forms…')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('discards a pending handoff when its query is removed and restores the default search', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    await router.push('/')
+    await flushPromises()
+    expect(searchForms).toHaveBeenLastCalledWith('')
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(wrapper.get('.home__library-popular').text()).toBe('Popular forms')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('keeps a delayed handoff answer from replacing a newer search', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    await wrapper.get('.home__library-another').trigger('click')
+    await flushPromises()
+    await wrapper.get('.home__library-search').setValue('W-4')
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    await wrapper.get('form[role="search"]').trigger('submit')
+    await flushPromises()
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
   })
 
   /** The search waits a quarter second, so a typed phrase is one request, not one per letter. */
@@ -430,7 +565,7 @@ describe('HomeView', () => {
     vi.useRealTimers()
     await flushPromises()
 
-    expect(wrapper.find('.home__library-empty').text()).toBe('No match. Upload your own copy below.')
+    expect(wrapper.find('.home__library-empty').text()).toBe('No match. Upload your own copy above.')
     expect(wrapper.find('.home__library-row').exists()).toBe(false)
   })
 
@@ -572,7 +707,7 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(wrapper.get('.home__hint').text()).toBe(
-      'There are no documents here. Upload a form above to start one, or choose a template under My Templates.',
+      'There are no documents here. Upload a form above to start one, or choose a saved template in the sidebar.',
     )
     expect(wrapper.find('.home__hint a').exists()).toBe(false)
 
@@ -888,7 +1023,7 @@ describe('HomeView: uploading a form', () => {
     expect(input.attributes('tabindex')).toBe('-1')
     expect(input.attributes('aria-hidden')).toBe('true')
     const button = wrapper.get('button.home__upload')
-    expect(button.text()).toBe('Upload your documents')
+    expect(button.text()).toBe('Upload a form')
     // The kinds of file it takes, and how large one may be, are said under it in plain words, and read out with it.
     expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF, up to 10 MB')
     expect(button.attributes('aria-describedby')).toBe('home-upload-kinds')

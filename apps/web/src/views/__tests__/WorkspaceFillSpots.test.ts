@@ -455,7 +455,7 @@ describe('WorkspaceView: adding a place', () => {
     expect(buttonNamed(page, 'Add a place')).toBeUndefined()
     // Nor from Brownie's first words, which still offer what does not depend on the page.
     expect(buttonNamed(page, 'Add a place to this form', 'ul[aria-label="Ways to begin"]')).toBeUndefined()
-    expect(buttonNamed(page, 'Add a document', 'ul[aria-label="Ways to begin"]')).toBeDefined()
+    expect(buttonNamed(page, 'Add notes or a source', 'ul[aria-label="Ways to begin"]')).toBeDefined()
     expect(buttonNamed(page, 'Type my details', 'ul[aria-label="Ways to begin"]')).toBeDefined()
   })
 

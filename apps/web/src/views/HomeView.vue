@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
-import type { IconName } from '@/components/icons'
 import LandingView from '@/views/LandingView.vue'
 import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
 import FormPurposePicker from '@/components/FormPurposePicker.vue'
@@ -63,8 +62,12 @@ const signInGoogleEarlyAccess = computed(
 const loadState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const loadError = ref('')
 
-// The form library, above the upload button: a debounced search whose first six
-// matches (or the six most popular forms on an empty query) each offer a Start.
+// The library is a secondary path; a public catalog handoff opens it without starting a document.
+const libraryOpen = ref(false)
+const requestedFormId = ref<string | null>(null)
+const formHandoffNotice = ref('')
+const handoffNoticeElement = ref<HTMLElement | null>(null)
+const librarySearch = ref<HTMLInputElement | null>(null)
 const formQuery = ref('')
 const selectedPurpose = ref<FormPurposeId | null>(null)
 const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
@@ -83,10 +86,24 @@ async function runFormSearch(): Promise<void> {
   formStartFailed.value = false
   try {
     const query = formQuery.value.trim()
-    const found = selectedPurpose.value && !query
+    const found = requestedFormId.value
+      // shortcut: catalog IDs use agency-formnumber slugs, use a catalog lookup endpoint if that format changes.
+      ? await findForms(requestedFormId.value.slice(requestedFormId.value.indexOf('-') + 1))
+      : selectedPurpose.value && !query
       ? await findFormsForPurpose(selectedPurpose.value)
       : await findForms(query)
     if (seq !== formSearchSeq) return
+    if (requestedFormId.value) {
+      formResults.value = found.filter((entry) => entry.id === requestedFormId.value)
+      formHandoffNotice.value = formResults.value.length
+        ? 'Your selected form is ready. Choose Start when you are ready to fill it.'
+        : 'That form is not in the library. Search for another form, or upload your own copy above.'
+      formSearchFailed.value = ''
+      formSearching.value = false
+      await nextTick()
+      if (seq === formSearchSeq && router.currentRoute.value.name === 'home') handoffNoticeElement.value?.focus()
+      return
+    }
     const relevant = found.filter((form) => !formGuidance.value?.excludeFormIds?.includes(form.id))
     const matches = selectedPurpose.value ? relevant.filter((form) => matchesPurpose(form, selectedPurpose.value!)) : relevant
     formResults.value = matches.slice(0, selectedPurpose.value || query ? 20 : 6)
@@ -97,13 +114,15 @@ async function runFormSearch(): Promise<void> {
     formSearchFailed.value =
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
-        : 'Brownie could not reach the form library. Try again, or upload your copy below.'
+        : 'Brownie could not reach the form library. Try again, or upload your copy above.'
   } finally {
     if (seq === formSearchSeq) formSearching.value = false
   }
 }
 
 watch([formQuery, selectedPurpose], () => {
+  requestedFormId.value = null
+  formHandoffNotice.value = ''
   formSearchSeq++
   formSearching.value = true
   formSearchFailed.value = ''
@@ -121,6 +140,19 @@ function submitLibrarySearch(): void {
   void runFormSearch()
 }
 
+async function findAnotherForm(): Promise<void> {
+  const query = { ...route.query }
+  delete query.form
+  formSearchSeq++
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  formSearching.value = true
+  requestedFormId.value = null
+  formHandoffNotice.value = ''
+  await router.replace({ query })
+  await nextTick()
+  librarySearch.value?.focus()
+}
+
 async function startLibraryForm(entry: FormEntry): Promise<void> {
   if (formBusyId.value) return
   formBusyId.value = entry.id
@@ -136,7 +168,7 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
     formSearchFailed.value =
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
-        : 'Brownie could not start this form. Try again, or upload your copy below.'
+        : 'Brownie could not start this form. Try again, or upload your copy above.'
   } finally {
     formBusyId.value = null
   }
@@ -185,7 +217,43 @@ function skipName(): void {
   nameSkipped.value = true
 }
 
-onMounted(() => void runFormSearch())
+watch(
+  [() => session.status, () => route.query.form],
+  async ([status, id], previous) => {
+    if (status !== 'authenticated') return
+    if (id === undefined) {
+      if (previous?.[1] !== undefined) {
+        if (formSearchTimer) clearTimeout(formSearchTimer)
+        requestedFormId.value = null
+        formHandoffNotice.value = ''
+        void runFormSearch()
+      }
+      return
+    }
+    libraryOpen.value = true
+    formSearchSeq++
+    if (formSearchTimer) clearTimeout(formSearchTimer)
+    formQuery.value = ''
+    selectedPurpose.value = null
+    // Query/purpose watchers must settle before resolving the selected entry.
+    await nextTick()
+    if (route.query.form !== id || session.status !== 'authenticated') return
+    if (formSearchTimer) clearTimeout(formSearchTimer)
+    if (typeof id !== 'string' || !/^[a-z0-9]+-[a-z0-9-]{1,70}$/.test(id)) {
+      requestedFormId.value = null
+      formResults.value = []
+      formSearching.value = false
+      formHandoffNotice.value = 'That form link is invalid. Search for a form, or upload your own copy above.'
+      return
+    }
+    requestedFormId.value = id
+    void runFormSearch()
+  },
+  { immediate: true },
+)
+onMounted(() => {
+  if (route.query.form === undefined) void runFormSearch()
+})
 
 // A batch page that deleted itself sends the person here with what it was called; the notice says what stays.
 const deletedBatch = computed(() => (typeof route.query.batchDeleted === 'string' ? route.query.batchDeleted : null))
@@ -327,7 +395,7 @@ function finishedWords(fileName: string): string {
 }
 
 // Someone who moves on while a form is being learned is not pulled back to it when it is ready: the
-// document is in their recent documents, and the template under My Templates, either way.
+// document is in their recent documents, and the saved template in the sidebar, either way.
 let leftHome = false
 onBeforeUnmount(() => {
   leftHome = true
@@ -549,16 +617,14 @@ onBeforeUnmount(() => {
 
 // ---- How Brownie works ----------------------------------------------------------------------
 
-/** The same three steps the sign-in page shows, so a visitor sees what the product does before they sign in. */
-const HOW_BROWNIE_WORKS: readonly { icon: IconName; title: string; text: string }[] = [
-  { icon: 'document-upload', title: 'Upload a form', text: 'Brownie learns where the values go and keeps the form’s own look.' },
+/** First-use guidance follows the upload and recent-work controls. */
+const HOW_BROWNIE_WORKS: readonly { title: string; text: string }[] = [
+  { title: 'Upload a form', text: 'Brownie learns where the values go and keeps the form’s own look.' },
   {
-    icon: 'document-text',
     title: 'Add your notes',
     text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
   },
   {
-    icon: 'document-check',
     title: 'Check and export',
     text: 'You approve every value. Brownie exports exactly the version you approved.',
   },
@@ -735,7 +801,7 @@ const resume = computed(() => {
   return { kind: 'document' as const, document: entry.document, title: entry.document.title, started }
 })
 
-/** The three cards that say how Brownie works are for someone with nothing yet; they make way for a form being learned. */
+/** First-use guidance makes way for the document being prepared. */
 const showHowItWorks = computed(
   () => loadState.value === 'loaded' && documents.value.length === 0 && !uploading.value && uploadError.value === null,
 )
@@ -795,105 +861,14 @@ const showHowItWorks = computed(
       </button>
     </div>
 
-    <section v-if="showNameCard" class="card home__name" aria-labelledby="home-name-heading">
-      <h2 id="home-name-heading" class="home__name-heading">What&rsquo;s your name?</h2>
-      <form class="home__name-form" @submit.prevent="submitName">
-        <label class="home__name-field">
-          <span>First</span>
-          <input v-model="nameGiven" class="text-field" type="text" autocomplete="given-name" maxlength="100" required />
-        </label>
-        <label class="home__name-field">
-          <span>Last</span>
-          <input v-model="nameFamily" class="text-field" type="text" autocomplete="family-name" maxlength="100" required />
-        </label>
-        <div class="home__name-actions">
-          <button type="submit" class="button button--primary button--small" :disabled="nameBusy">
-            {{ nameBusy ? 'Saving…' : 'Save' }}
-          </button>
-          <button type="button" class="link-button" @click="skipName">Skip</button>
-        </div>
-        <p v-if="nameError" class="field-error" role="alert">{{ nameError }}</p>
-      </form>
-    </section>
-
     <h1 class="page-title home__greeting">
       {{ authenticated ? greeting : 'Welcome to Brownie!' }}
     </h1>
 
-    <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
-      <div class="home__library-intro">
-        <div>
-          <h2 id="home-library-heading" class="home__library-heading">Search the form library</h2>
-          <p class="home__library-hint">Official U.S. forms, by name or purpose.</p>
-        </div>
-        <img class="home__library-mascot" src="/art/brownie-mascot-v2.webp" alt="" width="88" height="88" />
-      </div>
-      <form class="home__library-composer" role="search" @submit.prevent="submitLibrarySearch">
-      <AppIcon name="search" :size="22" />
-      <input
-        v-model="formQuery"
-        class="home__library-search"
-        type="search"
-        placeholder="Form name or purpose, e.g. starting a new job"
-        aria-label="Find an official form"
-        aria-describedby="home-search-hint"
-      />
-      <button type="submit" class="button button--primary button--small">Search</button>
-      </form>
-      <p class="home__library-browse">Or browse by purpose</p>
-      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
-      <div v-if="selectedPurpose === 'travel'" class="home__library-examples" aria-label="Passport purpose">
-        <button v-for="example in ['First passport', 'Renew passport', 'Lost passport']" :key="example" type="button"
-          class="button button--small" @click="formQuery = example">{{ example }}</button>
-      </div>
-      <div v-else-if="!selectedPurpose" class="home__library-examples" aria-label="Try a form search">
-        <button
-          v-for="example in ['Apply for a passport', 'Starting a new job', 'Self-employed tax form']"
-          :key="example"
-          type="button"
-          class="button button--small"
-          @click="formQuery = example"
-        >{{ example }}</button>
-      </div>
-      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check the agency’s requirements before you start.</p>
-      <div v-if="formGuidance" class="form-guidance" role="status">
-        <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
-        <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
-        <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet. Download your state’s form, then bring it here to fill.</p>
-        <a :href="formGuidance.url" target="_blank" rel="noopener noreferrer">{{ formGuidance.linkLabel }} <AppIcon name="external" :size="16" /></a>
-        <button v-if="drivingRequest" type="button" class="button button--small home__dmv-upload" @click="chooseForm">Upload a DMV form</button></div>
-      </div>
-      <p class="home__library-popular">
-        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : drivingRequest ? 'State services' : formQuery.trim() || selectedPurpose ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
-      </p>
-      <div v-if="formSearchFailed" class="home__library-error" role="alert">
-        <p>{{ formSearchFailed }}</p>
-        <button v-if="!formStartFailed" type="button" class="link-button" @click="runFormSearch">Retry search</button>
-      </div>
-      <ul v-if="formResults.length && !formSearching" class="home__library-list">
-        <li v-for="entry in formResults" :key="entry.id" class="home__library-row">
-          <div class="home__library-text">
-            <p class="home__library-title">{{ entry.title }}</p>
-            <p class="home__library-agency">{{ entry.agency }}</p>
-            <p class="home__library-description">{{ entry.description }}</p>
-          </div>
-          <button
-            type="button"
-            class="button button--small home__library-start"
-            :aria-disabled="formBusyId !== null ? 'true' : undefined"
-            @click="startLibraryForm(entry)"
-          >
-            {{ formBusyId === entry.id ? 'Getting the form…' : 'Start' }}
-          </button>
-        </li>
-      </ul>
-      <p v-else-if="!formGuidance && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
-        No match. Upload your own copy below.
-      </p>
-    </section>
 
     <div class="home__upload-area">
-      <p v-if="authenticated" class="home__upload-label">Have your own form?</p>
+      <h2 v-if="authenticated" class="home__upload-label">Start with your form</h2>
+      <p class="home__upload-intro">Bring a blank form. Brownie prepares it for you to fill.</p>
       <!--
         Signed in, the button opens the file chooser for the form to fill. Signed out it is a link
         to the sign-in page that brings the visitor back here, rather than a control that refuses.
@@ -908,7 +883,7 @@ const showHowItWorks = computed(
           @click="chooseForm"
         >
           <AppIcon name="upload" :size="30" />
-          <span>Upload your documents</span>
+          <span>Upload a form</span>
         </button>
         <input
           id="home-upload-input"
@@ -923,7 +898,7 @@ const showHowItWorks = computed(
       </template>
       <RouterLink v-else class="button button--primary home__upload" :to="{ name: 'signin', query: { next: '/' } }">
         <AppIcon name="upload" :size="30" />
-        <span>Upload your documents</span>
+        <span>Upload a form</span>
       </RouterLink>
       <p id="home-upload-kinds" class="home__upload-kinds">{{ kindsLine }}</p>
       <p v-if="showDisclosure" id="home-upload-disclosure" class="home__upload-disclosure">
@@ -1008,19 +983,90 @@ const showHowItWorks = computed(
       </div>
     </section>
 
-    <section v-if="authenticated && showHowItWorks" class="home__how" aria-labelledby="how-heading">
-      <h2 id="how-heading" class="home__section-title">How Brownie works</h2>
-      <ol class="home__how-cards">
-        <li v-for="(step, index) in HOW_BROWNIE_WORKS" :key="step.title" class="panel home__how-card">
-          <p class="home__how-head">
-            <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon :name="step.icon" :size="18" /></span>
-            <span class="home__how-step">Step {{ index + 1 }}</span>
-          </p>
-          <h3 class="home__how-title">{{ step.title }}</h3>
-          <p class="home__how-text">{{ step.text }}</p>
+    <details v-if="authenticated" class="home__library" :open="libraryOpen" @toggle="libraryOpen = ($event.target as HTMLDetailsElement).open">
+      <summary class="home__library-toggle">
+        <span>Find a form</span>
+        <span class="home__library-summary">Browse official U.S. forms</span>
+        <AppIcon name="chevron-down" :size="18" />
+      </summary>
+      <div class="home__library-content">
+      <div class="home__library-intro">
+        <div>
+          <h2 id="home-library-heading" class="home__library-heading">{{ requestedFormId ? 'Your selected form' : 'Search official forms' }}</h2>
+          <p v-if="!requestedFormId" class="home__library-hint">Official U.S. forms, by name or purpose.</p>
+        </div>
+      </div>
+      <template v-if="!requestedFormId">
+      <form class="home__library-composer" role="search" @submit.prevent="submitLibrarySearch">
+      <AppIcon name="search" :size="22" />
+      <input
+        ref="librarySearch"
+        v-model="formQuery"
+        class="home__library-search"
+        type="search"
+        placeholder="Form name or purpose, e.g. starting a new job"
+        aria-label="Find an official form"
+        aria-describedby="home-search-hint"
+      />
+      <button type="submit" class="button button--primary button--small">Search</button>
+      </form>
+      <p class="home__library-browse">Or browse by purpose</p>
+      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <div v-if="selectedPurpose === 'travel'" class="home__library-examples" aria-label="Passport purpose">
+        <button v-for="example in ['First passport', 'Renew passport', 'Lost passport']" :key="example" type="button"
+          class="button button--small" @click="formQuery = example">{{ example }}</button>
+      </div>
+      <div v-else-if="!selectedPurpose" class="home__library-examples" aria-label="Try a form search">
+        <button
+          v-for="example in ['Apply for a passport', 'Starting a new job', 'Self-employed tax form']"
+          :key="example"
+          type="button"
+          class="button button--small"
+          @click="formQuery = example"
+        >{{ example }}</button>
+      </div>
+      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check the agency’s requirements before you start.</p>
+      </template>
+      <div v-if="!requestedFormId && formGuidance" class="form-guidance" role="status">
+        <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
+        <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
+        <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet. Download your state’s form, then bring it here to fill.</p>
+        <a :href="formGuidance.url" target="_blank" rel="noopener noreferrer">{{ formGuidance.linkLabel }} <AppIcon name="external" :size="16" /></a>
+        <button v-if="drivingRequest" type="button" class="button button--small home__dmv-upload" @click="chooseForm">Upload a DMV form</button></div>
+      </div>
+      <p v-if="formHandoffNotice" ref="handoffNoticeElement" class="home__library-handoff" role="status" tabindex="-1">{{ formHandoffNotice }}</p>
+      <p v-if="!requestedFormId" class="home__library-popular">
+        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : drivingRequest ? 'State services' : formQuery.trim() || selectedPurpose ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
+      </p>
+      <div v-if="formSearchFailed" class="home__library-error" role="alert">
+        <p>{{ formSearchFailed }}</p>
+        <button v-if="!formStartFailed" type="button" class="link-button" @click="runFormSearch">Retry search</button>
+      </div>
+      <ul v-if="formResults.length && !formSearching" class="home__library-list">
+        <li v-for="entry in formResults" :key="entry.id" class="home__library-row">
+          <div class="home__library-text">
+            <p class="home__library-title">{{ entry.title }}</p>
+            <p class="home__library-agency">{{ entry.agency }}</p>
+            <p class="home__library-description">{{ entry.description }}</p>
+          </div>
+          <button
+            type="button"
+            class="button button--small home__library-start"
+            :aria-disabled="formBusyId !== null ? 'true' : undefined"
+            :aria-label="formBusyId === entry.id ? `Getting ${entry.title}` : `Start ${entry.title}`"
+            @click="startLibraryForm(entry)"
+          >
+            {{ formBusyId === entry.id ? 'Getting the form…' : 'Start' }}
+          </button>
         </li>
-      </ol>
-    </section>
+      </ul>
+      <p v-else-if="!requestedFormId && !formGuidance && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
+        No match. Upload your own copy above.
+      </p>
+      <button v-if="requestedFormId" type="button" class="link-button home__library-another" @click="findAnotherForm">Find another form</button>
+      </div>
+    </details>
+
 
     <section v-if="authenticated" class="home__recent" aria-labelledby="recent-heading">
       <h2 id="recent-heading" class="home__section-title">Recent documents</h2>
@@ -1046,7 +1092,7 @@ const showHowItWorks = computed(
           <RouterLink to="/trash">trash bin</RouterLink>.
         </p>
         <p v-else class="home__hint">
-          There are no documents here. Upload a form above to start one, or choose a template under My Templates.
+          There are no documents here. Upload a form above to start one, or choose a saved template in the sidebar.
         </p>
       </div>
 
@@ -1087,6 +1133,38 @@ const showHowItWorks = computed(
       </div>
     </section>
 
+    <section v-if="showNameCard" class="card home__name" aria-labelledby="home-name-heading">
+      <h2 id="home-name-heading" class="home__name-heading">What&rsquo;s your name?</h2>
+      <form class="home__name-form" @submit.prevent="submitName">
+        <label class="home__name-field">
+          <span>First</span>
+          <input v-model="nameGiven" class="text-field" type="text" autocomplete="given-name" maxlength="100" required />
+        </label>
+        <label class="home__name-field">
+          <span>Last</span>
+          <input v-model="nameFamily" class="text-field" type="text" autocomplete="family-name" maxlength="100" required />
+        </label>
+        <div class="home__name-actions">
+          <button type="submit" class="button button--primary button--small" :disabled="nameBusy">
+            {{ nameBusy ? 'Saving…' : 'Save' }}
+          </button>
+          <button type="button" class="link-button" @click="skipName">Skip</button>
+        </div>
+        <p v-if="nameError" class="field-error" role="alert">{{ nameError }}</p>
+      </form>
+    </section>
+
+    <section v-if="authenticated && showHowItWorks" class="home__how" aria-labelledby="how-heading">
+      <h2 id="how-heading" class="home__section-title">How Brownie works</h2>
+      <ol class="home__how-cards">
+        <li v-for="(step, index) in HOW_BROWNIE_WORKS" :key="step.title" class="home__how-card">
+          <p class="home__how-step">Step {{ index + 1 }}</p>
+          <h3 class="home__how-title">{{ step.title }}</h3>
+          <p class="home__how-text">{{ step.text }}</p>
+        </li>
+      </ol>
+    </section>
+
     <!--
       Drawn on the body rather than inside the page, so that it is fixed to the window whatever sits between here and
       the window: a container, a transform or a filter on an ancestor would make "fixed" mean fixed to that instead.
@@ -1110,12 +1188,7 @@ const showHowItWorks = computed(
 </template>
 
 <style scoped>
-/*
- * One centred column, 728px wide, whose blocks each take the width they read best at: a form being learned is a
- * narrower card than the list under it, and while there is nothing in the list yet the three cards that say how
- * Brownie works use the full column. The top gap is a share of the window's height, so the greeting sits at the
- * same place on a tall screen as on a short one.
- */
+/* Upload, continuation, and recent work share one reading column. */
 .home {
   /* The shell's own side margins already keep the column off the window edge. */
   --page-gutter: 0px;
@@ -1143,36 +1216,41 @@ const showHowItWorks = computed(
 
 .home__greeting {
   font-family: var(--font-display, var(--font-body));
-  text-align: center;
+  inline-size: min(100%, var(--home-column));
+  text-align: start;
   text-wrap: balance;
 }
 
 .home__upload-label {
-  margin: 0 0 var(--space-2);
-  font-size: var(--font-size-sm);
+  margin: 0;
+  font-size: var(--font-size-xl);
   font-weight: var(--font-weight-medium);
+}
+
+.home__upload-intro {
+  margin: var(--space-2) 0 var(--space-4);
+  color: var(--color-text-muted);
 }
 
 /* The button, the quiet lines under it, and the live region, as one block. */
 .home__upload-area {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  inline-size: 100%;
-  margin-block-start: 1.375rem;
+  align-items: flex-start;
+  inline-size: min(100%, var(--home-column));
+  margin-block-start: var(--space-5);
+  padding-block-end: var(--space-5);
+  border-block-end: 1px solid var(--color-hairline);
 }
 
-/*
- * The big button is the shared primary pill, drawn larger: 451px by 78px with its content set from the left, and a
- * 20px label at the regular weight, which on this cocoa is 4.8:1 and so clear of the 4.5:1 any size of text needs.
- */
+/* The file chooser is the primary action, with its disclosure directly below. */
 .home__upload {
-  --button-height: 4.875rem;
+  --button-height: 3.5rem;
   --button-pad: 1.75rem;
   --button-icon: 1.875rem;
-  --button-gap: 1.5rem;
+  --button-gap: 0.75rem;
   justify-content: flex-start;
-  inline-size: min(100%, 28.1875rem);
+  inline-size: auto;
   font-size: var(--font-size-lg);
   font-weight: 400;
 }
@@ -1185,8 +1263,7 @@ const showHowItWorks = computed(
   color: var(--color-text-muted);
   font-size: var(--home-fine);
   line-height: 1.4;
-  text-align: center;
-  text-wrap: balance;
+  text-align: start;
 }
 
 /* The note sits a hair further from the line above it than that line does from the button. */
@@ -1362,16 +1439,14 @@ const showHowItWorks = computed(
 .home__resume {
   inline-size: min(100%, var(--home-column));
   margin-block-start: 2.375rem;
-  padding: 1rem 1.1875rem;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  padding-block-end: var(--space-5);
+  border-block-end: 1px solid var(--color-hairline);
 }
 
 .home__resume-label {
   margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  font-size: var(--font-size-base);
   font-weight: var(--font-weight-medium);
   line-height: 1.4;
 }
@@ -1441,7 +1516,7 @@ const showHowItWorks = computed(
   line-height: 1.4;
 }
 
-/* Each card is as tall as its own words need, so a shorter one is not stretched to match a longer. */
+/* The first-use steps stay secondary to the work above. */
 .home__how-cards {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1452,14 +1527,8 @@ const showHowItWorks = computed(
   list-style: none;
 }
 
-.home__how-head {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin: 0;
-}
-
 .home__how-step {
+  margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
@@ -1491,10 +1560,6 @@ const showHowItWorks = computed(
 .home__recent {
   inline-size: min(100%, var(--home-column));
   margin-block-start: 1.5625rem;
-}
-
-.home__how + .home__recent {
-  margin-block-start: 1.8125rem;
 }
 
 /* Nothing yet: a dashed box rather than a card, so it reads as a place waiting to be filled and not as content. */
@@ -1848,15 +1913,27 @@ const showHowItWorks = computed(
 /* ---------- Form library ---------- */
 
 .home__library {
-  display: grid;
-  gap: 0.75rem;
   inline-size: min(100%, var(--home-column));
   margin-block-start: var(--space-5);
-  padding: clamp(1rem, 3vw, 1.5rem);
-  border: 1px solid var(--color-outline);
-  border-radius: var(--radius-lg);
-  background: var(--color-paper);
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--color-hairline);
 }
+
+.home__library-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.75rem;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  list-style: none;
+}
+.home__library-toggle::-webkit-details-marker { display: none; }
+.home__library-summary { margin-inline-start: auto; color: var(--color-text-muted); font-size: var(--font-size-sm); font-weight: 400; }
+.home__library[open] .home__library-toggle > svg { rotate: 180deg; }
+.home__library-content { display: grid; gap: var(--space-3); padding-block-start: var(--space-4); }
+.home__library-another { justify-self: start; }
+.home__library-handoff { margin: 0; color: var(--color-cocoa-strong); line-height: 1.5; }
 
 .home__library-intro {
   display: flex;
@@ -1871,8 +1948,7 @@ const showHowItWorks = computed(
   font-size: var(--font-size-sm);
 }
 
-.home__library-mascot { inline-size: clamp(3.5rem, 12vw, 5.5rem); block-size: auto; object-fit: contain; flex: none; }
-.home__library-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 2px solid var(--color-cocoa); border-radius: var(--radius-md); background: var(--color-surface); }
+.home__library-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--color-outline); border-radius: var(--radius-md); background: var(--color-surface); }
 .home__library-composer > svg { margin-inline-start: var(--space-2); color: var(--color-cocoa); }
 .home__library-composer:focus-within { box-shadow: var(--focus-ring); }
 .home__library-browse { margin: var(--space-2) 0 0; font-size: var(--font-size-sm); font-weight: 600; }
@@ -1920,7 +1996,7 @@ const showHowItWorks = computed(
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.5rem;
+  gap: 0;
 }
 
 .home__library-row {
@@ -1928,10 +2004,8 @@ const showHowItWorks = computed(
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: var(--color-surface);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-md);
+  padding-block: var(--space-4);
+  border-block-start: 1px solid var(--color-hairline);
 }
 
 .home__library-text {
@@ -1972,6 +2046,8 @@ const showHowItWorks = computed(
 }
 
 @media (max-width: 35rem) {
+  .home__library-summary { display: none; }
+  .home__library-row { align-items: flex-start; }
   .home__library-composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); }
   .home__library-composer > .button { grid-column: 1 / -1; inline-size: 100%; }
 }

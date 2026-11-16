@@ -25,19 +25,19 @@ const compactLabels: Record<FormPurposeId, string> = {
 </template>
 
 <style scoped>
-.purpose-picker { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.purpose-picker { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
 .purpose-picker__option {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
-  min-block-size: 2.75rem; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-outline);
-  border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text);
+  min-block-size: 2.75rem; padding: var(--space-2) var(--space-1);
+  border: 0; border-block-end: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--color-text-secondary);
   font-size: var(--font-size-sm); line-height: 1.25; white-space: nowrap; cursor: pointer;
-  transition: background-color var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
+  transition: color var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
 }
-.purpose-picker__option:hover { background: var(--color-paper-deep); }
-.purpose-picker__option[aria-pressed='true'] { background: var(--color-cocoa); border-color: var(--color-cocoa); color: var(--color-surface); }
-.purpose-picker__option:active { transform: translateY(1px); }
+.purpose-picker__option:hover { color: var(--color-text); }
+.purpose-picker__option[aria-pressed='true'] { border-block-end-color: var(--color-cocoa); color: var(--color-cocoa-strong); font-weight: var(--font-weight-medium); }
 @media (max-width: 35rem) {
-  .purpose-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .purpose-picker { display: flex; gap: 0 var(--space-3); }
   .purpose-picker__label { display: none; }
   .purpose-picker__option[data-short-label]::after { content: attr(data-short-label); }
 }

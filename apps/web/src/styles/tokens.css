@@ -14,7 +14,7 @@
  *        --color-cocoa-strong, as links already are; plain --color-cocoa is for fills, and for text on white.
  * SHAPE  Cards, the composer and chat cards 16px (--radius-lg). Quiet panels and the person's bubble 12px
  *        (--radius-md). Text fields and source chips 10px (--radius-control). Tags 6px (--radius-sm). Dialogs 20px
- *        (--radius-xl). Buttons are pills (--radius-pill). Cards are flat: a 1px --color-hairline edge and no shadow.
+ *        (--radius-xl). Buttons use the control radius; pills are reserved for small status labels. Cards are flat: a 1px --color-hairline edge and no shadow.
  *        Only floating things cast one: --shadow-popover (menus, toasts), --shadow-chip (a small pill sitting on
  *        the page, like the print-preview pager or the PDF zoom control), --shadow-dialog with --scrim behind it,
  *        and --shadow-sidebar (inset, for the sidebar panel).
@@ -242,11 +242,11 @@
 .shell--app {
   --font-display: var(--font-ui);
   --font-size-display: clamp(1.5rem, 1.2rem + 1vw, 2rem);
-  --color-paper: oklch(0.97076 0.01673 88.00);
+  --color-paper: oklch(0.984 0.007 88);
   --color-paper-soft: oklch(0.93873 0.02010 84.59);
   --color-paper-deep: oklch(0.89960 0.02727 85.67);
-  --color-sidebar: oklch(0.92666 0.02424 85.79);
-  --color-sidebar-border: oklch(0.80997 0.02794 85.67);
+  --color-sidebar: oklch(0.966 0.011 88);
+  --color-sidebar-border: var(--color-hairline);
   --color-text: oklch(0.27633 0.01344 154.36);
   --color-text-secondary: oklch(0.48483 0.02057 140.00);
   --color-text-muted: oklch(0.46116 0.02189 150.15);

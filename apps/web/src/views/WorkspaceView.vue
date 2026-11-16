@@ -2299,7 +2299,6 @@ async function attachAndPrepare(file: File, details?: string): Promise<boolean> 
       sourceUploadError.value = `That file was not attached: ${whyFileWasRefused(completed)}.`
       sourceUploadState.value = 'error'
       // A failure must stay visible even if the row was folded away while it was in flight.
-      sourceUploadOpen.value = true
       return false
     }
     // A spreadsheet is an accepted upload but never a readable source: the fill-many flow is its way in, so the
@@ -2309,7 +2308,6 @@ async function attachAndPrepare(file: File, details?: string): Promise<boolean> 
         "That file was not attached: a spreadsheet can't be used as a source. To make documents from its rows, " +
         "open a template's menu and choose Fill from a spreadsheet."
       sourceUploadState.value = 'error'
-      sourceUploadOpen.value = true
       return false
     }
     await extractArtifact(workspaceId, allocated.id)
@@ -2328,7 +2326,6 @@ async function attachAndPrepare(file: File, details?: string): Promise<boolean> 
     if (!canPrepare.value) {
       sourceUploadError.value = 'Your notes are attached. Finish or check the current preparation before starting another.'
       sourceUploadState.value = 'error'
-      sourceUploadOpen.value = true
       return false
     }
     if (sourcesOpen.value) await closeSources()
@@ -2342,7 +2339,6 @@ async function attachAndPrepare(file: File, details?: string): Promise<boolean> 
     sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
     // A failure must stay visible even if the row was folded away while it was in flight.
-    sourceUploadOpen.value = true
     return false
   }
 }
@@ -2356,7 +2352,6 @@ watch(() => props.documentId, () => {
 // opens with every picker closed like any other time.
 watch(sourcesOpen, (open) => {
   if (open) {
-    sourceUploadOpen.value = true
     return
   }
   justAttachedSources.value = []
@@ -2366,7 +2361,6 @@ watch(sourcesOpen, (open) => {
 })
 
 /** The row for uploading a file starts open, so its file picker is the first thing in the panel. */
-const sourceUploadOpen = ref(true)
 /** The files attached from this panel while it has been open, confirmed in it as small cards. */
 const justAttachedSources = ref<DocumentSourceResponse[]>([])
 /** Each one's size in bytes, by its source id: known only because this page watched it get chosen. */
@@ -2980,7 +2974,6 @@ async function prepareFromText(): Promise<void> {
   if (!prepared && composerText.value === '') composerText.value = text
   if (!prepared && sourceUploadError.value) {
     sourcesOpen.value = true
-    sourceUploadOpen.value = true
   }
 }
 
@@ -3236,12 +3229,12 @@ const singlePaneStrip = computed<{ title: string; status: string; action: string
       run: () => showAssistant(false),
     }
   }
-  if (reviewSlotId.value !== null) {
+  if (nextReviewTarget.value) {
     return {
       title: 'Check my work',
-      status: 'Brownie filled places to look over',
-      action: 'Check my work',
-      run: () => showAssistant(false),
+      status: reviewHeading.value,
+      action: 'Review next',
+      run: () => void goToNextToReview(),
     }
   }
   return null
@@ -3972,6 +3965,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   <div v-else-if="document" class="workspace" :class="`workspace--showing-${narrowView}`">
     <header class="workspace-bar">
       <div class="workspace-bar__start">
+        <h1 class="page-title workspace-title" :class="{ 'workspace-title--long': titleIsLong }">{{ document.title }}</h1>
         <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
         <button type="button" class="icon-button workspace-bar__undo" :aria-disabled="undoing" @click="undoLastChange">
           <AppIcon name="undo" :size="20" />
@@ -3992,6 +3986,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         </button>
       </div>
       <div class="workspace-bar__end">
+        <button v-if="nextReviewTarget" type="button" class="button button--secondary button--small" @click="narrowView = 'document'; goToNextToReview()">
+          Review next<span v-if="reviewList.length"> · {{ reviewHeading }}</span>
+        </button>
         <p ref="saveStatusRef" class="save-status" :class="`save-status--${saveStatus.tone}`" tabindex="-1">
           <span class="save-status__dot" aria-hidden="true"></span>
           <span>{{ saveStatus.text }}</span>
@@ -4009,7 +4006,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       </div>
     </header>
 
-    <h1 class="page-title workspace-title" :class="{ 'workspace-title--long': titleIsLong }">{{ document.title }}</h1>
 
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
 
@@ -4113,7 +4109,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         aria-controls="assistant-pane"
         @click="showAssistant(false)"
       >
-        Brownie
+        Brownie<span v-if="reviewList.length"> · {{ reviewHeading }}</span>
       </button>
     </div>
 
@@ -4547,7 +4543,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                   <template v-if="patchProposal && applyStage === 'proposed'">Review Brownie's proposed answers before applying them.</template>
                   <template v-else-if="fillCounts.total > 0 && fillCounts.accepted === fillCounts.total">Your answers are accepted. You can export this form or ask me for a change.</template>
                   <template v-else-if="fillCounts.filled > 0">Your form has {{ fillCounts.filled }} of {{ fillCounts.total }} places filled. Check the answers, or ask me for a change.</template>
-                  <template v-else>Tell me your details, typed or said, and I'll fill this form. Or add a document that has them with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template></template>
+                  <template v-else>Tell me your details, typed or said, and I'll fill this form. Or add notes or a connected source with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template></template>
                 </p>
               </div>
               <!-- Where to begin: offered until something has been said or a source attached. -->
@@ -4561,7 +4557,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                 <li>
                   <button type="button" class="button button--secondary button--small" @click="goToSources">
                     <AppIcon name="attach" :size="16" />
-                    Add a document
+                    Add notes or a source
                   </button>
                 </li>
                 <li v-if="starterAddsSpot">
@@ -4983,31 +4979,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               </button>
             </header>
             <div class="add-source__rows">
-              <div class="add-source__row" :class="{ 'add-source__row--open': sourceUploadOpen }">
+              <div class="add-source__row add-source__row--open">
                 <div class="add-source__row-head">
                   <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="document-upload" :size="18" /></span>
                   <div class="add-source__row-text">
-                    <button
-                      type="button"
-                      class="add-source__toggle"
-                      :aria-expanded="sourceUploadOpen"
-                      aria-controls="add-source-upload"
-                      aria-describedby="add-source-upload-hint"
-                      :disabled="sourceUploadState === 'uploading'"
-                      @click="sourceUploadOpen = !sourceUploadOpen"
-                    >
-                      Upload notes or a document
-                    </button>
-                    <p id="add-source-upload-hint" class="field-hint">
-                      Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
-                    </p>
-                  </div>
-                  <AppIcon class="add-source__chevron" :name="sourceUploadOpen ? 'chevron-down' : 'chevron-right'" :size="18" />
-                </div>
-                <div v-show="sourceUploadOpen" id="add-source-upload" class="add-source__row-body">
-                  <!-- Once a file is attached it shows as the chip below; the chooser comes back when the panel is closed and opened again. -->
-                  <template v-if="justAttachedSources.length === 0">
-                    <!-- The real file input, kept for the keyboard and for assistive technology; the button beside it is its label. -->
                     <input
                       id="attach-source"
                       class="visually-hidden add-source__input"
@@ -5016,18 +4991,16 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       :disabled="sourceUploadState === 'uploading' || !canPrepare"
                       @change="onSourceFileChosen"
                     />
-                    <label
-                      for="attach-source"
-                      class="button button--secondary button--small add-source__choose"
-                      :class="{ 'add-source__choose--busy': sourceUploadState === 'uploading' }"
-                    >
-                      <AppIcon name="upload" :size="16" />
-                      Upload notes and prepare<span class="visually-hidden"> this form</span>
-                    </label>
-                    <p v-if="!canPrepare" class="field-hint">Finish or check the current preparation before starting another.</p>
-                    <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
-                    <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
-                  </template>
+                    <label for="attach-source" class="add-source__toggle">Add notes (.txt)</label>
+                    <p id="add-source-upload-hint" class="field-hint">
+                      Plain text<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Uploading starts preparation.
+                    </p>
+                  </div>
+                </div>
+                <div id="add-source-upload" class="add-source__row-body">
+                  <p v-if="!canPrepare" class="field-hint">Finish or check the current preparation before starting another.</p>
+                  <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
+                  <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
                   <ul v-if="justAttachedSources.length > 0" class="add-source__files" aria-label="Added from here">
                     <li v-for="source in justAttachedSources" :key="source.id" class="source-chip">
                       <span class="source-chip__text">
@@ -5172,7 +5145,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 </template>
 
 <style scoped>
-.workspace-next-action { margin: 0; padding: 0 var(--space-4) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.workspace-next-action { margin: 0; padding: 0 0 var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .composer__prepare-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .rules-card__heading { font-family: var(--font-ui); }
 
@@ -5198,6 +5171,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 /* The top bar: Undo and version history at the start; how the document is shown, the save status and Export at the end. */
 .workspace-bar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
@@ -5211,6 +5185,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   align-items: center;
   gap: 0.125rem;
   margin-inline-end: auto;
+  min-inline-size: 0;
 }
 
 /* The two glyphs are drawn larger than the usual icon, so their targets carry no padding of their own. */
@@ -5227,8 +5202,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-bar__end {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1.125rem;
+  gap: var(--space-2) var(--space-3);
+  min-inline-size: 0;
 }
 
 .save-status {
@@ -5262,7 +5239,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 /* A compact file title keeps the working page in view. */
 .workspace-title {
-  margin: var(--space-3) 0 var(--space-5);
+  margin: 0 var(--space-2) 0 0;
   font-family: var(--font-ui);
   font-size: clamp(1.125rem, 1rem + 0.6vw, 1.5rem);
   font-weight: 500;
@@ -5462,14 +5439,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  */
 .workspace-switch,
 .view-toggle {
-  --segment-lift: 0 1px 2px color-mix(in srgb, var(--color-text) 14%, transparent);
   display: inline-flex;
-  padding: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--color-paper-deep);
+  gap: var(--space-2);
+  border-block-end: 1px solid var(--color-hairline);
 }
 
-/* The switch between the panes: only where they cannot sit side by side. */
 .workspace-switch {
   display: none;
   align-self: center;
@@ -5478,54 +5452,42 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-switch__button,
 .view-toggle__button {
-  min-block-size: 1.5rem;
-  padding: 0 0.78125rem;
+  min-block-size: 2rem;
+  padding: 0 var(--space-2);
   border: 0;
-  border-radius: var(--radius-pill);
+  border-block-end: 2px solid transparent;
   background: transparent;
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
   line-height: 1.25;
   color: var(--color-text-muted);
   cursor: pointer;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    color var(--motion-fast) var(--motion-ease);
 }
 
 .workspace-switch__button:hover,
-.view-toggle__button:hover {
-  color: var(--color-text);
-}
-
-/*
- * The chosen one is a white segment lifted a hair off the track, with the main text colour. The lift is a
- * shape cue that does not rely on colour, and the pressed state is also what assistive technology reads.
- */
+.view-toggle__button:hover,
 .workspace-switch__button[aria-pressed='true'],
 .view-toggle__button[aria-pressed='true'] {
-  background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: var(--segment-lift);
 }
 
-.workspace-switch__button[aria-pressed='true']:focus-visible,
-.view-toggle__button[aria-pressed='true']:focus-visible {
-  box-shadow:
-    var(--focus-ring),
-    var(--segment-lift);
+.workspace-switch__button[aria-pressed='true'],
+.view-toggle__button[aria-pressed='true'] {
+  border-block-end-color: currentColor;
 }
 
-/* A finger needs a taller target than the 24px a pointer gets. */
+.workspace-switch__button:focus-visible,
+.view-toggle__button:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
 @media (pointer: coarse) {
   .workspace-switch__button,
   .view-toggle__button {
-    min-block-size: 2.25rem;
-    padding-inline: var(--space-4);
+    min-block-size: 2.75rem;
   }
 }
 
-/* Forced colours draw every edge alike, so the chosen one takes the system's own selected colours instead. */
 @media (forced-colors: active) {
   .workspace-switch__button[aria-pressed='true'],
   .view-toggle__button[aria-pressed='true'] {
@@ -5546,23 +5508,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   min-inline-size: 0;
 }
 
-/*
- * The two-pane threshold sits at 40rem (640px) of content on purpose: this container is measured on its
- * content box inside the region's own side padding, so a 768px tablet with the sidebar as a drawer still
- * shows the document and Brownie side by side. Below it, one pane at a time with the switch.
- */
-@container main (min-width: 40rem) {
-  /*
-   * The page's column is the sheet, 600px wide at its fullest and never more than 55% of the room, so it keeps
-   * its full width for as long as Brownie's panel can give way for it. The panel takes what is left (671px
-   * where the window is wide enough for both, the most it grows to) and, below that, never less than 18rem.
-   * The two stop growing together and are centred in the window. The margin to the left of the page holds the
-   * rail and page numbers that hang beside the sheet, so it never drops below their 50px; margins and the gap
-   * between the columns follow the width of the region until they reach their fullest, 75px, 69px and 65px.
-   */
+/* Keep the document readable before showing both panes side by side. */
+@container main (min-width: 55rem) {
   .workspace-panes {
     --panes-room: clamp(3.125rem, 5.2cqi, 4.6875rem);
-    grid-template-columns: minmax(0, min(37.5rem, 55%)) minmax(15rem, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 35%);
     column-gap: clamp(var(--space-4), 4.6cqi, 4.0625rem);
     inline-size: 100%;
     max-inline-size: 92.5rem;
@@ -5655,7 +5605,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   }
 }
 
-@container main (max-width: 39.9999rem) {
+@container main (max-width: 54.9999rem) {
   .workspace-switch {
     display: inline-flex;
   }
@@ -5690,10 +5640,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     margin: var(--space-2) auto 0;
   }
 
-  /* Under controls that wrap onto lines of their own, the title gets more air than it does under the single wide row. */
-  .workspace-title {
-    margin-block-start: var(--space-3);
-  }
 
   /* The face of the document means nothing while Brownie's panel is the one showing. */
   .workspace--showing-assistant .view-toggle {
@@ -5731,7 +5677,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   font-weight: var(--font-weight-medium);
 }
 
-@container main (min-width: 40rem) {
+@container main (min-width: 55rem) {
   .empty-hint {
     display: none;
   }
@@ -5792,6 +5738,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   margin-inline-start: auto;
 }
 @container main (max-width: 27rem) {
+  .workspace-bar__start,
+  .workspace-bar__end {
+    flex-basis: 100%;
+  }
+
   .single-pane-strip {
     flex-wrap: wrap;
   }
@@ -5806,7 +5757,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     white-space: nowrap;
   }
 }
-@container main (min-width: 40rem) {
+@container main (min-width: 55rem) {
   .single-pane-strip {
     display: none;
   }
@@ -5928,7 +5879,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
 }
 
-@container main (min-width: 40rem) {
+@container main (min-width: 55rem) {
   .selection-bar__rules {
     display: none;
   }
@@ -6118,10 +6069,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   flex-direction: column;
   gap: var(--space-3);
   min-block-size: 0;
-  padding: var(--space-4);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  padding: var(--space-2) 0;
 }
 
 .assistant-pane__scroll {
@@ -6411,7 +6359,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   flex: none;
   block-size: var(--space-6);
   margin-block-end: calc(-1 * var(--space-4));
-  background: linear-gradient(to bottom, var(--color-surface) 0%, var(--color-surface) 60%, transparent);
+  background: linear-gradient(to bottom, var(--color-paper) 0%, var(--color-paper) 60%, transparent);
   pointer-events: none;
 }
 
@@ -7064,7 +7012,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   cursor: pointer;
 }
 
-.add-source__toggle:disabled {
+.add-source__input:disabled + .add-source__toggle {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -7076,11 +7024,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   border-radius: var(--radius-md);
 }
 
-.add-source__toggle:focus-visible {
-  box-shadow: none;
-}
-
-.add-source__toggle:focus-visible::after {
+.add-source__input:focus-visible + .add-source__toggle::after {
   box-shadow: var(--focus-ring);
 }
 
@@ -7097,14 +7041,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   padding: 0 0.75rem 0.75rem 3.1875rem;
 }
 
-.add-source__input:focus-visible + .add-source__choose {
-  box-shadow: var(--focus-ring);
-}
-
-.add-source__choose--busy {
-  opacity: 0.4;
-  cursor: progress;
-}
 
 .add-source__status {
   color: var(--color-text-muted);

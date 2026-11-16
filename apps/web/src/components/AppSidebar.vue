@@ -44,6 +44,11 @@ const invitationSent = ref(false)
 const templates = useTemplatesStore()
 const router = useRouter()
 const route = useRoute()
+const accountRoutes = ['/connections', '/your-data', '/details']
+const settingsOpen = ref(accountRoutes.includes(route.path))
+watch(() => route.path, (path) => {
+  if (accountRoutes.includes(path)) settingsOpen.value = true
+})
 
 const rootRef = ref<HTMLElement | null>(null)
 const closeButtonRef = ref<HTMLButtonElement | null>(null)
@@ -655,7 +660,7 @@ async function moveToTrash(): Promise<void> {
 
       <section class="sidebar__section" aria-labelledby="sidebar-templates-heading">
         <div class="sidebar__section-head">
-          <h2 id="sidebar-templates-heading" class="sidebar__section-title">My Templates</h2>
+          <h2 id="sidebar-templates-heading" class="sidebar__section-title">Start from a template</h2>
           <!-- Not disabled while a form is being added: that would drop the focus it holds. A press is ignored instead. -->
           <button
             v-if="session.status === 'authenticated'"
@@ -797,19 +802,27 @@ async function moveToTrash(): Promise<void> {
           <AppIcon name="trash" :size="19" />
           <span>Trash</span>
         </RouterLink>
-        <!-- Signed out, there is no account to show these for; both already send a direct visitor to sign in. -->
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/connections" @click="closeIfDrawer">
-          <AppIcon name="link" :size="19" />
-          <span>Connected apps</span>
-        </RouterLink>
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/your-data" @click="closeIfDrawer">
-          <AppIcon name="shield-check" :size="19" />
-          <span>Privacy &amp; data</span>
-        </RouterLink>
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/details" @click="closeIfDrawer">
-          <AppIcon name="document-text" :size="19" />
-          <span>Saved details</span>
-        </RouterLink>
+        <details v-if="session.status === 'authenticated'" class="sidebar__settings" :open="settingsOpen" @toggle="settingsOpen = ($event.target as HTMLDetailsElement).open">
+          <summary class="sidebar__link sidebar__settings-toggle">
+            <AppIcon name="sliders" :size="19" />
+            <span>Settings</span>
+            <AppIcon class="sidebar__settings-chevron" name="chevron-down" :size="16" />
+          </summary>
+          <nav aria-label="Account settings" class="sidebar__settings-links">
+            <RouterLink class="sidebar__link" to="/connections" @click="closeIfDrawer">
+              <AppIcon name="link" :size="19" />
+              <span>Connected apps</span>
+            </RouterLink>
+            <RouterLink class="sidebar__link" to="/your-data" @click="closeIfDrawer">
+              <AppIcon name="shield-check" :size="19" />
+              <span>Privacy &amp; data</span>
+            </RouterLink>
+            <RouterLink class="sidebar__link" to="/details" @click="closeIfDrawer">
+              <AppIcon name="document-text" :size="19" />
+              <span>Saved details</span>
+            </RouterLink>
+          </nav>
+        </details>
 
         <!-- A line with nothing under it would only mark an empty place, as it is until it is known who is here. -->
         <hr v-if="session.status === 'authenticated' || session.status === 'anonymous'" class="sidebar__rule sidebar__rule--foot" />
@@ -1073,7 +1086,7 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 0.1875rem;
-  min-block-size: 11rem;
+  min-block-size: 8rem;
 }
 
 .sidebar__section > * {
@@ -1124,8 +1137,7 @@ async function moveToTrash(): Promise<void> {
 
 /*
  * A form just added: its name on one line, cut short when long, and the way to start a document on the
- * next, so the list under it keeps most of its height. It sits under the My Templates heading, so the
- * words "to My Templates" are left to assistive technology.
+ * next, so the list under it keeps most of its height. The existing added-template announcement stays with its list.
  */
 .sidebar__notice--added {
   padding: var(--space-1) 0.9375rem;
@@ -1370,6 +1382,12 @@ async function moveToTrash(): Promise<void> {
     padding-inline-end: calc(var(--icon-button-size) - 0.125rem);
   }
 }
+
+.sidebar__settings-toggle { list-style: none; cursor: pointer; }
+.sidebar__settings-toggle::-webkit-details-marker { display: none; }
+.sidebar__settings-chevron { margin-inline-start: auto; }
+.sidebar__settings[open] .sidebar__settings-chevron { rotate: 180deg; }
+.sidebar__settings-links { padding-inline-start: var(--space-3); }
 
 /* Pins the trash and account rows to the bottom of the panel. */
 .sidebar__foot {

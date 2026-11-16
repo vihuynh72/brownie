@@ -15,8 +15,6 @@ vi.mock('@/landing/findForms', async () => {
 })
 
 const MCP_URL = 'https://api.example.com/mcp'
-const SIGN_IN = '/oauth2/authorization/entra'
-const GOOGLE_SIGN_IN = '/oauth2/authorization/google'
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
@@ -63,7 +61,7 @@ describe('LandingView', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0].text()).toContain('Form W-9')
     expect(rows[0].text()).toContain('Internal Revenue Service')
-    expect(rows[0].get('a.landing-forms__start').attributes('href')).toBe(SIGN_IN)
+    expect(rows[0].get('a.landing-forms__start').attributes('href')).toBe('/signin?next=%2F%3Fform%3Dirs-w9')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -132,44 +130,48 @@ describe('LandingView', () => {
     expect(wrapper.text()).toContain('without personal details')
   })
 
-  it('says the day is free when sign-up is open with a daily allowance', async () => {
+  it('starts a form through sign-in and keeps access information visible', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()
-
-    const primary = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
-    expect(primary).toBeDefined()
-    expect(primary!.attributes('href')).toBe(SIGN_IN)
+    expect(wrapper.get('.hero__action').attributes('href')).toBe('/signin?next=%2F')
     expect(wrapper.text()).toContain('Free to use every day')
   })
 
-  it('invites anyone to start when sign-up is simply open', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
+  it.each([
+    ['OPEN', 'Get started', 'Free to use every day'],
+    ['INVITATION_ONLY', 'Sign in', 'invited people'],
+  ] as const)('shows the correct access state for %s', async (signUp, label, note) => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp, mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()
-
-    const primary = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Get started')
-    expect(primary).toBeDefined()
-    expect(wrapper.text()).not.toContain('Free to use every day')
+    expect(wrapper.get('.landing__footer a').text()).toBe(label)
+    if (signUp === 'OPEN') expect(wrapper.text()).not.toContain(note)
+    else expect(wrapper.text()).toContain(note)
   })
 
-  it('says the deployment is by invitation only', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: MCP_URL })
-    const wrapper = await mountLanding()
-
-    const primary = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Sign in')
-    expect(primary).toBeDefined()
-    expect(wrapper.text()).toContain('invited people')
-  })
-
-  it('does not invent connection details when welcome fails', async () => {
+  it('shows recovery and only the browser when welcome fails', async () => {
     vi.mocked(getWelcome).mockRejectedValue(new Error('offline'))
     const wrapper = await mountLanding()
+    expect(wrapper.text()).toContain('Connection details are unavailable. Refresh the page to try again.')
+    expect(tabs(wrapper).map((tab) => tab.attributes('data-target'))).toEqual(['browser'])
+    expect(wrapper.find('.install__line').exists()).toBe(false)
+  })
 
-    const primary = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Sign in')
-    expect(primary).toBeDefined()
-    expect(tabs(wrapper).map((t) => t.attributes('data-target'))).toEqual(['browser'])
-    expect(wrapper.text()).not.toContain('Add to Claude or ChatGPT')
-    expect(wrapper.text()).not.toContain('invited people')
-    expect(wrapper.get('[role="status"]').text()).toContain('Refresh the page to try again')
+  it('does not link to Entra while providers are loading', async () => {
+    let resolveWelcome!: (value: Awaited<ReturnType<typeof getWelcome>>) => void
+    vi.mocked(getWelcome).mockReturnValue(new Promise((resolve) => { resolveWelcome = resolve }))
+    const wrapper = mount(LandingView, { attachTo: document.body })
+    mounted.push(wrapper)
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+    resolveWelcome({ signUp: 'OPEN', mcpServerUrl: MCP_URL, signInProviders: ['google'] })
+    await flushPromises()
+    expect(wrapper.get('.landing__nav a:last-child').attributes('href')).toBe('/oauth2/authorization/google')
+  })
+
+  it('does not offer Entra when Google is the only provider', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL, signInProviders: ['google'] })
+    const wrapper = await mountLanding()
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+    expect(wrapper.get('.landing__nav a:last-child').attributes('href')).toBe('/oauth2/authorization/google')
   })
 
   it('offers only the browser when the deployment serves no chat apps', async () => {
@@ -264,25 +266,6 @@ describe('LandingView', () => {
     expect(wrapper.get('.install__copy').text()).toContain('Selected: copy it with your keyboard')
   })
 
-  it('selects the Claude tab from the hero link', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
-    const wrapper = await mountLanding()
-
-    const heroLink = wrapper.findAll('a').find((a) => a.text() === 'Add to Claude or ChatGPT')!
-    await heroLink.trigger('click')
-
-    expect(activeTab(wrapper)).toBe('claude')
-  })
-
-  it('sends every sign-in affordance to the identity provider, none to an app page', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: MCP_URL })
-    const wrapper = await mountLanding()
-
-    const signIns = wrapper.findAll(`a[href="${SIGN_IN}"]`)
-    expect(signIns.length).toBeGreaterThanOrEqual(3)
-    expect(wrapper.find('a[href="/signin"]').exists()).toBe(false)
-  })
-
   it('has no automatically-detectable accessibility violations', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()
@@ -290,66 +273,7 @@ describe('LandingView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-it('points every sign-in action at Google when the deployment runs it', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({
-      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['google', 'entra'],
-    })
-    const wrapper = await mountLanding()
 
-    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
-    expect(tryIt?.attributes('href')).toBe(GOOGLE_SIGN_IN)
-    const signIn = wrapper.findAll('a').find((a) => a.text() === 'Sign in')
-    expect(signIn?.attributes('href')).toBe(GOOGLE_SIGN_IN)
-
-    const emailCode = wrapper.get('a.landing__email-code')
-    expect(emailCode.attributes('href')).toBe(SIGN_IN)
-    expect(emailCode.text()).toContain('Use an email code instead')
-  })
-
-  it('does not offer an email code when only Google is available', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({
-      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['google'],
-    })
-    const wrapper = await mountLanding()
-    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('code sent to your email')
-    expect(wrapper.text()).toContain('Sign in to Brownie.')
-  })
-
-  it('does not point at Entra while sign-in providers are still loading', async () => {
-    let resolveWelcome!: (value: Awaited<ReturnType<typeof getWelcome>>) => void
-    vi.mocked(getWelcome).mockReturnValue(new Promise((resolve) => { resolveWelcome = resolve }))
-    const wrapper = mount(LandingView, { attachTo: document.body })
-    mounted.push(wrapper)
-    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
-    resolveWelcome({ signUp: 'OPEN', mcpServerUrl: MCP_URL, signInProviders: ['google'] })
-    await flushPromises()
-    expect(wrapper.get('.landing__nav a:last-child').attributes('href')).toBe(GOOGLE_SIGN_IN)
-  })
-
-  it('keeps the email-code button primary with Google as a small early-access link', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({
-      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['entra', 'google'],
-    })
-    const wrapper = await mountLanding()
-
-    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
-    expect(tryIt?.attributes('href')).toBe(SIGN_IN)
-    const emailCode = wrapper.get('a.landing__email-code')
-    expect(emailCode.attributes('href')).toBe(GOOGLE_SIGN_IN)
-    expect(emailCode.text()).toContain('Continue with Google (early access)')
-  })
-
-  it('keeps the single email-code action when Google is not enabled', async () => {
-    vi.mocked(getWelcome).mockResolvedValue({
-      signUp: 'OPEN_WITH_DAILY_ALLOWANCE', mcpServerUrl: MCP_URL, signInProviders: ['entra'],
-    })
-    const wrapper = await mountLanding()
-
-    const tryIt = wrapper.findAll('a.button--primary').find((a) => a.text() === 'Try it free')
-    expect(tryIt?.attributes('href')).toBe(SIGN_IN)
-    expect(wrapper.find('a.landing__email-code').exists()).toBe(false)
-  })
 })
 
 function activeTab(wrapper: VueWrapper): string | undefined {

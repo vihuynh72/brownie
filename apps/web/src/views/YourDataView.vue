@@ -635,6 +635,11 @@ watch(
 
 /* A heading row, then what it says, ten pixels apart. */
 .your-data__card {
+  padding: var(--space-5) 0;
+  border: 0;
+  border-block-start: 1px solid var(--color-hairline);
+  border-radius: 0;
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -729,8 +734,7 @@ watch(
 
 /* The card that cannot be undone: a red edge, with a half pixel more so it shows on paper, and a red heading. */
 .your-data__danger {
-  border-color: var(--color-error);
-  box-shadow: inset 0 0 0 0.5px var(--color-error);
+  border-block-start-color: var(--color-error);
 }
 
 .your-data__card-title--danger {

@@ -1,6 +1,6 @@
 <template>
   <span class="brand">
-    <img class="brand__mark" src="/art/brownie-mascot-v2.webp" width="40" height="40" alt="" />
+    <img class="brand__mark" src="/art/brownie-mark-v3.webp" width="32" height="32" alt="" />
     <span>Brownie</span>
   </span>
 </template>
@@ -9,7 +9,7 @@
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.625rem;
+  gap: var(--space-2);
   font-family: var(--font-ui);
   font-size: 1.125rem;
   font-weight: 600;
@@ -18,8 +18,8 @@
 }
 
 .brand__mark {
-  inline-size: 2.5rem;
-  block-size: 2.5rem;
+  inline-size: 2rem;
+  block-size: 2rem;
   object-fit: contain;
 }
 </style>
