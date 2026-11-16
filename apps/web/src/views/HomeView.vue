@@ -1063,7 +1063,7 @@ const showHowItWorks = computed(
       <p v-else-if="!requestedFormId && !formGuidance && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
         No match. Upload your own copy above.
       </p>
-      <button v-if="requestedFormId" type="button" class="link-button home__library-another" @click="findAnotherForm">Find another form</button>
+      <button v-if="requestedFormId" type="button" class="button button--quiet button--small home__library-another" @click="findAnotherForm">Find another form</button>
       </div>
     </details>
 
