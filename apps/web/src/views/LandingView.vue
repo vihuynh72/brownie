@@ -1101,6 +1101,7 @@ const TESTED_FORMS = [
 .landing-forms__browse { margin-block: var(--space-5) var(--space-3); font-weight: 600; }
 .landing-forms .form-guidance { margin-block: var(--space-4); }
 @media (max-width: 35rem) {
+  .landing-forms__row { flex-direction: column; align-items: flex-start; gap: var(--space-3); }
   .landing-forms__composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); padding: var(--space-2); }
   .landing-forms__composer button { grid-column: 1 / -1; inline-size: 100%; }
 }

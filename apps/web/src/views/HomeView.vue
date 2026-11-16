@@ -830,7 +830,7 @@ const showHowItWorks = computed(
       </p>
     </template>
   </LandingView>
-  <div v-else class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks }">
+  <div v-else class="page-column page-column--narrow home" :class="{ 'home--wide': showHowItWorks, 'home--handoff': requestedFormId !== null }">
     <p v-if="signInRefusedAsUninvited" class="card home__signin-error" role="alert">
       This Brownie is open to invited people only, and the account you signed in with is not on its list. If you think it
       should be, ask whoever invited you; signing in again with the same account will not change it.
@@ -1215,6 +1215,7 @@ const showHowItWorks = computed(
 }
 
 .home__greeting {
+  order: -2;
   font-family: var(--font-display, var(--font-body));
   inline-size: min(100%, var(--home-column));
   text-align: start;
@@ -1918,6 +1919,9 @@ const showHowItWorks = computed(
   padding-block-end: var(--space-4);
   border-block-end: 1px solid var(--color-hairline);
 }
+
+/* A chosen catalog form leads the page; ordinary browsing stays below upload and continuation. */
+.home--handoff .home__library { order: -1; }
 
 .home__library-toggle {
   display: flex;
