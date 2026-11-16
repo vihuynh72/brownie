@@ -783,7 +783,4 @@ watch(
   margin: var(--space-2) 0 0;
 }
 
-.your-data__card { border-top: 3px solid var(--color-honey); }
-.your-data__card-title { font-family: var(--font-display); font-size: 1.3rem; font-weight: 400; }
-.your-data__danger { border-top-color: var(--color-error); }
 </style>

@@ -583,6 +583,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
 }
 
 .trash__list {
+  padding: 0;
   margin: 0;
   list-style: none;
 }
@@ -601,7 +602,7 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 0.875rem;
-  padding: 0.875rem 1rem;
+  padding: var(--space-4) 0;
 }
 
 .trash__item + .trash__item {
@@ -721,7 +722,6 @@ async function deleteForever(entry: DeletionResponse): Promise<void> {
   }
 }
 
-.trash__subtitle { font-family: var(--font-display); font-size: 1.5rem; font-weight: 400; }
 .trash__list { overflow: hidden; }
 .trash__item { transition: background-color 160ms ease; }
 .trash__item:hover { background: var(--color-paper-soft); }
