@@ -3608,8 +3608,9 @@ describe('WorkspaceView: the chat', () => {
     expect(norm(chatLog(page).text())).toContain('You can also type straight into the highlighted spots')
     await attachUpload(page)
     expect(starters()).toEqual([])
-    // Under way, its first words keep to the point.
-    expect(norm(chatLog(page).text())).toContain("I'll fill this form")
+    // Once work starts, the source and conversation replace the opening instructions.
+    expect(norm(chatLog(page).text())).toContain('minutes.txt')
+    expect(norm(chatLog(page).text())).not.toContain("I'll fill this form")
     expect(norm(chatLog(page).text())).not.toContain('You can also type straight into the highlighted spots')
   })
 
@@ -3620,8 +3621,8 @@ describe('WorkspaceView: the chat', () => {
     await send(page, 'write me a poem')
 
     const lines = chatLog(page).findAll('.chat-line')
-    expect(lines.map((line) => (line.classes().includes('msg--user') ? 'person' : 'brownie'))).toEqual(['brownie', 'person', 'brownie'])
-    expect(chatLog(page).findAll('.msg--brownie > .msg__who').map((who) => who.text())).toEqual(['Brownie', 'Brownie'])
+    expect(lines.map((line) => (line.classes().includes('msg--user') ? 'person' : 'brownie'))).toEqual(['person', 'brownie'])
+    expect(chatLog(page).findAll('.msg--brownie > .msg__who').map((who) => who.text())).toEqual(['Brownie'])
     expect(chatLog(page).find('.msg--user .msg__who').exists()).toBe(false)
   })
 

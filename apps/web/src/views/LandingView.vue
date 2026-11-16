@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import BrownieDemo from '@/components/BrownieDemo.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type FormEntry, type WelcomeResponse } from '@/api/client'
 import { findForms } from '@/landing/findForms'
 import { installTargets, type InstallTargetId } from '@/landing/installTargets'
@@ -187,7 +188,7 @@ const TESTED_FORMS = [
 
     <header class="landing__bar">
       <a class="landing__brand" href="/" aria-label="Brownie, home">
-        <span>Brownie<span class="landing__brand-dot" aria-hidden="true">.</span></span>
+        <BrownieBrand />
       </a>
       <nav class="landing__nav" aria-label="Brownie">
         <a href="#how">How it works</a>
@@ -403,8 +404,7 @@ const TESTED_FORMS = [
 
     <footer class="landing__footer">
       <span class="landing__brand landing__brand--quiet">
-        <span class="doc-tile doc-tile--small" aria-hidden="true"><AppIcon name="document-text" :size="14" /></span>
-        <span>Brownie</span>
+        <BrownieBrand />
       </span>
       <span class="landing__footer-line">Fills your forms from what you tell it.</span>
       <a :href="signInHref">{{ primaryLabel }}</a>

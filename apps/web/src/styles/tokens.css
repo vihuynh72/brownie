@@ -89,7 +89,7 @@
  */
 
 /*
- * Rubik, the interface typeface, self-hosted so no page load depends on a
+ * Retained Rubik font faces, self-hosted so no page load depends on a
  * third-party font host and no visitor's request for this app reaches one.
  * One variable file per subset covers every weight the interface uses
  * (400 body, 500 labels, buttons and headings), which is smaller than the
@@ -211,7 +211,8 @@
   /* Labels, buttons and headings are medium weight; reading text is regular. */
   --font-weight-medium: 500;
   --font-display: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
-  --font-body: 'Rubik', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: var(--font-ui);
   /* Commands and addresses a person copies, and nothing else: the system's own monospace, so no font is downloaded. */
   --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
@@ -238,8 +239,8 @@
   /* What covers the page behind a dialog. */
   --scrim: rgb(0 0 0 / 0.27);
 
-  /* How wide the docked sidebar is (263px), and how far the main region sits from it. */
-  --sidebar-width: 16.4375rem;
+  /* Width of the docked sidebar (240px). */
+  --sidebar-width: 15rem;
 
   /* Motion: short enough to feel like a response rather than an effect.
      Both are set to an imperceptible duration under prefers-reduced-motion
@@ -252,6 +253,29 @@
   /* A solid ring the eye can find: the focus color itself at full strength (about 5.5:1 on white,
      well past the 3:1 a focus indicator needs), offset so it never merges with a control's border. */
   --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-focus);
+}
+
+/* The working app uses neutral surfaces; the illustrated public page keeps its warm palette. */
+.shell--app {
+  --font-display: var(--font-ui);
+  --font-size-display: clamp(1.5rem, 1.2rem + 1vw, 2rem);
+  --color-paper: #f7f8fa;
+  --color-paper-soft: #f2f3f5;
+  --color-paper-deep: #e9ebee;
+  --color-sidebar: #fbfbfc;
+  --color-sidebar-border: #e4e6ea;
+  --color-text: #25272c;
+  --color-text-secondary: #5f626b;
+  --color-text-muted: #5a5e67;
+  --color-text-faint: #686c75;
+  --color-hairline: #e2e5e9;
+  --color-outline: #d0d4da;
+  --color-cocoa: #79573f;
+  --color-cocoa-strong: #60432f;
+  --color-cocoa-wash: #eeebe7;
+  --color-track: #e4e6ea;
+  --color-bubble: #f2f3f5;
+  --color-bubble-border: #e2e5e9;
 }
 
 /*

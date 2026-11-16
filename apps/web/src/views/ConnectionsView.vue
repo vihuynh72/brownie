@@ -336,7 +336,7 @@ async function disconnect(): Promise<void> {
 
   <section v-else class="page-column page-column--wide connections" aria-labelledby="connections-heading">
     <header class="page-head">
-      <h1 id="connections-heading" class="page-title">Connections</h1>
+      <h1 id="connections-heading" class="page-title">Connected apps</h1>
       <p class="page-lede">
         Brownie uses your Google account only where you allow it here, and only when you ask for it inside a document.
       </p>

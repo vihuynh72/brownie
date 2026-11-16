@@ -42,7 +42,7 @@
   /* A filled button trims the 1px edge off its side padding, so filled and outline pills have the same label room. */
   padding: var(--button-block) calc(var(--button-pad) - var(--button-trim));
   border: 1px solid var(--button-border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--button-bg);
   color: var(--button-ink);
   font-size: var(--font-size-sm);
@@ -219,7 +219,7 @@
 /* ---------- Document tile ---------- */
 
 /*
- * A rounded cocoa square holding a white glyph. Left empty it draws a page; give it an icon (an svg child) to draw
+ * A quiet file tile. Left empty it draws a page; give it an icon (an svg child) to draw
  * another glyph at the same size. The glyph is a whole number of pixels (22, 18 and 14), because a mask scaled to a
  * fractional box is drawn too large.
  */
@@ -233,8 +233,9 @@
   inline-size: var(--doc-tile-size);
   block-size: var(--doc-tile-size);
   border-radius: var(--doc-tile-radius);
-  background: var(--color-cocoa-tile);
-  color: var(--color-surface);
+  background: var(--color-paper-soft);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-hairline);
 }
 
 .doc-tile--medium {
@@ -580,7 +581,7 @@ textarea.text-field {
 
 .msg--brownie {
   display: grid;
-  gap: 0.875rem;
+  gap: 0.5rem;
 }
 
 .msg__who {
@@ -594,26 +595,9 @@ textarea.text-field {
   line-height: 1.3;
 }
 
-.msg__who::before {
-  content: '';
-  flex: none;
-  inline-size: 1.125rem;
-  block-size: 1.125rem;
-  background: var(--color-cocoa);
-  mask: var(--glyph-sparkles) center / contain no-repeat;
-}
-
-/* A display that forces its own colours drops the mask's background, which would erase the sparkle; hand it the text colour. */
-@media (forced-colors: active) {
-  .msg__who::before {
-    forced-color-adjust: none;
-    background: CanvasText;
-  }
-}
-
 .msg__body {
-  font-size: var(--font-size-base);
-  line-height: 1.45;
+  font-size: 0.9375rem;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
@@ -701,8 +685,8 @@ textarea.text-field {
 .composer {
   display: flex;
   flex-direction: column;
-  gap: 1.1875rem;
-  padding: 1rem 0.75rem 0.75rem;
+  gap: 0.75rem;
+  padding: 0.875rem 0.75rem 0.625rem;
   border: 1px solid var(--color-outline);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
@@ -733,7 +717,7 @@ textarea.text-field {
   border: 0;
   background: transparent;
   color: var(--color-text);
-  font-size: var(--font-size-base);
+  font-size: 0.9375rem;
   line-height: 1.4375;
   resize: none;
   field-sizing: content;
@@ -858,12 +842,12 @@ textarea.text-field {
 
 .page-title {
   margin: 0;
-  font-family: var(--font-display);
+  font-family: var(--font-ui);
   font-style: normal;
   font-size: var(--font-size-display);
-  font-weight: 400;
-  line-height: 1.1;
-  letter-spacing: -0.035em;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
   text-wrap: balance;
   overflow-wrap: anywhere;
 }

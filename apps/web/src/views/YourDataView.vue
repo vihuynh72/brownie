@@ -342,7 +342,7 @@ watch(
 
   <section v-else class="page-column page-column--wide your-data" aria-labelledby="your-data-title">
     <header class="page-head">
-      <h1 id="your-data-title" class="page-title">Your data</h1>
+      <h1 id="your-data-title" class="page-title">Privacy &amp; data</h1>
       <p class="page-lede">What Brownie keeps, for how long, who else sees it, and how to delete it all.</p>
     </header>
 

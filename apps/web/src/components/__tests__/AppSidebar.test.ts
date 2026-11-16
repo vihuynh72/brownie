@@ -294,9 +294,9 @@ describe('AppSidebar', () => {
     it.each([
       ['/', 'Home'],
       ['/chat', 'Chat'],
-      ['/trash', 'Trash Bin'],
-      ['/connections', 'Connections'],
-      ['/your-data', 'Your data'],
+      ['/trash', 'Trash'],
+      ['/connections', 'Connected apps'],
+      ['/your-data', 'Privacy & data'],
     ])('marks only the row for %s as the current page', async (path, name) => {
       wrapper = await mountWithTemplates([CLUB], { open: true, docked: true }, path)
 
@@ -313,7 +313,7 @@ describe('AppSidebar', () => {
 
       await router.push('/your-data')
       await flushPromises()
-      expect(current()).toEqual(['Your data'])
+      expect(current()).toEqual(['Privacy & data'])
     })
   })
 
@@ -334,9 +334,9 @@ describe('AppSidebar', () => {
     // Nothing links to a separate new-document page any more.
     expect(wrapper.find('a[href^="/documents/new"]').exists()).toBe(false)
     // Where what is kept, for how long, and how to delete all of it can always be found.
-    expect(wrapper.find('a[href="/your-data"]').text()).toBe('Your data')
-    expect(wrapper.find('a[href="/connections"]').text()).toBe('Connections')
-    expect(wrapper.find('a[href="/trash"]').text()).toBe('Trash Bin')
+    expect(wrapper.find('a[href="/your-data"]').text()).toBe('Privacy & data')
+    expect(wrapper.find('a[href="/connections"]').text()).toBe('Connected apps')
+    expect(wrapper.find('a[href="/trash"]').text()).toBe('Trash')
   })
 
   it('says so, without promising anything, when there are no templates', async () => {

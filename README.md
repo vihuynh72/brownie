@@ -174,6 +174,12 @@ call a model, create a document, or download an export. Original landing art
 is served from `apps/web/public/art/brownie-paper-world.webp`; motion respects
 the browser's reduced-motion preference.
 
+The working app uses platform system fonts, compact titles and a shared Brownie
+brand mark. Neutral app surfaces keep the document distinct from the controls;
+the public illustration retains its warm palette. Template font/date metadata
+is available under Details, and opening chat instructions disappear once a
+conversation or source is present.
+
 ## Run
 
 Check the pinned local toolchain with:

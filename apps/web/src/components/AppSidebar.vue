@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
+import BrownieBrand from './BrownieBrand.vue'
 import TemplateActionsMenu from './TemplateActionsMenu.vue'
 import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
 import { useSessionStore } from '@/stores/session'
@@ -617,7 +618,9 @@ async function moveToTrash(): Promise<void> {
   >
     <div class="sidebar__inner">
       <div class="sidebar__head">
-        <RouterLink class="sidebar__brand" to="/" aria-label="Brownie, home" aria-current-value="false" @click="closeIfDrawer">Brownie<span class="sidebar__brand-dot" aria-hidden="true">.</span></RouterLink>
+        <RouterLink class="sidebar__brand" to="/" aria-label="Brownie, home" aria-current-value="false" @click="closeIfDrawer">
+          <BrownieBrand />
+        </RouterLink>
         <button
           ref="closeButtonRef"
           type="button"
@@ -626,7 +629,7 @@ async function moveToTrash(): Promise<void> {
           aria-controls="app-sidebar"
           @click="close"
         >
-          <AppIcon name="panel-collapse" :size="24" />
+          <AppIcon name="panel-collapse" :size="20" />
           <span class="visually-hidden">{{ props.docked ? 'Hide sidebar' : 'Close menu' }}</span>
         </button>
       </div>
@@ -635,13 +638,13 @@ async function moveToTrash(): Promise<void> {
         <ul class="sidebar__list">
           <li>
             <RouterLink class="sidebar__link" to="/" @click="closeIfDrawer">
-              <AppIcon name="home" :size="24" />
+              <AppIcon name="home" :size="19" />
               <span>Home</span>
             </RouterLink>
           </li>
           <li>
             <RouterLink class="sidebar__link" to="/chat" @click="closeIfDrawer">
-              <AppIcon name="chat" :size="24" />
+              <AppIcon name="chat" :size="19" />
               <span>Chat</span>
             </RouterLink>
           </li>
@@ -663,7 +666,7 @@ async function moveToTrash(): Promise<void> {
             :aria-disabled="adding !== null ? 'true' : undefined"
             @click="chooseFormFile"
           >
-            <AppIcon name="plus" :size="24" />
+            <AppIcon name="plus" :size="20" />
             <span class="visually-hidden">{{ adding !== null ? 'Adding a template from a file…' : 'Add a template from a file' }}</span>
           </button>
           <!-- Signed out, this adds nothing yet: a link to sign in that brings the visitor back here, like Home's own upload control. -->
@@ -673,7 +676,7 @@ async function moveToTrash(): Promise<void> {
             :to="{ name: 'signin', query: { next: route.fullPath } }"
             @click="closeIfDrawer"
           >
-            <AppIcon name="plus" :size="24" />
+            <AppIcon name="plus" :size="20" />
             <span class="visually-hidden">Sign in to add a template from a file</span>
           </RouterLink>
           <input
@@ -791,21 +794,21 @@ async function moveToTrash(): Promise<void> {
 
       <div class="sidebar__foot">
         <RouterLink class="sidebar__link" to="/trash" @click="closeIfDrawer">
-          <AppIcon name="trash" :size="24" />
-          <span>Trash Bin</span>
+          <AppIcon name="trash" :size="19" />
+          <span>Trash</span>
         </RouterLink>
         <!-- Signed out, there is no account to show these for; both already send a direct visitor to sign in. -->
         <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/connections" @click="closeIfDrawer">
-          <AppIcon name="link" :size="24" />
-          <span>Connections</span>
+          <AppIcon name="link" :size="19" />
+          <span>Connected apps</span>
         </RouterLink>
         <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/your-data" @click="closeIfDrawer">
-          <AppIcon name="shield-check" :size="24" />
-          <span>Your data</span>
+          <AppIcon name="shield-check" :size="19" />
+          <span>Privacy &amp; data</span>
         </RouterLink>
         <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/details" @click="closeIfDrawer">
-          <AppIcon name="document-text" :size="24" />
-          <span>Your details</span>
+          <AppIcon name="document-text" :size="19" />
+          <span>Saved details</span>
         </RouterLink>
 
         <!-- A line with nothing under it would only mark an empty place, as it is until it is known who is here. -->
@@ -847,7 +850,7 @@ async function moveToTrash(): Promise<void> {
             :aria-disabled="signingOut ? 'true' : undefined"
             @click="signOut"
           >
-            <AppIcon name="sign-out" :size="24" />
+            <AppIcon name="sign-out" :size="20" />
             <span class="visually-hidden">{{ signingOut ? 'Signing out' : 'Sign out' }}</span>
           </button>
         </div>
@@ -918,6 +921,7 @@ async function moveToTrash(): Promise<void> {
   padding: 0.5rem 0.75rem 0.75rem;
   overflow-y: auto;
   color: var(--color-text-muted);
+  font-family: var(--font-ui);
 }
 
 /*
@@ -968,16 +972,8 @@ async function moveToTrash(): Promise<void> {
 
 .sidebar__brand {
   padding-inline: 0.40625rem;
-  font-family: var(--font-display);
-  font-size: 1.875rem;
-  font-weight: 400;
-  letter-spacing: -0.055em;
   color: var(--color-text);
   text-decoration: none;
-}
-
-.sidebar__brand-dot {
-  color: var(--color-cocoa-strong);
 }
 
 /* The glyph sits a hair inside the other icon buttons below, as a toggle at a panel's corner does. */
@@ -1003,13 +999,13 @@ async function moveToTrash(): Promise<void> {
 .sidebar__link {
   display: flex;
   align-items: center;
-  gap: 0.65625rem;
-  min-block-size: 2.75rem;
+  gap: 0.75rem;
+  min-block-size: 2.5rem;
   padding-inline: 0.40625rem 0.5rem;
   border-radius: var(--radius);
   color: var(--color-text);
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.875rem;
+  font-weight: 500;
   line-height: 1.5;
   text-decoration: none;
   transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
@@ -1059,7 +1055,7 @@ async function moveToTrash(): Promise<void> {
 }
 
 .sidebar__rule--nav {
-  margin-block: 1.75rem 1.25rem;
+  margin-block: 1rem 0.75rem;
 }
 
 .sidebar__rule--foot {
@@ -1095,8 +1091,8 @@ async function moveToTrash(): Promise<void> {
 
 .sidebar__section-title {
   margin: 0;
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.75rem;
+  font-weight: 500;
   line-height: 1.5;
   color: var(--color-text-muted);
 }
@@ -1287,7 +1283,7 @@ async function moveToTrash(): Promise<void> {
   border-radius: var(--radius);
   background: transparent;
   color: var(--color-text-muted);
-  font-size: var(--font-size-base);
+  font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.5;
   text-align: start;
@@ -1427,8 +1423,8 @@ async function moveToTrash(): Promise<void> {
   margin-block-start: 0.25rem;
   padding-inline: 0.4375rem 0.40625rem;
   color: var(--color-text);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.875rem;
+  font-weight: 500;
   line-height: 1.5;
 }
 

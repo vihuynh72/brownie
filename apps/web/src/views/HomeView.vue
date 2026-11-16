@@ -796,7 +796,6 @@ const showHowItWorks = computed(
       </form>
     </section>
 
-    <p v-if="authenticated" class="home__eyebrow">YOUR WORKSPACE</p>
     <h1 class="page-title home__greeting">
       {{ authenticated ? greeting : 'Welcome to Brownie!' }}
     </h1>
@@ -804,9 +803,8 @@ const showHowItWorks = computed(
     <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
       <div class="home__library-intro">
         <div>
-          <p class="home__library-kicker">LET’S GET IT STARTED</p>
-          <h2 id="home-library-heading" class="home__library-heading">What form do you need?</h2>
-          <p class="home__library-hint">Describe what you need to do. Brownie will look for possible matches.</p>
+          <h2 id="home-library-heading" class="home__library-heading">Find a form</h2>
+          <p class="home__library-hint">Describe your task or enter a form name.</p>
         </div>
         <span class="home__library-mark" aria-hidden="true"><AppIcon name="document-text" :size="28" /></span>
       </div>
@@ -1104,14 +1102,6 @@ const showHowItWorks = computed(
   max-inline-size: 45rem;
   margin-block-end: var(--space-5);
   border-color: var(--color-error);
-}
-
-.home__eyebrow {
-  margin: 0 0 var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: 0.1em;
 }
 
 .home__greeting {
@@ -1836,14 +1826,6 @@ const showHowItWorks = computed(
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-3);
-}
-
-.home__library-kicker {
-  margin: 0 0 var(--space-1);
-  color: var(--color-cocoa);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: 0.08em;
 }
 
 .home__library-hint {

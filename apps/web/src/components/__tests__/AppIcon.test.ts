@@ -86,6 +86,16 @@ describe('the icon set', () => {
     }
   })
 
+  it('draws navigation and editor icons with the same stroke weight', () => {
+    for (const name of ['home', 'chat', 'trash', 'link', 'shield', 'shield-check', 'document', 'document-blank', 'document-text', 'undo', 'history', 'mic'] as const) {
+      const icon = mount(AppIcon, { props: { name } })
+      expect(icon.attributes('fill'), name).toBe('none')
+      expect(icon.attributes('stroke-width'), name).toBe('1.7')
+    }
+    expect(ICONS.document).toBe(ICONS['document-blank'])
+    expect(ICONS.shield).toBe(ICONS['shield-check'])
+  })
+
   it('still answers to every name the app has used', () => {
     for (const name of NAMES_IN_USE) expect(NAMES, name).toContain(name)
   })

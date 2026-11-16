@@ -3974,11 +3974,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       <div class="workspace-bar__start">
         <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
         <button type="button" class="icon-button workspace-bar__undo" :aria-disabled="undoing" @click="undoLastChange">
-          <AppIcon name="undo-arrow" :size="24" />
+          <AppIcon name="undo" :size="20" />
           <span class="visually-hidden">Undo the last change</span>
         </button>
         <button type="button" class="icon-button workspace-bar__history" @click="openHistory">
-          <AppIcon name="history" :size="22" />
+          <AppIcon name="history" :size="20" />
           <span class="visually-hidden">Version history</span>
         </button>
       </div>
@@ -4540,7 +4540,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             tabindex="0"
             @scroll.passive="noteChatScroll"
           >
-            <div class="chat-line msg--brownie">
+            <div v-if="startersShown" class="chat-line msg--brownie">
               <p class="msg__who">Brownie</p>
               <div class="msg__body">
                 <p>
@@ -5174,7 +5174,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 <style scoped>
 .workspace-next-action { margin: 0; padding: 0 var(--space-4) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .composer__prepare-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.rules-card__heading { font-family: var(--font-display, var(--font-body)); }
+.rules-card__heading { font-family: var(--font-ui); }
 
 /*
  * The page is two panes: the document, and Brownie's panel. They sit side by side only where both
@@ -5260,23 +5260,20 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   background: var(--color-error);
 }
 
-/*
- * The document's name under the bar: centred, light, and as large as a page title gets (the shared display size).
- * The tight line height keeps a one-line title close under the bar and the panes starting a fixed distance below it.
- */
+/* A compact file title keeps the working page in view. */
 .workspace-title {
-  margin: 0.125rem 0 var(--space-5);
-  font-family: var(--font-display, var(--font-body));
-  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  margin: var(--space-3) 0 var(--space-5);
+  font-family: var(--font-ui);
+  font-size: clamp(1.125rem, 1rem + 0.6vw, 1.5rem);
+  font-weight: 500;
   text-align: left;
   line-height: 1.15;
-  text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
 /* Never larger than the title already is (it is smaller than this on a phone), so a long name only ever shrinks. */
 .workspace-title--long {
-  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  font-size: clamp(1.125rem, 1rem + 0.6vw, 1.5rem);
   line-height: 1.2;
 }
 
@@ -5623,9 +5620,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       min-block-size: 0;
     }
 
-    /* Brownie's panel starts a little lower than the page, whose first row is its status line. */
+    /* Align the panel with the document's status row. */
     .workspace-panes > .assistant-pane {
-      margin-block-start: 1.6875rem;
+      margin-block-start: 0;
     }
 
     /*
@@ -6119,8 +6116,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .assistant-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-block-size: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
 
 .assistant-pane__scroll {
@@ -6139,9 +6140,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .rules-card {
   container: rules-card / inline-size;
   flex: none;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  border-block-end: 1px solid var(--color-hairline);
   font-size: var(--font-size-xs);
   line-height: 1.4;
 }
@@ -6151,8 +6150,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-block-size: 2.875rem;
-  padding-inline: var(--space-4);
+  min-block-size: 2.25rem;
+  padding-inline: 0;
 }
 
 .rules-card__heading {
@@ -6164,6 +6163,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 /* Beside the button; where the card is narrow it wraps rather than hides what it says. */
 .rules-card__summary {
+  display: none;
   flex: 1 1 0;
   min-inline-size: 0;
   margin: 0;
@@ -6386,9 +6386,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   box-shadow: inset 0 0 0 2px var(--color-focus);
 }
 
-/* Short, the conversation sits at the foot of its space, just above the message box; long, it scrolls from its start. */
+/* Keep short conversations near the context instead of floating above the composer. */
 .chat > :first-child {
-  margin-block-start: auto;
+  margin-block-start: 0;
 }
 
 /* A line keeps its own height: a card that clips what overflows it would otherwise be squeezed shorter than its words. */
@@ -6411,7 +6411,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   flex: none;
   block-size: var(--space-6);
   margin-block-end: calc(-1 * var(--space-4));
-  background: linear-gradient(to bottom, var(--color-paper) 0%, var(--color-paper) 60%, transparent);
+  background: linear-gradient(to bottom, var(--color-surface) 0%, var(--color-surface) 60%, transparent);
   pointer-events: none;
 }
 

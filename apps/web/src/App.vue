@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
 import { useSessionStore } from '@/stores/session'
 import { takeSignInIntent } from '@/auth/intent'
 
@@ -152,7 +153,7 @@ onBeforeUnmount(() => {
 <template>
   <a class="visually-hidden skip-link" href="#main-content">Skip to main content</a>
 
-  <div class="shell" :class="{ 'shell--drawer': !docked }">
+  <div class="shell" :class="{ 'shell--drawer': !docked, 'shell--app': !landing }">
     <!-- It asks to be opened when something the person started in it ends while it is closed, such as a refused file. -->
     <AppSidebar
       v-if="!bare"
@@ -179,7 +180,7 @@ onBeforeUnmount(() => {
           <AppIcon :name="docked ? 'panel-expand' : 'menu'" :size="24" />
           <span class="visually-hidden">{{ openLabel }}</span>
         </button>
-        <RouterLink v-if="!docked" class="shell__brand" to="/">Brownie</RouterLink>
+        <RouterLink v-if="!docked" class="shell__brand" to="/"><BrownieBrand /></RouterLink>
       </header>
 
       <main

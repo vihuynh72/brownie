@@ -411,7 +411,7 @@ describe('YourDataView', () => {
   it('answers each question in a card of its own, under a title and a line saying what the page is for', async () => {
     const wrapper = await mountPage()
 
-    expect(wrapper.get('h1').text()).toBe('Your data')
+    expect(wrapper.get('h1').text()).toBe('Privacy & data')
     expect(wrapper.text()).toContain('What Brownie keeps, for how long, who else sees it, and how to delete it all.')
     expect(cardHeadings(wrapper)).toEqual([
       'What is kept',

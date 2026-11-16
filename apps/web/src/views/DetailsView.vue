@@ -212,7 +212,7 @@ function savedWhen(savedAt: string): string {
 <template>
   <section class="page-column page-column--wide details" aria-labelledby="details-title">
     <header class="page-head">
-      <h1 id="details-title" class="page-title">Your details</h1>
+      <h1 id="details-title" class="page-title">Saved details</h1>
       <p class="page-lede">Brownie saves the details from forms you approve, so the next form fills faster.</p>
     </header>
 
