@@ -261,8 +261,8 @@ const TESTED_FORMS = [
       <button v-if="formQuery" type="button" class="button button--quiet button--small landing-forms__clear" @click="clearFormSearch">Clear</button>
       </form>
       <p class="landing-forms__hint">Search by task, without personal details.</p>
-      <p class="landing-forms__browse">Or browse by purpose</p>
-      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <p v-if="!formQuery.trim()" class="landing-forms__browse">Or browse by purpose</p>
+      <FormPurposePicker v-if="!formQuery.trim()" :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
       <div v-if="formDecision && !formSearching" class="form-guidance" role="group" :aria-label="formDecision.question">
         <div><h3>{{ formDecision.question }}</h3><div class="landing-forms__suggestions"><button v-for="choice in formDecision.choices" :key="choice.query" type="button" class="button button--small" @click="selectedPurpose = null; searchExample(choice.query)">{{ choice.label }}</button></div></div>
       </div>
@@ -276,7 +276,7 @@ const TESTED_FORMS = [
       <div v-if="selectedPurpose === 'travel'" class="landing-forms__suggestions" aria-label="Passport purpose">
         <button v-for="query in ['First passport', 'Renew passport', 'Lost passport']" :key="query" type="button" class="button button--small" @click="searchExample(query)">{{ query }}</button>
       </div>
-      <p class="landing-forms__popular" role="status">{{ formSearching ? 'Searching the form library…' : formLibraryFailed ? 'Search unavailable.' : formDecision ? formDecision.question : !formQuery.trim() && !selectedPurpose ? `${formResults.length} official ${formResults.length === 1 ? 'form' : 'forms'}` : formResults.length ? `${formResults.length} possible ${formResults.length === 1 ? 'match' : 'matches'}${formQuery.trim() ? ` for “${formQuery.trim()}”` : ` for ${purposeLabel}`}` : 'No matching forms in this library.' }}</p>
+      <p class="landing-forms__popular" :class="{ 'visually-hidden': formDecision && !formSearching }" role="status">{{ formSearching ? 'Searching the form library…' : formLibraryFailed ? 'Search unavailable.' : formDecision ? formDecision.question : !formQuery.trim() && !selectedPurpose ? `${formResults.length} official ${formResults.length === 1 ? 'form' : 'forms'}` : formResults.length ? `${formResults.length} possible ${formResults.length === 1 ? 'match' : 'matches'}${formQuery.trim() ? ` for “${formQuery.trim()}”` : ` for ${purposeLabel}`}` : 'No matching forms in this library.' }}</p>
       <div v-if="!formSearching && formLibraryFailed" class="landing-forms__empty">The form library is unavailable right now. <button type="button" class="button button--small" @click="runFormSearch">Try again</button></div>
       <template v-if="!formSearching && !formLibraryFailed">
       <ul v-if="formResults.length && !formDecision" class="landing-forms__list">
@@ -1061,7 +1061,7 @@ const TESTED_FORMS = [
 }
 
 /* Landing composition */
-.landing__bar { position: sticky; top: 0; z-index: 10; width: 100%; max-width: 76rem; padding: .75rem var(--landing-gutter); border-bottom: 1px solid var(--color-hairline); border-radius: 0; background: var(--color-paper); box-shadow: none; }
+.landing__bar { position: sticky; top: 0; z-index: 10; width: 100%; max-inline-size: none; padding: .75rem max(var(--landing-gutter), calc((100% - 70rem) / 2 + var(--landing-gutter))); border-bottom: 1px solid var(--color-hairline); border-radius: 0; background: var(--color-paper); box-shadow: none; }
 .landing__brand { font: 400 1.75rem/1 var(--font-display, Georgia, serif); letter-spacing: -.04em; white-space: nowrap; }
 .landing__brand-dot { color: var(--color-cocoa); }
 .landing__nav a { font-size: .9rem; font-weight: 500; padding-block: .75rem; }
@@ -1075,9 +1075,10 @@ const TESTED_FORMS = [
 .hero__actions { align-items: center; justify-content: center; margin-top: .5rem; }
 .hero__chat-link { color: var(--color-text); font-size: .9rem; text-underline-offset: .2em; }
 .landing-forms__suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-block: 1rem 2rem; color: var(--color-text-muted); font-size: .9rem; }
-.landing-forms__composer { display: flex; align-items: center; gap: .75rem; width: 100%; margin: 1.5rem 0 0; padding: .65rem .75rem .65rem 1.25rem; border: 2px solid var(--color-cocoa); border-radius: 1rem; background: var(--color-surface); }
-.landing-forms__composer:focus-within { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.landing-forms__composer { display: flex; align-items: center; gap: .75rem; width: 100%; margin: 1.5rem 0 0; padding: .65rem .75rem .65rem 1.25rem; border: 1px solid var(--color-field-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.landing-forms__composer:focus-within { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .landing-forms__composer .landing-forms__search { flex: 1; min-width: 0; width: auto; margin: 0; padding: .55rem 0; border: 0; outline: 0; background: transparent; color: var(--color-text); font: inherit; font-size: 1.05rem; }
+.landing-forms__search::-webkit-search-cancel-button { appearance: none; }
 .landing-forms__composer .landing-forms__search:focus-visible { box-shadow: none; }
 .landing-forms__hint { margin-block: .75rem 0; color: var(--color-text-muted); font-size: .85rem; }
 .landing-forms__list { max-width: var(--landing-max); display: block; }

@@ -1019,8 +1019,8 @@ const showHowItWorks = computed(
       <button type="submit" class="button button--primary button--small home__library-submit">Search</button>
       <button v-if="formQuery" type="button" class="button button--quiet button--small home__library-clear" @click="formQuery = ''; selectedPurpose = null; librarySearch?.focus()">Clear</button>
       </form>
-      <p class="home__library-browse">Or browse by purpose</p>
-      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <p v-if="!formQuery.trim()" class="home__library-browse">Or browse by purpose</p>
+      <FormPurposePicker v-if="!formQuery.trim()" :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
       <div v-if="selectedPurpose === 'travel'" class="home__library-examples" aria-label="Passport purpose">
         <button v-for="example in ['First passport', 'Renew passport', 'Lost passport']" :key="example" type="button"
           class="button button--small" @click="formQuery = example">{{ example }}</button>
@@ -1958,6 +1958,7 @@ const showHowItWorks = computed(
 
 .home__library-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--color-outline); border-radius: var(--radius-md); background: var(--color-surface); }
 .home__library-composer > svg { margin-inline-start: var(--space-2); color: var(--color-cocoa); }
+.home__library-search::-webkit-search-cancel-button { appearance: none; }
 .home__library-composer:focus-within { box-shadow: var(--focus-ring); }
 .home__library-browse { margin: var(--space-2) 0 0; font-size: var(--font-size-sm); font-weight: 600; }
 .home__dmv-upload { display: flex; margin-block-start: var(--space-3); }
