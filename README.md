@@ -135,7 +135,7 @@ Local Codex OAuth was reconnected to the new URL. Already-loaded chats may
 retain the old server binding until a fresh session loads the configuration.
 Do not redirect bearer-authenticated MCP requests across origins.
 
-Live MCP verification created only synthetic document 75: template listing,
+Live MCP verification created synthetic document 75: template listing,
 model extraction, exact-hash confirmation, and both Word/PDF exports passed
 (receipt 22). Chrome showed the accepted fictional fields and a legible
 print preview. All six Railway services passed readiness, and a private
@@ -144,6 +144,11 @@ A direct public-dummy model call also succeeded; the MCP fill test then
 proved the application's own orchestration. Google Drive's actual account
 consent remains pending; Calendar permissions and real external writes
 have not been granted or tested.
+
+The published browser workflow was also exercised on synthetic document 76:
+one typed notes source produced a proposal, explicit approval filled all seven
+places including an action-item row, and both export downloads completed.
+The downloaded one-page PDF and Word file contained the fictional test values.
 
 References: [Railway Sandboxes](https://docs.railway.com/sandboxes),
 [Railway buckets](https://docs.railway.com/storage-buckets),

@@ -804,9 +804,9 @@ const showHowItWorks = computed(
     <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
       <div class="home__library-intro">
         <div>
-          <p class="home__library-kicker">START WITH A FORM</p>
-          <h2 id="home-library-heading" class="home__library-heading">Find an official form</h2>
-          <p class="home__library-hint">Search the library, or bring a form of your own.</p>
+          <p class="home__library-kicker">LET’S GET IT STARTED</p>
+          <h2 id="home-library-heading" class="home__library-heading">What form do you need?</h2>
+          <p class="home__library-hint">Describe what you need to do. Brownie will look for possible matches.</p>
         </div>
         <span class="home__library-mark" aria-hidden="true"><AppIcon name="document-text" :size="28" /></span>
       </div>
@@ -814,9 +814,20 @@ const showHowItWorks = computed(
         v-model="formQuery"
         class="home__library-search"
         type="search"
-        placeholder="W-9, I-9, passport, VA…"
+        placeholder="I need to apply for a passport…"
         aria-label="Find an official form"
+        aria-describedby="home-search-hint"
       />
+      <div class="home__library-examples" aria-label="Try a form search">
+        <button
+          v-for="example in ['Apply for a passport', 'Starting a new job', 'Self-employed tax form']"
+          :key="example"
+          type="button"
+          class="button button--small"
+          @click="formQuery = example"
+        >{{ example }}</button>
+      </div>
+      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check that the form fits your situation.</p>
       <p class="home__library-popular">
         {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : formQuery.trim() ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
       </p>
@@ -1879,6 +1890,16 @@ const showHowItWorks = computed(
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin: 0;
+}
+
+.home__library-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.home__library-examples .button {
+  white-space: nowrap;
 }
 
 .home__library-list {

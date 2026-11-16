@@ -5794,6 +5794,21 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .single-pane-strip__action {
   margin-inline-start: auto;
 }
+@container main (max-width: 27rem) {
+  .single-pane-strip {
+    flex-wrap: wrap;
+  }
+  .single-pane-strip__text {
+    flex-basis: 100%;
+  }
+  .single-pane-strip__action {
+    margin-inline-start: 0;
+  }
+  .single-pane-strip__action,
+  .single-pane-strip__details {
+    white-space: nowrap;
+  }
+}
 @container main (min-width: 40rem) {
   .single-pane-strip {
     display: none;
