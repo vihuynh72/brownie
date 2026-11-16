@@ -24,6 +24,15 @@ vi.mock('@/upload/learnAndStart', async () => {
   const actual = await vi.importActual<typeof import('@/upload/learnAndStart')>('@/upload/learnAndStart')
   return { ...actual, learnFormAndStartDocument: vi.fn() }
 })
+vi.mock('@/landing/findForms', async () => {
+  const actual = await vi.importActual<typeof import('@/landing/findForms')>('@/landing/findForms')
+  return {
+    ...actual,
+    findForms: (query: string) => searchForms(query),
+    findFormsForPurpose: async (purpose: import('@/landing/findForms').FormPurposeId) =>
+      (await searchForms('')).filter((form) => actual.matchesPurpose(form, purpose)),
+  }
+})
 
 import {
   ApiRequestError,
@@ -266,7 +275,7 @@ describe('HomeView', () => {
   })
 
   /** The form library opens with its popular row before the person types anything. */
-  it('shows the popular forms before any typing, six at most', async () => {
+  it('shows every catalog form before any typing', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
     vi.mocked(searchForms).mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({
@@ -279,9 +288,9 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(searchForms).toHaveBeenCalledWith('')
-    expect(wrapper.find('.home__library-popular').text()).toBe('Popular forms')
+    expect(wrapper.find('.home__library-popular').text()).toBe('8 forms shown')
     const rows = wrapper.findAll('.home__library-row')
-    expect(rows).toHaveLength(6)
+    expect(rows).toHaveLength(8)
     expect(rows[0].text()).toContain('Form 0')
     expect(rows[0].text()).toContain('Agency')
     expect(await axe(wrapper.element)).toHaveNoViolations()
@@ -399,7 +408,7 @@ describe('HomeView', () => {
     finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
     await flushPromises()
     expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
-    expect(wrapper.get('.home__library-popular').text()).toBe('Popular forms')
+    expect(wrapper.get('.home__library-popular').text()).toBe('1 form shown')
     expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
     expect(startForm).not.toHaveBeenCalled()
   })
@@ -550,7 +559,26 @@ describe('HomeView', () => {
     const alert = wrapper.get('[role="alert"]')
     expect(alert.text()).toContain("couldn't download this form from Internal Revenue Service")
     expect(alert.text()).toContain('upload your copy')
+    expect(wrapper.get('.home__library-start').text()).toBe('Retry')
+    vi.mocked(startForm).mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(startForm).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/documents/42')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('does not start the same form twice while the first request is pending', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockReturnValue(new Promise(() => {}))
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-start').trigger('click')
+    await wrapper.get('.home__library-start').trigger('click')
+    expect(startForm).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.home__library-start').attributes('aria-disabled')).toBe('true')
   })
 
   /** No answer for the query is the upload path underneath it, named plainly. */
@@ -567,8 +595,39 @@ describe('HomeView', () => {
     vi.useRealTimers()
     await flushPromises()
 
-    expect(wrapper.find('.home__library-empty').text()).toBe('No match. Upload your own copy above.')
+    expect(wrapper.find('.home__library-empty').text()).toContain('No match in this library.')
+    expect(wrapper.get('.home__library-empty button').text()).toBe('Upload your own copy')
     expect(wrapper.find('.home__library-row').exists()).toBe(false)
+  })
+
+  it('clears a selected purpose when the visitor types a new task', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w99', title: 'Form W-99', agency: 'IRS', category: 'Tax', description: 'Example.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.text() === 'Passports & travel')!.trigger('click')
+    await wrapper.get('.home__library-search').setValue('W-99')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-99')
+  })
+
+  it('asks a clarifying question for a broad job search', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-search').setValue('starting a job')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('What kind of work are you preparing for?')
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    await wrapper.findAll('button').find((button) => button.text() === 'Starting as an employee')!.trigger('click')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
   })
 
   it('greets a signed-in person by their first name only', async () => {

@@ -6,6 +6,7 @@ import LandingView from '@/views/LandingView.vue'
 import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
 import FormPurposePicker from '@/components/FormPurposePicker.vue'
 import { guidanceForQuery } from '@/landing/formGuidance'
+import { decisionForQuery } from '@/landing/formDecision'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import {
@@ -72,18 +73,20 @@ const formQuery = ref('')
 const selectedPurpose = ref<FormPurposeId | null>(null)
 const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
 const formGuidance = computed(() => guidanceForQuery(formQuery.value, drivingRequest.value ? 'driving' : selectedPurpose.value ?? undefined))
+const formDecision = computed(() => requestedFormId.value ? undefined : decisionForQuery(formQuery.value))
+const marketplaceRequest = computed(() => formQuery.value.trim().toLowerCase() === 'health insurance marketplace')
 const formResults = ref<FormEntry[]>([])
 const formSearchFailed = ref('')
-const formStartFailed = ref(false)
 const formSearching = ref(true)
 const formBusyId = ref<string | null>(null)
+const formStartErrorId = ref<string | null>(null)
+const formStartError = ref('')
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
 let formSearchSeq = 0
 
 async function runFormSearch(): Promise<void> {
   const seq = ++formSearchSeq
   formSearching.value = true
-  formStartFailed.value = false
   try {
     const query = formQuery.value.trim()
     const found = requestedFormId.value
@@ -106,7 +109,7 @@ async function runFormSearch(): Promise<void> {
     }
     const relevant = found.filter((form) => !formGuidance.value?.excludeFormIds?.includes(form.id))
     const matches = selectedPurpose.value ? relevant.filter((form) => matchesPurpose(form, selectedPurpose.value!)) : relevant
-    formResults.value = matches.slice(0, selectedPurpose.value || query ? 20 : 6)
+    formResults.value = matches
     formSearchFailed.value = ''
   } catch (error) {
     if (seq !== formSearchSeq) return
@@ -126,6 +129,8 @@ watch([formQuery, selectedPurpose], () => {
   formSearchSeq++
   formSearching.value = true
   formSearchFailed.value = ''
+  formStartErrorId.value = null
+  formStartError.value = ''
   if (formSearchTimer) clearTimeout(formSearchTimer)
   formSearchTimer = setTimeout(() => void runFormSearch(), 250)
 })
@@ -156,7 +161,8 @@ async function findAnotherForm(): Promise<void> {
 async function startLibraryForm(entry: FormEntry): Promise<void> {
   if (formBusyId.value) return
   formBusyId.value = entry.id
-  formSearchFailed.value = ''
+  formStartErrorId.value = null
+  formStartError.value = ''
   try {
     const started = await startForm(entry.id)
     // The download can outlast the visit: only open the document when Home is still the page.
@@ -164,8 +170,8 @@ async function startLibraryForm(entry: FormEntry): Promise<void> {
       await router.push(`/documents/${started.documentId}`)
     }
   } catch (error) {
-    formStartFailed.value = true
-    formSearchFailed.value =
+    formStartErrorId.value = entry.id
+    formStartError.value =
       error instanceof ApiRequestError && error.problem?.detail
         ? error.problem.detail
         : 'Brownie could not start this form. Try again, or upload your copy above.'
@@ -374,6 +380,7 @@ const announcement = computed(() => {
   if (finishedAnnouncement.value) return finishedAnnouncement.value
   if (formQuery.value.trim()) {
     if (formSearching.value) return 'Searching forms…'
+    if (formDecision.value) return formDecision.value.question
     if (!formSearchFailed.value) return `${formResults.value.length} ${formResults.value.length === 1 ? 'form' : 'forms'} shown`
   }
   return ''
@@ -1002,13 +1009,15 @@ const showHowItWorks = computed(
       <input
         ref="librarySearch"
         v-model="formQuery"
+        @input="selectedPurpose = null"
         class="home__library-search"
         type="search"
         placeholder="Form name or purpose, e.g. starting a new job"
         aria-label="Find an official form"
         aria-describedby="home-search-hint"
       />
-      <button type="submit" class="button button--primary button--small">Search</button>
+      <button type="submit" class="button button--primary button--small home__library-submit">Search</button>
+      <button v-if="formQuery" type="button" class="button button--quiet button--small home__library-clear" @click="formQuery = ''; selectedPurpose = null; librarySearch?.focus()">Clear</button>
       </form>
       <p class="home__library-browse">Or browse by purpose</p>
       <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
@@ -1016,18 +1025,13 @@ const showHowItWorks = computed(
         <button v-for="example in ['First passport', 'Renew passport', 'Lost passport']" :key="example" type="button"
           class="button button--small" @click="formQuery = example">{{ example }}</button>
       </div>
-      <div v-else-if="!selectedPurpose" class="home__library-examples" aria-label="Try a form search">
-        <button
-          v-for="example in ['Apply for a passport', 'Starting a new job', 'Self-employed tax form']"
-          :key="example"
-          type="button"
-          class="button button--small"
-          @click="formQuery = example"
-        >{{ example }}</button>
-      </div>
-      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check the agency’s requirements before you start.</p>
+      <p id="home-search-hint" class="home__library-hint">A selection of official U.S. forms, not every form. Search by task without personal details; check the agency’s requirements before starting.</p>
       </template>
-      <div v-if="!requestedFormId && formGuidance" class="form-guidance" role="status">
+      <div v-if="formDecision && !formSearching" class="form-guidance" role="group" :aria-label="formDecision.question">
+        <div><h3>{{ formDecision.question }}</h3><div class="home__library-examples"><button v-for="choice in formDecision.choices" :key="choice.query" type="button" class="button button--small" @click="selectedPurpose = null; formQuery = choice.query">{{ choice.label }}</button></div></div>
+      </div>
+      <div v-if="!requestedFormId && marketplaceRequest && !formSearching" class="form-guidance"><div><h3>Health Insurance Marketplace</h3><p>Find coverage and application information at HealthCare.gov.</p><a href="https://www.healthcare.gov/get-coverage/" target="_blank" rel="noopener noreferrer">Explore Marketplace coverage</a></div></div>
+      <div v-if="!requestedFormId && formGuidance && !formDecision" class="form-guidance" role="status">
         <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
         <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
         <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet. Download your state’s form, then bring it here to fill.</p>
@@ -1035,33 +1039,33 @@ const showHowItWorks = computed(
         <button v-if="drivingRequest" type="button" class="button button--small home__dmv-upload" @click="chooseForm">Upload a DMV form</button></div>
       </div>
       <p v-if="formHandoffNotice" ref="handoffNoticeElement" class="home__library-handoff" role="status" tabindex="-1">{{ formHandoffNotice }}</p>
-      <p v-if="!requestedFormId" class="home__library-popular">
-        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : drivingRequest ? 'State services' : formQuery.trim() || selectedPurpose ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
+      <p v-if="!requestedFormId && (!formDecision || formSearching)" class="home__library-popular">
+        {{ formSearching ? 'Searching forms…' : formSearchFailed ? 'Search unavailable' : drivingRequest ? 'State services' : `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` }}
       </p>
       <div v-if="formSearchFailed" class="home__library-error" role="alert">
         <p>{{ formSearchFailed }}</p>
-        <button v-if="!formStartFailed" type="button" class="link-button" @click="runFormSearch">Retry search</button>
+        <button type="button" class="link-button" @click="runFormSearch">Retry search</button>
       </div>
-      <ul v-if="formResults.length && !formSearching" class="home__library-list">
+      <ul v-if="formResults.length && !formSearching && !formDecision" class="home__library-list">
         <li v-for="entry in formResults" :key="entry.id" class="home__library-row">
           <div class="home__library-text">
             <p class="home__library-title">{{ entry.title }}</p>
             <p class="home__library-agency">{{ entry.agency }}</p>
             <p class="home__library-description">{{ entry.description }}</p>
           </div>
-          <button
+          <div class="home__library-action"><button
             type="button"
             class="button button--small home__library-start"
             :aria-disabled="formBusyId !== null ? 'true' : undefined"
             :aria-label="formBusyId === entry.id ? `Getting ${entry.title}` : `Start ${entry.title}`"
             @click="startLibraryForm(entry)"
           >
-            {{ formBusyId === entry.id ? 'Getting the form…' : 'Start' }}
-          </button>
+            {{ formBusyId === entry.id ? 'Getting the form…' : formStartErrorId === entry.id ? 'Retry' : 'Start' }}
+          </button><p v-if="formStartErrorId === entry.id" class="home__library-error" role="alert">{{ formStartError }}</p></div>
         </li>
       </ul>
-      <p v-else-if="!requestedFormId && !formGuidance && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
-        No match. Upload your own copy above.
+      <p v-else-if="!requestedFormId && !formGuidance && !formDecision && !marketplaceRequest && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
+        No match in this library. <button type="button" class="link-button" @click="chooseForm">Upload your own copy</button>.
       </p>
       <button v-if="requestedFormId" type="button" class="button button--quiet button--small home__library-another" @click="findAnotherForm">Find another form</button>
       </div>
@@ -2043,6 +2047,8 @@ const showHowItWorks = computed(
   flex: none;
 }
 
+.home__library-action { flex: none; max-inline-size: 24rem; }
+
 .home__library-empty {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
@@ -2051,9 +2057,11 @@ const showHowItWorks = computed(
 
 @media (max-width: 35rem) {
   .home__library-summary { display: none; }
-  .home__library-row { align-items: flex-start; }
-  .home__library-composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); }
-  .home__library-composer > .button { grid-column: 1 / -1; inline-size: 100%; }
+  .home__library-row { align-items: flex-start; flex-direction: column; }
+  .home__library-composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; }
+  .home__library-composer .home__library-submit { grid-column: 1 / -1; grid-row: 2; inline-size: 100%; }
+  .home__library-composer .home__library-clear { grid-column: 3; grid-row: 1; }
+  .home__library-action { max-inline-size: 100%; }
 }
 
 </style>

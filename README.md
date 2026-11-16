@@ -165,24 +165,26 @@ export checks still apply. Page-specific commands such as "fill here" retain
 their selected-page context. Preparation uses one source at a time; an
 attached file and a separate typed request are not silently combined.
 
-The landing and home form finders search the official catalog. When a full
-description has no direct match, they try up to three keyword searches and
-rank deduplicated candidates. This is catalog search, not model advice about
-which form applies. Search descriptions should not contain personal details.
+The landing and home form finders search the official catalog. They load and
+cache the catalog across agency searches, then rank form numbers, descriptions,
+common tasks and close spelling matches locally. Ambiguous work or health
+requests offer a short clarification before showing candidates. This is catalog
+search, not model advice about which form applies. Search descriptions should not contain personal details.
 The public interactive demonstration is local to the browser: it does not
 call a model, create a document, or download an export. Original landing art
 is served from `apps/web/public/art/brownie-paper-world.webp`; motion respects
 the browser's reduced-motion preference.
 
 The working app uses platform system fonts, compact titles and a shared original
-cartoon Brownie mascot. Warm paper surfaces and ink-teal actions carry the public
-illustration's character into the app. The shared icons use vendored Phosphor
-regular paths, with their MIT license alongside the registry. Template font/date metadata
+cartoon Brownie mascot. Warm paper surfaces carry the public illustration's
+character into the app. Charcoal primary buttons and restrained teal links keep
+actions readable. The shared icons use vendored Phosphor regular paths, with
+their MIT license alongside the registry. Template font/date metadata
 is available under Details, and opening chat instructions disappear once a
 conversation or source is present.
 
-Both library views browse forms by purpose, using targeted searches so a topic's
-entries are not cut off by the popular-forms cap. Purpose IDs are curated against
+Both library views browse forms by purpose, using a shared cached index so a topic's
+entries are not cut off by the API search cap. Purpose IDs are curated against
 the current catalog, not eligibility determinations. Passport renewal searches
 show the State Department's process guide rather than offering DS-11 as a loose
 keyword match. Lost passports, worker classification and DMV requests also link
@@ -193,11 +195,11 @@ opens USAGov, and a person can upload the form their state supplies.
 
 Public pages use the original paper illustration and a restrained serif hero.
 The working app uses compact system sans type, a lighter neutral canvas and a
-small simplified Brownie mark. Ink-teal identifies the next action; ordinary
+small simplified Brownie mark. Charcoal identifies primary actions; teal is reserved for links and focus. Ordinary
 layout uses spacing and rules rather than nested cards. Shared colors and type
 remain in `apps/web/src/styles/tokens.css`, controls in `primitives.css`.
 
-Home leads with a person's own form and recent work. The catalog opens on request;
+Home leads with a person's own form and recent work. The catalog opens on request and shows all matches in the current catalog;
 choosing a public catalog entry preserves its identifier through sign-in and
 returns to an explicit Start action. Template links are identified as starting
 points, with account settings grouped separately. The editor prioritizes the

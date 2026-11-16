@@ -18,7 +18,7 @@
 /* ---------- Buttons ---------- */
 
 /*
- * A pill. The look is carried by a handful of properties that each variant resets, so hover, pressed and the
+ * The look is carried by a handful of properties that each variant resets, so hover, pressed and the
  * faded state are written once. A bare .button is the white outline look.
  */
 .button {
@@ -39,6 +39,8 @@
   justify-content: center;
   gap: var(--button-gap);
   min-block-size: var(--button-height);
+  min-inline-size: 0;
+  max-inline-size: 100%;
   /* A filled button trims the 1px edge off its side padding, so filled and outline pills have the same label room. */
   padding: var(--button-block) calc(var(--button-pad) - var(--button-trim));
   border: 1px solid var(--button-border);
@@ -49,6 +51,7 @@
   font-weight: var(--font-weight-medium);
   line-height: 1.25;
   text-align: center;
+  overflow-wrap: anywhere;
   text-decoration: none;
   cursor: pointer;
   transition:
@@ -76,18 +79,18 @@
 
 .button--secondary {
   --button-bg: transparent;
-  --button-border: var(--color-hairline);
+  --button-border: var(--color-outline);
   --button-ink: var(--color-text);
 }
 
 .button--primary {
   --button-trim: 1px;
-  --button-bg: var(--color-cocoa);
-  --button-border: var(--color-cocoa);
+  --button-bg: var(--color-action);
+  --button-border: var(--color-action);
   --button-ink: var(--color-surface);
-  --button-bg-hover: var(--color-cocoa-strong);
-  --button-border-hover: var(--color-cocoa-strong);
-  --button-bg-active: color-mix(in srgb, var(--color-cocoa-strong) 82%, black);
+  --button-bg-hover: var(--color-action-hover);
+  --button-border-hover: var(--color-action-hover);
+  --button-bg-active: var(--color-action-active);
 }
 
 .form-guidance {
@@ -132,7 +135,9 @@
  */
 .button:disabled,
 .button[aria-disabled='true'] {
-  opacity: 0.4;
+  background: var(--color-paper-soft);
+  border-color: var(--color-hairline);
+  color: var(--color-text-muted);
   cursor: not-allowed;
 }
 

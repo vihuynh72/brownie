@@ -1,4 +1,5 @@
 import { searchForms, type FormEntry } from '@/api/client'
+import { decisionForQuery } from './formDecision'
 
 // shortcut: topics use curated catalog IDs; derive server-side purpose metadata when the catalog grows.
 export const FORM_PURPOSES = [
@@ -16,24 +17,21 @@ export function matchesPurpose(form: FormEntry, purposeId: FormPurposeId): boole
   return (FORM_PURPOSES.find((purpose) => purpose.id === purposeId)?.formIds as readonly string[] | undefined)?.includes(form.id) ?? false
 }
 
-// Search targeted catalog fields so the default 20-result limit does not hide a topic's forms.
+// shortcut: each agency search is capped at 20; add pagination when an agency grows beyond that.
+let catalogPromise: Promise<FormEntry[]> | undefined
+
+function loadCatalog(): Promise<FormEntry[]> {
+  if (!catalogPromise) {
+    catalogPromise = Promise.all(['Internal Revenue Service', 'Citizenship and Immigration', 'Veterans Affairs', 'Department of State', 'Medicare'].map(searchForms))
+      .then((groups) => [...new Map(groups.flat().map((form) => [form.id, form])).values()])
+      .catch((error: unknown) => { catalogPromise = undefined; throw error })
+  }
+  return catalogPromise
+}
+
 export async function findFormsForPurpose(purposeId: FormPurposeId): Promise<FormEntry[]> {
-  const queries: Record<FormPurposeId, string[]> = {
-    driving: [],
-    work: ['new job', 'contractor', '941'],
-    taxes: ['Internal Revenue Service'],
-    travel: ['passport'],
-    health: ['medicare'],
-    veterans: ['Veterans Affairs'],
-  }
-  const answers = await Promise.all(queries[purposeId].map((query) => searchForms(query)))
-  const entries = new Map<string, FormEntry>()
-  for (const forms of answers) {
-    for (const form of forms) {
-      if (matchesPurpose(form, purposeId)) entries.set(form.id, form)
-    }
-  }
-  return [...entries.values()]
+  if (purposeId === 'driving') return []
+  return (await loadCatalog()).filter((form) => matchesPurpose(form, purposeId))
 }
 
 export function matchingPurposes(query: string): FormPurposeId[] {
@@ -43,37 +41,62 @@ export function matchingPurposes(query: string): FormPurposeId[] {
   )).map((purpose) => purpose.id)
 }
 
-// These words describe the request rather than which catalog entry to find.
 const FILLER = new Set([
   'a', 'an', 'the', 'and', 'or', 'of', 'for', 'to', 'from', 'in', 'on', 'at', 'with',
   'i', 'me', 'my', 'we', 'our', 'you', 'your', 'is', 'are', 'what', 'which', 'how',
   'please', 'need', 'want', 'would', 'could', 'can', 'get', 'find', 'help', 'fill',
-  'form', 'forms', 'document', 'documents',
+  'form', 'forms', 'document', 'documents', 'starting', 'start', 'new', 'apply', 'application',
 ])
 
-/** Search the catalog as written first, then try a bounded set of meaningful keywords. */
-export async function findForms(query: string): Promise<FormEntry[]> {
-  const direct = query.trim()
-  const exact = await searchForms(direct)
-  if (!direct || exact.length) return exact
+const TASKS: { pattern: RegExp; ids: string[] }[] = [
+  { pattern: /\b(?:new employee|employee onboarding|new hire|starting (?:a )?(?:new )?job|new job)\b/, ids: ['irs-w4', 'uscis-i9'] },
+  { pattern: /\b(?:independent contractor|freelanc\w*|self employed|self employment)\b/, ids: ['irs-w9', 'irs-1040es'] },
+  { pattern: /\b(?:employer payroll|payroll taxes|employer quarterly)\b/, ids: ['irs-941'] },
+  { pattern: /\b(?:medicare enrollment|enroll in medicare|medicare part b)\b/, ids: ['cms-40b', 'cms-l564'] },
+  { pattern: /\b(?:veterans? benefits|veterans? disability)\b/, ids: ['va-21-526ez', 'va-21-4138', 'va-21-0781'] },
+]
 
-  const words = [...new Set((direct.toLowerCase().match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [])
-    .filter((word) => word.length > 1 && !FILLER.has(word)))]
-  const phrase = words.length > 1 ? words.slice(-2).join(' ') : ''
-  const aliases = /\b(?:start(?:ing|ed)?|begin(?:ning)?|new)\b.*\bjob\b|\bnew hire\b/i.test(direct) ? ['new job']
-    : /\bhealth\s*care\b|\bhealth insurance\b/i.test(direct) ? ['medicare'] : []
-  const candidates = [...new Set([...aliases, phrase, ...words.sort((a, b) => Number(/\d/.test(b)) - Number(/\d/.test(a)) || b.length - a.length)])]
-    .filter((term) => term && term !== direct.toLowerCase()).slice(0, 3)
-  const answers = await Promise.all(candidates.map((term) => searchForms(term)))
-  const ranked = new Map<string, { entry: FormEntry; score: number; order: number }>()
-  for (const forms of answers) {
-    // A match from a smaller result set is more specific; ties retain catalog response order.
-    const weight = 1 / Math.max(forms.length, 1)
-    for (const form of forms) {
-      const previous = ranked.get(form.id)
-      if (previous) previous.score += weight
-      else ranked.set(form.id, { entry: form, score: weight, order: ranked.size })
+function normalize(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+}
+
+// Only tolerate one edit in longer words, so short form numbers do not match unrelated forms.
+function closeWord(a: string, b: string): boolean {
+  if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 1) return false
+  if (a.length > b.length) return closeWord(b, a)
+  let i = 0
+  while (i < a.length && a[i] === b[i]) i++
+  return a.slice(i + 1) === b.slice(i + 1) || a.slice(i) === b.slice(i + 1)
+    || (a.length === b.length && a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2))
+}
+
+/** Search the local catalog by form number, description, and a small set of common tasks. */
+export async function findForms(query: string): Promise<FormEntry[]> {
+  const forms = await loadCatalog()
+  const text = normalize(query)
+  if (!text) return forms
+  if (decisionForQuery(text) || (/\bhealth(?:care| care| insurance)\b/.test(text) && !/\bmedicare\b/.test(text))) return []
+  const task = TASKS.find(({ pattern }) => pattern.test(text))
+  if (task) return task.ids.flatMap((id) => forms.filter((form) => form.id === id))
+
+  const words = [...new Set(text.split(' ').filter((word) => word.length > 1 && !FILLER.has(word)))]
+  const compactQuery = text.replace(/^form /, '').replace(/ /g, '')
+  const embeddedCode = text.match(/\b(?:w|i|ds|ss|cms)\s*\d+[a-z]*\b/)?.[0].replace(/ /g, '')
+  if (!words.length && !/\d/.test(compactQuery)) return []
+  return forms.map((form, order) => {
+    const id = normalize(form.id)
+    const content = normalize(`${form.title} ${form.description} ${form.agency} ${form.category}`)
+    const tokens = content.split(' ')
+    const compactId = id.replace(/ /g, '')
+    const code = compactId.replace(/^(?:irs|uscis|state|va|cms)/, '')
+    const codeMatches = compactQuery === code || compactQuery === compactId || embeddedCode === code
+    let score = codeMatches ? 100 : 0
+    let matchedWords = 0
+    for (const word of words) {
+      if (tokens.includes(word)) { score += 5; matchedWords++ }
+      else if (tokens.some((token) => closeWord(word, token))) { score += 2; matchedWords++ }
     }
-  }
-  return [...ranked.values()].sort((a, b) => b.score - a.score || a.order - b.order).map(({ entry }) => entry)
+    if (!codeMatches && matchedWords < words.length) score = 0
+    return { form, order, score }
+  }).filter(({ score }) => score > 0).sort((a, b) => b.score - a.score || a.order - b.order).map(({ form }) => form)
 }

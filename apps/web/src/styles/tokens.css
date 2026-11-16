@@ -4,7 +4,7 @@
  * buttons, chips, dialogs and fields. This file holds fonts, tokens and base element rules; primitives.css, loaded
  * right after it, holds the classes listed here.
  *
- * TYPE   Rubik at 400 (reading text) and 500 (labels, buttons, headings); display titles use the local serif stack.
+ * TYPE   System sans at 400 (reading text) and 500 (labels, buttons, headings); display titles use the local serif stack.
  *        12px --font-size-xs: tags, hints, small print.   14px --font-size-sm: buttons, labels, fields, list rows.
  *        16px --font-size-base: reading text, chat.   24px --font-size-xl: dialog titles.   32px --font-size-2xl:
  *        compact page title.   48px --font-size-display: page titles.   Reading text sits on a 1.45 line height.
@@ -19,14 +19,14 @@
  *        the page, like the print-preview pager or the PDF zoom control), --shadow-dialog with --scrim behind it,
  *        and --shadow-sidebar (inset, for the sidebar panel).
  *
- * .button            Pill, 40px high, 14px/500. An AppIcon that is a direct child sits before the label and sizes
+ * .button            Rounded rectangle, 44px high, 14px/500. An AppIcon that is a direct child sits before the label and sizes
  *                    itself (20px; 16px when small). Works on <button> and <a>. A bare .button is the white outline look.
- *   --primary        Cocoa fill, white label: the one main action of a view.
+ *   --primary        Charcoal fill, white label: the one main action of a view.
  *   --secondary      White fill, 1px --color-outline edge (the default, spelled out).
  *   --quiet          Text only; a cocoa wash on hover.
  *   --danger         Red fill, white label: deleting for good.
- *   --small          32px high, 16px icon: toolbars, rows, quick replies.
- *   Unavailable: the disabled attribute or aria-disabled="true" fades it to 40%; aria-disabled keeps focus.
+ *   --small          36px high (44px on touch), 16px icon: toolbars, rows, quick replies.
+ *   Unavailable: neutral fill and readable muted label; aria-disabled keeps focus.
  *   To change one button, set --button-bg, --button-ink or --button-border (and the -hover / -active forms) on it;
  *   overriding background directly would be lost on hover.
  * .icon-button       32px square (44px on a touch screen), icon only; put a .visually-hidden label inside it.
@@ -158,6 +158,9 @@
 
   /* Existing action token names now carry ink-teal, with cream labels. */
   --color-cocoa: oklch(0.39180 0.05698 207.13);
+  --color-action: #2b2d2a;
+  --color-action-hover: #454943;
+  --color-action-active: #1c1f1b;
   /* Deeper action ink for hover and links. */
   --color-cocoa-strong: oklch(0.33282 0.04858 207.70);
   /* A lighter cocoa used only behind decorative glyphs (a white glyph on it is 3.53:1, above the 3:1 graphics need). */
@@ -199,8 +202,8 @@
   /* Commands and addresses a person copies, and nothing else: the system's own monospace, so no font is downloaded. */
   --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 
-  --control-height: 2.5rem;
-  --control-height-small: 2rem;
+  --control-height: 2.75rem;
+  --control-height-small: 2.25rem;
   /* The side of a square icon control (see .icon-button); a finger gets more room, set below. */
   --icon-button-size: 2rem;
   --radius: 0.5rem;
@@ -297,6 +300,19 @@ body {
 /* Links are the dark cocoa, underlined: 5.44:1 on paper and 4.95:1 even on the sidebar, where the focus blue would measure 4.22:1. */
 a {
   color: var(--color-cocoa-strong);
+  text-underline-offset: 0.2em;
+}
+
+::selection { background: var(--color-cocoa-wash); color: var(--color-text); }
+input, textarea { caret-color: var(--color-cocoa-strong); }
+* { scrollbar-color: var(--color-scrollbar) transparent; }
+
+@media (pointer: coarse) {
+  :root { --control-height-small: 2.75rem; }
+}
+
+@media (max-width: 40rem) {
+  input, select, textarea { font-size: 1rem; }
 }
 
 button,

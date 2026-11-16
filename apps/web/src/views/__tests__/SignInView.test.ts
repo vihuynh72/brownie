@@ -21,9 +21,7 @@ async function mountAt(path: string) {
   return mount(SignInView, { global: { plugins: [router] }, attachTo: document.body })
 }
 
-const ONE_PAGE_FOR_BOTH =
-  'Brownie uses one page for both: sign in with an account you already have, ' +
-  'or create one there if this is your first time.'
+const ONE_PAGE_FOR_BOTH = 'Sign in or create an account to continue.'
 
 // These mount into the document so a click on a real anchor reaches this listener, which
 // cancels the navigation jsdom cannot perform; the assertion is about what the handler
@@ -54,7 +52,7 @@ describe('SignInView', () => {
     const action = wrapper.get('a.button')
     expect(action.attributes('href')).toBe('/oauth2/authorization/entra')
     expect(action.text()).toContain('Sign in or sign up')
-    expect(wrapper.text()).toContain('create one there')
+    expect(wrapper.text()).toContain('create an account')
     // The only way out of this page is the one action; the steps below it are information, not links.
     expect(wrapper.findAll('a')).toHaveLength(1)
   })
@@ -163,7 +161,7 @@ describe('SignInView', () => {
     expect(wrapper.text()).toContain('Sign in or sign up')
     // "You need to be signed in" would read oddly straight after being told the account's data is gone.
     expect(wrapper.text()).not.toContain('You need to be signed in')
-    expect(wrapper.text()).toContain('Brownie uses one page for both')
+    expect(wrapper.text()).toContain('Sign in or create an account to continue.')
     expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
   })
 
@@ -201,16 +199,23 @@ describe('SignInView', () => {
     expect(wrapper.text()).toContain('Open to invited people only. Your workspace is private to you.')
   })
 
-  /** What a visitor is told Brownie does before they have an account. */
-  it('lays out how Brownie works in three steps, in order', async () => {
+  it('explains the review step without numbered cards', async () => {
     const wrapper = await mountAt('/signin')
+    expect(wrapper.get('.signin__guidance').text()).toContain('review each value before exporting')
+    expect(wrapper.find('.signin__steps').exists()).toBe(false)
+  })
 
-    const steps = wrapper.get('ol[aria-label="How Brownie works"]').findAll('li')
-    expect(steps.map((step) => step.get('h2').text())).toEqual(['Upload a form', 'Add your notes', 'Check and export'])
-    expect(steps.map((step) => step.get('p').text())).toEqual(['Step 1', 'Step 2', 'Step 3'])
-    expect(steps[0]?.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
-    expect(steps[1]?.text()).toContain('Brownie reads only what you add.')
-    expect(steps[2]?.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
+  it('preserves a selected form and describes the return journey', async () => {
+    const wrapper = await mountAt('/signin?next=%2F%3Fform%3Dirs-w4')
+    await flushPromises()
+    expect(wrapper.get('.signin__lede').text()).toBe('Sign in to continue with your selected form.')
+    await wrapper.get('a.button').trigger('click')
+    expect(window.sessionStorage.getItem('brownie.signInIntent')).toBe('/?form=irs-w4')
+  })
+
+  it('does not promise a selected form for an invalid or repeated form id', async () => {
+    const wrapper = await mountAt('/signin?next=%2F%3Fform%3Dinvalid%26form%3Dirs-w4')
+    expect(wrapper.get('.signin__lede').text()).not.toContain('selected form')
   })
 
   it('says the day is free when the deployment offers the open allowance', async () => {

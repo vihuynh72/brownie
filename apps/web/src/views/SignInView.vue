@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type WelcomeResponse } from '@/api/client'
 import { isInAppPath, rememberSignInIntent } from '@/auth/intent'
 
@@ -9,6 +10,12 @@ const route = useRoute()
 
 /** Where the person was going when this page interrupted them; anything that is not an in-app path is ignored. */
 const next = computed(() => (isInAppPath(route.query.next) ? route.query.next : null))
+const selectedForm = computed(() => {
+  if (!next.value) return false
+  const destination = new URL(next.value, window.location.origin)
+  const forms = destination.searchParams.getAll('form')
+  return destination.origin === window.location.origin && destination.pathname === '/' && forms.length === 1 && /^[a-z0-9]+-[a-z0-9-]{1,70}$/.test(forms[0]!)
+})
 
 /**
  * Says what signing in is for, in the words of the thing they just tried
@@ -65,9 +72,7 @@ const purpose = computed(() => {
   return /^\/documents\/\d+$/.test(path) ? 'to open that document' : null
 })
 
-const ONE_PAGE_FOR_BOTH =
-  'Brownie uses one page for both: sign in with an account you already have, ' +
-  'or create one there if this is your first time.'
+const ONE_PAGE_FOR_BOTH = 'Sign in or create an account to continue.'
 
 /**
  * One paragraph under the title: why the person is here, then how the provider's page works, which is one page
@@ -76,27 +81,9 @@ const ONE_PAGE_FOR_BOTH =
  */
 const lede = computed(() => {
   if (workspaceDeleted.value) return ONE_PAGE_FOR_BOTH
+  if (selectedForm.value) return 'Sign in to continue with your selected form.'
   return `You need to be signed in ${purpose.value ?? 'to open your documents'}. ${ONE_PAGE_FOR_BOTH}`
 })
-
-/** What Brownie does, in three steps, so a visitor can see what the product is before they sign in. */
-const STEPS = [
-  {
-    icon: 'document-upload',
-    title: 'Upload a form',
-    text: 'Brownie learns where the values go and keeps the form’s own look.',
-  },
-  {
-    icon: 'document-text',
-    title: 'Add your notes',
-    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
-  },
-  {
-    icon: 'document-check',
-    title: 'Check and export',
-    text: 'You approve every value. Brownie exports exactly the version you approved.',
-  },
-] as const
 
 /**
  * Signing in is a full-page navigation to the identity provider, so this
@@ -114,8 +101,7 @@ function keepDestination(): void {
     <header class="page-head page-head--center">
       <!-- The title right below says the same word, so a screen reader skips the mark rather than read it twice. -->
       <p class="signin__brand" aria-hidden="true">
-        <span class="doc-tile"><AppIcon name="document-text" :size="22" /></span>
-        <span class="signin__wordmark">Brownie</span>
+        <BrownieBrand />
       </p>
 
       <h1 class="page-title">Sign in to Brownie</h1>
@@ -166,20 +152,7 @@ function keepDestination(): void {
       {{ accessNote }}
     </p>
 
-    <!--
-      The explicit role keeps this a list for Safari's screen reader, which otherwise drops the list once its
-      markers are hidden.
-    -->
-    <ol class="signin__steps" role="list" aria-label="How Brownie works">
-      <li v-for="(step, index) in STEPS" :key="step.title" class="panel">
-        <p class="signin__step-head">
-          <span class="doc-tile doc-tile--medium"><AppIcon :name="step.icon" :size="18" /></span>
-          <span class="signin__step-label">Step {{ index + 1 }}</span>
-        </p>
-        <h2 class="signin__step-title">{{ step.title }}</h2>
-        <p class="signin__step-text">{{ step.text }}</p>
-      </li>
-    </ol>
+    <p class="signin__guidance">Bring a form, add your notes, and review each value before exporting.</p>
   </section>
 </template>
 
@@ -225,14 +198,6 @@ function keepDestination(): void {
   justify-content: center;
   gap: 0.75rem;
   margin: 0 0 1.3125rem;
-}
-
-/* A wordmark rather than interface text, so it is set heavier than the 500 that labels use. */
-.signin__wordmark {
-  color: var(--color-cocoa);
-  font-size: var(--font-size-xl);
-  font-weight: 600;
-  line-height: 1.2;
 }
 
 /* About 80 characters a line: at this width the wording without a destination runs to three lines. */
@@ -324,54 +289,14 @@ function keepDestination(): void {
   vertical-align: middle;
 }
 
-/* The three cards fill the column and are as tall as their own words need, so a shorter one is not stretched. */
-.signin__steps {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
-  inline-size: 100%;
-  margin: 3.625rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.signin__step-head {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin: 0;
-}
-
-.signin__step-label {
+.signin__guidance {
+  max-inline-size: 32rem;
+  margin: 2.5rem 0 0;
   color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  line-height: 1.3;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  text-align: center;
 }
 
-.signin__step-title {
-  margin: 0.5rem 0 0;
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
-  line-height: 1.3;
-}
-
-.signin__step-text {
-  margin: 0.625rem 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  line-height: 1.42;
-}
-
-@container main (min-width: 40rem) {
-  .signin__steps {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-.signin__wordmark { font-family: var(--font-display); font-size: 1.65rem; font-weight: 400; }
-.signin__steps li { border-top: 3px solid var(--color-honey); }
-.signin__step-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; }
 .signin__google { transition: background-color 160ms ease, border-color 160ms ease; }
 </style>

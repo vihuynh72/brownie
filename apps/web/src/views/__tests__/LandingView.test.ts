@@ -56,7 +56,7 @@ describe('LandingView', () => {
     const wrapper = await mountLanding()
 
     expect(wrapper.get('.landing-forms h2').text()).toBe('Search the form library.')
-    expect(wrapper.get('.landing-forms__popular').text()).toBe('Popular forms')
+    expect(wrapper.get('.landing-forms__popular').text()).toBe('2 official forms')
     const rows = wrapper.findAll('.landing-forms__row')
     expect(rows).toHaveLength(2)
     expect(rows[0].text()).toContain('Form W-9')
@@ -73,7 +73,7 @@ describe('LandingView', () => {
     await wrapper.findAll('.purpose-picker__option').find((button) => button.attributes('aria-label') === 'Passports & travel')!.trigger('click')
     await flushPromises()
     expect(findFormsForPurpose).toHaveBeenCalledWith('travel')
-    expect(wrapper.get('.landing-forms__popular').text()).toBe('Forms for Passports & travel')
+    expect(wrapper.get('.landing-forms__popular').text()).toBe('1 possible match for Passports & travel')
   })
 
   /** Typing exposes matching entries beyond the shorter popular row. */
@@ -96,6 +96,15 @@ describe('LandingView', () => {
     expect(wrapper.findAll('.landing-forms__row')).toHaveLength(10)
   })
 
+  it('shows all 21 matching forms rather than truncating the final result', async () => {
+    vi.mocked(findForms).mockResolvedValue(Array.from({ length: 21 }, (_, i) => ({
+      id: `f${i}`, title: `Form ${i}`, agency: 'Agency', category: 'Tax', description: 'Example.',
+    })))
+    const wrapper = await mountLanding()
+    expect(wrapper.findAll('.landing-forms__row')).toHaveLength(21)
+    expect(wrapper.get('.landing-forms__popular').text()).toBe('21 official forms')
+  })
+
   it('lets the visitor retry when the catalog cannot be reached', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
     vi.mocked(findForms).mockRejectedValue(new Error('down'))
@@ -110,12 +119,13 @@ describe('LandingView', () => {
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-  it('searches the real catalog when an example is chosen', async () => {
+  it('searches the catalog when a passport purpose is chosen', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()
-    await wrapper.findAll('.landing-forms__suggestions button').find((button) => button.text() === 'passport')!.trigger('click')
-    expect(findForms).toHaveBeenLastCalledWith('passport')
-    expect((wrapper.get('.landing-forms__search').element as HTMLInputElement).value).toBe('passport')
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.attributes('aria-label') === 'Passports & travel')!.trigger('click')
+    await wrapper.findAll('.landing-forms__suggestions button').find((button) => button.text() === 'Renew passport')!.trigger('click')
+    expect(findForms).toHaveBeenLastCalledWith('Renew passport')
+    expect((wrapper.get('.landing-forms__search').element as HTMLInputElement).value).toBe('Renew passport')
   })
 
   it('submits a described task and labels the returned results as possible matches', async () => {
@@ -126,8 +136,31 @@ describe('LandingView', () => {
     await wrapper.get('.landing-forms__composer').trigger('submit')
     await flushPromises()
     expect(findForms).toHaveBeenLastCalledWith('self-employed tax form')
-    expect(wrapper.text()).toContain('Possible matches for “self-employed tax form”')
+    expect(wrapper.text()).toContain('1 possible match for “self-employed tax form”')
     expect(wrapper.text()).toContain('without personal details')
+  })
+
+  it('asks which type of health coverage before showing matches', async () => {
+    const wrapper = await mountLanding()
+    await wrapper.get('.landing-forms__search').setValue('health insurance')
+    await wrapper.get('.landing-forms__composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Which coverage are you looking for?')
+    expect(wrapper.get('.landing-forms__popular').attributes('role')).toBe('status')
+    expect(wrapper.findAll('.landing-forms__row')).toHaveLength(0)
+    await wrapper.findAll('button').find((button) => button.text() === 'Health Insurance Marketplace')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('a[href="https://www.healthcare.gov/get-coverage/"]').exists()).toBe(true)
+  })
+
+  it('searches all forms after typing over a selected purpose', async () => {
+    const wrapper = await mountLanding()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.attributes('aria-label') === 'Passports & travel')!.trigger('click')
+    vi.mocked(findForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    await wrapper.get('.landing-forms__search').setValue('W-4')
+    await wrapper.get('.landing-forms__composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('.landing-forms__row').text()).toContain('Withholding.')
   })
 
   it('starts a form through sign-in and keeps access information visible', async () => {

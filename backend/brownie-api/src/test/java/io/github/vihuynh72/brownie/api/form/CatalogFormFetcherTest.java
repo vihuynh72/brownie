@@ -7,6 +7,9 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
@@ -127,4 +130,57 @@ class CatalogFormFetcherTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("404");
     }
+    @Test
+    void aBodyThatStallsAfterHeadersTimesOut() {
+        CountDownLatch release = new CountDownLatch(1);
+        server.createContext("/stalled", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write(1);
+            exchange.getResponseBody().flush();
+            try { release.await(3, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        });
+        var bounded = new HttpCatalogFormFetcher(Set.of("127.0.0.1"), false, Duration.ofMillis(300));
+        try {
+            assertThatThrownBy(() -> bounded.fetch(entry(url("/stalled"))))
+                    .isInstanceOf(IOException.class).hasMessageContaining("timed out");
+        } finally { release.countDown(); }
+    }
+
+    @Test
+    void delayedHeadersTimeOut() {
+        CountDownLatch release = new CountDownLatch(1);
+        server.createContext("/headers", exchange -> {
+            try { release.await(3, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        });
+        var bounded = new HttpCatalogFormFetcher(Set.of("127.0.0.1"), false, Duration.ofMillis(300));
+        try {
+            assertThatThrownBy(() -> bounded.fetch(entry(url("/headers"))))
+                    .isInstanceOf(IOException.class).hasMessageContaining("timed out");
+        } finally { release.countDown(); }
+    }
+
+    @Test
+    void redirectsShareOneDeadline() {
+        server.createContext("/slow", exchange -> {
+            try { Thread.sleep(180); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            exchange.getResponseHeaders().set("Location", url("/last"));
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+        });
+        server.createContext("/last", exchange -> {
+            try { Thread.sleep(180); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        var bounded = new HttpCatalogFormFetcher(Set.of("127.0.0.1"), false, Duration.ofMillis(300));
+        assertThatThrownBy(() -> bounded.fetch(entry(url("/slow"))))
+                .isInstanceOf(IOException.class).hasMessageContaining("timed out");
+    }
+
 }
