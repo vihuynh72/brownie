@@ -9,7 +9,10 @@ vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
   return { ...actual, getWelcome: vi.fn(), searchForms: vi.fn() }
 })
-vi.mock('@/landing/findForms', () => ({ findForms: vi.fn() }))
+vi.mock('@/landing/findForms', async () => {
+  const actual = await vi.importActual<typeof import('@/landing/findForms')>('@/landing/findForms')
+  return { ...actual, findForms: vi.fn() }
+})
 
 const MCP_URL = 'https://api.example.com/mcp'
 const SIGN_IN = '/oauth2/authorization/entra'
@@ -53,7 +56,7 @@ describe('LandingView', () => {
     ])
     const wrapper = await mountLanding()
 
-    expect(wrapper.get('.landing-forms h2').text()).toBe('What form do you need?')
+    expect(wrapper.get('.landing-forms h2').text()).toBe('Search the form library.')
     expect(wrapper.get('.landing-forms__popular').text()).toBe('Popular forms')
     const rows = wrapper.findAll('.landing-forms__row')
     expect(rows).toHaveLength(2)
@@ -64,7 +67,7 @@ describe('LandingView', () => {
   })
 
   /** Typing is its own search; an eight-row catalog shows at most eight. */
-  it('searches the library as the person types, at most eight rows', async () => {
+  it('searches the library as the person types without cutting matches to eight', async () => {
     vi.mocked(getWelcome).mockResolvedValue({ signUp: 'OPEN', mcpServerUrl: MCP_URL })
     const wrapper = await mountLanding()
     vi.useFakeTimers()
@@ -80,7 +83,7 @@ describe('LandingView', () => {
     await flushPromises()
 
     expect(findForms).toHaveBeenLastCalledWith('va')
-    expect(wrapper.findAll('.landing-forms__row')).toHaveLength(8)
+    expect(wrapper.findAll('.landing-forms__row')).toHaveLength(10)
   })
 
   it('lets the visitor retry when the catalog cannot be reached', async () => {

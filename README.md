@@ -174,11 +174,20 @@ call a model, create a document, or download an export. Original landing art
 is served from `apps/web/public/art/brownie-paper-world.webp`; motion respects
 the browser's reduced-motion preference.
 
-The working app uses platform system fonts, compact titles and a shared Brownie
-brand mark. Neutral app surfaces keep the document distinct from the controls;
-the public illustration retains its warm palette. Template font/date metadata
+The working app uses platform system fonts, compact titles and a shared original
+cartoon Brownie mascot. Warm paper surfaces and ink-teal actions carry the public
+illustration's character into the app. The shared icons use vendored Phosphor
+regular paths, with their MIT license alongside the registry. Template font/date metadata
 is available under Details, and opening chat instructions disappear once a
 conversation or source is present.
+
+Both library views browse forms by purpose, using targeted searches so a topic's
+entries are not cut off by the popular-forms cap. Purpose IDs are curated against
+the current catalog, not eligibility determinations. Passport renewal searches
+show the State Department's process guide rather than offering DS-11 as a loose
+keyword match. Lost passports, worker classification and DMV requests also link
+to official guidance. DMV forms are not in the fillable catalog: the state selector
+opens USAGov, and a person can upload the form their state supplies.
 
 ## Run
 

@@ -4,7 +4,9 @@ import AppIcon from '@/components/AppIcon.vue'
 import BrownieDemo from '@/components/BrownieDemo.vue'
 import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type FormEntry, type WelcomeResponse } from '@/api/client'
-import { findForms } from '@/landing/findForms'
+import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import FormPurposePicker from '@/components/FormPurposePicker.vue'
+import { guidanceForQuery } from '@/landing/formGuidance'
 import { installTargets, type InstallTargetId } from '@/landing/installTargets'
 
 /**
@@ -42,6 +44,9 @@ onMounted(async () => {
  * "Sign in to start" link. A failed catalog call leaves a retry option visible.
  */
 const formQuery = ref('')
+const selectedPurpose = ref<FormPurposeId | null>(null)
+const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
+const formGuidance = computed(() => guidanceForQuery(formQuery.value, drivingRequest.value ? 'driving' : selectedPurpose.value ?? undefined))
 const formResults = ref<FormEntry[]>([])
 const formLibraryFailed = ref(false)
 const formSearching = ref(true)
@@ -53,9 +58,14 @@ async function runFormSearch(): Promise<void> {
   formSearching.value = true
   formLibraryFailed.value = false
   try {
-    const found = await findForms(formQuery.value.trim())
+    const query = formQuery.value.trim()
+    const found = selectedPurpose.value && !query
+      ? await findFormsForPurpose(selectedPurpose.value)
+      : await findForms(query)
     if (seq !== formSearchSeq) return
-    formResults.value = found.slice(0, 8)
+    const relevant = found.filter((form) => !formGuidance.value?.excludeFormIds?.includes(form.id))
+    const matches = selectedPurpose.value ? relevant.filter((form) => matchesPurpose(form, selectedPurpose.value!)) : relevant
+    formResults.value = matches.slice(0, selectedPurpose.value || query ? 20 : 8)
   } catch {
     if (seq !== formSearchSeq) return
     formLibraryFailed.value = true
@@ -81,6 +91,13 @@ function searchExample(query: string): void {
 }
 
 function submitFormSearch(): void {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  void runFormSearch()
+}
+
+function selectFormPurpose(purpose: FormPurposeId | null): void {
+  selectedPurpose.value = purpose
+  formQuery.value = ''
   if (formSearchTimer) clearTimeout(formSearchTimer)
   void runFormSearch()
 }
@@ -230,9 +247,9 @@ const TESTED_FORMS = [
 
     <section class="landing-forms" aria-labelledby="landing-forms-title">
       <div class="landing-forms__head">
-        <h2 id="landing-forms-title" class="landing__h2">What form do you need?</h2>
+        <h2 id="landing-forms-title" class="landing__h2">Search the form library.</h2>
         <p class="landing__lede">
-          Search official forms by name or topic, or bring your own.
+          Name a form, or tell Brownie what you need to do. Browse official U.S. forms by purpose below.
         </p>
       </div>
       <form class="landing-forms__composer" role="search" @submit.prevent="submitFormSearch">
@@ -241,21 +258,32 @@ const TESTED_FORMS = [
         v-model="formQuery"
         class="landing-forms__search"
         type="search"
-        placeholder="e.g. I need a passport"
+        placeholder="Form name or purpose, e.g. starting a new job"
         aria-label="Find an official form"
         @input="onFormQueryInput"
       />
       <button type="submit">Search</button>
       </form>
       <p class="landing-forms__hint">Describe the task, without personal details. Your search is sent to Brownie's form catalog.</p>
-      <div class="landing-forms__suggestions" aria-label="Example searches">
+      <p class="landing-forms__browse">Or browse by purpose</p>
+      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <div v-if="formGuidance" class="form-guidance" role="status">
+        <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
+        <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
+        <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet.</p>
+        <a :href="formGuidance.url" target="_blank" rel="noopener noreferrer">{{ formGuidance.linkLabel }} <AppIcon name="external" :size="16" /></a></div>
+      </div>
+      <div v-if="selectedPurpose === 'travel'" class="landing-forms__suggestions" aria-label="Passport purpose">
+        <button v-for="query in ['First passport', 'Renew passport', 'Lost passport']" :key="query" type="button" @click="searchExample(query)">{{ query }}</button>
+      </div>
+      <div v-else-if="!selectedPurpose" class="landing-forms__suggestions" aria-label="Example searches">
         <span>Try searching</span>
         <button v-for="query in ['W-9', 'withholding', 'passport', 'veterans']" :key="query" type="button" @click="searchExample(query)">{{ query }}</button>
       </div>
       <p v-if="formSearching" class="landing-forms__popular" role="status">Searching the form library…</p>
       <div v-else-if="formLibraryFailed" class="landing-forms__empty" role="status">The form library is unavailable right now. <button type="button" @click="runFormSearch">Try again</button></div>
       <template v-else>
-      <p v-if="!formQuery.trim()" class="landing-forms__popular">Popular forms</p>
+      <p v-if="!formQuery.trim() && !selectedPurpose" class="landing-forms__popular">Popular forms</p>
       <p v-else-if="formResults.length" class="landing-forms__popular">Possible matches for “{{ formQuery.trim() }}”</p>
       <ul v-if="formResults.length" class="landing-forms__list">
         <li v-for="entry in formResults" :key="entry.id" class="landing-forms__row">
@@ -266,7 +294,7 @@ const TESTED_FORMS = [
           <a class="button button--small landing-forms__start" :href="signInHref">Sign in to start</a>
         </li>
       </ul>
-      <p v-else-if="formQuery.trim()" class="landing-forms__empty">No match. You can always upload your own copy.</p>
+      <p v-else-if="!formGuidance && (formQuery.trim() || selectedPurpose)" class="landing-forms__empty">No match. You can always upload your own copy.</p>
       </template>
     </section>
 
@@ -1065,11 +1093,11 @@ const TESTED_FORMS = [
 .landing-forms__suggestions button, .landing-forms__empty button { min-height: 2.75rem; padding: .5rem 1rem; border: 1px solid var(--color-outline); border-radius: 999px; background: var(--color-surface); color: var(--color-text); font: inherit; cursor: pointer; }
 .landing-forms__suggestions button:hover, .landing-forms__empty button:hover { background: var(--color-cocoa-soft); }
 .landing-forms__suggestions button:focus-visible, .landing-forms__empty button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-.landing-forms__composer { display: flex; align-items: center; gap: .75rem; max-width: 52rem; margin: 1.5rem auto 0; padding: .65rem .75rem .65rem 1.25rem; border: 1px solid var(--color-outline); border-radius: 1.5rem; background: var(--color-surface); }
+.landing-forms__composer { display: flex; align-items: center; gap: .75rem; max-width: 52rem; margin: 1.5rem auto 0; padding: .65rem .75rem .65rem 1.25rem; border: 2px solid var(--color-cocoa); border-radius: 1rem; background: var(--color-surface); }
 .landing-forms__composer:focus-within { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .landing-forms__composer .landing-forms__search { flex: 1; min-width: 0; width: auto; max-width: none; margin: 0; padding: .55rem 0; border: 0; outline: 0; background: transparent; font-size: 1.05rem; }
 .landing-forms__composer .landing-forms__search:focus-visible { box-shadow: none; }
-.landing-forms__composer button { min-height: 2.75rem; padding: .6rem 1.2rem; border: 0; border-radius: 999px; background: var(--color-cocoa-strong); color: var(--color-surface); font: inherit; font-weight: 500; cursor: pointer; }
+.landing-forms__composer button { min-height: 2.75rem; padding: .6rem 1.2rem; border: 0; border-radius: var(--radius-control); background: var(--color-cocoa-strong); color: var(--color-surface); font: inherit; font-weight: 500; cursor: pointer; }
 .landing-forms__composer button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .landing-forms__hint { margin-block: .75rem 0; color: var(--color-text-muted); font-size: .85rem; }
 .landing-forms__list { max-width: var(--landing-max); grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; }
@@ -1084,4 +1112,6 @@ const TESTED_FORMS = [
 @media (max-width: 47.99rem) { .landing__bar { top: .5rem; } .hero { min-height: 43rem; } .hero__art { background-position: 60% center; } .hero__foot { align-content: start; padding-block: 4rem 17rem; } .hero__title { font-size: clamp(3.4rem, 13vw, 5.5rem); } }
 @media (prefers-reduced-motion: no-preference) { .hero__foot { animation: hero-arrive .7s ease both; } @keyframes hero-arrive { from { opacity: 0; transform: translateY(1rem); } } }
 @supports (animation-timeline: view()) { @media (prefers-reduced-motion: no-preference) { .landing-forms, .install, .how, .tested, .yours { animation: section-arrive linear both; animation-timeline: view(); animation-range: entry 0% entry 25%; } @keyframes section-arrive { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: none; } } } }
+.landing-forms__browse { margin-block: var(--space-5) var(--space-3); font-weight: 600; }
+.landing-forms .form-guidance { margin-block: var(--space-4); }
 </style>

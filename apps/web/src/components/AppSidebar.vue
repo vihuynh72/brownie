@@ -871,7 +871,7 @@ async function moveToTrash(): Promise<void> {
  * carry the weight. A quiet border keeps the navigation distinct from the working page.
  */
 .sidebar {
-  --sidebar-icon: color-mix(in srgb, var(--color-text) 60%, transparent);
+  --sidebar-icon: var(--color-text-muted);
   flex: none;
   inline-size: var(--sidebar-width);
   block-size: 100dvh;

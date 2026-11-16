@@ -294,7 +294,7 @@ onBeforeUnmount(() => {
 
 /* The glyph is the text colour at 60%, like the icons in the sidebar it brings back, and full strength under the pointer. */
 .shell__bar .icon-button {
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  color: var(--color-text-muted);
 }
 
 .shell__bar .icon-button:hover {

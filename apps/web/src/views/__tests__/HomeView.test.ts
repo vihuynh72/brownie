@@ -326,6 +326,38 @@ describe('HomeView', () => {
     vi.useRealTimers()
   })
 
+  it('sends passport renewal to the agency instead of offering the first-application form', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State Department', category: 'Travel', description: 'First application.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+    await wrapper.get('.home__library-search').setValue('renew my passport')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(wrapper.get('.form-guidance a').attributes('href')).toBe('https://travel.state.gov/en/passports/renew-replace.html')
+    expect(startForm).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('distinguishes state DMV services from fillable catalog forms', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.text() === 'Driving & vehicles')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.get('.form-guidance').text()).toContain('DMV forms are not in Brownie’s fillable library yet.')
+    expect(wrapper.get('.form-guidance a').attributes('href')).toBe('https://www.usa.gov/state-motor-vehicle-services')
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(startForm).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
   it('retries a failed document list without leaving home', async () => {
     signedIn()
     vi.mocked(listDocuments).mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce([])

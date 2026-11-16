@@ -1,3 +1,4 @@
+/* Hallmark · macrostructure: Catalogue · tone: playful · anchor hue: ink-teal */
 /*
  * STYLE GUIDE: the shared look of every screen. Screens reuse these classes and tokens instead of drawing their own
  * buttons, chips, dialogs and fields. This file holds fonts, tokens and base element rules; primitives.css, loaded
@@ -45,7 +46,7 @@
  *                    --ruled adds a hairline under it), .dialog__body (scrolls; --flush removes its padding),
  *                    .dialog__foot (buttons, right aligned). Width 35rem (560px); --medium 40rem; --wide 62.5rem; or set
  *                    --dialog-width on the element.
- * .msg--brownie      Brownie's turn: .msg__who (a sparkle and the word) then .msg__body in 16px reading text. No bubble.
+ * .msg--brownie      Brownie's turn: .msg__who (the speaker name) then .msg__body in reading text. No bubble.
  * .msg--user         The person's turn: right aligned white bubble with a hairline edge, up to 80% wide.
  * .msg-card          White 16px card in the chat (progress, plan, tables, choices). Stack .msg-card__section rows in it
  *                    (hairlines between them; --soft shades one).
@@ -64,28 +65,10 @@
  * something is under way). Spacing is --space-*, motion is --motion-*, focus is --focus-ring. Under a reduced-motion
  * preference every turning ring stands still.
  *
- * Contrast, measured for the pairs the interface uses (text needs 4.5:1, graphics that carry meaning 3:1):
- *   main text   on paper 12.38  sidebar 11.25  white 14.57  paper-soft 13.06  cocoa wash 10.17  paper-deep 12.08
- *   muted text  on paper  5.68  sidebar  5.16  white  6.68  paper-soft  5.99  cocoa wash  4.66  paper-deep  5.54
- *   secondary   on paper  4.53  white  5.33  paper-soft 4.78 (sidebar 4.12, cocoa wash 3.72, paper-deep 4.42 fall short)
- *   faint       on white  5.06  paper-soft 4.54 (paper 4.30 and sidebar 3.91 fall short)
- *   white on cocoa 4.80, on cocoa-strong 6.41, on error red 5.90, on error-strong 7.70
- *   honey ink on honey spot 6.37 and honey soft 6.87; main text on honey 6.66; muted text on honey spot 5.51
- *   success ink on its wash 5.20, error ink on its wash 4.83, info blue on its wash 4.63
- *   cocoa on white 4.80, but on paper 4.08, paper-soft 4.30, sidebar 3.71, cocoa-soft 3.98; cocoa-strong on white
- *   6.41, paper 5.44, paper-soft 5.74, sidebar 4.95, cocoa-soft 5.32
- *   field border on white 3.53, paper-soft 3.17, paper 3.00
- *   links (cocoa-strong, underlined) on white 6.41, paper 5.44, paper-soft 5.74, sidebar 4.95, the error, success and
- *   info washes 5.24 to 5.43; only the cocoa wash (4.47) falls short, where a link is main text instead
- *   focus blue (the focus ring and info chips) on white 5.46, paper 4.64
- * Where a first choice missed its threshold, the nearest passing colour was taken instead:
- *   the quiet grey #8a857a for placeholders measured 3.67:1 on white, so --color-text-faint is darkened to #736e65;
- *   the pale #d9d5cb edge of a text field measured 1.47:1 on white, so a field uses --color-field-border (#8b8882),
- *   while --color-outline stays for edges that are only decoration (outline buttons, the composer, dividers);
- *   cocoa text on a cocoa-soft tag measured 3.98:1, so .tag--cocoa uses --color-cocoa-strong.
- * Disabled controls fade to 40% and are exempt from contrast rules. White text on honey always fails, so honey is
- * paired with --color-honey-ink or main text, never a light foreground; honey ink itself is for the honey-soft and
- * honey-spot fills only (3.52:1 on plain honey).
+ * Warm-paper contrast checks: main ink 13.50:1 on paper and 11.83:1 on the sidebar;
+ * secondary text 5.83:1 and 5.11:1; control outlines 3.69:1 and 3.23:1.
+ * Cream labels on the ink-teal primary action measure 9.15:1.
+ * Honey always carries dark text. Focus keeps a solid visible ring.
  */
 
 /*
@@ -119,20 +102,20 @@
 
 :root {
   /* The page colour, a shade warmer than white so the white sheet and cards lift off it. */
-  --color-paper: #fcf9f2;
+  --color-paper: oklch(0.97076 0.01673 88.00);
   /* The lightest inset: a quiet panel inside a card, a table's header row, a hovered choice row. */
-  --color-paper-soft: #f6f2eb;
+  --color-paper-soft: oklch(0.93873 0.02010 84.59);
   /* A step deeper than paper: the track of a two-way switch, a number tile, a neutral tag, an empty send button. */
-  --color-paper-deep: #efe9e0;
-  --color-surface: #ffffff;
+  --color-paper-deep: oklch(0.89960 0.02727 85.67);
+  --color-surface: oklch(0.99393 0.00818 91.48);
 
-  --color-text: #2a2924;
-  /* Secondary text clears 4.5:1 on paper (5.07) and the sidebar (4.71), but the darker hover wash uses muted text. */
-  --color-text-secondary: #6e6b61;
-  /* The same hue, darker: 6.36:1 on paper, 5.90 on the sidebar, 4.66 on the hover wash. Safe on every surface. */
-  --color-text-muted: #5f5c53;
-  /* Placeholders and steps not reached yet. The lightest grey that still reads on white (5.06) and paper-soft (4.54). */
-  --color-text-faint: #736e65;
+  --color-text: oklch(0.27633 0.01344 154.36);
+  /* Secondary text stays readable on the page and sidebar. */
+  --color-text-secondary: oklch(0.48483 0.02057 140.00);
+  /* Muted text is darker where it sits on tinted surfaces. */
+  --color-text-muted: oklch(0.46116 0.02189 150.15);
+  /* Placeholders remain readable rather than fading into the background. */
+  --color-text-faint: var(--color-text-secondary);
 
   --color-honey: #d9a82e;
   --color-honey-soft: #fff2be;
@@ -154,42 +137,42 @@
   /* Hover and pressed depth of the red button, 7.70:1 against a white label. */
   --color-error-strong: #962f22;
   /* Focus blue, and the blue of an information chip. */
-  --color-focus: #2a6f9b;
+  --color-focus: oklch(0.45117 0.07017 209.88);
   --color-info-wash: #e2eef6;
 
-  --color-border: #e4e1d6;
+  --color-border: oklch(0.79972 0.02762 87.87);
   /* The quiet outline around a card that sits on paper (a source card, a list of choices, a chat card). */
-  --color-hairline: #e6e1d8;
+  --color-hairline: oklch(0.84424 0.02767 85.67);
   /* The outline of an outline button and of the composer. Decoration only: a label or a placeholder names the
      control, so this pale edge (1.47:1 on white) is never the only sign that something is there. */
-  --color-outline: #d9d5cb;
+  --color-outline: oklch(0.59352 0.02659 133.60);
   /* The edge of a text field, which is the one sign of where to type, and the ring of a step not reached yet: a
      graphic that carries meaning, so 3.53:1 on white, 3.17 on paper-soft, 3.36 on paper. */
-  --color-field-border: #8b8882;
+  --color-field-border: oklch(0.55501 0.02286 149.82);
   /* The track of the rail beside the page, and the thumb of a thin scroll bar. */
-  --color-track: #e4ddd1;
+  --color-track: oklch(0.84424 0.02767 85.67);
   --color-scrollbar: #8f8a80;
   /* What the person said in the chat: a white bubble with a hairline edge, main text at 14.57:1. */
-  --color-bubble: #ffffff;
-  --color-bubble-border: #e6e1d8;
+  --color-bubble: oklch(0.93873 0.02010 84.59);
+  --color-bubble-border: oklch(0.82955 0.02822 83.53);
 
-  /* 4.80:1 against white: the action colour, safe for a white button label. */
-  --color-cocoa: #96684a;
-  /* Hover and pressed depth for the same button, 6.41:1 against white; also cocoa-coloured text on paper (6.09) and paper-soft (5.74). */
-  --color-cocoa-strong: #7e5639;
+  /* Existing action token names now carry ink-teal, with cream labels. */
+  --color-cocoa: oklch(0.39180 0.05698 207.13);
+  /* Deeper action ink for hover and links. */
+  --color-cocoa-strong: oklch(0.33282 0.04858 207.70);
   /* A lighter cocoa used only behind decorative glyphs (a white glyph on it is 3.53:1, above the 3:1 graphics need). */
-  --color-cocoa-tile: #ac7f5e;
+  --color-cocoa-tile: oklch(0.46407 0.06150 205.91);
   /* The faintest cocoa tint: a cocoa tag, a locked-value note. Cocoa-strong text on it is 5.32:1. */
-  --color-cocoa-soft: #f3e8df;
+  --color-cocoa-soft: oklch(0.93660 0.01917 152.81);
   /* A cocoa wash for the selected navigation row and a hovered control; main text on it is 10.17:1. It
      is deep enough to show on the sidebar, which is itself only a shade off paper. */
-  --color-cocoa-wash: #e4d5c8;
+  --color-cocoa-wash: oklch(0.90702 0.02369 149.36);
 
   /* The sidebar sits a shade deeper and rosier than paper so the two regions read apart
      without a hard divider. Its quieter text uses --color-text-muted, not
      --color-text-secondary, for the reason recorded on that token. */
-  --color-sidebar: #f6f0e7;
-  --color-sidebar-border: #e2dcd0;
+  --color-sidebar: oklch(0.92666 0.02424 85.79);
+  --color-sidebar-border: oklch(0.80997 0.02794 85.67);
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -255,27 +238,27 @@
   --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-focus);
 }
 
-/* The working app uses neutral surfaces; the illustrated public page keeps its warm palette. */
+/* Shared warm paper and ink-teal actions connect the working app to the illustrated public page. */
 .shell--app {
   --font-display: var(--font-ui);
   --font-size-display: clamp(1.5rem, 1.2rem + 1vw, 2rem);
-  --color-paper: #f7f8fa;
-  --color-paper-soft: #f2f3f5;
-  --color-paper-deep: #e9ebee;
-  --color-sidebar: #fbfbfc;
-  --color-sidebar-border: #e4e6ea;
-  --color-text: #25272c;
-  --color-text-secondary: #5f626b;
-  --color-text-muted: #5a5e67;
-  --color-text-faint: #686c75;
-  --color-hairline: #e2e5e9;
-  --color-outline: #d0d4da;
-  --color-cocoa: #79573f;
-  --color-cocoa-strong: #60432f;
-  --color-cocoa-wash: #eeebe7;
-  --color-track: #e4e6ea;
-  --color-bubble: #f2f3f5;
-  --color-bubble-border: #e2e5e9;
+  --color-paper: oklch(0.97076 0.01673 88.00);
+  --color-paper-soft: oklch(0.93873 0.02010 84.59);
+  --color-paper-deep: oklch(0.89960 0.02727 85.67);
+  --color-sidebar: oklch(0.92666 0.02424 85.79);
+  --color-sidebar-border: oklch(0.80997 0.02794 85.67);
+  --color-text: oklch(0.27633 0.01344 154.36);
+  --color-text-secondary: oklch(0.48483 0.02057 140.00);
+  --color-text-muted: oklch(0.46116 0.02189 150.15);
+  --color-text-faint: var(--color-text-secondary);
+  --color-hairline: oklch(0.84424 0.02767 85.67);
+  --color-outline: oklch(0.59352 0.02659 133.60);
+  --color-cocoa: oklch(0.39180 0.05698 207.13);
+  --color-cocoa-strong: oklch(0.33282 0.04858 207.70);
+  --color-cocoa-wash: oklch(0.90702 0.02369 149.36);
+  --color-track: oklch(0.84424 0.02767 85.67);
+  --color-bubble: oklch(0.93873 0.02010 84.59);
+  --color-bubble-border: oklch(0.82955 0.02822 83.53);
 }
 
 /*

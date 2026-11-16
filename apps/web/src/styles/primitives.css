@@ -89,7 +89,20 @@
   --button-bg-hover: var(--color-cocoa-strong);
   --button-border-hover: var(--color-cocoa-strong);
   --button-bg-active: color-mix(in srgb, var(--color-cocoa-strong) 82%, black);
+  box-shadow: 0 3px 0 var(--color-cocoa-strong);
 }
+
+.button--primary:active:not(:disabled):not([aria-disabled='true']) { box-shadow: 0 1px 0 var(--color-cocoa-strong); }
+
+.form-guidance {
+  display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4);
+  border: 1px solid var(--color-cocoa); border-radius: var(--radius-md);
+  background: var(--color-cocoa-soft); color: var(--color-text);
+}
+.form-guidance h3 { margin: 0 0 var(--space-1); font-size: var(--font-size-base); font-weight: 600; }
+.form-guidance p { margin: 0 0 var(--space-2); font-size: var(--font-size-sm); line-height: 1.55; }
+.form-guidance a { color: var(--color-cocoa-strong); font-size: var(--font-size-sm); font-weight: 600; text-underline-offset: 0.2em; }
+.form-guidance a svg { display: inline; vertical-align: middle; }
 
 .button--quiet {
   --button-bg: transparent;

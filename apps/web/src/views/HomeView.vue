@@ -4,7 +4,9 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import type { IconName } from '@/components/icons'
 import LandingView from '@/views/LandingView.vue'
-import { findForms } from '@/landing/findForms'
+import { findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import FormPurposePicker from '@/components/FormPurposePicker.vue'
+import { guidanceForQuery } from '@/landing/formGuidance'
 import { useSessionStore } from '@/stores/session'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
 import {
@@ -64,6 +66,9 @@ const loadError = ref('')
 // The form library, above the upload button: a debounced search whose first six
 // matches (or the six most popular forms on an empty query) each offer a Start.
 const formQuery = ref('')
+const selectedPurpose = ref<FormPurposeId | null>(null)
+const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
+const formGuidance = computed(() => guidanceForQuery(formQuery.value, drivingRequest.value ? 'driving' : selectedPurpose.value ?? undefined))
 const formResults = ref<FormEntry[]>([])
 const formSearchFailed = ref('')
 const formStartFailed = ref(false)
@@ -77,9 +82,14 @@ async function runFormSearch(): Promise<void> {
   formSearching.value = true
   formStartFailed.value = false
   try {
-    const found = await findForms(formQuery.value.trim())
+    const query = formQuery.value.trim()
+    const found = selectedPurpose.value && !query
+      ? await findFormsForPurpose(selectedPurpose.value)
+      : await findForms(query)
     if (seq !== formSearchSeq) return
-    formResults.value = found.slice(0, 6)
+    const relevant = found.filter((form) => !formGuidance.value?.excludeFormIds?.includes(form.id))
+    const matches = selectedPurpose.value ? relevant.filter((form) => matchesPurpose(form, selectedPurpose.value!)) : relevant
+    formResults.value = matches.slice(0, selectedPurpose.value || query ? 20 : 6)
     formSearchFailed.value = ''
   } catch (error) {
     if (seq !== formSearchSeq) return
@@ -93,13 +103,23 @@ async function runFormSearch(): Promise<void> {
   }
 }
 
-watch(formQuery, () => {
+watch([formQuery, selectedPurpose], () => {
   formSearchSeq++
   formSearching.value = true
   formSearchFailed.value = ''
   if (formSearchTimer) clearTimeout(formSearchTimer)
   formSearchTimer = setTimeout(() => void runFormSearch(), 250)
 })
+
+function selectFormPurpose(purpose: FormPurposeId | null): void {
+  selectedPurpose.value = purpose
+  formQuery.value = ''
+}
+
+function submitLibrarySearch(): void {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  void runFormSearch()
+}
 
 async function startLibraryForm(entry: FormEntry): Promise<void> {
   if (formBusyId.value) return
@@ -803,20 +823,30 @@ const showHowItWorks = computed(
     <section v-if="authenticated" class="home__library" aria-labelledby="home-library-heading">
       <div class="home__library-intro">
         <div>
-          <h2 id="home-library-heading" class="home__library-heading">Find a form</h2>
-          <p class="home__library-hint">Describe your task or enter a form name.</p>
+          <h2 id="home-library-heading" class="home__library-heading">Search the form library</h2>
+          <p class="home__library-hint">Find an official U.S. form by name, or tell Brownie what you need to do.</p>
         </div>
-        <span class="home__library-mark" aria-hidden="true"><AppIcon name="document-text" :size="28" /></span>
+        <img class="home__library-mascot" src="/art/brownie-mascot-v2.webp" alt="" width="88" height="88" />
       </div>
+      <form class="home__library-composer" role="search" @submit.prevent="submitLibrarySearch">
+      <AppIcon name="search" :size="22" />
       <input
         v-model="formQuery"
         class="home__library-search"
         type="search"
-        placeholder="I need to apply for a passport…"
+        placeholder="Form name or purpose, e.g. starting a new job"
         aria-label="Find an official form"
         aria-describedby="home-search-hint"
       />
-      <div class="home__library-examples" aria-label="Try a form search">
+      <button type="submit" class="button button--primary button--small">Search</button>
+      </form>
+      <p class="home__library-browse">Or browse by purpose</p>
+      <FormPurposePicker :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <div v-if="selectedPurpose === 'travel'" class="home__library-examples" aria-label="Passport purpose">
+        <button v-for="example in ['First passport', 'Renew passport', 'Lost passport']" :key="example" type="button"
+          class="button button--small" @click="formQuery = example">{{ example }}</button>
+      </div>
+      <div v-else-if="!selectedPurpose" class="home__library-examples" aria-label="Try a form search">
         <button
           v-for="example in ['Apply for a passport', 'Starting a new job', 'Self-employed tax form']"
           :key="example"
@@ -825,9 +855,16 @@ const showHowItWorks = computed(
           @click="formQuery = example"
         >{{ example }}</button>
       </div>
-      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check that the form fits your situation.</p>
+      <p id="home-search-hint" class="home__library-hint">Just the task, no personal details. Check the agency’s requirements before you start.</p>
+      <div v-if="formGuidance" class="form-guidance" role="status">
+        <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
+        <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
+        <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet. Download your state’s form, then bring it here to fill.</p>
+        <a :href="formGuidance.url" target="_blank" rel="noopener noreferrer">{{ formGuidance.linkLabel }} <AppIcon name="external" :size="16" /></a>
+        <button v-if="drivingRequest" type="button" class="button button--small home__dmv-upload" @click="chooseForm">Upload a DMV form</button></div>
+      </div>
       <p class="home__library-popular">
-        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : formQuery.trim() ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
+        {{ formSearching ? 'Searching forms…' : formSearchFailed && !formStartFailed ? 'Search unavailable' : drivingRequest ? 'State services' : formQuery.trim() || selectedPurpose ? `${formResults.length} ${formResults.length === 1 ? 'form' : 'forms'} shown` : 'Popular forms' }}
       </p>
       <div v-if="formSearchFailed" class="home__library-error" role="alert">
         <p>{{ formSearchFailed }}</p>
@@ -850,7 +887,7 @@ const showHowItWorks = computed(
           </button>
         </li>
       </ul>
-      <p v-else-if="formQuery.trim() && !formSearchFailed && !formSearching" class="home__library-empty">
+      <p v-else-if="!formGuidance && (formQuery.trim() || selectedPurpose) && !formSearchFailed && !formSearching" class="home__library-empty">
         No match. Upload your own copy below.
       </p>
     </section>
@@ -1082,7 +1119,7 @@ const showHowItWorks = computed(
 .home {
   /* The shell's own side margins already keep the column off the window edge. */
   --page-gutter: 0px;
-  --home-column: 42.375rem;
+  --home-column: 52rem;
   /* The size of the quiet lines under the button: between the 12px of tags and the 14px of body text. */
   --home-fine: 0.8125rem;
   /* A row's trash control sits just outside the column, so the column itself lines up with the cards above it. */
@@ -1090,7 +1127,7 @@ const showHowItWorks = computed(
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-block: clamp(var(--space-6), 6vh, 4rem) var(--space-8);
+  padding-block: var(--space-5) var(--space-8);
 }
 
 .home--wide {
@@ -1816,15 +1853,15 @@ const showHowItWorks = computed(
   inline-size: min(100%, var(--home-column));
   margin-block-start: var(--space-5);
   padding: clamp(1rem, 3vw, 1.5rem);
-  border: 1px solid var(--color-hairline);
+  border: 1px solid var(--color-outline);
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: var(--color-paper);
 }
 
 .home__library-intro {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-3);
 }
 
@@ -1834,16 +1871,12 @@ const showHowItWorks = computed(
   font-size: var(--font-size-sm);
 }
 
-.home__library-mark {
-  display: grid;
-  flex: none;
-  place-items: center;
-  inline-size: 3rem;
-  block-size: 3rem;
-  border-radius: var(--radius-lg);
-  background: var(--color-cocoa-soft);
-  color: var(--color-cocoa);
-}
+.home__library-mascot { inline-size: clamp(3.5rem, 12vw, 5.5rem); block-size: auto; object-fit: contain; flex: none; }
+.home__library-composer { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 2px solid var(--color-cocoa); border-radius: var(--radius-md); background: var(--color-surface); }
+.home__library-composer > svg { margin-inline-start: var(--space-2); color: var(--color-cocoa); }
+.home__library-composer:focus-within { box-shadow: var(--focus-ring); }
+.home__library-browse { margin: var(--space-2) 0 0; font-size: var(--font-size-sm); font-weight: 600; }
+.home__dmv-upload { display: flex; margin-block-start: var(--space-3); }
 
 .home__library-error p { margin: 0 0 var(--space-2); }
 .home__load-error { margin-block-start: var(--space-3); }
@@ -1856,12 +1889,12 @@ const showHowItWorks = computed(
 }
 
 .home__library-search {
-  width: 100%;
+  flex: 1; min-inline-size: 0; width: 100%;
   min-height: 2.75rem;
-  padding: 0.625rem 0.875rem;
-  border: 1px solid var(--color-outline);
-  border-radius: var(--radius-md);
-  background: var(--color-paper);
+  padding: 0.625rem 0.25rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text);
 }
 
@@ -1869,8 +1902,6 @@ const showHowItWorks = computed(
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   margin: 0;
 }
 
@@ -1898,7 +1929,7 @@ const showHowItWorks = computed(
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
-  background: var(--color-paper);
+  background: var(--color-surface);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
 }
