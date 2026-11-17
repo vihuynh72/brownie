@@ -2726,7 +2726,7 @@ describe('WorkspaceView: previewing what Brownie proposes', () => {
 
     const strip = page.find('.single-pane-strip')
     expect(strip.exists()).toBe(true)
-    expect(strip.text()).toContain('Brownie filled')
+    expect(strip.text()).toContain('1 answer prepared by Brownie')
     expect(strip.find('button').text()).toBe('I approve, fill it in')
     expect(strip.text()).toContain('See details')
   })
@@ -2739,6 +2739,22 @@ describe('WorkspaceView: previewing what Brownie proposes', () => {
     await page.find('.single-pane-strip__action').trigger('click')
 
     expect(acceptPatchProposal).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows one approval action and keeps the proposal stable while approval is being saved', async () => {
+    const pending = deferred<PatchAcceptResponse>()
+    vi.mocked(acceptPatchProposal).mockReturnValue(pending.promise)
+    const page = await mountWithFindings()
+    expect(proposal(page).find('.choices__other-input').exists()).toBe(false)
+    const approve = proposal(page).get('.proposal__actions .button--primary')
+    await approve.trigger('click')
+    expect(approve.attributes('aria-disabled')).toBe('true')
+    await press(page, 'Not now', '.proposal')
+    await approve.trigger('click')
+    expect(acceptPatchProposal).toHaveBeenCalledTimes(1)
+    expect(proposal(page).exists()).toBe(true)
+    pending.resolve(acceptedProposal({ 'meeting.title': 'CLEAN' }))
+    await flushPromises()
   })
 
   it("learns the approved fill's details and offers to review or undo them", async () => {
@@ -2875,7 +2891,7 @@ describe('WorkspaceView: previewing what Brownie proposes', () => {
     )
 
     // The first of the proposal's choices is the approval, in whichever words the proposal puts it.
-    const approve = page.get('.proposal button.choices__option')
+    const approve = page.get('.proposal__actions .button--primary')
     ;(approve.element as HTMLElement).focus()
     await approve.trigger('click')
     await flushPromises()
@@ -3697,25 +3713,25 @@ describe('WorkspaceView: the chat', () => {
     expect((await axe(page.element)).violations).toEqual([])
   })
 
-  it("moves the focus to the new proposal when the proposal's own line asks for something else", async () => {
+  it('keeps focus in the shared message box when a correction replaces the proposal', async () => {
     vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
     const page = await mountPage()
     await send(page, 'change meeting title to Spring Planning')
 
-    const other = proposal(page).get('#proposal-other')
+    const other = page.get('#assist-composer')
     ;(other.element as HTMLElement).focus()
     await other.setValue('change meeting title to Autumn Planning')
     vi.mocked(executeAssist).mockResolvedValue({
       ...TITLE_CHANGED,
       proposal: proposalOf({ 'meeting.title': proposedScalar('Autumn Planning') }, { id: 34 }),
     })
-    await proposal(page).get('form').trigger('submit')
+    await other.trigger('keydown', { key: 'Enter' })
     await flushPromises()
 
     expect(proposalRowOf(page, 'Change to')).toBe('Change to Autumn Planning')
-    expect(document.activeElement).toBe(proposal(page).element)
+    expect(document.activeElement).toBe(other.element)
   })
 
   it('does a change straight away and fills it in once approved', async () => {
@@ -3734,7 +3750,7 @@ describe('WorkspaceView: the chat', () => {
     expect(proposalRowOf(page, 'Now')).toBe('Now Weekly Sync')
     expect(proposalRowOf(page, 'Change to')).toBe('Change to Spring Planning')
     expect(offer.get('.proposal__note').text()).toBe('Approving marks Meeting title as not reviewed, so you review it again.')
-    expect(offer.text()).toContain('Can you confirm?')
+    expect(offer.text()).toContain('Need a correction? Tell Brownie in the message box.')
     expect(liveRegion(page).text()).toBe('Brownie proposed a change. Check it, then approve it to update the document.')
     expect(acceptPatchProposal).not.toHaveBeenCalled()
 
@@ -3802,7 +3818,7 @@ describe('WorkspaceView: the chat', () => {
     expect(valueOf(page, 'edit-meeting.title')).toBe('Weekly Sync')
   })
 
-  it('sends what the person types on the last line of a proposal as a new request', async () => {
+  it('takes corrections through the shared message box without approving the existing proposal', async () => {
     vi.mocked(interpretAssist).mockResolvedValue(CHANGE_TITLE)
     vi.mocked(executeAssist).mockResolvedValue(TITLE_CHANGED)
     vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
@@ -3810,9 +3826,7 @@ describe('WorkspaceView: the chat', () => {
     await send(page, 'change meeting title to Spring Planning')
 
     vi.mocked(interpretAssist).mockResolvedValue(NOT_RECOGNISED)
-    await page.get('#proposal-other').setValue('make it Summer Planning instead')
-    page.get('#proposal-other').element.closest('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await flushPromises()
+    await send(page, 'make it Summer Planning instead')
 
     expect(interpretAssist).toHaveBeenLastCalledWith(7, 1, 'make it Summer Planning instead')
     expect(acceptPatchProposal).not.toHaveBeenCalled()

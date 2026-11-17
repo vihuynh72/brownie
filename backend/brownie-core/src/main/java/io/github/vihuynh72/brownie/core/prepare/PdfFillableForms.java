@@ -32,7 +32,7 @@ import java.util.Optional;
 public class PdfFillableForms implements PdfFormPreparer {
 
     /** The recipe's own name; its version is this and the reader's version. */
-    public static final String RECIPE = "fillable-pdf-v1";
+    public static final String RECIPE = "fillable-pdf-v2";
 
     private final PdfFormPreparationService preparation;
     private final PdfFormExtractionVersionRepository readings;

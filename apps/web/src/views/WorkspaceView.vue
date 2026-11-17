@@ -2979,9 +2979,10 @@ const starterFields = computed(() => {
 const missingRequiredFields = computed(() => editableFields.value.filter((field) => requiredFieldIds.value.has(field.fieldId)
   && (field.cardinality === 'SCALAR' ? scalarDraft(field.fieldId).trim() === '' : rowDraft(field.fieldId).length === 0 || rowDraft(field.fieldId).some((value) => !value.trim()))))
 const nextStepWords = computed(() => {
-  if (patchProposal.value && applyStage.value === 'proposed') return 'Check the proposed answers below, then approve them.'
+  if (patchProposal.value && applyStage.value === 'proposed') return 'Review the proposed answers, then approve them or ask for a correction.'
   if (composerBusy.value || sourceUploadState.value === 'uploading') return 'Preparing answers from your notes. You can keep looking at the form.'
   if (extractionStage.value === 'waiting-for-input') return 'Answer the questions above. Brownie will continue when you are done.'
+  if (extractionStage.value === 'succeeded' && !patchProposal.value && decidedRunJobId.value !== extractionJobId.value) return 'Your earlier reading is ready. Show its answers above, or add another source.'
   if (fillCounts.value.filled === 0) return 'Share what you know in the message box. Brownie will match it to the form.'
   if (missingRequiredFields.value.length > 0) return `Still needed: ${missingRequiredFields.value.map(fieldLabel).join(', ')}.`
   if (nextReviewTarget.value) return 'Check the remaining answers from Brownie before export.'
@@ -3239,8 +3240,8 @@ const singlePaneStrip = computed<{ title: string; status: string; action: string
   if (patchProposal.value !== null) {
     const filled = Object.keys(patchProposal.value.proposedValues ?? {}).length
     return {
-      title: 'A proposal',
-      status: `Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}`,
+      title: 'Review answers',
+      status: `${filled === 1 ? '1 answer' : `${filled} answers`} prepared by Brownie`,
       action: 'I approve, fill it in',
       run: () => void acceptProposal(),
     }
@@ -3397,6 +3398,7 @@ function setProposalAside(): void {
 }
 
 async function onProposalChoice(index: number): Promise<void> {
+  if (applyStage.value === 'accepting') return
   if (index === 0) await acceptProposal()
   else setProposalAside()
   await keepFocusInChat()
@@ -4892,17 +4894,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     </ul>
                   </div>
                 </div>
-                <div class="msg__body"><p>Can you confirm?</p></div>
-                <ChoiceList
-                  :options="[proposalChangeCard ? 'I approve, make the change' : 'I approve, fill it in', 'Not now']"
-                  name="Your decision about these values"
-                  id-prefix="proposal"
-                  other-label="Other"
-                  other-placeholder="Type what you would prefer…"
-                  :busy="applyStage === 'accepting'"
-                  @choose="onProposalChoice"
-                  @other="(text) => sendMessage(text)"
-                />
+                <div class="proposal__actions" role="group" aria-label="Your decision about these values">
+                  <button type="button" class="button button--primary button--small" :aria-disabled="applyStage === 'accepting'" @click="onProposalChoice(0)">
+                    {{ proposalChangeCard ? 'I approve, make the change' : 'I approve, fill it in' }}
+                  </button>
+                  <button type="button" class="button button--quiet button--small" :aria-disabled="applyStage === 'accepting'" @click="onProposalChoice(1)">Not now</button>
+                </div>
+                <p class="field-hint">Need a correction? Tell Brownie in the message box.</p>
                 <p v-if="applyStage === 'accepting'" class="proposal__status" aria-live="polite">Filling in…</p>
                 <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
               </div>
@@ -6829,6 +6827,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .proposal__skipped ul {
   margin: 0.25rem 0 0;
   padding-inline-start: 1.25rem;
+}
+
+.proposal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .proposal__status {
