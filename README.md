@@ -166,12 +166,20 @@ References: [Railway Sandboxes](https://docs.railway.com/sandboxes),
 
 On a blank form, the composer offers one **Prepare my form** action. Clicking
 it or pressing Enter stores the supplied details as a text source, scans and
-reads it, then prepares a proposal. Uploading a notes file through **Upload
-notes and prepare** follows the same path. A pending reading or unchecked
+reads it, then prepares a proposal. The first message accepts up to 20,000
+characters. The opening names fields from the actual form, with required
+fields first, instead of seeding a personal-name prompt. Choosing an existing
+file through **Use a document or notes** follows the same path. The source
+picker advertises the running backend's supported formats: plain text, DOCX,
+and text-based PDF. Each proposed answer retains citations to its source text,
+Word run, or PDF page and line. Scanned PDFs need OCR and are refused as
+sources rather than treated as readable notes. A pending reading or unchecked
 proposal blocks another preparation. Questions, exact-hash approval and
 export checks still apply. Page-specific commands such as "fill here" retain
 their selected-page context. Preparation uses one source at a time; an
 attached file and a separate typed request are not silently combined.
+The next-step guidance links to missing required fields, then offers the
+server's export check without asking users to complete every optional field.
 
 The landing and home form finders search the official catalog. They load and
 cache the catalog across agency searches, then rank form numbers, descriptions,

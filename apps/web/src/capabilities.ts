@@ -18,6 +18,18 @@ export function resetCapabilitiesCache(): void {
   cached = null
 }
 
+/** Only advertise source formats the running backend can turn into cited answers. */
+export function sourceFileOptions(capabilities?: Pick<CapabilitiesResponse, 'assistSourceMediaTypes'> | null): { accept: string; words: string } {
+  const formats = [
+    { type: 'application/pdf', extension: '.pdf', words: 'PDF' },
+    { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', extension: '.docx', words: 'Word (.docx)' },
+    { type: 'text/plain', extension: '.txt', words: 'Plain text (.txt)' },
+  ]
+  const supported = formats.filter((format) => capabilities?.assistSourceMediaTypes?.includes(format.type))
+  const offered = supported.length > 0 ? supported : formats.slice(-1)
+  return { accept: offered.flatMap((format) => [format.extension, format.type]).join(','), words: offered.map((format) => format.words).join(', ') }
+}
+
 const LARGER_UNITS = ['KB', 'MB', 'GB', 'TB'] as const
 
 /**

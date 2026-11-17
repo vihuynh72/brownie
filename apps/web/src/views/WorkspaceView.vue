@@ -72,7 +72,7 @@ import {
 import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
 import { brownieSaysNotThere, describeCommonFailure, isOpenLimitRefusal } from '@/api/failures'
 import { describePayload } from '@/rules/describeRule'
-import { formatBytes, loadCapabilities } from '@/capabilities'
+import { formatBytes, loadCapabilities, sourceFileOptions } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, offeredAccess, originLink, originLinkLabel, originSentence } from '@/connections/words'
 import {
   describeStyle,
@@ -138,6 +138,7 @@ function announce(text: string): void {
 }
 
 const uploadLimit = ref<string | null>(null)
+const sourceFiles = ref(sourceFileOptions())
 /** The same limit in bytes, to tell a file refused for its size from one refused for what it unpacks to. */
 const uploadLimitBytes = ref<number | null>(null)
 /**
@@ -148,6 +149,7 @@ const sourcesOffered = ref(false)
 onMounted(async () => {
   try {
     const capabilities = await loadCapabilities()
+    sourceFiles.value = sourceFileOptions(capabilities)
     const { maxUploadBytes } = capabilities
     // An older server may not send the limit at all; then neither the hint nor a size refusal names one.
     if (typeof maxUploadBytes === 'number' && maxUploadBytes > 0) {
@@ -373,6 +375,8 @@ function sourceKindWords(source: DocumentSourceResponse): string {
   if (source.origin?.conversion === 'CALENDAR_EVENT_AS_TEXT') return 'Calendar event'
   if (source.origin?.conversion === 'GOOGLE_DOC_AS_TEXT') return 'Google Doc'
   if (source.kind === 'SAVED_DETAILS') return 'Your details'
+  if (/\.pdf$/i.test(source.displayFilename ?? '')) return 'PDF file'
+  if (/\.docx$/i.test(source.displayFilename ?? '')) return 'Word document'
   return 'Text file'
 }
 
@@ -2263,7 +2267,7 @@ function uploadFailureMessage(error: unknown, file: File): string {
       : 'That file was not attached: it is larger than Brownie accepts.'
   }
   if (error instanceof ApiRequestError && error.status === 415) {
-    return 'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.'
+    return `That file was not attached: Brownie cannot use that kind of file as a source. Choose ${sourceFiles.value.words}.`
   }
   const why = describeCommonFailure(error, 'a way to attach sources')
   return why ? `That file was not attached. ${why}` : 'Could not attach that file. Try again.'
@@ -2310,8 +2314,13 @@ async function attachAndPrepare(file: File, details?: string): Promise<boolean> 
       sourceUploadState.value = 'error'
       return false
     }
-    await extractArtifact(workspaceId, allocated.id)
+    const extraction = await extractArtifact(workspaceId, allocated.id)
     if (!stillHere()) return false
+    if (extraction.status !== 'COMPLETE') {
+      sourceUploadError.value = 'Brownie could not read the text in this file. Try a text-based PDF, a Word document, or paste the notes into the message box.'
+      sourceUploadState.value = 'error'
+      return false
+    }
     const attached = await attachDocumentSource(workspaceId, documentId, allocated.id)
     if (!stillHere()) return false
     sourcesAddedHere.add(attached.id)
@@ -2720,7 +2729,7 @@ async function applyResultToDocument(): Promise<void> {
     proposalIntro.value = `Here is what I found in ${runSourceName.value ?? 'your source'}:`
     applyStage.value = 'proposed'
     const filled = Object.keys(proposal.proposedValues).length
-    announce(`Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}. Look them over, then approve.`)
+    announce(`Brownie prepared ${filled === 1 ? '1 answer' : `${filled} answers`}. Look them over, then approve.`)
     // "Show what I found" went away with the reading's status; the proposal it showed takes focus.
     await keepFocusInChat()
   } catch (error) {
@@ -2931,9 +2940,8 @@ const voiceEnabled = ref(false)
 const voiceError = ref('')
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
-/** The "Type my details" starter: seeds the composer with the beginning of the answer and focuses it. */
+/** Start with the person's own words, without assuming what kind of form they brought. */
 function typeMyDetails(): void {
-  composerText.value = 'My name is '
   composerTextareaRef.value?.focus()
 }
 const wsId = computed(() => session.personalWorkspaceId ?? -1)
@@ -2962,6 +2970,23 @@ const composerStops = computed(() => ['running', 'resuming'].includes(extraction
 const initialPrepare = computed(() => loadState.value === 'loaded' && fillCounts.value.total > 0
   && fillCounts.value.filled === 0 && chat.value.length === 0 && attachedSources.value.length === 0
   && hereHint.value === null)
+
+const starterFields = computed(() => {
+  const fields = [...editableFields.value.filter((field) => requiredFieldIds.value.has(field.fieldId)),
+    ...editableFields.value.filter((field) => !requiredFieldIds.value.has(field.fieldId))]
+  return [...new Set(fields.map(fieldLabel))].slice(0, 4)
+})
+const missingRequiredFields = computed(() => editableFields.value.filter((field) => requiredFieldIds.value.has(field.fieldId)
+  && (field.cardinality === 'SCALAR' ? scalarDraft(field.fieldId).trim() === '' : rowDraft(field.fieldId).length === 0 || rowDraft(field.fieldId).some((value) => !value.trim()))))
+const nextStepWords = computed(() => {
+  if (patchProposal.value && applyStage.value === 'proposed') return 'Check the proposed answers below, then approve them.'
+  if (composerBusy.value || sourceUploadState.value === 'uploading') return 'Preparing answers from your notes. You can keep looking at the form.'
+  if (extractionStage.value === 'waiting-for-input') return 'Answer the questions above. Brownie will continue when you are done.'
+  if (fillCounts.value.filled === 0) return 'Share what you know in the message box. Brownie will match it to the form.'
+  if (missingRequiredFields.value.length > 0) return `Still needed: ${missingRequiredFields.value.map(fieldLabel).join(', ')}.`
+  if (nextReviewTarget.value) return 'Check the remaining answers from Brownie before export.'
+  return 'Check export for remaining requirements. Blank optional fields do not all need an answer.'
+})
 
 async function prepareFromText(): Promise<void> {
   const text = composerText.value.trim()
@@ -4541,23 +4566,25 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               <div class="msg__body">
                 <p>
                   <template v-if="patchProposal && applyStage === 'proposed'">Review Brownie's proposed answers before applying them.</template>
-                  <template v-else-if="fillCounts.total > 0 && fillCounts.accepted === fillCounts.total">Your answers are accepted. You can export this form or ask me for a change.</template>
+                  <template v-else-if="fillCounts.filled > 0 && fillCounts.accepted === fillCounts.filled">Your added answers are accepted. Check export for any remaining requirements, or ask me for a change.</template>
                   <template v-else-if="fillCounts.filled > 0">Your form has {{ fillCounts.filled }} of {{ fillCounts.total }} places filled. Check the answers, or ask me for a change.</template>
-                  <template v-else>Tell me your details, typed or said, and I'll fill this form. Or add notes or a connected source with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template></template>
+                  <template v-else>Paste your notes or tell me what you know in one message. I'll match the details to this form and ask about anything required that's missing.</template>
                 </p>
+                <p v-if="fillCounts.filled === 0 && starterFields.length" class="chat-line__form-brief">This form asks for {{ starterFields.join(', ') }}<template v-if="editableFields.length > starterFields.length"> and more</template>.</p>
+                <p v-if="fillCounts.filled === 0" class="field-hint">You can also type straight into the highlighted spots.</p>
               </div>
               <!-- Where to begin: offered until something has been said or a source attached. -->
               <ul v-if="startersShown" class="chat-line__starters" aria-label="Ways to begin">
                 <li>
                   <button type="button" class="button button--secondary button--small" @click="typeMyDetails">
                     <AppIcon name="pencil" :size="16" />
-                    Type my details
+                    Share details
                   </button>
                 </li>
                 <li>
                   <button type="button" class="button button--secondary button--small" @click="goToSources">
                     <AppIcon name="attach" :size="16" />
-                    Add notes or a source
+                    Use a document or notes
                   </button>
                 </li>
                 <li v-if="starterAddsSpot">
@@ -4971,7 +4998,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <header class="add-source__head">
               <div>
                 <h3 id="add-source-title" class="add-source__title">Add a source</h3>
-                <p class="add-source__lede">Uploading a notes file starts preparation. Brownie reads it and offers answers for your review.</p>
+                <p class="add-source__lede">Use a file you already have. Brownie reads it and prepares answers for your review.</p>
               </div>
               <button type="button" class="icon-button add-source__close" @click="closeSources">
                 <AppIcon name="close" :size="20" />
@@ -4987,13 +5014,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                       id="attach-source"
                       class="visually-hidden add-source__input"
                       type="file"
-                      accept=".txt,text/plain"
+                      :accept="sourceFiles.accept"
+                      aria-describedby="add-source-upload-hint"
                       :disabled="sourceUploadState === 'uploading' || !canPrepare"
                       @change="onSourceFileChosen"
                     />
-                    <label for="attach-source" class="add-source__toggle">Add notes (.txt)</label>
+                    <label for="attach-source" class="add-source__toggle">Choose a source file</label>
                     <p id="add-source-upload-hint" class="field-hint">
-                      Plain text<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Uploading starts preparation.
+                      {{ sourceFiles.words }}<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Uploading starts preparation.
                     </p>
                   </div>
                 </div>
@@ -5037,7 +5065,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           </section>
         </div>
 
-        <p class="workspace-next-action">{{ patchProposal && applyStage === 'proposed' ? 'Review the proposed answers.' : fillCounts.total > 0 && fillCounts.accepted === fillCounts.total ? 'Your answers are accepted. Continue to export when you are ready.' : fillCounts.filled === 0 ? 'Tell Brownie what belongs on this form.' : `${fillCounts.filled} of ${fillCounts.total} places filled. Check your answers before export.` }}</p>
+        <div v-if="!startersShown || fillCounts.filled > 0" class="workspace-next-action">
+          <p>{{ nextStepWords }}</p>
+          <button v-if="!patchProposal && !runUnderWay && !composerBusy && fillCounts.filled > 0 && missingRequiredFields.length"
+            type="button" class="link-button" @click="focusField(missingRequiredFields[0]!.fieldId)">Go to {{ fieldLabel(missingRequiredFields[0]!) }}</button>
+          <button v-else-if="!patchProposal && !runUnderWay && !composerBusy && fillCounts.filled > 0 && !missingRequiredFields.length && !nextReviewTarget"
+            type="button" class="link-button" @click="openExport">Check export</button>
+        </div>
         <form class="composer" @submit.prevent="submitComposer()">
           <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
           <label class="visually-hidden" for="assist-composer">Tell me what to fill</label>
@@ -5047,8 +5081,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             v-model="composerText"
             class="composer__input"
             rows="2"
-            maxlength="1000"
-            :placeholder="composerBusy ? 'Working on it…' : 'Tell me what to fill'"
+            :maxlength="initialPrepare ? 20000 : 1000"
+            :placeholder="composerBusy ? 'Working on it…' : initialPrepare ? 'Paste notes or describe what goes in this form…' : 'Tell me what to fill'"
             :aria-describedby="hereHint ? 'assist-composer-here' : undefined"
             @keydown="onComposerKeydown"
           ></textarea>
@@ -5056,7 +5090,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <AppIcon name="pointer" :size="14" />
             <span>{{ hereHint }}</span>
           </p>
-          <p v-if="initialPrepare" class="composer__prepare-hint">Brownie saves these details as a notes source and prepares answers for you to review.</p>
+          <p v-if="initialPrepare" class="composer__prepare-hint">Share the details together. You'll review the draft before anything is filled.</p>
           <div class="composer__tools">
             <button v-if="initialPrepare && !composerStops" type="submit" class="button button--primary button--small composer__prepare"
               :disabled="!composerText.trim() || !canPrepare || sourceUploadState === 'uploading'">
@@ -5146,6 +5180,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 <style scoped>
 .workspace-next-action { margin: 0; padding: 0 0 var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.workspace-next-action p { margin: 0; }
+.workspace-next-action .link-button { margin-block-start: var(--space-1); min-block-size: 2.75rem; text-align: start; }
+.chat-line__form-brief { color: var(--color-text); font-size: var(--font-size-sm); }
 .composer__prepare-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .rules-card__heading { font-family: var(--font-ui); }
 

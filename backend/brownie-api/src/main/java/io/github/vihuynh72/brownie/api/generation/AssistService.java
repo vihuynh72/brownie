@@ -375,7 +375,7 @@ public class AssistService {
         return switch (command) {
             case AssistCommand.DraftFromSources ignored -> new Interpretation(
                     Kind.DRAFT,
-                    "Fill this document's fields from an attached source. Assist reads plain-text sources; you accept every value before it lands.",
+                    "Fill this document's fields from an attached source. Assist reads text, DOCX, and text-based PDF sources; you accept every value before it lands.",
                     null, true, true, List.of());
             case AssistCommand.ChangeField change -> interpretChange(context, change);
             case AssistCommand.RewriteField rewrite -> interpretRewrite(context, rewrite);

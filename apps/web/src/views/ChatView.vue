@@ -19,7 +19,7 @@ import {
   type DocumentSummaryResponse,
 } from '@/api/client'
 import { brownieSaysNotThere, describeCommonFailure } from '@/api/failures'
-import { formatBytes, loadCapabilities } from '@/capabilities'
+import { formatBytes, loadCapabilities, sourceFileOptions } from '@/capabilities'
 import { suggestTemplates } from '@/chat/templateMatch'
 import { documentHandoffState } from '@/router/handoff'
 import { useSessionStore } from '@/stores/session'
@@ -363,7 +363,7 @@ async function uploadFailureMessage(error: unknown, file: File): Promise<string>
       : 'That file was not attached: it is larger than Brownie accepts.'
   }
   if (error instanceof ApiRequestError && error.status === 415) {
-    return 'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.'
+    return `That file was not attached: Brownie cannot use that kind of file as a source. Choose ${sourceFiles.value.words}.`
   }
   const why = describeCommonFailure(error, 'a way to attach sources')
   return why ? `That file was not attached. ${why}` : 'Could not attach that file. Try again.'
@@ -373,6 +373,8 @@ async function uploadFailureMessage(error: unknown, file: File): Promise<string>
 function kindWords(artifact: ArtifactResponse, file: File): string {
   const detected = artifact.detectedMediaType
   const looksLikeText = /\.txt$/i.test(file.name) || file.type === 'text/plain'
+  if (detected === 'PDF') return 'PDF file'
+  if (detected === 'DOCX') return 'Word document'
   return detected === 'PLAIN_TEXT' || (detected == null && looksLikeText) ? 'Text file' : 'File'
 }
 
@@ -393,7 +395,11 @@ async function attachFile(workspaceId: number, file: File): Promise<void> {
       refuseFile(chip, `That file was not attached: ${whyFileWasRefused(completed)}.`)
       return
     }
-    await extractArtifact(workspaceId, allocated.id)
+    const extraction = await extractArtifact(workspaceId, allocated.id)
+    if (extraction.status !== 'COMPLETE') {
+      refuseFile(chip, 'Brownie could not read the text in this file. Try a text-based PDF, a Word document, or paste your notes into the message box.')
+      return
+    }
     const name = completed.displayFilename ?? allocated.displayFilename ?? file.name
     attached.value = { artifactId: allocated.id, name }
     chip.name = name
@@ -451,11 +457,13 @@ async function replanWithFile(): Promise<void> {
 
 const composerText = ref('')
 const voiceEnabled = ref(false)
+const sourceFiles = ref(sourceFileOptions())
 const voiceError = ref('')
 try {
   void loadCapabilities()
     .then((caps) => {
       voiceEnabled.value = caps.voiceInput === true
+      sourceFiles.value = sourceFileOptions(caps)
     })
     .catch(() => {})
 } catch {
@@ -964,7 +972,7 @@ async function focusFailure(): Promise<void> {
           <button
             type="button"
             class="icon-button chat__attach"
-            title="Plain-text files (.txt)"
+            :title="sourceFiles.words"
             :aria-disabled="!canAttach()"
             @click="chooseFile"
           >
@@ -982,7 +990,7 @@ async function focusFailure(): Promise<void> {
             ref="fileInputRef"
             class="visually-hidden"
             type="file"
-            accept=".txt,text/plain"
+            :accept="sourceFiles.accept"
             tabindex="-1"
             aria-hidden="true"
             @change="onFileChosen"

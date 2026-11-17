@@ -1056,7 +1056,7 @@ describe('WorkspaceView: the page', () => {
 
     expect(page.find('.empty-hint').exists()).toBe(false)
     expect(page.get('.empty-state').text()).toContain('Nothing filled in yet.')
-    await press(page, 'Add notes or a source')
+    await press(page, 'Use a document or notes')
     expect(document.activeElement?.id).toBe('attach-source')
   })
 
@@ -3594,13 +3594,46 @@ describe('WorkspaceView: the message box', () => {
 // =================================================================================================
 
 describe('WorkspaceView: the chat', () => {
+  it('grounds the opening in this form and focuses the existing notes without inserting a personal-name prompt', async () => {
+    const page = await mountPage()
+    expect(chatLog(page).text()).toContain('This form asks for Meeting title, Meeting date')
+    const composer = page.get('#assist-composer')
+    expect(composer.attributes('maxlength')).toBe('20000')
+    await composer.setValue('Notes I already started')
+    await press(page, 'Share details')
+    expect(document.activeElement).toBe(composer.element)
+    expect((composer.element as HTMLTextAreaElement).value).toBe('Notes I already started')
+    expect(startExtraction).not.toHaveBeenCalled()
+  })
+
+  it('takes the person to a missing required answer instead of asking them to fill every optional box', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(getDocument).mockResolvedValue(DOCUMENT_WITH_A_SCALAR_FIELD)
+    const page = await mountPage()
+    expect(page.get('.workspace-next-action').text()).toContain('Still needed: Meeting date.')
+    await press(page, 'Go to Meeting date', '.workspace-next-action')
+    expect(document.activeElement?.id).toBe('edit-meeting.date')
+  })
+
+  it('offers the real export check when required answers are present and optional boxes remain blank', async () => {
+    vi.mocked(listDocumentSources).mockResolvedValue(ONE_SOURCE)
+    vi.mocked(getDocument).mockResolvedValue(documentAt(revision({ fields: {
+      'meeting.title': scalarField('Synthetic meeting'),
+      'meeting.date': scalarField('2026-11-17', TYPED_STATE, 'DATE'),
+    } })))
+    const page = await mountPage()
+    expect(page.get('.workspace-next-action').text()).toContain('Blank optional fields do not all need an answer.')
+    await press(page, 'Check export', '.workspace-next-action')
+    expect(validateDocument).toHaveBeenCalled()
+  })
+
   it('offers ways to begin under its first words, and takes them away once a source is attached', async () => {
     const page = await mountPage()
     const starters = () => chatLog(page).findAll('ul[aria-label="Ways to begin"] button').map((button) => norm(button.text()))
 
     // A page with no line to put a new place on offers only notes; the place is tested with the pages that have lines.
-    expect(starters()).toEqual(['Type my details', 'Add notes or a source'])
-    await press(page, 'Add notes or a source', 'ul[aria-label="Ways to begin"]')
+    expect(starters()).toEqual(['Share details', 'Use a document or notes'])
+    await press(page, 'Use a document or notes', 'ul[aria-label="Ways to begin"]')
     expect(page.find('#add-source-panel').exists()).toBe(true)
     expect(document.activeElement?.id).toBe('attach-source')
     expect(await axe(page.element)).toHaveNoViolations()
@@ -4034,7 +4067,7 @@ describe('WorkspaceView: Brownie reading a source', () => {
     expect(proposalRowOf(page, 'Meeting title')).toBe('Meeting title Executive Committee Sync Your answer')
     // The answer the person gave stays said, in one line over what was found.
     expect(norm(runStatus(page).text())).toBe('You answered 1 question: Meeting title.')
-    expect(liveRegion(page).text()).toBe('Brownie filled 1 place. Look them over, then approve.')
+    expect(liveRegion(page).text()).toBe('Brownie prepared 1 answer. Look them over, then approve.')
 
     vi.mocked(acceptPatchProposal).mockResolvedValue(acceptedProposal({ 'meeting.title': 'CLEAN' }))
     vi.mocked(getDocument).mockResolvedValue(
@@ -4791,7 +4824,7 @@ describe('WorkspaceView: the panel for adding a source', () => {
     expect(panel.attributes('aria-modal')).toBeUndefined()
     expect(panel.attributes('aria-labelledby')).toBe('add-source-title')
     expect(panel.get('#add-source-title').text()).toBe('Add a source')
-    expect(panel.get('.add-source__lede').text()).toContain('Uploading a notes file starts preparation')
+    expect(panel.get('.add-source__lede').text()).toContain('Use a file you already have.')
     expect(norm(panel.get('.add-source__foot').text())).toBe(
       'A copied event or file is a text snapshot. Brownie never browses the rest of your calendar or Drive.',
     )
@@ -4823,9 +4856,30 @@ describe('WorkspaceView: the panel for adding a source', () => {
   it('offers the notes picker directly when the source panel opens', async () => {
     const page = await mountPage()
     await press(page, 'Add a source')
-    expect(page.get('label[for="attach-source"]').text()).toBe('Add notes (.txt)')
+    expect(page.get('label[for="attach-source"]').text()).toBe('Choose a source file')
     expect(page.get('#attach-source').classes()).toContain('visually-hidden')
     expect(page.find('#attach-source').attributes('disabled')).toBeUndefined()
+  })
+
+  it('offers Word and PDF source files when the backend supports them', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({ ...TEN_MEGABYTE_LIMIT, assistSourceMediaTypes: ['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] })
+    const page = await mountPage()
+    await press(page, 'Add a source')
+    expect(page.get('#attach-source').attributes('accept')).toContain('.pdf')
+    expect(page.get('#attach-source').attributes('accept')).toContain('.docx')
+    expect(page.get('#add-source-panel').text()).toContain('PDF, Word (.docx), Plain text (.txt)')
+  })
+
+  it.each(['UNSUPPORTED', 'FAILED'])('keeps an unreadable source out of generation (%s)', async (status) => {
+    vi.mocked(allocateUpload).mockResolvedValue({ id: 5, status: 'UPLOADING' })
+    vi.mocked(uploadArtifactContent).mockResolvedValue({ id: 5, status: 'SCANNING' })
+    vi.mocked(completeUpload).mockResolvedValue({ id: 5, status: 'READY', detectedMediaType: 'PDF' })
+    vi.mocked(extractArtifact).mockResolvedValue({ status } as never)
+    const page = await mountPage()
+    await chooseSourceFile(page, 'scanned-notes.pdf')
+    expect(page.get('#add-source-panel [role="alert"]').text()).toContain('could not read the text')
+    expect(attachDocumentSource).not.toHaveBeenCalled()
+    expect(startExtraction).not.toHaveBeenCalled()
   })
 
   it('closes the source panel after attaching notes and shows the source in the conversation', async () => {
@@ -5460,7 +5514,7 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       await chooseSourceFile(page)
 
       expect(panelAlert(page).text()).toBe(
-        'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.',
+        'That file was not attached: Brownie cannot use that kind of file as a source. Choose Plain text (.txt).',
       )
     })
 
@@ -5500,7 +5554,7 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       vi.mocked(uploadArtifactContent).mockRejectedValue(refusal(413, 'CONTENT_TOO_LARGE', 'Upload exceeds the maximum allowed size of 10485760 bytes.'))
       const page = await mountPage()
       await openAddSource(page)
-      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text. Uploading starts preparation.')
+      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text (.txt). Uploading starts preparation.')
 
       await chooseSourceFile(page, 'notes.txt', 11 * 1024 * 1024)
 
@@ -5514,7 +5568,7 @@ describe('WorkspaceView says what went wrong, and keeps what the person has', ()
       await openAddSource(page)
 
       expect(getCapabilities).toHaveBeenCalledTimes(1)
-      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text, up to 10 MB. Uploading starts preparation.')
+      expect(norm(page.get('#add-source-panel .field-hint').text())).toBe('Plain text (.txt), up to 10 MB. Uploading starts preparation.')
     })
   })
 

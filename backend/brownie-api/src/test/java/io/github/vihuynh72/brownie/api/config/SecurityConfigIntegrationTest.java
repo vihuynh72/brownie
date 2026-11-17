@@ -151,7 +151,7 @@ class SecurityConfigIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.maxUploadBytes").value(10485760))
                 .andExpect(jsonPath("$.uploadMediaTypes[*].extension").value(org.hamcrest.Matchers.hasItems("docx", "pdf", "txt")))
-                .andExpect(jsonPath("$.assistSourceMediaTypes[0]").value("text/plain"))
+                .andExpect(jsonPath("$.assistSourceMediaTypes[*]").value(org.hamcrest.Matchers.contains("text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/pdf")))
                 .andExpect(jsonPath("$.templateMediaTypes[0]").value("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
                 .andExpect(jsonPath("$.templateMediaTypes[1]").value("application/pdf"))
                 .andExpect(jsonPath("$.googleConnectorAccess").isEmpty())

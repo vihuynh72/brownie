@@ -981,7 +981,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return handleExceptionInternal(ex, problem, new HttpHeaders(), HttpStatus.UNPROCESSABLE_CONTENT, request);
     }
 
-    /** Reachable for the first time by {@code GenerationController}: the attached source's own plain-text extraction never completed. */
+    /** Reachable for the first time by {@code GenerationController}: the attached source has no usable extraction. */
     @ExceptionHandler(SourceNotExtractableException.class)
     public ResponseEntity<Object> handleSourceNotExtractable(SourceNotExtractableException ex, WebRequest request) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_CONTENT);
