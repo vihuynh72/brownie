@@ -4,12 +4,16 @@
 # identity provider: http://localhost:8081/login/oauth2/code/entra.
 server:
   port: 8081
+  shutdown: graceful
   tomcat:
     # A form-encoded body is read by the server itself, where the limit on
     # request bodies cannot see it, so the server's own limit is set to match.
     max-http-form-post-size: 1MB
 
 spring:
+  lifecycle:
+    # Match the gateway's request window while an old replica drains.
+    timeout-per-shutdown-phase: 300s
   application:
     name: brownie-api
   servlet:

@@ -58,6 +58,14 @@ readiness before switching traffic. `redeploy` may reuse a previous
 artifact; it does not upload source changes. The API owns migrations and
 must be ready before the worker serves new work.
 
+The API service uses `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=60` so the previous
+replica survives the gateway's 30-second private-DNS cache during a rollout.
+`RAILWAY_DEPLOYMENT_DRAINING_SECONDS=305` allows the API's graceful shutdown
+window of 300 seconds for requests already running. These settings do not keep
+an idle process alive for the whole draining window. The gateway limits an
+unreachable backend connection to five seconds per address and ten seconds
+across failover, while keeping the existing 300-second response window.
+
 Both Java services select Railway storage with
 `BROWNIE_STORAGE_PROVIDER=s3`. Use the two separately credentialed
 `BROWNIE_S3_*` and `BROWNIE_ARCHIVE_S3_*` configurations in `.env.example`.
