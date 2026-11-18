@@ -220,6 +220,11 @@ function onInput(event: Event): void {
   }
   emit('update:value', value)
 }
+
+function onCheckboxClick(event: MouseEvent): void {
+  if (readOnly.value) event.preventDefault()
+  emit('focus')
+}
 </script>
 
 <template>
@@ -260,13 +265,13 @@ function onInput(event: Event): void {
         :aria-label="accessibleName"
         :aria-describedby="describedBy"
         :aria-checked="shownValue === 'checked' ? 'true' : 'false'"
+        aria-keyshortcuts="Alt+Enter"
         :aria-readonly="readOnly ? 'true' : undefined"
-        :disabled="readOnly"
         :style="controlStyle"
         @input="onInput"
         @keydown="onKeydown"
         @focus="emit('focus')"
-        @click="emit('focus')"
+        @click="onCheckboxClick"
       />
       <template v-else>
         <input
