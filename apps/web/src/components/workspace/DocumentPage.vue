@@ -1130,6 +1130,14 @@ watch(
   max-inline-size: 100%;
 }
 
+.document-page__kept > .document-page__text {
+  margin-inline-end: 0.35em;
+}
+
+.document-page__kept + .document-page__kept {
+  margin-inline-start: 0.65em;
+}
+
 .document-page__bullet {
   display: inline-block;
   inline-size: 1em;

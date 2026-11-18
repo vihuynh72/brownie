@@ -336,7 +336,7 @@ async function disconnect(): Promise<void> {
 
   <section v-else class="page-column page-column--wide connections" aria-labelledby="connections-heading">
     <header class="page-head">
-      <h1 id="connections-heading" class="page-title">Connections</h1>
+      <h1 id="connections-heading" class="page-title">Connected apps</h1>
       <p class="page-lede">
         Brownie uses your Google account only where you allow it here, and only when you ask for it inside a document.
       </p>
@@ -806,8 +806,8 @@ async function disconnect(): Promise<void> {
  */
 .connections__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
-  gap: 1rem 1.125rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 /*
@@ -815,6 +815,11 @@ async function disconnect(): Promise<void> {
  * at the bottom, so the buttons in a row of cards line up even when their tables differ in length.
  */
 .account {
+  padding: var(--space-5) 0;
+  border: 0;
+  border-block-start: 1px solid var(--color-hairline);
+  border-radius: 0;
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -824,8 +829,7 @@ async function disconnect(): Promise<void> {
 
 /* A connection waiting for the person: the same card with a honey edge, a pixel and a half thick so it stands out from the plain hairline of the others. */
 .account--attention {
-  border-color: var(--color-honey);
-  box-shadow: inset 0 0 0 0.5px var(--color-honey);
+  border-block-start-color: var(--color-honey);
 }
 
 /* The tile, the name and the chip on one line; a name that is long wraps inside its own column and never under the chip. */
@@ -885,12 +889,14 @@ async function disconnect(): Promise<void> {
 .account__facts {
   margin: 0;
   padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .account__fact {
   display: grid;
   gap: var(--space-1);
-  padding: 0.5625rem 0.75rem;
+  padding: var(--space-3) 0;
 }
 
 .account__fact + .account__fact {
@@ -907,7 +913,7 @@ async function disconnect(): Promise<void> {
 
 .account__fact > dd {
   margin: 0;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-sm);
   line-height: 1.4;
 }
 
@@ -1000,4 +1006,5 @@ async function disconnect(): Promise<void> {
 .connections__back {
   display: flex;
 }
+
 </style>

@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
-import { getWelcome, searchForms, type FormEntry, type WelcomeResponse } from '@/api/client'
+import BrownieDemo from '@/components/BrownieDemo.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
+import { getWelcome, type FormEntry, type WelcomeResponse } from '@/api/client'
+import { formSourceUrl, FORM_PURPOSES, findForms, findFormsForPurpose, matchingPurposes, matchesPurpose, type FormPurposeId } from '@/landing/findForms'
+import FormPurposePicker from '@/components/FormPurposePicker.vue'
+import { guidanceForQuery } from '@/landing/formGuidance'
+import { decisionForQuery } from '@/landing/formDecision'
 import { installTargets, type InstallTargetId } from '@/landing/installTargets'
 
 /**
@@ -13,22 +19,17 @@ import { installTargets, type InstallTargetId } from '@/landing/installTargets'
 
 /** The sign-in start for whatever providers this deployment runs: Google when it is enabled, the Entra email code otherwise. */
 const signInHref = computed(() =>
-  welcome.value?.signInProviders?.[0] === 'google'
+  !welcome.value ? '/signin' : welcome.value.signInProviders?.[0] === 'google'
     ? '/oauth2/authorization/google'
     : '/oauth2/authorization/entra')
-const EMAIL_CODE_HREF = '/oauth2/authorization/entra'
-const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
-const googleSecondary = computed(
-  () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
 const welcome = ref<WelcomeResponse | null>(null)
+const welcomeFailed = ref(false)
 onMounted(async () => {
   try {
     welcome.value = await getWelcome()
   } catch {
-    // An older server, or a passing failure: claim nothing about sign-up, and point chat apps at this origin, which is
-    // where the address lives whenever chat apps are offered at all.
-    welcome.value = { signUp: 'INVITATION_ONLY', mcpServerUrl: `${window.location.origin}/mcp` }
+    welcomeFailed.value = true
   }
 })
 
@@ -36,36 +37,81 @@ onMounted(async () => {
 
 /**
  * The form library, offered before sign-in: the same search Home uses, capped at eight, each with a
- * "Sign in to start" link. A failed catalog call takes the whole section away rather than promising
- * a library that is not there.
+ * "Sign in to start" link. A failed catalog call leaves a retry option visible.
  */
 const formQuery = ref('')
+const formSearchInput = ref<HTMLInputElement | null>(null)
+const selectedPurpose = ref<FormPurposeId | null>(null)
+const purposeLabel = computed(() => FORM_PURPOSES.find((purpose) => purpose.id === selectedPurpose.value)?.label)
+const drivingRequest = computed(() => selectedPurpose.value === 'driving' || matchingPurposes(formQuery.value).includes('driving'))
+const formGuidance = computed(() => guidanceForQuery(formQuery.value, drivingRequest.value ? 'driving' : selectedPurpose.value ?? undefined))
+const formDecision = computed(() => decisionForQuery(formQuery.value))
+const marketplaceRequest = computed(() => formQuery.value.trim().toLowerCase() === 'health insurance marketplace')
 const formResults = ref<FormEntry[]>([])
 const formLibraryFailed = ref(false)
+const formSearching = ref(true)
 let formSearchTimer: ReturnType<typeof setTimeout> | undefined
 let formSearchSeq = 0
 
 async function runFormSearch(): Promise<void> {
   const seq = ++formSearchSeq
+  formSearching.value = true
+  formLibraryFailed.value = false
   try {
-    const found = await searchForms(formQuery.value.trim())
+    const query = formQuery.value.trim()
+    const found = selectedPurpose.value && !query
+      ? await findFormsForPurpose(selectedPurpose.value)
+      : await findForms(query)
     if (seq !== formSearchSeq) return
-    formResults.value = found.slice(0, 8)
+    const relevant = found.filter((form) => !formGuidance.value?.excludeFormIds?.includes(form.id))
+    const matches = selectedPurpose.value ? relevant.filter((form) => matchesPurpose(form, selectedPurpose.value!)) : relevant
+    formResults.value = matches
   } catch {
     if (seq !== formSearchSeq) return
     formLibraryFailed.value = true
+  } finally {
+    if (seq === formSearchSeq) formSearching.value = false
   }
 }
 
 onMounted(() => void runFormSearch())
 
 function onFormQueryInput(): void {
+  selectedPurpose.value = null
   if (formSearchTimer) clearTimeout(formSearchTimer)
+  formSearchSeq++
+  formSearching.value = true
+  formLibraryFailed.value = false
   formSearchTimer = setTimeout(() => void runFormSearch(), 250)
+}
+
+function searchExample(query: string): void {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  formQuery.value = query
+  void runFormSearch()
+}
+
+function clearFormSearch(): void {
+  selectedPurpose.value = null
+  searchExample('')
+  void nextTick(() => formSearchInput.value?.focus())
+}
+
+function submitFormSearch(): void {
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  void runFormSearch()
+}
+
+function selectFormPurpose(purpose: FormPurposeId | null): void {
+  selectedPurpose.value = purpose
+  formQuery.value = ''
+  if (formSearchTimer) clearTimeout(formSearchTimer)
+  void runFormSearch()
 }
 
 onBeforeUnmount(() => {
   if (formSearchTimer) clearTimeout(formSearchTimer)
+  formSearchSeq++
 })
 
 const signUp = computed(() => welcome.value?.signUp ?? null)
@@ -75,8 +121,7 @@ const primaryLabel = computed(() => {
   return 'Sign in'
 })
 const accessNote = computed(() => {
-  if (signUp.value === 'OPEN_WITH_DAILY_ALLOWANCE') return 'Free to use every day. You sign in with a code sent to your email.'
-  if (signUp.value === 'OPEN') return 'You sign in with a code sent to your email.'
+  if (signUp.value === 'OPEN_WITH_DAILY_ALLOWANCE') return 'Free to use every day.'
   if (signUp.value === 'INVITATION_ONLY') return 'Brownie is open to invited people for now.'
   return ''
 })
@@ -94,11 +139,6 @@ async function choose(id: InstallTargetId, focus = false): Promise<void> {
   if (!focus) return
   await nextTick()
   tabRefs.value.find((tab) => tab.dataset.target === id)?.focus()
-}
-
-/** The hero's chat-app button lands on the install section with Claude already chosen, when chat apps are offered. */
-function openChatAppTab(): void {
-  if (targets.value.some((target) => target.id === 'claude')) void choose('claude')
 }
 
 /** The arrow keys move along the tabs, as a tab list does everywhere else; Home and End jump to either end. */
@@ -167,85 +207,91 @@ const TESTED_FORMS = [
 
     <header class="landing__bar">
       <a class="landing__brand" href="/" aria-label="Brownie, home">
-        <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="document-text" :size="18" /></span>
-        <span>Brownie</span>
+        <BrownieBrand />
       </a>
       <nav class="landing__nav" aria-label="Brownie">
+        <a href="#library">Form library</a>
         <a href="#how">How it works</a>
         <a href="#install">Install</a>
         <a :href="signInHref">Sign in</a>
       </nav>
-      <a class="button button--primary landing__bar-action" :href="signInHref">{{ primaryLabel }}</a>
+      <a class="button button--primary landing__bar-action" href="/signin?next=%2F">Start a form</a>
     </header>
 
     <section class="hero" aria-labelledby="landing-title">
-      <figure class="exchange" aria-label="An example request and Brownie's answer">
-        <blockquote class="exchange__you">
-          <p>
-            “Fill my rental application. I’m <mark class="exchange__fact" style="--i: 0">Maya Chen</mark>, I’ve worked
-            at <mark class="exchange__fact" style="--i: 1">Harbor Freight Logistics</mark> since
-            <mark class="exchange__fact" style="--i: 2">March 2022</mark>, and I make
-            <mark class="exchange__fact" style="--i: 3">$4,800 a month</mark>.”
-          </p>
-        </blockquote>
-        <figcaption class="exchange__brownie">
-          <span class="exchange__who"><AppIcon name="sparkle" :size="16" />Brownie</span>
-          <span class="exchange__reply">“Done. 14 places filled. Two are yours: your SSN and your signature.”</span>
-          <span class="exchange__receipt">
-            <span class="tag tag--honey"><AppIcon name="fill-here" :size="16" />14 filled from what you said</span>
-            <span class="tag exchange__yours"><AppIcon name="pencil" :size="16" />2 left for you</span>
-            <span class="tag tag--success"><AppIcon name="check-circle" :size="16" />Nothing exported until you approve</span>
-          </span>
-        </figcaption>
-      </figure>
-
+      <div class="hero__art" aria-hidden="true">
+        <div class="hero__art-note"><span>A little less paperwork.</span><span>A little more life.</span></div>
+      </div>
       <div class="hero__foot">
         <h1 id="landing-title" class="hero__title">
-          Brownie fills your forms from what you tell it. You make the calls.
+          Paperwork, taken care of.
         </h1>
+        <p class="hero__intro">Tell Brownie what you know. It prepares your form, and you make the final call.</p>
         <div class="hero__actions">
-          <a class="button button--primary hero__action" :href="signInHref">{{ primaryLabel }}</a>
-          <a v-if="googlePrimary" :href="EMAIL_CODE_HREF" class="landing__email-code">Use an email code instead</a>
-          <a v-else-if="googleSecondary" href="/oauth2/authorization/google" class="landing__email-code">
-            <svg class="landing__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-              <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
-              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
-              <path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09Z"/>
-              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75Z"/>
-            </svg>
-            Continue with Google (early access)</a>
-          <a class="button hero__action" href="#install" @click="openChatAppTab">Add to Claude or ChatGPT</a>
+          <a class="button button--primary hero__action" href="/signin?next=%2F">Start a form</a>
+          <a class="hero__chat-link" href="#library">Find a form</a>
         </div>
+        <p class="hero__note">You review every value before export.</p>
         <p v-if="accessNote" class="hero__note">{{ accessNote }}</p>
+        <p v-if="welcomeFailed" class="hero__note" role="status">Connection details are unavailable. Refresh the page to try again.</p>
       </div>
     </section>
 
-    <section v-if="!formLibraryFailed" class="landing-forms" aria-labelledby="landing-forms-title">
+    <BrownieDemo />
+
+    <section id="library" class="landing-forms" aria-labelledby="landing-forms-title">
       <div class="landing-forms__head">
-        <h2 id="landing-forms-title" class="landing__h2">Start from an official form</h2>
+        <h2 id="landing-forms-title" class="landing__h2">Search the form library.</h2>
         <p class="landing__lede">
-          Tax, immigration, veterans and health forms, downloaded from the agency that publishes them.
+          Search a selection of official U.S. forms by name or purpose. Check the agency's requirements before starting.
         </p>
       </div>
+      <form class="landing-forms__composer" role="search" @submit.prevent="submitFormSearch">
+      <AppIcon name="search" :size="22" aria-hidden="true" />
       <input
+        ref="formSearchInput"
         v-model="formQuery"
         class="landing-forms__search"
         type="search"
-        placeholder="W-9, I-9, passport, VA…"
+        placeholder="Form name or purpose, e.g. starting a new job"
         aria-label="Find an official form"
         @input="onFormQueryInput"
       />
-      <p v-if="!formQuery.trim()" class="landing-forms__popular">Popular forms</p>
-      <ul v-if="formResults.length" class="landing-forms__list">
+      <button type="submit" class="button button--primary button--small landing-forms__submit">Search</button>
+      <button v-if="formQuery" type="button" class="button button--quiet button--small landing-forms__clear" @click="clearFormSearch">Clear</button>
+      </form>
+      <p class="landing-forms__hint">Search by task, without personal details.</p>
+      <p v-if="!formQuery.trim()" class="landing-forms__browse">Or browse by purpose</p>
+      <FormPurposePicker v-if="!formQuery.trim()" :model-value="selectedPurpose" @update:model-value="selectFormPurpose" />
+      <div v-if="formDecision && !formSearching" class="form-guidance" role="group" :aria-label="formDecision.question">
+        <div><h3>{{ formDecision.question }}</h3><div class="landing-forms__suggestions"><button v-for="choice in formDecision.choices" :key="choice.query" type="button" class="button button--small" @click="selectedPurpose = null; searchExample(choice.query)">{{ choice.label }}</button></div></div>
+      </div>
+      <div v-if="marketplaceRequest && !formSearching" class="form-guidance"><div><h3>Health Insurance Marketplace</h3><p>Find coverage and application information at HealthCare.gov.</p><a href="https://www.healthcare.gov/get-coverage/" target="_blank" rel="noopener noreferrer">Explore Marketplace coverage</a></div></div>
+      <div v-if="formGuidance && !formDecision" class="form-guidance" role="status">
+        <AppIcon :name="drivingRequest ? 'car' : 'info'" :size="28" />
+        <div><h3>{{ formGuidance.title }}</h3><p>{{ formGuidance.description }}</p>
+        <p v-if="drivingRequest">DMV forms are not in Brownie’s fillable library yet.</p>
+        <a :href="formGuidance.url" target="_blank" rel="noopener noreferrer">{{ formGuidance.linkLabel }} <AppIcon name="external" :size="16" /></a></div>
+      </div>
+      <div v-if="selectedPurpose === 'travel'" class="landing-forms__suggestions" aria-label="Passport purpose">
+        <button v-for="query in ['First passport', 'Renew passport', 'Lost passport']" :key="query" type="button" class="button button--small" @click="searchExample(query)">{{ query }}</button>
+      </div>
+      <p class="landing-forms__popular" :class="{ 'visually-hidden': formDecision && !formSearching }" role="status">{{ formSearching ? 'Searching the form library…' : formLibraryFailed ? 'Search unavailable.' : formDecision ? formDecision.question : !formQuery.trim() && !selectedPurpose ? `${formResults.length} official ${formResults.length === 1 ? 'form' : 'forms'}` : formResults.length ? `${formResults.length} possible ${formResults.length === 1 ? 'match' : 'matches'}${formQuery.trim() ? ` for “${formQuery.trim()}”` : ` for ${purposeLabel}`}` : 'No matching forms in this library.' }}</p>
+      <div v-if="!formSearching && formLibraryFailed" class="landing-forms__empty">The form library is unavailable right now. <button type="button" class="button button--small" @click="runFormSearch">Try again</button></div>
+      <template v-if="!formSearching && !formLibraryFailed">
+      <ul v-if="formResults.length && !formDecision" class="landing-forms__list">
         <li v-for="entry in formResults" :key="entry.id" class="landing-forms__row">
           <div class="landing-forms__text">
             <p class="landing-forms__title">{{ entry.title }}</p>
             <p class="landing-forms__agency">{{ entry.agency }}</p>
+            <p class="landing-forms__agency">{{ entry.description }}</p>
+            <a v-if="formSourceUrl(entry)" class="form-source-link" :href="formSourceUrl(entry)" target="_blank" rel="noopener noreferrer" :aria-label="`View the official PDF for ${entry.title} (opens in a new tab)`">View official PDF <AppIcon name="external" :size="14" /></a>
           </div>
-          <a class="button button--small landing-forms__start" :href="signInHref">Sign in to start</a>
+          <a class="button button--small landing-forms__start" :href="`/signin?next=${encodeURIComponent(`/?form=${encodeURIComponent(entry.id)}`)}`">Choose form</a>
         </li>
       </ul>
-      <p v-else-if="formQuery.trim()" class="landing-forms__empty">No match. You can always upload your own copy.</p>
+      <p v-else-if="!formGuidance && !formDecision && !marketplaceRequest && (formQuery.trim() || selectedPurpose)" class="landing-forms__empty">No match in this library. <a :href="signInHref">Sign in to upload your own form</a>.</p>
+      </template>
     </section>
 
     <section id="install" class="install" aria-labelledby="install-title">
@@ -257,6 +303,7 @@ const TESTED_FORMS = [
         </p>
       </div>
 
+      <details class="install__disclosure"><summary>Set up Brownie in an assistant or terminal</summary>
       <div class="install__tabs" role="tablist" aria-label="Where to use Brownie" @keydown="onTabKey">
         <button
           v-for="target in targets"
@@ -300,6 +347,7 @@ const TESTED_FORMS = [
           <li v-for="(step, index) in active.steps" :key="index">{{ step }}</li>
         </ol>
       </div>
+      </details>
     </section>
 
     <section id="how" class="how" aria-labelledby="how-title">
@@ -309,8 +357,7 @@ const TESTED_FORMS = [
           <span class="how__num" aria-hidden="true">1</span>
           <h3 class="how__title">Hand it the form</h3>
           <p>
-            Word, PDF, Pages, OpenDocument, RTF, or a photo of the paper. Brownie finds every blank, box and checkbox in
-            seconds, and keeps the form's own look.
+            Word, PDF, Pages, OpenDocument, RTF, or a photo of the paper. Brownie finds places to fill and keeps the form's own look.
           </p>
         </li>
         <li class="how__step">
@@ -382,8 +429,7 @@ const TESTED_FORMS = [
 
     <footer class="landing__footer">
       <span class="landing__brand landing__brand--quiet">
-        <span class="doc-tile doc-tile--small" aria-hidden="true"><AppIcon name="document-text" :size="14" /></span>
-        <span>Brownie</span>
+        <BrownieBrand />
       </span>
       <span class="landing__footer-line">Fills your forms from what you tell it.</span>
       <a :href="signInHref">{{ primaryLabel }}</a>
@@ -395,6 +441,7 @@ const TESTED_FORMS = [
 .landing {
   --landing-gutter: clamp(1.25rem, 0.6rem + 3vw, 4rem);
   --landing-max: 90rem;
+  overflow-x: clip;
   min-block-size: 100dvh;
   background: var(--color-paper);
 }
@@ -402,6 +449,8 @@ const TESTED_FORMS = [
 .landing > * {
   padding-inline: var(--landing-gutter);
 }
+
+.landing [id] { scroll-margin-block-start: 6rem; }
 
 .landing__notice {
   max-inline-size: var(--landing-max);
@@ -448,7 +497,7 @@ const TESTED_FORMS = [
   text-decoration: underline;
 }
 
-@media (min-width: 48rem) {
+@media (min-width: 64rem) {
   .landing__nav {
     display: flex;
   }
@@ -624,7 +673,7 @@ const TESTED_FORMS = [
 
 .landing__h2 {
   margin: 0;
-  font-size: clamp(2rem, 1.2rem + 2.6vw, 3.25rem);
+  font-size: clamp(2rem, 1.2rem + 2vw, 2.75rem);
   font-weight: var(--font-weight-medium);
   line-height: 1.04;
   letter-spacing: -0.025em;
@@ -644,25 +693,14 @@ const TESTED_FORMS = [
 
 .landing-forms {
   padding-block: clamp(var(--space-8), 6vw, 6rem);
+  max-inline-size: 70rem;
+  margin-inline: auto;
 }
 
 .landing-forms > * {
-  max-inline-size: var(--landing-max);
-  margin-inline: auto;
-  padding-inline: clamp(var(--space-4), 4vw, var(--space-10));
-}
-
-.landing-forms__search {
-  display: block;
-  margin-block-start: var(--space-4);
-  max-inline-size: 28rem;
-  inline-size: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-outline);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font: inherit;
+  max-inline-size: 100%;
+  margin-inline: 0;
+  padding-inline: 0;
 }
 
 .landing-forms__popular {
@@ -1021,5 +1059,49 @@ const TESTED_FORMS = [
   margin-inline-end: auto;
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
+}
+
+/* Landing composition */
+.landing__bar { position: sticky; top: 0; z-index: 10; width: 100%; max-inline-size: none; padding: .75rem max(var(--landing-gutter), calc((100% - 70rem) / 2 + var(--landing-gutter))); border-bottom: 1px solid var(--color-hairline); border-radius: 0; background: var(--color-paper); box-shadow: none; }
+.landing__brand { font: 400 1.75rem/1 var(--font-display, Georgia, serif); letter-spacing: -.04em; white-space: nowrap; }
+.landing__brand-dot { color: var(--color-cocoa); }
+.landing__nav a { font-size: .9rem; font-weight: 500; padding-block: .75rem; }
+.hero { display: grid; position: relative; min-height: 0; max-width: none; padding: 0; overflow: hidden; }
+.hero__art { position: absolute; inset: 0; background: var(--color-paper) url('/art/brownie-paper-world.webp') center bottom / cover no-repeat; }
+.hero__art::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, var(--color-paper) 0%, transparent 70%); opacity: .45; }
+.hero__art-note { display: none; }
+.hero__foot { position: relative; z-index: 1; width: min(100%, 90rem); padding: clamp(4rem, 6vw, 6rem) var(--landing-gutter) 10rem; margin: auto; justify-items: center; text-align: center; }
+.hero__title { max-width: 14ch; font: 400 clamp(3rem, 5vw, 5rem)/.98 var(--font-display, Georgia, serif); letter-spacing: -.035em; overflow-wrap: anywhere; }
+.hero__intro { max-width: 30rem; margin: .5rem 0; font-size: clamp(1.1rem, 1.3vw, 1.3rem); line-height: 1.55; }
+.hero__actions { align-items: center; justify-content: center; margin-top: .5rem; }
+.hero__chat-link { color: var(--color-text); font-size: .9rem; text-underline-offset: .2em; }
+.landing-forms__suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-block: 1rem 2rem; color: var(--color-text-muted); font-size: .9rem; }
+.landing-forms__composer { display: flex; align-items: center; gap: .75rem; width: 100%; margin: 1.5rem 0 0; padding: .65rem .75rem .65rem 1.25rem; border: 1px solid var(--color-field-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.landing-forms__composer:focus-within { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.landing-forms__composer .landing-forms__search { flex: 1; min-width: 0; width: auto; margin: 0; padding: .55rem 0; border: 0; outline: 0; background: transparent; color: var(--color-text); font: inherit; font-size: 1.05rem; }
+.landing-forms__search::-webkit-search-cancel-button { appearance: none; }
+.landing-forms__composer .landing-forms__search:focus-visible { box-shadow: none; }
+.landing-forms__hint { margin-block: .75rem 0; color: var(--color-text-muted); font-size: .85rem; }
+.landing-forms__list { max-width: var(--landing-max); display: block; }
+.landing-forms__row { min-width: 0; padding: 1rem 0; border: 0; border-bottom: 1px solid var(--color-hairline); border-radius: 0; background: transparent; }
+.landing-forms__start { margin: 0; }
+.install__disclosure { margin-block-start: 1.5rem; }
+.install__disclosure summary { cursor: pointer; font-weight: 600; padding-block: .75rem; }
+.landing__h2 { font-family: var(--font-display, Georgia, serif); font-weight: 400; letter-spacing: -.04em; }
+.how { padding-block: clamp(5rem, 9vw, 9rem); }
+.how__num { font-family: Georgia, serif; }
+.tested { border-top: 1px solid var(--color-hairline); }
+.yours { padding-block: clamp(5rem, 9vw, 9rem); }
+@media (min-width: 64rem) { .hero { display: grid; grid-template-columns: 1fr; } .hero__foot { grid-column: 1; grid-row: 1; } }
+@media (max-width: 47.99rem) { .hero { min-height: 0; } .hero__art { background-position: 60% center; } .hero__foot { align-content: start; padding-block: 3rem 9rem; } .hero__title { font-size: clamp(2.8rem, 11vw, 4.5rem); } }
+@media (prefers-reduced-motion: no-preference) { .hero__foot { animation: hero-arrive .7s ease both; } @keyframes hero-arrive { from { opacity: 0; transform: translateY(1rem); } } }
+
+.landing-forms__browse { margin-block: var(--space-5) var(--space-3); font-weight: 600; }
+.landing-forms .form-guidance { margin-block: var(--space-4); }
+@media (max-width: 35rem) {
+  .landing-forms__row { flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+  .landing-forms__composer { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; padding: var(--space-2); }
+  .landing-forms__composer .landing-forms__submit { grid-column: 1 / -1; grid-row: 2; inline-size: 100%; }
+  .landing-forms__composer .landing-forms__clear { grid-column: 3; grid-row: 1; }
 }
 </style>

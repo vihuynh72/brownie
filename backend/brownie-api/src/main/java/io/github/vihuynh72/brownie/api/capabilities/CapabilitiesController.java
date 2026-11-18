@@ -49,7 +49,7 @@ import java.util.List;
 @RequestMapping("/api/v1/capabilities")
 class CapabilitiesController {
 
-    private static final List<SupportedMediaType> ASSIST_SOURCE_MEDIA_TYPES = List.of(SupportedMediaType.PLAIN_TEXT);
+    private static final List<SupportedMediaType> ASSIST_SOURCE_MEDIA_TYPES = List.of(SupportedMediaType.PLAIN_TEXT, SupportedMediaType.DOCX, SupportedMediaType.PDF);
     private static final List<SupportedMediaType> TEMPLATE_MEDIA_TYPES = List.of(SupportedMediaType.DOCX, SupportedMediaType.PDF);
     private static final List<FormFileTypeResponse> FORM_FILE_TYPES = List.of(
             FormFileTypeResponse.of("docx", SupportedMediaType.DOCX),

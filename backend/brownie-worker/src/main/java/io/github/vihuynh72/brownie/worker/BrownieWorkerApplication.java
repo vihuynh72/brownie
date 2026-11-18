@@ -5,6 +5,7 @@ import io.github.vihuynh72.brownie.ai.generation.json.ExtractionResponseParserCo
 import io.github.vihuynh72.brownie.ai.openai.OpenAiModelGatewayConfig;
 import io.github.vihuynh72.brownie.worker.config.BrownieEnvironmentListener;
 import io.github.vihuynh72.brownie.storage.azure.AzureBlobStorageConfig;
+import io.github.vihuynh72.brownie.storage.s3.S3StorageConfig;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -13,7 +14,7 @@ import org.springframework.context.annotation.Import;
 
 @SpringBootApplication
 @Import({
-        AzureBlobStorageConfig.class, OpenAiModelGatewayConfig.class, ExtractionResponseParserConfig.class,
+        AzureBlobStorageConfig.class, S3StorageConfig.class, OpenAiModelGatewayConfig.class, ExtractionResponseParserConfig.class,
         CompositionResponseParserConfig.class})
 public class BrownieWorkerApplication {
 

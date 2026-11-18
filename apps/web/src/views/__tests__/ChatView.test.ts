@@ -546,14 +546,31 @@ describe('ChatView', () => {
       expect(wrapper.find('.chat__start').exists()).toBe(false)
     })
 
-    it('says "File", not "Text file", when the server found something else in the bytes', async () => {
+    it('labels a PDF by the format the server found in its bytes', async () => {
       acceptUploads({ detectedMediaType: 'PDF' })
       await mountChat()
 
       await attach(textFile('minutes.pdf'))
 
-      expect(words(wrapper.get('.source-chip__meta'))).toContain('File')
+      expect(words(wrapper.get('.source-chip__meta'))).toContain('PDF file')
       expect(wrapper.get('.source-chip__meta').text()).not.toContain('Text file')
+    })
+
+    it('offers the source formats supported by the running backend', async () => {
+      vi.mocked(getCapabilities).mockResolvedValue({ assistSourceMediaTypes: ['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] } as CapabilitiesResponse)
+      await mountChat()
+      expect(wrapper.get('input[type="file"]').attributes('accept')).toContain('.pdf')
+      expect(wrapper.get('input[type="file"]').attributes('accept')).toContain('.docx')
+    })
+
+    it('does not use an unreadable source to start a document', async () => {
+      acceptUploads({ detectedMediaType: 'PDF' })
+      vi.mocked(extractArtifact).mockResolvedValue({ status: 'UNSUPPORTED' } as never)
+      await mountChat()
+      await attach(textFile('scanned-notes.pdf'))
+      expect(log()).toContain('could not read the text')
+      expect(wrapper.find('.source-chip').exists()).toBe(false)
+      expect(createDocument).not.toHaveBeenCalled()
     })
 
     it('shows the chip while the upload runs, and holds the + until it is done', async () => {
@@ -675,7 +692,7 @@ describe('ChatView', () => {
 
       await attach(textFile('picture.png'))
 
-      expect(log()).toContain('That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.')
+      expect(log()).toContain('That file was not attached: Brownie cannot use that kind of file as a source. Choose Plain text (.txt).')
     })
 
     it('says Brownie could not be reached when no answer came back', async () => {

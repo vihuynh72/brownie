@@ -342,7 +342,7 @@ watch(
 
   <section v-else class="page-column page-column--wide your-data" aria-labelledby="your-data-title">
     <header class="page-head">
-      <h1 id="your-data-title" class="page-title">Your data</h1>
+      <h1 id="your-data-title" class="page-title">Privacy &amp; data</h1>
       <p class="page-lede">What Brownie keeps, for how long, who else sees it, and how to delete it all.</p>
     </header>
 
@@ -459,7 +459,7 @@ watch(
               >
               <template v-else>Nothing is sent until you ask.</template>
             </li>
-            <li>Signing in is handled by Microsoft. Brownie receives who you are, never your password.</li>
+            <li>Brownie receives your account identity when you sign in, never your password.</li>
             <li>Every file you upload is scanned for viruses on Brownie's own server before anything reads it.</li>
             <li v-if="mentionsGoogle">
               If you connect a Google account, Brownie reads from Google only what you ask for (the days of your calendar you
@@ -635,6 +635,11 @@ watch(
 
 /* A heading row, then what it says, ten pixels apart. */
 .your-data__card {
+  padding: var(--space-5) 0;
+  border: 0;
+  border-block-start: 1px solid var(--color-hairline);
+  border-radius: 0;
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -729,8 +734,7 @@ watch(
 
 /* The card that cannot be undone: a red edge, with a half pixel more so it shows on paper, and a red heading. */
 .your-data__danger {
-  border-color: var(--color-error);
-  box-shadow: inset 0 0 0 0.5px var(--color-error);
+  border-block-start-color: var(--color-error);
 }
 
 .your-data__card-title--danger {
@@ -778,4 +782,5 @@ watch(
 .your-data__confirm > .field-error {
   margin: var(--space-2) 0 0;
 }
+
 </style>

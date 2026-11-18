@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
 import { getWelcome, type WelcomeResponse } from '@/api/client'
 import { isInAppPath, rememberSignInIntent } from '@/auth/intent'
 
@@ -9,6 +10,12 @@ const route = useRoute()
 
 /** Where the person was going when this page interrupted them; anything that is not an in-app path is ignored. */
 const next = computed(() => (isInAppPath(route.query.next) ? route.query.next : null))
+const selectedForm = computed(() => {
+  if (!next.value) return false
+  const destination = new URL(next.value, window.location.origin)
+  const forms = destination.searchParams.getAll('form')
+  return destination.origin === window.location.origin && destination.pathname === '/' && forms.length === 1 && /^[a-z0-9]+-[a-z0-9-]{1,70}$/.test(forms[0]!)
+})
 
 /**
  * Says what signing in is for, in the words of the thing they just tried
@@ -28,16 +35,21 @@ const PURPOSE: Record<string, string> = {
 const workspaceDeleted = computed(() => route.query.deleted === '1')
 
 const welcome = ref<WelcomeResponse | null>(null)
-onMounted(async () => {
+const welcomeState = ref<'loading' | 'loaded' | 'error'>('loading')
+async function loadWelcome(): Promise<void> {
+  welcomeState.value = 'loading'
   try {
     welcome.value = await getWelcome()
+    welcomeState.value = 'loaded'
   } catch {
-    welcome.value = null
+    welcomeState.value = 'error'
   }
-})
+}
+onMounted(loadWelcome)
 
 /** Google as the big button only while it carries the flag; otherwise it is a small early-access link. */
 const googlePrimary = computed(() => welcome.value?.signInProviders?.[0] === 'google')
+const emailCodeAvailable = computed(() => welcome.value?.signInProviders?.includes('entra') ?? true)
 const googleSecondary = computed(
   () => (welcome.value?.signInProviders?.includes('google') ?? false) && !googlePrimary.value)
 
@@ -60,9 +72,7 @@ const purpose = computed(() => {
   return /^\/documents\/\d+$/.test(path) ? 'to open that document' : null
 })
 
-const ONE_PAGE_FOR_BOTH =
-  'Brownie uses one page for both: sign in with an account you already have, ' +
-  'or create one there if this is your first time.'
+const ONE_PAGE_FOR_BOTH = 'Sign in or create an account to continue.'
 
 /**
  * One paragraph under the title: why the person is here, then how the provider's page works, which is one page
@@ -71,27 +81,9 @@ const ONE_PAGE_FOR_BOTH =
  */
 const lede = computed(() => {
   if (workspaceDeleted.value) return ONE_PAGE_FOR_BOTH
+  if (selectedForm.value) return 'Sign in to continue with your selected form.'
   return `You need to be signed in ${purpose.value ?? 'to open your documents'}. ${ONE_PAGE_FOR_BOTH}`
 })
-
-/** What Brownie does, in three steps, so a visitor can see what the product is before they sign in. */
-const STEPS = [
-  {
-    icon: 'document-upload',
-    title: 'Upload a form',
-    text: 'Brownie learns where the values go and keeps the form’s own look.',
-  },
-  {
-    icon: 'document-text',
-    title: 'Add your notes',
-    text: 'Notes or a document, a calendar event or a Google Doc. Brownie reads only what you add.',
-  },
-  {
-    icon: 'document-check',
-    title: 'Check and export',
-    text: 'You approve every value. Brownie exports exactly the version you approved.',
-  },
-] as const
 
 /**
  * Signing in is a full-page navigation to the identity provider, so this
@@ -109,8 +101,7 @@ function keepDestination(): void {
     <header class="page-head page-head--center">
       <!-- The title right below says the same word, so a screen reader skips the mark rather than read it twice. -->
       <p class="signin__brand" aria-hidden="true">
-        <span class="doc-tile"><AppIcon name="document-text" :size="22" /></span>
-        <span class="signin__wordmark">Brownie</span>
+        <BrownieBrand />
       </p>
 
       <h1 class="page-title">Sign in to Brownie</h1>
@@ -123,7 +114,12 @@ function keepDestination(): void {
       <p class="page-lede signin__lede">{{ lede }}</p>
     </header>
 
-    <a v-if="googlePrimary" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
+    <p v-if="welcomeState === 'loading'" class="signin__provider-status" role="status">Loading sign-in options…</p>
+    <div v-else-if="welcomeState === 'error'" class="signin__provider-status" role="alert">
+      <p>Sign-in options could not be loaded.</p>
+      <button type="button" class="button button--secondary button--small" @click="loadWelcome">Try again</button>
+    </div>
+    <a v-if="welcomeState === 'loaded' && googlePrimary" class="signin__google" href="/oauth2/authorization/google" @click="keepDestination">
       <svg class="signin__google-mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
         <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
         <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
@@ -132,14 +128,14 @@ function keepDestination(): void {
       </svg>
       <span>Continue with Google</span>
     </a>
-    <a v-if="googlePrimary" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && googlePrimary && emailCodeAvailable" class="signin__email-code" href="/oauth2/authorization/entra" @click="keepDestination">
       Use an email code instead
     </a>
-    <a v-if="!googlePrimary" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && !googlePrimary && emailCodeAvailable" class="button button--primary signin__action" href="/oauth2/authorization/entra" @click="keepDestination">
       <span>Sign in or sign up</span>
       <AppIcon name="sign-in" :size="22" />
     </a>
-    <a v-if="googleSecondary" class="signin__email-code signin__google-secondary" href="/oauth2/authorization/google" @click="keepDestination">
+    <a v-if="welcomeState === 'loaded' && googleSecondary" class="signin__email-code signin__google-secondary" href="/oauth2/authorization/google" @click="keepDestination">
       <svg class="signin__google-mark" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
         <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47a5.57 5.57 0 0 1-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"/>
         <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24Z"/>
@@ -149,29 +145,25 @@ function keepDestination(): void {
       <span>Continue with Google (early access)</span>
     </a>
 
-    <p class="signin__note">
+    <p v-if="welcomeState === 'loaded' && !googlePrimary && !emailCodeAvailable && !googleSecondary" class="signin__provider-status" role="status">No sign-in options are available. Contact whoever gave you access to Brownie.</p>
+
+    <p v-if="welcomeState === 'loaded'" class="signin__note">
       <AppIcon name="shield-check" :size="16" />
       {{ accessNote }}
     </p>
 
-    <!--
-      The explicit role keeps this a list for Safari's screen reader, which otherwise drops the list once its
-      markers are hidden.
-    -->
-    <ol class="signin__steps" role="list" aria-label="How Brownie works">
-      <li v-for="(step, index) in STEPS" :key="step.title" class="panel">
-        <p class="signin__step-head">
-          <span class="doc-tile doc-tile--medium"><AppIcon :name="step.icon" :size="18" /></span>
-          <span class="signin__step-label">Step {{ index + 1 }}</span>
-        </p>
-        <h2 class="signin__step-title">{{ step.title }}</h2>
-        <p class="signin__step-text">{{ step.text }}</p>
-      </li>
-    </ol>
+    <p class="signin__guidance">Bring a form, add your notes, and review each value before exporting.</p>
   </section>
 </template>
 
 <style scoped>
+.signin__provider-status {
+  margin: 0 auto;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.signin__provider-status p { margin: 0 0 var(--space-3); }
+
 /*
  * One block, centred in the room the shell gives the page, which with the sidebar docked is the window's middle line.
  * The shell keeps some room clear above the page (more when the sidebar button floats over its corner) and a
@@ -206,14 +198,6 @@ function keepDestination(): void {
   justify-content: center;
   gap: 0.75rem;
   margin: 0 0 1.3125rem;
-}
-
-/* A wordmark rather than interface text, so it is set heavier than the 500 that labels use. */
-.signin__wordmark {
-  color: var(--color-cocoa);
-  font-size: var(--font-size-xl);
-  font-weight: 600;
-  line-height: 1.2;
 }
 
 /* About 80 characters a line: at this width the wording without a destination runs to three lines. */
@@ -305,49 +289,14 @@ function keepDestination(): void {
   vertical-align: middle;
 }
 
-/* The three cards fill the column and are as tall as their own words need, so a shorter one is not stretched. */
-.signin__steps {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
-  inline-size: 100%;
-  margin: 3.625rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.signin__step-head {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin: 0;
-}
-
-.signin__step-label {
+.signin__guidance {
+  max-inline-size: 32rem;
+  margin: 2.5rem 0 0;
   color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  line-height: 1.3;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  text-align: center;
 }
 
-.signin__step-title {
-  margin: 0.5rem 0 0;
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
-  line-height: 1.3;
-}
-
-.signin__step-text {
-  margin: 0.625rem 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  line-height: 1.42;
-}
-
-@container main (min-width: 40rem) {
-  .signin__steps {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
+.signin__google { transition: background-color 160ms ease, border-color 160ms ease; }
 </style>

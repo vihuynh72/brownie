@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes } from '@/capabilities'
+import { formatBytes, sourceFileOptions } from '@/capabilities'
+
+describe('sourceFileOptions', () => {
+  it('advertises only known source formats supported by the current backend', () => {
+    const offered = sourceFileOptions({ assistSourceMediaTypes: ['application/pdf', 'text/plain', 'application/x-unknown'] })
+    expect(offered.accept).toBe('.pdf,application/pdf,.txt,text/plain')
+    expect(offered.words).toBe('PDF, Plain text (.txt)')
+    expect(sourceFileOptions({ assistSourceMediaTypes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'] }).accept).toContain('.docx')
+  })
+
+  it('keeps the plain-text route for older or unreachable backends', () => {
+    expect(sourceFileOptions()).toEqual({ accept: '.txt,text/plain', words: 'Plain text (.txt)' })
+    expect(sourceFileOptions({ assistSourceMediaTypes: [] })).toEqual(sourceFileOptions())
+  })
+})
 
 describe('formatBytes', () => {
   it('reads as a person would say it, singular included', () => {

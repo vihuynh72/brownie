@@ -354,14 +354,11 @@ class ModuleBoundariesTest {
     }
 
     /**
-     * Only the classes that talk to Google hold an HTTP client, so there is
-     * no other place from which a request could reach a person's account.
-     * The chat-app file fetcher is the one named exception: it asks a URL
-     * for bytes, and its own allowlist means only the chat app's file host
-     * ever answers.
+     * Only the Google adapter and named external-service adapters hold an HTTP
+     * client. This keeps account access and external requests in reviewed places.
      */
     @Test
-    void nothingButTheGoogleAdapterHoldsAnHttpClient() {
+    void onlyNamedAdaptersHoldAnHttpClient() {
         noClasses().that().resideInAPackage("io.github.vihuynh72.brownie..")
                 .and().resideOutsideOfPackage(GOOGLE_ADAPTER)
                 .and().doNotHaveFullyQualifiedName(
@@ -370,6 +367,13 @@ class ModuleBoundariesTest {
                 // for bytes, and its own allowlist means only a catalog host ever answers.
                 .and().doNotHaveFullyQualifiedName(
                         "io.github.vihuynh72.brownie.api.form.HttpCatalogFormFetcher")
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.form.HttpCatalogFormFetcher$CappedBody")
+                // The remote renderer posts to its configured broker and bounds its response.
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.document.render.RailwayDocumentSandbox")
+                .and().doNotHaveFullyQualifiedName(
+                        "io.github.vihuynh72.brownie.api.document.render.RailwayDocumentSandbox$LimitedBody")
                 .should().dependOnClassesThat().resideInAPackage("java.net.http..")
                 .orShould().dependOnClassesThat().belongToAnyOf(RestClient.class, RestTemplate.class, HttpURLConnection.class)
                 .check(production);

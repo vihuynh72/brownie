@@ -206,6 +206,7 @@ public class PdfFormPreparationService {
                 }
                 continue;
             }
+            named = disambiguateLabel(graph, found, byId, candidate, named);
             PreparedPdfSpot spot = candidate.prepared(named, takenIds);
             checked.add(spot.definition());
             String fieldId = spot.definition().fieldId();
@@ -407,10 +408,30 @@ public class PdfFormPreparationService {
                 typedFields++;
             }
             PdfFormGraph.Widget widget = field.widgets().get(0);
-            String nearby = nearbyLabel(graph, widget);
+            String nearby = field.kind() == PdfFormGraph.FieldKind.TEXT && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH)
+                    ? aboveLabel(graph, widget) : null;
+            if (nearby == null) {
+                nearby = nearbyLabel(graph, widget);
+            }
             String label = field.kind() == PdfFormGraph.FieldKind.CHECKBOX
                     ? checkboxFieldLabel(field, rightOfLabel(graph, widget), nearby, fieldNumber)
                     : formFieldLabel(field, nearby, fieldNumber);
+            if (field.kind() == PdfFormGraph.FieldKind.TEXT && field.maxLen() != null && field.maxLen() <= 9
+                    && GENERIC_NAME.matcher(label).matches() && !candidates.isEmpty()) {
+                Candidate previous = candidates.getLast();
+                PdfFormGraph.Field previousField = graph.acroForm().fields().stream()
+                        .filter(item -> item.fullName().equals(previous.formFieldName())).findFirst().orElse(null);
+                if (previousField != null && previousField.kind() == PdfFormGraph.FieldKind.TEXT
+                        && previousField.maxLen() != null && previousField.maxLen() <= 9
+                        && previous.place().pageNumber() == widget.pageNumber()
+                        && Math.abs(previous.place().box().y() - widget.box().y()) < 2
+                        && widget.box().x() >= previous.place().box().right()
+                        && widget.box().x() - previous.place().box().right() <= 24
+                        && dashBetween(graph, previous.place().box(), widget)
+                        && !GENERIC_NAME.matcher(previous.naming().rulesLabel()).matches()) {
+                    label = previous.naming().rulesLabel();
+                }
+            }
             FieldType type = field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? FieldType.CHECKBOX
                     : (field.dateFormat() != null || DATE_WORD.matcher(label).find())
                             && (field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH) ? FieldType.DATE : FieldType.TEXT;
@@ -418,7 +439,8 @@ public class PdfFormPreparationService {
             // A field the form made is a place to fill, as a Word form's own controls are: the naming step names it but keeps it.
             NamingCandidate naming = new NamingCandidate(
                     id, field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? "FORM_CHECKBOX" : "FORM_FIELD", label, type,
-                    formFieldContext(field, nearby), signatureLike, null, true, null, List.of());
+                    formFieldContext(field, field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? label : nearby),
+                    signatureLike, null, true, null, List.of());
             candidates.add(new Candidate(naming, new Place(id, widget.pageNumber(), widget.box()), field.fullName(), field.required(), null));
         }
         int blankNumber = 0;
@@ -531,27 +553,73 @@ public class PdfFormPreparationService {
                 .labelGuess();
     }
 
+    private static boolean dashBetween(PdfFormGraph graph, PdfRect left, PdfFormGraph.Widget right) {
+        return graph.pages().stream().filter(page -> page.pageNumber() == right.pageNumber())
+                .flatMap(page -> page.lines().stream()).flatMap(line -> line.words().stream())
+                .anyMatch(word -> word.box().x() >= left.right() - 1 && word.box().right() <= right.box().x() + 1
+                        && word.box().centerY() >= right.box().y() && word.box().centerY() <= right.box().bottom()
+                        && word.text().matches("[-–—]"));
+    }
+
+    /** A caption immediately above a field, limited to the field's own horizontal span. */
+    static String aboveLabel(PdfFormGraph graph, PdfFormGraph.Widget widget) {
+        PdfRect box = widget.box();
+        return graph.pages().stream().filter(page -> page.pageNumber() == widget.pageNumber())
+                .flatMap(page -> page.lines().stream())
+                .filter(line -> line.box().bottom() <= box.y() + 1 && box.y() - line.box().bottom() <= 12)
+                .sorted(Comparator.comparingDouble((PdfFormGraph.Line line) -> line.box().bottom()).reversed())
+                .map(line -> line.words().stream()
+                        .filter(word -> word.box().x() >= box.x() - 2 && word.box().right() <= box.right() + 2)
+                        .map(PdfFormGraph.Word::text).collect(Collectors.joining(" ")))
+                .filter(text -> !text.isBlank()).findFirst().orElse(null);
+    }
+
+    private static boolean sameLabel(String left, String right) {
+        if (left == null || right == null) return false;
+        return left.replaceFirst("^\\s*\\d+[.)]?\\s+", "").replaceAll("[^\\p{L}\\p{N}]", "").equalsIgnoreCase(
+                right.replaceFirst("^\\s*\\d+[.)]?\\s+", "").replaceAll("[^\\p{L}\\p{N}]", ""));
+    }
+
+    static NamedSpot disambiguateLabel(PdfFormGraph graph, Found found, Map<String, NamedSpot> byId,
+                                       Candidate candidate, NamedSpot named) {
+        if (candidate.formFieldName() != null && named.namedByModel()
+                && found.candidates().stream().filter(other -> !other.naming().id().equals(candidate.naming().id()))
+                        .map(other -> byId.getOrDefault(other.naming().id(), RulesOnlySpotNamer.byRules(other.naming())))
+                        .anyMatch(other -> sameLabel(other.label(), named.label()))
+                && !sameLabel(named.label(), candidate.naming().rulesLabel()) && hasLocalCaption(graph, candidate)) {
+            return new NamedSpot(named.id(), named.keep(), candidate.naming().rulesLabel(), named.type(),
+                    named.suggestedType(), named.requiredHint(), false);
+        }
+        return named;
+    }
+
+    private static boolean hasLocalCaption(PdfFormGraph graph, Candidate candidate) {
+        PdfFormGraph.Field field = graph.acroForm().fields().stream()
+                .filter(item -> item.fullName().equals(candidate.formFieldName())).findFirst().orElseThrow();
+        PdfFormGraph.Widget widget = field.widgets().get(0);
+        String caption = field.kind() == PdfFormGraph.FieldKind.CHECKBOX ? rightOfLabel(graph, widget)
+                : field.maxLen() == null || field.maxLen() >= LONG_DATE_LENGTH ? aboveLabel(graph, widget) : null;
+        return caption != null && sameLabel(caption, candidate.naming().rulesLabel());
+    }
+
     /** The words a checkbox's caption sits at: on its line, beginning just past its box. */
     static String rightOfLabel(PdfFormGraph graph, PdfFormGraph.Widget widget) {
         PdfFormGraph.Page page = graph.pages().stream().filter(candidate -> candidate.pageNumber() == widget.pageNumber()).findFirst().orElse(null);
         if (page == null || !page.hasText()) {
             return null;
         }
-        StringBuilder words = new StringBuilder();
-        for (PdfFormGraph.Line line : page.lines()) {
-            if (Math.abs(line.box().centerY() - widget.box().centerY()) > widget.box().height() * 0.8 + 2) {
-                continue;
-            }
-            for (PdfFormGraph.Word word : line.words()) {
-                if (word.box().x() >= widget.box().right() - 1 && word.box().x() <= widget.box().right() + 200) {
-                    if (words.length() > 0) {
-                        words.append(' ');
-                    }
-                    words.append(word.text());
-                }
-            }
-        }
-        return words.isEmpty() ? null : words.toString();
+        double nextWidgetX = graph.acroForm().fields().stream().flatMap(field -> field.widgets().stream())
+                .filter(other -> other.pageNumber() == widget.pageNumber() && other.box().x() > widget.box().x()
+                        && Math.abs(other.box().centerY() - widget.box().centerY()) <= widget.box().height() * 0.8 + 2)
+                .mapToDouble(other -> other.box().x()).min().orElse(widget.box().right() + 200);
+        return page.lines().stream()
+                .filter(line -> Math.abs(line.box().centerY() - widget.box().centerY()) <= widget.box().height() * 0.8 + 2)
+                .sorted(Comparator.comparingDouble(line -> Math.abs(line.box().centerY() - widget.box().centerY())))
+                .map(line -> line.words().stream()
+                        .filter(word -> word.box().x() >= widget.box().right() - 1 && word.box().x() < nextWidgetX
+                                && word.box().x() <= widget.box().right() + 200)
+                        .map(PdfFormGraph.Word::text).collect(Collectors.joining(" ")))
+                .filter(text -> !text.isBlank()).findFirst().orElse(null);
     }
 
     private static String formFieldContext(PdfFormGraph.Field field, String nearby) {
@@ -605,7 +673,8 @@ public class PdfFormPreparationService {
 
     private static boolean sharesLine(PdfRect line, PdfRect place) {
         double shared = Math.min(line.bottom(), place.bottom()) - Math.max(line.y(), place.y());
-        return shared > 0.3 * Math.min(Math.max(line.height(), 1), Math.max(place.height(), 1));
+        return line.y() <= place.y() + Math.max(8, place.height() * 0.3)
+                && shared > 0.3 * Math.min(Math.max(line.height(), 1), Math.max(place.height(), 1));
     }
 
     private static String marked(PdfFormGraph.Line line, List<Place> onLine) {

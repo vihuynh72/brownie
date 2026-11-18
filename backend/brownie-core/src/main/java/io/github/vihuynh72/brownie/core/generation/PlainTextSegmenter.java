@@ -10,8 +10,7 @@ import java.util.regex.Pattern;
  * excerpts an extraction run can address and cite individually -- the
  * addressable unit this format's {@code EvidenceLocator.PlainText} needs,
  * the same role a DOCX paragraph node or a PDF text line plays for their
- * own formats (neither of which this class handles; see {@link
- * ExtractionService}'s own stated boundary). A blank line (one or more
+ * own formats. A blank line (one or more
  * blank lines in a row) separates paragraphs; leading/trailing whitespace
  * within one paragraph is trimmed from its offsets, not just its text, so
  * a citation never quotes whitespace that was never part of the claim.

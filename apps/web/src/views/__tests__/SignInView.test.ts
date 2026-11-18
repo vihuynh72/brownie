@@ -21,9 +21,7 @@ async function mountAt(path: string) {
   return mount(SignInView, { global: { plugins: [router] }, attachTo: document.body })
 }
 
-const ONE_PAGE_FOR_BOTH =
-  'Brownie uses one page for both: sign in with an account you already have, ' +
-  'or create one there if this is your first time.'
+const ONE_PAGE_FOR_BOTH = 'Sign in or create an account to continue.'
 
 // These mount into the document so a click on a real anchor reaches this listener, which
 // cancels the navigation jsdom cannot perform; the assertion is about what the handler
@@ -50,10 +48,11 @@ describe('SignInView', () => {
   it('sends the browser to the provider, where the same page signs in and signs up', async () => {
     const wrapper = await mountAt('/signin')
 
+    await flushPromises()
     const action = wrapper.get('a.button')
     expect(action.attributes('href')).toBe('/oauth2/authorization/entra')
     expect(action.text()).toContain('Sign in or sign up')
-    expect(wrapper.text()).toContain('create one there')
+    expect(wrapper.text()).toContain('create an account')
     // The only way out of this page is the one action; the steps below it are information, not links.
     expect(wrapper.findAll('a')).toHaveLength(1)
   })
@@ -93,6 +92,48 @@ describe('SignInView', () => {
   })
 
   /** Being interrupted on the way somewhere should say where, so the page does not read like an unprompted demand. */
+  it('waits for the provider list before offering sign-in', async () => {
+    let resolveWelcome!: (value: Awaited<ReturnType<typeof getWelcome>>) => void
+    vi.mocked(getWelcome).mockReturnValue(new Promise((resolve) => { resolveWelcome = resolve }))
+    const wrapper = await mountAt('/signin')
+    expect(wrapper.find('a[href^="/oauth2/authorization/"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Loading sign-in options')
+    resolveWelcome({ signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google'] })
+    await flushPromises()
+    expect(wrapper.get('a.signin__google').attributes('href')).toBe('/oauth2/authorization/google')
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+  })
+
+  it('retries loading sign-in options after an error', async () => {
+    vi.mocked(getWelcome).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({
+      signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google'],
+    })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+    expect(wrapper.find('a[href^="/oauth2/authorization/"]').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('a.signin__google').attributes('href')).toBe('/oauth2/authorization/google')
+  })
+
+  it('explains when no providers are configured', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({ signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: [] })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+    expect(wrapper.text()).toContain('No sign-in options are available')
+    expect(wrapper.find('a[href^="/oauth2/authorization/"]').exists()).toBe(false)
+  })
+
+  it('does not offer an email code when only Google is available', async () => {
+    vi.mocked(getWelcome).mockResolvedValue({
+      signUp: 'INVITATION_ONLY', mcpServerUrl: null, signInProviders: ['google'],
+    })
+    const wrapper = await mountAt('/signin')
+    await flushPromises()
+    expect(wrapper.get('a.signin__google').attributes('href')).toBe('/oauth2/authorization/google')
+    expect(wrapper.find('a[href="/oauth2/authorization/entra"]').exists()).toBe(false)
+  })
+
   it('names what the sign-in is for when it interrupted something', async () => {
     const wrapper = await mountAt('/signin?next=%2F')
 
@@ -115,16 +156,18 @@ describe('SignInView', () => {
   it('tells someone who just deleted their workspace that it worked, before anything else', async () => {
     const wrapper = await mountAt('/signin?deleted=1')
 
+    await flushPromises()
     expect(wrapper.find('[role="status"]').text()).toContain('Your workspace and everything in it was deleted.')
     expect(wrapper.text()).toContain('Sign in or sign up')
     // "You need to be signed in" would read oddly straight after being told the account's data is gone.
     expect(wrapper.text()).not.toContain('You need to be signed in')
-    expect(wrapper.text()).toContain('Brownie uses one page for both')
+    expect(wrapper.text()).toContain('Sign in or create an account to continue.')
     expect((await axe(wrapper.element as HTMLElement)).violations).toEqual([])
   })
 
   it('parks the interrupted destination before the browser leaves for the provider', async () => {
     const wrapper = await mountAt('/signin?next=%2Ftrash')
+    await flushPromises()
     await wrapper.get('a.button').trigger('click')
 
     expect(window.sessionStorage.getItem('brownie.signInIntent')).toBe('/trash')
@@ -133,6 +176,7 @@ describe('SignInView', () => {
   /** A destination that is not an in-app path is a redirect off this site; it is dropped, not followed. */
   it('refuses to park anything but an in-app path', async () => {
     const wrapper = await mountAt('/signin?next=https%3A%2F%2Felsewhere.example%2Fx')
+    await flushPromises()
     await wrapper.get('a.button').trigger('click')
 
     expect(window.sessionStorage.getItem('brownie.signInIntent')).toBeNull()
@@ -150,20 +194,28 @@ describe('SignInView', () => {
 
   it('says who may sign in and that the workspace is private', async () => {
     const wrapper = await mountAt('/signin')
+    await flushPromises()
 
     expect(wrapper.text()).toContain('Open to invited people only. Your workspace is private to you.')
   })
 
-  /** What a visitor is told Brownie does before they have an account. */
-  it('lays out how Brownie works in three steps, in order', async () => {
+  it('explains the review step without numbered cards', async () => {
     const wrapper = await mountAt('/signin')
+    expect(wrapper.get('.signin__guidance').text()).toContain('review each value before exporting')
+    expect(wrapper.find('.signin__steps').exists()).toBe(false)
+  })
 
-    const steps = wrapper.get('ol[aria-label="How Brownie works"]').findAll('li')
-    expect(steps.map((step) => step.get('h2').text())).toEqual(['Upload a form', 'Add your notes', 'Check and export'])
-    expect(steps.map((step) => step.get('p').text())).toEqual(['Step 1', 'Step 2', 'Step 3'])
-    expect(steps[0]?.text()).toContain('Brownie learns where the values go and keeps the form’s own look.')
-    expect(steps[1]?.text()).toContain('Brownie reads only what you add.')
-    expect(steps[2]?.text()).toContain('You approve every value. Brownie exports exactly the version you approved.')
+  it('preserves a selected form and describes the return journey', async () => {
+    const wrapper = await mountAt('/signin?next=%2F%3Fform%3Dirs-w4')
+    await flushPromises()
+    expect(wrapper.get('.signin__lede').text()).toBe('Sign in to continue with your selected form.')
+    await wrapper.get('a.button').trigger('click')
+    expect(window.sessionStorage.getItem('brownie.signInIntent')).toBe('/?form=irs-w4')
+  })
+
+  it('does not promise a selected form for an invalid or repeated form id', async () => {
+    const wrapper = await mountAt('/signin?next=%2F%3Fform%3Dinvalid%26form%3Dirs-w4')
+    expect(wrapper.get('.signin__lede').text()).not.toContain('selected form')
   })
 
   it('says the day is free when the deployment offers the open allowance', async () => {
@@ -183,12 +235,13 @@ describe('SignInView', () => {
     expect(wrapper.get('.signin__note').text()).not.toContain('invited people')
   })
 
-  it('says it is by invitation when the welcome answer never comes', async () => {
+  it('shows a retry when the welcome answer fails', async () => {
     vi.mocked(getWelcome).mockRejectedValue(new Error('offline'))
     const wrapper = await mountAt('/signin')
     await flushPromises()
 
-    expect(wrapper.get('.signin__note').text()).toContain('Open to invited people only')
+    expect(wrapper.text()).toContain('Sign-in options could not be loaded')
+    expect(wrapper.find('.signin__note').exists()).toBe(false)
   })
 
   it('has no automatically-detectable accessibility violations', async () => {

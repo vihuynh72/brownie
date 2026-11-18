@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
+import BrownieBrand from './BrownieBrand.vue'
 import TemplateActionsMenu from './TemplateActionsMenu.vue'
 import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
 import { useSessionStore } from '@/stores/session'
@@ -43,6 +44,11 @@ const invitationSent = ref(false)
 const templates = useTemplatesStore()
 const router = useRouter()
 const route = useRoute()
+const accountRoutes = ['/connections', '/your-data', '/details']
+const settingsOpen = ref(accountRoutes.includes(route.path))
+watch(() => route.path, (path) => {
+  if (accountRoutes.includes(path)) settingsOpen.value = true
+})
 
 const rootRef = ref<HTMLElement | null>(null)
 const closeButtonRef = ref<HTMLButtonElement | null>(null)
@@ -617,7 +623,9 @@ async function moveToTrash(): Promise<void> {
   >
     <div class="sidebar__inner">
       <div class="sidebar__head">
-        <RouterLink v-if="!props.docked" class="sidebar__brand" to="/" @click="closeIfDrawer">Brownie</RouterLink>
+        <RouterLink class="sidebar__brand" to="/" aria-label="Brownie, home" aria-current-value="false" @click="closeIfDrawer">
+          <BrownieBrand />
+        </RouterLink>
         <button
           ref="closeButtonRef"
           type="button"
@@ -626,7 +634,7 @@ async function moveToTrash(): Promise<void> {
           aria-controls="app-sidebar"
           @click="close"
         >
-          <AppIcon name="panel-collapse" :size="24" />
+          <AppIcon name="panel-collapse" :size="20" />
           <span class="visually-hidden">{{ props.docked ? 'Hide sidebar' : 'Close menu' }}</span>
         </button>
       </div>
@@ -635,13 +643,13 @@ async function moveToTrash(): Promise<void> {
         <ul class="sidebar__list">
           <li>
             <RouterLink class="sidebar__link" to="/" @click="closeIfDrawer">
-              <AppIcon name="home" :size="24" />
+              <AppIcon name="home" :size="19" />
               <span>Home</span>
             </RouterLink>
           </li>
           <li>
             <RouterLink class="sidebar__link" to="/chat" @click="closeIfDrawer">
-              <AppIcon name="chat" :size="24" />
+              <AppIcon name="chat" :size="19" />
               <span>Chat</span>
             </RouterLink>
           </li>
@@ -652,7 +660,7 @@ async function moveToTrash(): Promise<void> {
 
       <section class="sidebar__section" aria-labelledby="sidebar-templates-heading">
         <div class="sidebar__section-head">
-          <h2 id="sidebar-templates-heading" class="sidebar__section-title">My Templates</h2>
+          <h2 id="sidebar-templates-heading" class="sidebar__section-title">Start from a template</h2>
           <!-- Not disabled while a form is being added: that would drop the focus it holds. A press is ignored instead. -->
           <button
             v-if="session.status === 'authenticated'"
@@ -663,7 +671,7 @@ async function moveToTrash(): Promise<void> {
             :aria-disabled="adding !== null ? 'true' : undefined"
             @click="chooseFormFile"
           >
-            <AppIcon name="plus" :size="24" />
+            <AppIcon name="plus" :size="20" />
             <span class="visually-hidden">{{ adding !== null ? 'Adding a template from a file…' : 'Add a template from a file' }}</span>
           </button>
           <!-- Signed out, this adds nothing yet: a link to sign in that brings the visitor back here, like Home's own upload control. -->
@@ -673,7 +681,7 @@ async function moveToTrash(): Promise<void> {
             :to="{ name: 'signin', query: { next: route.fullPath } }"
             @click="closeIfDrawer"
           >
-            <AppIcon name="plus" :size="24" />
+            <AppIcon name="plus" :size="20" />
             <span class="visually-hidden">Sign in to add a template from a file</span>
           </RouterLink>
           <input
@@ -791,22 +799,30 @@ async function moveToTrash(): Promise<void> {
 
       <div class="sidebar__foot">
         <RouterLink class="sidebar__link" to="/trash" @click="closeIfDrawer">
-          <AppIcon name="trash" :size="24" />
-          <span>Trash Bin</span>
+          <AppIcon name="trash" :size="19" />
+          <span>Trash</span>
         </RouterLink>
-        <!-- Signed out, there is no account to show these for; both already send a direct visitor to sign in. -->
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/connections" @click="closeIfDrawer">
-          <AppIcon name="link" :size="24" />
-          <span>Connections</span>
-        </RouterLink>
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/your-data" @click="closeIfDrawer">
-          <AppIcon name="shield-check" :size="24" />
-          <span>Your data</span>
-        </RouterLink>
-        <RouterLink v-if="session.status === 'authenticated'" class="sidebar__link" to="/details" @click="closeIfDrawer">
-          <AppIcon name="document-text" :size="24" />
-          <span>Your details</span>
-        </RouterLink>
+        <details v-if="session.status === 'authenticated'" class="sidebar__settings" :open="settingsOpen" @toggle="settingsOpen = ($event.target as HTMLDetailsElement).open">
+          <summary class="sidebar__link sidebar__settings-toggle">
+            <AppIcon name="sliders" :size="19" />
+            <span>Settings</span>
+            <AppIcon class="sidebar__settings-chevron" name="chevron-down" :size="16" />
+          </summary>
+          <nav aria-label="Account settings" class="sidebar__settings-links">
+            <RouterLink class="sidebar__link" to="/connections" @click="closeIfDrawer">
+              <AppIcon name="link" :size="19" />
+              <span>Connected apps</span>
+            </RouterLink>
+            <RouterLink class="sidebar__link" to="/your-data" @click="closeIfDrawer">
+              <AppIcon name="shield-check" :size="19" />
+              <span>Privacy &amp; data</span>
+            </RouterLink>
+            <RouterLink class="sidebar__link" to="/details" @click="closeIfDrawer">
+              <AppIcon name="document-text" :size="19" />
+              <span>Saved details</span>
+            </RouterLink>
+          </nav>
+        </details>
 
         <!-- A line with nothing under it would only mark an empty place, as it is until it is known who is here. -->
         <hr v-if="session.status === 'authenticated' || session.status === 'anonymous'" class="sidebar__rule sidebar__rule--foot" />
@@ -847,7 +863,7 @@ async function moveToTrash(): Promise<void> {
             :aria-disabled="signingOut ? 'true' : undefined"
             @click="signOut"
           >
-            <AppIcon name="sign-out" :size="24" />
+            <AppIcon name="sign-out" :size="20" />
             <span class="visually-hidden">{{ signingOut ? 'Signing out' : 'Sign out' }}</span>
           </button>
         </div>
@@ -865,11 +881,10 @@ async function moveToTrash(): Promise<void> {
 /*
  * A column of quiet rows on the sidebar colour. The page the person is on, and any row under the pointer, takes a
  * cocoa-wash pill; labels are the main text colour and the icons beside them the same colour at 60%, so the words
- * carry the weight (3.7:1 on the sidebar and 3.5:1 on the wash, past the 3:1 a graphic needs). The edge is a soft
- * inset shadow rather than a border, so the panel reads as set into the page.
+ * carry the weight. A quiet border keeps the navigation distinct from the working page.
  */
 .sidebar {
-  --sidebar-icon: color-mix(in srgb, var(--color-text) 60%, transparent);
+  --sidebar-icon: var(--color-text-muted);
   flex: none;
   inline-size: var(--sidebar-width);
   block-size: 100dvh;
@@ -877,6 +892,7 @@ async function moveToTrash(): Promise<void> {
   inset-block-start: 0;
   background: var(--color-sidebar);
   box-shadow: var(--shadow-sidebar);
+  border-inline-end: 1px solid var(--color-sidebar-border);
   /* The inner column keeps its own width while this box narrows, so collapsing
      slides the navigation out of view instead of squashing every label first. */
   overflow: hidden;
@@ -915,9 +931,10 @@ async function moveToTrash(): Promise<void> {
   block-size: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 0.5rem 0.625rem;
+  padding: 0.5rem 0.75rem 0.75rem;
   overflow-y: auto;
   color: var(--color-text-muted);
+  font-family: var(--font-ui);
 }
 
 /*
@@ -962,14 +979,12 @@ async function moveToTrash(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-block-size: 3.1875rem;
-  margin-block-end: 0.125rem;
+  min-block-size: 3.75rem;
+  margin-block-end: var(--space-3);
 }
 
 .sidebar__brand {
   padding-inline: 0.40625rem;
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
   color: var(--color-text);
   text-decoration: none;
 }
@@ -997,16 +1012,16 @@ async function moveToTrash(): Promise<void> {
 .sidebar__link {
   display: flex;
   align-items: center;
-  gap: 0.65625rem;
-  min-block-size: 2.25rem;
+  gap: 0.75rem;
+  min-block-size: 2.5rem;
   padding-inline: 0.40625rem 0.5rem;
   border-radius: var(--radius);
   color: var(--color-text);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.875rem;
+  font-weight: 500;
   line-height: 1.5;
   text-decoration: none;
-  transition: background-color var(--motion-fast) var(--motion-ease);
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
 }
 
 .sidebar__link > svg {
@@ -1016,6 +1031,10 @@ async function moveToTrash(): Promise<void> {
 .sidebar__link:hover,
 .sidebar__link[aria-current='page'] {
   background: var(--color-cocoa-wash);
+}
+
+.sidebar__link[aria-current='page'] > svg {
+  color: var(--color-cocoa-strong);
 }
 
 /*
@@ -1045,11 +1064,11 @@ async function moveToTrash(): Promise<void> {
   block-size: 0;
   margin-inline: 0.9375rem 1.1875rem;
   border: 0;
-  border-block-start: 1px solid color-mix(in srgb, var(--color-text) 50%, transparent);
+  border-block-start: 1px solid var(--color-sidebar-border);
 }
 
 .sidebar__rule--nav {
-  margin-block: 1.75rem 1.25rem;
+  margin-block: 1rem 0.75rem;
 }
 
 .sidebar__rule--foot {
@@ -1067,7 +1086,7 @@ async function moveToTrash(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 0.1875rem;
-  min-block-size: 11rem;
+  min-block-size: 8rem;
 }
 
 .sidebar__section > * {
@@ -1085,8 +1104,8 @@ async function moveToTrash(): Promise<void> {
 
 .sidebar__section-title {
   margin: 0;
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.75rem;
+  font-weight: 500;
   line-height: 1.5;
   color: var(--color-text-muted);
 }
@@ -1118,8 +1137,7 @@ async function moveToTrash(): Promise<void> {
 
 /*
  * A form just added: its name on one line, cut short when long, and the way to start a document on the
- * next, so the list under it keeps most of its height. It sits under the My Templates heading, so the
- * words "to My Templates" are left to assistive technology.
+ * next, so the list under it keeps most of its height. The existing added-template announcement stays with its list.
  */
 .sidebar__notice--added {
   padding: var(--space-1) 0.9375rem;
@@ -1277,7 +1295,7 @@ async function moveToTrash(): Promise<void> {
   border-radius: var(--radius);
   background: transparent;
   color: var(--color-text-muted);
-  font-size: var(--font-size-base);
+  font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.5;
   text-align: start;
@@ -1365,6 +1383,12 @@ async function moveToTrash(): Promise<void> {
   }
 }
 
+.sidebar__settings-toggle { list-style: none; cursor: pointer; }
+.sidebar__settings-toggle::-webkit-details-marker { display: none; }
+.sidebar__settings-chevron { margin-inline-start: auto; }
+.sidebar__settings[open] .sidebar__settings-chevron { rotate: 180deg; }
+.sidebar__settings-links { padding-inline-start: var(--space-3); }
+
 /* Pins the trash and account rows to the bottom of the panel. */
 .sidebar__foot {
   flex: none;
@@ -1417,8 +1441,8 @@ async function moveToTrash(): Promise<void> {
   margin-block-start: 0.25rem;
   padding-inline: 0.4375rem 0.40625rem;
   color: var(--color-text);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-medium);
+  font-size: 0.875rem;
+  font-weight: 500;
   line-height: 1.5;
 }
 

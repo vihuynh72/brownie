@@ -18,7 +18,7 @@
 /* ---------- Buttons ---------- */
 
 /*
- * A pill. The look is carried by a handful of properties that each variant resets, so hover, pressed and the
+ * The look is carried by a handful of properties that each variant resets, so hover, pressed and the
  * faded state are written once. A bare .button is the white outline look.
  */
 .button {
@@ -39,22 +39,26 @@
   justify-content: center;
   gap: var(--button-gap);
   min-block-size: var(--button-height);
+  min-inline-size: 0;
+  max-inline-size: 100%;
   /* A filled button trims the 1px edge off its side padding, so filled and outline pills have the same label room. */
   padding: var(--button-block) calc(var(--button-pad) - var(--button-trim));
   border: 1px solid var(--button-border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--button-bg);
   color: var(--button-ink);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   line-height: 1.25;
   text-align: center;
+  overflow-wrap: anywhere;
   text-decoration: none;
   cursor: pointer;
   transition:
     background-color var(--motion-fast) var(--motion-ease),
     border-color var(--motion-fast) var(--motion-ease),
-    color var(--motion-fast) var(--motion-ease);
+    color var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
 }
 
 .button > svg {
@@ -70,23 +74,42 @@
 
 .button:active:not(:disabled):not([aria-disabled='true']) {
   background: var(--button-bg-active);
+  transform: translateY(1px);
 }
 
 .button--secondary {
-  /* The default look, spelled out so a screen can say what it means. */
-  --button-bg: var(--color-surface);
+  --button-bg: transparent;
   --button-border: var(--color-outline);
   --button-ink: var(--color-text);
 }
 
 .button--primary {
   --button-trim: 1px;
-  --button-bg: var(--color-cocoa);
-  --button-border: var(--color-cocoa);
+  --button-bg: var(--color-action);
+  --button-border: var(--color-action);
   --button-ink: var(--color-surface);
-  --button-bg-hover: var(--color-cocoa-strong);
-  --button-border-hover: var(--color-cocoa-strong);
-  --button-bg-active: color-mix(in srgb, var(--color-cocoa-strong) 82%, black);
+  --button-bg-hover: var(--color-action-hover);
+  --button-border-hover: var(--color-action-hover);
+  --button-bg-active: var(--color-action-active);
+}
+
+.form-guidance {
+  display: flex; align-items: flex-start; gap: var(--space-3); padding-block: var(--space-4);
+  border: 0; border-block-start: 1px solid var(--color-hairline);
+  color: var(--color-text);
+}
+.form-guidance h3 { margin: 0 0 var(--space-1); font-size: var(--font-size-base); font-weight: 600; }
+.form-guidance p { margin: 0 0 var(--space-2); font-size: var(--font-size-sm); line-height: 1.55; }
+.form-guidance a { color: var(--color-cocoa-strong); font-size: var(--font-size-sm); font-weight: 600; text-underline-offset: 0.2em; }
+.form-guidance a svg { display: inline; vertical-align: middle; }
+
+.form-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-block-size: 2.75rem;
+  inline-size: fit-content;
+  font-size: var(--font-size-sm);
 }
 
 .button--quiet {
@@ -121,7 +144,9 @@
  */
 .button:disabled,
 .button[aria-disabled='true'] {
-  opacity: 0.4;
+  background: var(--color-paper-soft);
+  border-color: var(--color-hairline);
+  color: var(--color-text-muted);
   cursor: not-allowed;
 }
 
@@ -217,7 +242,7 @@
 /* ---------- Document tile ---------- */
 
 /*
- * A rounded cocoa square holding a white glyph. Left empty it draws a page; give it an icon (an svg child) to draw
+ * A quiet file tile. Left empty it draws a page; give it an icon (an svg child) to draw
  * another glyph at the same size. The glyph is a whole number of pixels (22, 18 and 14), because a mask scaled to a
  * fractional box is drawn too large.
  */
@@ -230,9 +255,7 @@
   place-items: center;
   inline-size: var(--doc-tile-size);
   block-size: var(--doc-tile-size);
-  border-radius: var(--doc-tile-radius);
-  background: var(--color-cocoa-tile);
-  color: var(--color-surface);
+  color: var(--color-text-muted);
 }
 
 .doc-tile--medium {
@@ -578,7 +601,7 @@ textarea.text-field {
 
 .msg--brownie {
   display: grid;
-  gap: 0.875rem;
+  gap: 0.5rem;
 }
 
 .msg__who {
@@ -592,26 +615,9 @@ textarea.text-field {
   line-height: 1.3;
 }
 
-.msg__who::before {
-  content: '';
-  flex: none;
-  inline-size: 1.125rem;
-  block-size: 1.125rem;
-  background: var(--color-cocoa);
-  mask: var(--glyph-sparkles) center / contain no-repeat;
-}
-
-/* A display that forces its own colours drops the mask's background, which would erase the sparkle; hand it the text colour. */
-@media (forced-colors: active) {
-  .msg__who::before {
-    forced-color-adjust: none;
-    background: CanvasText;
-  }
-}
-
 .msg__body {
-  font-size: var(--font-size-base);
-  line-height: 1.45;
+  font-size: 0.9375rem;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
@@ -699,8 +705,8 @@ textarea.text-field {
 .composer {
   display: flex;
   flex-direction: column;
-  gap: 1.1875rem;
-  padding: 1rem 0.75rem 0.75rem;
+  gap: 0.75rem;
+  padding: 0.875rem 0.75rem 0.625rem;
   border: 1px solid var(--color-outline);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
@@ -731,7 +737,7 @@ textarea.text-field {
   border: 0;
   background: transparent;
   color: var(--color-text);
-  font-size: var(--font-size-base);
+  font-size: 0.9375rem;
   line-height: 1.4375;
   resize: none;
   field-sizing: content;
@@ -856,9 +862,14 @@ textarea.text-field {
 
 .page-title {
   margin: 0;
+  font-family: var(--font-ui);
+  font-style: normal;
   font-size: var(--font-size-display);
-  font-weight: 400;
-  line-height: 1.1;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .page-title--small {

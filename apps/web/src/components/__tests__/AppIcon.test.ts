@@ -65,11 +65,10 @@ function pathPoints(d: string): Array<[number, number]> {
 const count = (text: string, pattern: RegExp): number => text.match(pattern)?.length ?? 0
 
 describe('the icon set', () => {
-  it('gives every declared name something to draw, well formed and inside its 24-unit frame', () => {
+  it('gives every declared name something to draw, well formed and inside its 256-unit frame', () => {
     expect(NAMES.length).toBeGreaterThan(0)
     for (const name of NAMES) {
-      const { kind, paths } = ICONS[name]
-      expect(['outline', 'stroke'], `${name}: how it is drawn`).toContain(kind)
+      const { paths } = ICONS[name]
       expect(paths.length, `${name}: number of paths`).toBeGreaterThan(0)
       for (const d of paths) {
         expect(d, `${name}: path data starts with a move`).toMatch(/^[Mm]/)
@@ -77,11 +76,11 @@ describe('the icon set', () => {
         const points = pathPoints(d)
         expect(points.length, `${name}: points in its path`).toBeGreaterThan(1)
         for (const [px, py] of points) {
-          const inside = Number.isFinite(px) && Number.isFinite(py) && px >= 0 && px <= 24 && py >= 0 && py <= 24
+          const inside = Number.isFinite(px) && Number.isFinite(py) && px >= 0 && px <= 256 && py >= 0 && py <= 256
           expect(inside, `${name}: point ${px},${py} is inside the frame`).toBe(true)
         }
         // A filled shape left open would be closed by the browser at a point nobody chose.
-        if (kind === 'outline') expect(count(d, /[Mm]/g), `${name}: every outline closed`).toBe(count(d, /[Zz]/g))
+        expect(count(d, /[Mm]/g), `${name}: every outline closed`).toBe(count(d, /[Zz]/g))
       }
     }
   })
@@ -92,30 +91,14 @@ describe('the icon set', () => {
 })
 
 describe('AppIcon', () => {
-  it('draws a stroke icon as unfilled, round-ended lines at the size asked for', () => {
+  it('draws an icon in the requested size using its regular paths and current color', () => {
     const icon = mount(AppIcon, { props: { name: 'menu', size: 32 } })
     expect(icon.element.tagName.toLowerCase()).toBe('svg')
     expect(icon.attributes('width')).toBe('32')
     expect(icon.attributes('height')).toBe('32')
-    expect(icon.attributes('viewBox')).toBe('0 0 24 24')
-    expect(icon.attributes('fill')).toBe('none')
-    expect(icon.attributes('stroke')).toBe('currentColor')
-    expect(icon.attributes('stroke-width')).toBe('1.7')
-    expect(icon.attributes('stroke-linecap')).toBe('round')
-    expect(icon.attributes('stroke-linejoin')).toBe('round')
-    expect(icon.findAll('path').map((path) => path.attributes('d'))).toEqual([...ICONS.menu.paths])
-  })
-
-  it('draws an outline icon as filled shapes with no stroke on top of them', () => {
-    const icon = mount(AppIcon, { props: { name: 'upload', size: 40 } })
-    expect(icon.element.tagName.toLowerCase()).toBe('svg')
-    expect(icon.attributes('width')).toBe('40')
-    expect(icon.attributes('height')).toBe('40')
-    expect(icon.attributes('viewBox')).toBe('0 0 24 24')
+    expect(icon.attributes('viewBox')).toBe('0 0 256 256')
     expect(icon.attributes('fill')).toBe('currentColor')
-    expect(icon.attributes('stroke')).toBeUndefined()
-    expect(icon.attributes('stroke-width')).toBeUndefined()
-    expect(icon.findAll('path').map((path) => path.attributes('d'))).toEqual([...ICONS.upload.paths])
+    expect(icon.findAll('path').map((path) => path.attributes('d'))).toEqual([...ICONS.menu.paths])
   })
 
   it('is 20 units wide unless told otherwise', () => {
@@ -132,17 +115,10 @@ describe('AppIcon', () => {
     }
   })
 
-  it('repaints when the name changes between the two ways of drawing', async () => {
+  it('repaints when the name changes', async () => {
     const icon = mount(AppIcon, { props: { name: 'menu' } })
-    await icon.setProps({ name: 'panel-expand' })
-    expect(icon.attributes('fill')).toBe('currentColor')
-    expect(icon.attributes('stroke')).toBeUndefined()
-    expect(icon.findAll('path').map((path) => path.attributes('d'))).toEqual([...ICONS['panel-expand'].paths])
-
-    await icon.setProps({ name: 'menu' })
-    expect(icon.attributes('fill')).toBe('none')
-    expect(icon.attributes('stroke')).toBe('currentColor')
-    expect(icon.findAll('path')).toHaveLength(ICONS.menu.paths.length)
+    await icon.setProps({ name: 'upload' })
+    expect(icon.findAll('path').map((path) => path.attributes('d'))).toEqual([...ICONS.upload.paths])
   })
 
   it('passes an accessibility scan beside a visible label', async () => {

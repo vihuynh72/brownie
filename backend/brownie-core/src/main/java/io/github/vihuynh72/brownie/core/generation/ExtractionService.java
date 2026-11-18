@@ -2,7 +2,7 @@ package io.github.vihuynh72.brownie.core.generation;
 
 import io.github.vihuynh72.brownie.core.document.DocumentExtractionService;
 import io.github.vihuynh72.brownie.core.document.ExtractionStatus;
-import io.github.vihuynh72.brownie.core.document.PlainTextExtractionVersion;
+import io.github.vihuynh72.brownie.core.document.StructuralNode;
 import io.github.vihuynh72.brownie.core.evidence.EvidenceLocator;
 import io.github.vihuynh72.brownie.core.evidence.SourceSpan;
 import io.github.vihuynh72.brownie.core.generation.usage.BudgetExceededException;
@@ -27,17 +27,14 @@ import java.util.Set;
 
 /**
  * Extracts candidate field values for one template's fields from one
- * plain-text source, grounded in real, individually citable evidence, and
+ * source, grounded in real, individually citable evidence, and
  * bounded by a caller-supplied {@link UsageBudget} that this class must
  * never spend past. Depends only on the interfaces above, so it has no
  * framework, model-SDK, or JSON-parsing dependency of its own -- real
  * implementations are supplied by whichever module wires this up, the
  * same shape {@code CompilationService} already establishes.
  *
- * <p>Plain text only: a source's DOCX or PDF structural graph is not yet
- * segmented into addressable excerpts here -- a real, named boundary, not
- * an oversight, tracked the same way this codebase already tracks other
- * deliberately incomplete capabilities. There is also no silent provider
+ * <p>There is no silent provider
  * fallback anywhere in this class or {@code ModelGateway}: a transport
  * failure or an unusable reply is reported as exactly what it was, never
  * retried against a different provider or model.
@@ -244,29 +241,74 @@ public class ExtractionService {
         return Math.min(MAX_OUTPUT_TOKENS, OUTPUT_BASE + OUTPUT_PER_FIELD * size);
     }
 
-    /**
-     * Segments the snapshot's current plain-text extraction into
-     * paragraphs and creates a real, addressable {@link SourceSpan} for
-     * each one -- the exact set of citations this run is allowed to
-     * receive back. Public so a caller that wants to freeze a bundle of
-     * excerpts ahead of an asynchronous {@link #extractFromExcerpts} call
-     * (rather than an immediate {@link #extract}) can still reuse this
-     * exact citation logic instead of duplicating it.
-     */
+    /** Creates addressable citations for each source excerpt before sending it to the model. */
     public List<LabeledExcerpt> segmentAndCiteSource(long workspaceId, long userId, SourceSnapshot snapshot) {
-        PlainTextExtractionVersion extraction = documentExtractionService.extractPlainText(workspaceId, userId, snapshot.artifactId());
-        if (extraction.status() != ExtractionStatus.COMPLETE) {
-            throw new SourceNotExtractableException(snapshot.id(), extraction.status());
+        List<LabeledExcerpt> excerpts = new ArrayList<>();
+        var extraction = documentExtractionService.extract(workspaceId, userId, snapshot.artifactId());
+        switch (extraction) {
+            case io.github.vihuynh72.brownie.core.document.ExtractionResult.PlainText result -> {
+                requireComplete(snapshot, result.version().status());
+                for (var segment : PlainTextSegmenter.segmentIntoParagraphs(result.version().graph().normalizedText())) {
+                    addSegments(excerpts, workspaceId, userId, snapshot, segment.text(),
+                            (start, end) -> new EvidenceLocator.PlainText(segment.startCodePoint() + start, segment.startCodePoint() + end));
+                }
+            }
+            case io.github.vihuynh72.brownie.core.document.ExtractionResult.Docx result -> {
+                requireComplete(snapshot, result.version().status());
+                for (var part : result.version().graph().parts()) {
+                    addDocxNode(excerpts, workspaceId, userId, snapshot, part.partName(), part.root());
+                }
+            }
+            case io.github.vihuynh72.brownie.core.document.ExtractionResult.Pdf result -> {
+                if (result.version().unsupportedReason() == io.github.vihuynh72.brownie.core.document.UnsupportedPdfReason.NO_EXTRACTABLE_TEXT) {
+                    throw new SourceNotExtractableException(snapshot.id(), "PDF has no extractable text. Use a text-based PDF or a text source.");
+                }
+                if (result.version().status() == ExtractionStatus.FAILED) {
+                    throw new SourceNotExtractableException(snapshot.id(), "PDF could not be read. Check the file and try another source.");
+                }
+                requireComplete(snapshot, result.version().status());
+                for (var page : result.version().graph().pages()) {
+                    for (var line : page.lines()) {
+                        addSegments(excerpts, workspaceId, userId, snapshot, line.text(),
+                                (start, end) -> new EvidenceLocator.Pdf(page.pageNumber(), line.lineIndex(), start, end));
+                    }
+                }
+                if (excerpts.isEmpty()) {
+                    throw new SourceNotExtractableException(snapshot.id(), "PDF has no extractable text. Use a text-based PDF or a text source.");
+                }
+            }
         }
-        List<PlainTextSegmenter.Segment> segments =
-                PlainTextSegmenter.segmentIntoParagraphs(extraction.graph().normalizedText());
-        return segments.stream()
-                .map(segment -> {
-                    EvidenceLocator locator = new EvidenceLocator.PlainText(segment.startCodePoint(), segment.endCodePointExclusive());
-                    SourceSpan span = sourceService.createSpan(workspaceId, userId, snapshot.id(), locator);
-                    return new LabeledExcerpt(span.id(), segment.text());
-                })
-                .toList();
+        return List.copyOf(excerpts);
+    }
+
+    private static void requireComplete(SourceSnapshot snapshot, ExtractionStatus status) {
+        if (status != ExtractionStatus.COMPLETE) {
+            throw new SourceNotExtractableException(snapshot.id(), status);
+        }
+    }
+
+    private void addDocxNode(List<LabeledExcerpt> excerpts, long workspaceId, long userId, SourceSnapshot snapshot,
+                             String partName, StructuralNode node) {
+        if (node.text() != null) {
+            addSegments(excerpts, workspaceId, userId, snapshot, node.text(),
+                    (start, end) -> new EvidenceLocator.Docx(partName, node.nodeId(), start, end));
+        }
+        for (var child : node.children()) {
+            addDocxNode(excerpts, workspaceId, userId, snapshot, partName, child);
+        }
+    }
+
+    private void addSegments(List<LabeledExcerpt> excerpts, long workspaceId, long userId, SourceSnapshot snapshot,
+                             String text, java.util.function.BiFunction<Integer, Integer, EvidenceLocator> locator) {
+        int count = text.codePointCount(0, text.length());
+        for (int start = 0; start < count; start += 2000) {
+            int end = Math.min(start + 2000, count);
+            String chunk = text.substring(text.offsetByCodePoints(0, start), text.offsetByCodePoints(0, end));
+            if (!chunk.isBlank()) {
+                SourceSpan span = sourceService.createSpan(workspaceId, userId, snapshot.id(), locator.apply(start, end));
+                excerpts.add(new LabeledExcerpt(span.id(), chunk));
+            }
+        }
     }
 
     /**

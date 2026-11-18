@@ -72,7 +72,7 @@ import {
 import InvitationRequestDialog from '@/components/InvitationRequestDialog.vue'
 import { brownieSaysNotThere, describeCommonFailure, isOpenLimitRefusal } from '@/api/failures'
 import { describePayload } from '@/rules/describeRule'
-import { formatBytes, loadCapabilities } from '@/capabilities'
+import { formatBytes, loadCapabilities, sourceFileOptions } from '@/capabilities'
 import { CONSENT_QUERY_KEYS, consentOutcome, offeredAccess, originLink, originLinkLabel, originSentence } from '@/connections/words'
 import {
   describeStyle,
@@ -138,6 +138,7 @@ function announce(text: string): void {
 }
 
 const uploadLimit = ref<string | null>(null)
+const sourceFiles = ref(sourceFileOptions())
 /** The same limit in bytes, to tell a file refused for its size from one refused for what it unpacks to. */
 const uploadLimitBytes = ref<number | null>(null)
 /**
@@ -148,6 +149,7 @@ const sourcesOffered = ref(false)
 onMounted(async () => {
   try {
     const capabilities = await loadCapabilities()
+    sourceFiles.value = sourceFileOptions(capabilities)
     const { maxUploadBytes } = capabilities
     // An older server may not send the limit at all; then neither the hint nor a size refusal names one.
     if (typeof maxUploadBytes === 'number' && maxUploadBytes > 0) {
@@ -373,6 +375,8 @@ function sourceKindWords(source: DocumentSourceResponse): string {
   if (source.origin?.conversion === 'CALENDAR_EVENT_AS_TEXT') return 'Calendar event'
   if (source.origin?.conversion === 'GOOGLE_DOC_AS_TEXT') return 'Google Doc'
   if (source.kind === 'SAVED_DETAILS') return 'Your details'
+  if (/\.pdf$/i.test(source.displayFilename ?? '')) return 'PDF file'
+  if (/\.docx$/i.test(source.displayFilename ?? '')) return 'Word document'
   return 'Text file'
 }
 
@@ -2263,7 +2267,7 @@ function uploadFailureMessage(error: unknown, file: File): string {
       : 'That file was not attached: it is larger than Brownie accepts.'
   }
   if (error instanceof ApiRequestError && error.status === 415) {
-    return 'That file was not attached: Brownie cannot use that kind of file as a source. Attach a plain-text (.txt) file.'
+    return `That file was not attached: Brownie cannot use that kind of file as a source. Choose ${sourceFiles.value.words}.`
   }
   const why = describeCommonFailure(error, 'a way to attach sources')
   return why ? `That file was not attached. ${why}` : 'Could not attach that file. Try again.'
@@ -2275,19 +2279,31 @@ async function onSourceFileChosen(event: Event): Promise<void> {
   const file = input.files?.[0]
   input.value = ''
   if (workspaceId === undefined || !file) return
+  await attachAndPrepare(file)
+}
 
+const canPrepare = computed(() => !runUnderWay.value && extractionStage.value !== 'unconfirmed'
+  && !['applying', 'proposed', 'accepting'].includes(applyStage.value) && !assistBusy.value)
+
+async function attachAndPrepare(file: File, details?: string): Promise<boolean> {
+  const workspaceId = session.personalWorkspaceId
+  const documentId = props.documentId
+  if (pageLeft || workspaceId === undefined || sourceUploadState.value === 'uploading' || !canPrepare.value) return false
+  const stillHere = () => !pageLeft && props.documentId === documentId && session.personalWorkspaceId === workspaceId
   sourceUploadState.value = 'uploading'
   sourceUploadError.value = null
   try {
     const allocated = await allocateUpload(workspaceId, file.name)
+    if (!stillHere()) return false
     await uploadArtifactContent(workspaceId, allocated.id, file)
+    if (!stillHere()) return false
     const completed = await completeUpload(workspaceId, allocated.id)
+    if (!stillHere()) return false
     if (completed.status !== 'READY') {
       sourceUploadError.value = `That file was not attached: ${whyFileWasRefused(completed)}.`
       sourceUploadState.value = 'error'
       // A failure must stay visible even if the row was folded away while it was in flight.
-      sourceUploadOpen.value = true
-      return
+      return false
     }
     // A spreadsheet is an accepted upload but never a readable source: the fill-many flow is its way in, so the
     // sentence points there rather than asking for a plain-text file the person may not have.
@@ -2296,11 +2312,17 @@ async function onSourceFileChosen(event: Event): Promise<void> {
         "That file was not attached: a spreadsheet can't be used as a source. To make documents from its rows, " +
         "open a template's menu and choose Fill from a spreadsheet."
       sourceUploadState.value = 'error'
-      sourceUploadOpen.value = true
-      return
+      return false
     }
-    await extractArtifact(workspaceId, allocated.id)
-    const attached = await attachDocumentSource(workspaceId, props.documentId, allocated.id)
+    const extraction = await extractArtifact(workspaceId, allocated.id)
+    if (!stillHere()) return false
+    if (extraction.status !== 'COMPLETE') {
+      sourceUploadError.value = 'Brownie could not read the text in this file. Try a text-based PDF, a Word document, or paste the notes into the message box.'
+      sourceUploadState.value = 'error'
+      return false
+    }
+    const attached = await attachDocumentSource(workspaceId, documentId, allocated.id)
+    if (!stillHere()) return false
     sourcesAddedHere.add(attached.id)
     attachedSources.value = [attached, ...attachedSources.value.filter((source) => source.id !== attached.id)]
     // The new source is the one read next, but a reading under way keeps the source it started with.
@@ -2310,20 +2332,35 @@ async function onSourceFileChosen(event: Event): Promise<void> {
     // for as long as the chip above is showing.
     justAttachedSourceBytes.value = { ...justAttachedSourceBytes.value, [attached.id]: file.size }
     sourceUploadState.value = 'idle'
-    announce(`${sourceName(attached)} attached.`)
+    if (!canPrepare.value) {
+      sourceUploadError.value = 'Your notes are attached. Finish or check the current preparation before starting another.'
+      sourceUploadState.value = 'error'
+      return false
+    }
+    if (sourcesOpen.value) await closeSources()
+    if (!stillHere() || !canPrepare.value) return false
+    if (details) say({ from: 'person', text: details })
+    announce(`${sourceName(attached)} attached. Preparing your form.`)
+    await tryGroundedExtraction()
+    return true
   } catch (error) {
+    if (!stillHere()) return false
     sourceUploadError.value = uploadFailureMessage(error, file)
     sourceUploadState.value = 'error'
     // A failure must stay visible even if the row was folded away while it was in flight.
-    sourceUploadOpen.value = true
+    return false
   }
 }
+
+watch(() => props.documentId, () => {
+  sourceUploadState.value = 'idle'
+  sourceUploadError.value = null
+})
 
 // Google's answer opened a picker by itself on this first visit only; after the panel closes, it
 // opens with every picker closed like any other time.
 watch(sourcesOpen, (open) => {
   if (open) {
-    sourceUploadOpen.value = true
     return
   }
   justAttachedSources.value = []
@@ -2333,7 +2370,6 @@ watch(sourcesOpen, (open) => {
 })
 
 /** The row for uploading a file starts open, so its file picker is the first thing in the panel. */
-const sourceUploadOpen = ref(true)
 /** The files attached from this panel while it has been open, confirmed in it as small cards. */
 const justAttachedSources = ref<DocumentSourceResponse[]>([])
 /** Each one's size in bytes, by its source id: known only because this page watched it get chosen. */
@@ -2374,13 +2410,16 @@ async function goToSources(): Promise<void> {
  */
 async function tryGroundedExtraction(): Promise<void> {
   const workspaceId = session.personalWorkspaceId
+  const documentId = props.documentId
   const source = selectedSource.value
-  if (workspaceId === undefined || !source) return
+  if (pageLeft || workspaceId === undefined || !source) return
+  const stillHere = () => !pageLeft && props.documentId === documentId && session.personalWorkspaceId === workspaceId
 
   extractionStage.value = 'starting'
   extractionError.value = null
   // The last run's state must not describe this one, or offer to start it again, before its first status read.
   extractionJobState.value = null
+  extractionJobId.value = null
   extractionResultArtifactId.value = null
   extractionStalled.value = false
   cancellationRequested.value = false
@@ -2392,11 +2431,13 @@ async function tryGroundedExtraction(): Promise<void> {
   runSourceName.value = sourceName(source)
   placeInChat('run')
   try {
-    const receipt = await startExtraction(workspaceId, props.documentId, source.artifactId, crypto.randomUUID())
+    const receipt = await startExtraction(workspaceId, documentId, source.artifactId, crypto.randomUUID())
+    if (!stillHere()) return
     extractionJobId.value = receipt.jobId
     runFollowedHere.value = receipt.jobId
     extractionStage.value = 'running'
   } catch (error) {
+    if (!stillHere()) return
     extractionStage.value = 'failed'
     extractionError.value =
       describeCommonFailure(error, 'reading sources') ??
@@ -2688,7 +2729,7 @@ async function applyResultToDocument(): Promise<void> {
     proposalIntro.value = `Here is what I found in ${runSourceName.value ?? 'your source'}:`
     applyStage.value = 'proposed'
     const filled = Object.keys(proposal.proposedValues).length
-    announce(`Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}. Look them over, then approve.`)
+    announce(`Brownie prepared ${filled === 1 ? '1 answer' : `${filled} answers`}. Look them over, then approve.`)
     // "Show what I found" went away with the reading's status; the proposal it showed takes focus.
     await keepFocusInChat()
   } catch (error) {
@@ -2899,9 +2940,8 @@ const voiceEnabled = ref(false)
 const voiceError = ref('')
 const composerTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
-/** The "Type my details" starter: seeds the composer with the beginning of the answer and focuses it. */
+/** Start with the person's own words, without assuming what kind of form they brought. */
 function typeMyDetails(): void {
-  composerText.value = 'My name is '
   composerTextareaRef.value?.focus()
 }
 const wsId = computed(() => session.personalWorkspaceId ?? -1)
@@ -2927,8 +2967,49 @@ function onVoiceError(message: string) { voiceError.value = message }
  */
 const composerBusy = computed(() => assistBusy.value || ['starting', 'running', 'resuming'].includes(extractionStage.value))
 const composerStops = computed(() => ['running', 'resuming'].includes(extractionStage.value))
+const initialPrepare = computed(() => loadState.value === 'loaded' && fillCounts.value.total > 0
+  && fillCounts.value.filled === 0 && chat.value.length === 0 && attachedSources.value.length === 0
+  && hereHint.value === null)
+
+const starterFields = computed(() => {
+  const fields = [...editableFields.value.filter((field) => requiredFieldIds.value.has(field.fieldId)),
+    ...editableFields.value.filter((field) => !requiredFieldIds.value.has(field.fieldId))]
+  return [...new Set(fields.map(fieldLabel))].slice(0, 4)
+})
+const missingRequiredFields = computed(() => editableFields.value.filter((field) => requiredFieldIds.value.has(field.fieldId)
+  && (field.cardinality === 'SCALAR' ? scalarDraft(field.fieldId).trim() === '' : rowDraft(field.fieldId).length === 0 || rowDraft(field.fieldId).some((value) => !value.trim()))))
+const nextStepWords = computed(() => {
+  if (patchProposal.value && applyStage.value === 'proposed') return 'Review the proposed answers, then approve them or ask for a correction.'
+  if (composerBusy.value || sourceUploadState.value === 'uploading') return 'Preparing answers from your notes. You can keep looking at the form.'
+  if (extractionStage.value === 'waiting-for-input') return 'Answer the questions above. Brownie will continue when you are done.'
+  if (extractionStage.value === 'succeeded' && !patchProposal.value && decidedRunJobId.value !== extractionJobId.value) return 'Your earlier reading is ready. Show its answers above, or add another source.'
+  if (fillCounts.value.filled === 0) return 'Share what you know in the message box. Brownie will match it to the form.'
+  if (missingRequiredFields.value.length > 0) return `Still needed: ${missingRequiredFields.value.map(fieldLabel).join(', ')}.`
+  if (nextReviewTarget.value) return 'Check the remaining answers from Brownie before export.'
+  return 'Check export for remaining requirements. Blank optional fields do not all need an answer.'
+})
+
+async function prepareFromText(): Promise<void> {
+  const text = composerText.value.trim()
+  if (!text || !canPrepare.value || sourceUploadState.value === 'uploading') return
+  const documentId = props.documentId
+  const workspaceId = session.personalWorkspaceId
+  composerText.value = ''
+  const prepared = await attachAndPrepare(new File([text], 'Your notes.txt', { type: 'text/plain' }), text)
+  if (pageLeft || props.documentId !== documentId || session.personalWorkspaceId !== workspaceId) return
+  if (!prepared && composerText.value === '') composerText.value = text
+  if (!prepared && sourceUploadError.value) {
+    sourcesOpen.value = true
+  }
+}
+
 function stopReadingFromComposer(): void {
   if (composerStops.value) void cancelExtraction()
+}
+
+function submitComposer(): void {
+  if (initialPrepare.value && !composerStops.value) void prepareFromText()
+  else void sendMessage()
 }
 
 function onComposerKeydown(event: KeyboardEvent): void {
@@ -2936,7 +3017,7 @@ function onComposerKeydown(event: KeyboardEvent): void {
   // input-method composition (Japanese, Chinese, Korean) is left to finish it.
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
   event.preventDefault()
-  void sendMessage()
+  submitComposer()
 }
 
 /**
@@ -2948,7 +3029,7 @@ function onComposerKeydown(event: KeyboardEvent): void {
 async function sendMessage(given?: string, options: { anchor?: AssistPageAnchor | null; echo?: boolean } = {}): Promise<void> {
   const workspaceId = session.personalWorkspaceId
   const text = (given ?? composerText.value).trim()
-  if (workspaceId === undefined || text === '' || assistBusy.value || !document.value) return
+  if (workspaceId === undefined || text === '' || assistBusy.value || sourceUploadState.value === 'uploading' || !document.value) return
   // What "here" means in a line typed in the box is said under it in the conversation, since the box's hint goes with the text.
   const hereWords = given === undefined ? hereHint.value : null
   if (given === undefined) composerText.value = ''
@@ -3159,8 +3240,8 @@ const singlePaneStrip = computed<{ title: string; status: string; action: string
   if (patchProposal.value !== null) {
     const filled = Object.keys(patchProposal.value.proposedValues ?? {}).length
     return {
-      title: 'A proposal',
-      status: `Brownie filled ${filled === 1 ? '1 place' : `${filled} places`}`,
+      title: 'Review answers',
+      status: `${filled === 1 ? '1 answer' : `${filled} answers`} prepared by Brownie`,
       action: 'I approve, fill it in',
       run: () => void acceptProposal(),
     }
@@ -3174,12 +3255,12 @@ const singlePaneStrip = computed<{ title: string; status: string; action: string
       run: () => showAssistant(false),
     }
   }
-  if (reviewSlotId.value !== null) {
+  if (nextReviewTarget.value) {
     return {
       title: 'Check my work',
-      status: 'Brownie filled places to look over',
-      action: 'Check my work',
-      run: () => showAssistant(false),
+      status: reviewHeading.value,
+      action: 'Review next',
+      run: () => void goToNextToReview(),
     }
   }
   return null
@@ -3317,6 +3398,7 @@ function setProposalAside(): void {
 }
 
 async function onProposalChoice(index: number): Promise<void> {
+  if (applyStage.value === 'accepting') return
   if (index === 0) await acceptProposal()
   else setProposalAside()
   await keepFocusInChat()
@@ -3910,13 +3992,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   <div v-else-if="document" class="workspace" :class="`workspace--showing-${narrowView}`">
     <header class="workspace-bar">
       <div class="workspace-bar__start">
+        <h1 class="page-title workspace-title" :class="{ 'workspace-title--long': titleIsLong }">{{ document.title }}</h1>
         <!-- Not disabled while busy: that would drop the focus it holds. A second press is ignored instead. -->
         <button type="button" class="icon-button workspace-bar__undo" :aria-disabled="undoing" @click="undoLastChange">
-          <AppIcon name="undo-arrow" :size="24" />
+          <AppIcon name="undo" :size="20" />
           <span class="visually-hidden">Undo the last change</span>
         </button>
         <button type="button" class="icon-button workspace-bar__history" @click="openHistory">
-          <AppIcon name="history" :size="22" />
+          <AppIcon name="history" :size="20" />
           <span class="visually-hidden">Version history</span>
         </button>
       </div>
@@ -3930,6 +4013,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         </button>
       </div>
       <div class="workspace-bar__end">
+        <button v-if="nextReviewTarget" type="button" class="button button--secondary button--small" @click="narrowView = 'document'; goToNextToReview()">
+          Review next<span v-if="reviewList.length"> · {{ reviewHeading }}</span>
+        </button>
         <p ref="saveStatusRef" class="save-status" :class="`save-status--${saveStatus.tone}`" tabindex="-1">
           <span class="save-status__dot" aria-hidden="true"></span>
           <span>{{ saveStatus.text }}</span>
@@ -3947,7 +4033,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       </div>
     </header>
 
-    <h1 class="page-title workspace-title" :class="{ 'workspace-title--long': titleIsLong }">{{ document.title }}</h1>
 
     <p class="visually-hidden" aria-live="polite" aria-atomic="true">{{ liveMessage }}</p>
 
@@ -4051,7 +4136,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
         aria-controls="assistant-pane"
         @click="showAssistant(false)"
       >
-        Brownie
+        Brownie<span v-if="reviewList.length"> · {{ reviewHeading }}</span>
       </button>
     </div>
 
@@ -4478,25 +4563,30 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             tabindex="0"
             @scroll.passive="noteChatScroll"
           >
-            <div class="chat-line msg--brownie">
+            <div v-if="startersShown" class="chat-line msg--brownie">
               <p class="msg__who">Brownie</p>
               <div class="msg__body">
                 <p>
-                  Tell me your details, typed or said, and I'll fill this form. Or add a document that has them with +.<template v-if="startersShown"> You can also type straight into the highlighted spots, and change anything I fill in.</template>
+                  <template v-if="patchProposal && applyStage === 'proposed'">Review Brownie's proposed answers before applying them.</template>
+                  <template v-else-if="fillCounts.filled > 0 && fillCounts.accepted === fillCounts.filled">Your added answers are accepted. Check export for any remaining requirements, or ask me for a change.</template>
+                  <template v-else-if="fillCounts.filled > 0">Your form has {{ fillCounts.filled }} of {{ fillCounts.total }} places filled. Check the answers, or ask me for a change.</template>
+                  <template v-else>Paste your notes or tell me what you know in one message. I'll match the details to this form and ask about anything required that's missing.</template>
                 </p>
+                <p v-if="fillCounts.filled === 0 && starterFields.length" class="chat-line__form-brief">This form asks for {{ starterFields.join(', ') }}<template v-if="editableFields.length > starterFields.length"> and more</template>.</p>
+                <p v-if="fillCounts.filled === 0" class="field-hint">You can also type straight into the highlighted spots.</p>
               </div>
               <!-- Where to begin: offered until something has been said or a source attached. -->
               <ul v-if="startersShown" class="chat-line__starters" aria-label="Ways to begin">
                 <li>
                   <button type="button" class="button button--secondary button--small" @click="typeMyDetails">
                     <AppIcon name="pencil" :size="16" />
-                    Type my details
+                    Share details
                   </button>
                 </li>
                 <li>
                   <button type="button" class="button button--secondary button--small" @click="goToSources">
                     <AppIcon name="attach" :size="16" />
-                    Add a document
+                    Use a document or notes
                   </button>
                 </li>
                 <li v-if="starterAddsSpot">
@@ -4717,6 +4807,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                         {{ retryingRun ? 'Starting again…' : 'Try this reading again' }}
                       </button>
                     </div>
+                    <div v-else-if="extractionJobId === null && selectedSource" class="run-status__actions">
+                      <p class="run-status__note">Your notes are saved with this form.</p>
+                      <button class="button button--secondary button--small" type="button" :disabled="!canPrepare" @click="canPrepare && tryGroundedExtraction()">
+                        Prepare again
+                      </button>
+                    </div>
                   </template>
                   <p v-if="extractionError && extractionStage !== 'failed'" class="field-error">{{ extractionError }}</p>
                   <div v-if="extractionStalled" class="run-status__stalled">
@@ -4798,17 +4894,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
                     </ul>
                   </div>
                 </div>
-                <div class="msg__body"><p>Can you confirm?</p></div>
-                <ChoiceList
-                  :options="[proposalChangeCard ? 'I approve, make the change' : 'I approve, fill it in', 'Not now']"
-                  name="Your decision about these values"
-                  id-prefix="proposal"
-                  other-label="Other"
-                  other-placeholder="Type what you would prefer…"
-                  :busy="applyStage === 'accepting'"
-                  @choose="onProposalChoice"
-                  @other="(text) => sendMessage(text)"
-                />
+                <div class="proposal__actions" role="group" aria-label="Your decision about these values">
+                  <button type="button" class="button button--primary button--small" :aria-disabled="applyStage === 'accepting'" @click="onProposalChoice(0)">
+                    {{ proposalChangeCard ? 'I approve, make the change' : 'I approve, fill it in' }}
+                  </button>
+                  <button type="button" class="button button--quiet button--small" :aria-disabled="applyStage === 'accepting'" @click="onProposalChoice(1)">Not now</button>
+                </div>
+                <p class="field-hint">Need a correction? Tell Brownie in the message box.</p>
                 <p v-if="applyStage === 'accepting'" class="proposal__status" aria-live="polite">Filling in…</p>
                 <p v-if="applyError" class="field-error" role="alert">{{ applyError }}</p>
               </div>
@@ -4904,7 +4996,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <header class="add-source__head">
               <div>
                 <h3 id="add-source-title" class="add-source__title">Add a source</h3>
-                <p class="add-source__lede">Brownie reads only what you add here, and only when you ask.</p>
+                <p class="add-source__lede">Use a file you already have. Brownie reads it and prepares answers for your review.</p>
               </div>
               <button type="button" class="icon-button add-source__close" @click="closeSources">
                 <AppIcon name="close" :size="20" />
@@ -4912,50 +5004,29 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
               </button>
             </header>
             <div class="add-source__rows">
-              <div class="add-source__row" :class="{ 'add-source__row--open': sourceUploadOpen }">
+              <div class="add-source__row add-source__row--open">
                 <div class="add-source__row-head">
                   <span class="doc-tile doc-tile--medium" aria-hidden="true"><AppIcon name="document-upload" :size="18" /></span>
                   <div class="add-source__row-text">
-                    <button
-                      type="button"
-                      class="add-source__toggle"
-                      :aria-expanded="sourceUploadOpen"
-                      aria-controls="add-source-upload"
-                      aria-describedby="add-source-upload-hint"
-                      :disabled="sourceUploadState === 'uploading'"
-                      @click="sourceUploadOpen = !sourceUploadOpen"
-                    >
-                      Upload notes or a document
-                    </button>
-                    <p id="add-source-upload-hint" class="field-hint">
-                      Plain text (.txt)<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Brownie reads plain-text sources.
-                    </p>
-                  </div>
-                  <AppIcon class="add-source__chevron" :name="sourceUploadOpen ? 'chevron-down' : 'chevron-right'" :size="18" />
-                </div>
-                <div v-show="sourceUploadOpen" id="add-source-upload" class="add-source__row-body">
-                  <!-- Once a file is attached it shows as the chip below; the chooser comes back when the panel is closed and opened again. -->
-                  <template v-if="justAttachedSources.length === 0">
-                    <!-- The real file input, kept for the keyboard and for assistive technology; the button beside it is its label. -->
                     <input
                       id="attach-source"
                       class="visually-hidden add-source__input"
                       type="file"
-                      accept=".txt,text/plain"
-                      :disabled="sourceUploadState === 'uploading'"
+                      :accept="sourceFiles.accept"
+                      aria-describedby="add-source-upload-hint"
+                      :disabled="sourceUploadState === 'uploading' || !canPrepare"
                       @change="onSourceFileChosen"
                     />
-                    <label
-                      for="attach-source"
-                      class="button button--secondary button--small add-source__choose"
-                      :class="{ 'add-source__choose--busy': sourceUploadState === 'uploading' }"
-                    >
-                      <AppIcon name="upload" :size="16" />
-                      Choose a file<span class="visually-hidden"> to upload notes or a document</span>
-                    </label>
-                    <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
-                    <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
-                  </template>
+                    <label for="attach-source" class="add-source__toggle">Choose a source file</label>
+                    <p id="add-source-upload-hint" class="field-hint">
+                      {{ sourceFiles.words }}<span v-if="uploadLimit">, up to {{ uploadLimit }}</span>. Uploading starts preparation.
+                    </p>
+                  </div>
+                </div>
+                <div id="add-source-upload" class="add-source__row-body">
+                  <p v-if="!canPrepare" class="field-hint">Finish or check the current preparation before starting another.</p>
+                  <p v-if="sourceUploadState === 'uploading'" class="add-source__status" aria-live="polite">Uploading…</p>
+                  <p v-if="sourceUploadError" class="field-error" role="alert">{{ sourceUploadError }}</p>
                   <ul v-if="justAttachedSources.length > 0" class="add-source__files" aria-label="Added from here">
                     <li v-for="source in justAttachedSources" :key="source.id" class="source-chip">
                       <span class="source-chip__text">
@@ -4992,7 +5063,14 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
           </section>
         </div>
 
-        <form class="composer" @submit.prevent="sendMessage()">
+        <div v-if="!startersShown || fillCounts.filled > 0" class="workspace-next-action">
+          <p>{{ nextStepWords }}</p>
+          <button v-if="!patchProposal && !runUnderWay && !composerBusy && fillCounts.filled > 0 && missingRequiredFields.length"
+            type="button" class="link-button" @click="focusField(missingRequiredFields[0]!.fieldId)">Go to {{ fieldLabel(missingRequiredFields[0]!) }}</button>
+          <button v-else-if="!patchProposal && !runUnderWay && !composerBusy && fillCounts.filled > 0 && !missingRequiredFields.length && !nextReviewTarget"
+            type="button" class="link-button" @click="openExport">Check export</button>
+        </div>
+        <form class="composer" @submit.prevent="submitComposer()">
           <!-- The question the box shows is also its name, so speech input can reach it by the words on screen. -->
           <label class="visually-hidden" for="assist-composer">Tell me what to fill</label>
           <textarea
@@ -5001,8 +5079,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             v-model="composerText"
             class="composer__input"
             rows="2"
-            maxlength="1000"
-            :placeholder="composerBusy ? 'Working on it…' : 'Tell me what to fill'"
+            :maxlength="initialPrepare ? 20000 : 1000"
+            :placeholder="composerBusy ? 'Working on it…' : initialPrepare ? 'Paste notes or describe what goes in this form…' : 'Tell me what to fill'"
             :aria-describedby="hereHint ? 'assist-composer-here' : undefined"
             @keydown="onComposerKeydown"
           ></textarea>
@@ -5010,7 +5088,12 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             <AppIcon name="pointer" :size="14" />
             <span>{{ hereHint }}</span>
           </p>
+          <p v-if="initialPrepare" class="composer__prepare-hint">Share the details together. You'll review the draft before anything is filled.</p>
           <div class="composer__tools">
+            <button v-if="initialPrepare && !composerStops" type="submit" class="button button--primary button--small composer__prepare"
+              :disabled="!composerText.trim() || !canPrepare || sourceUploadState === 'uploading'">
+              Prepare my form
+            </button>
             <button
               ref="addSourceButtonRef"
               type="button"
@@ -5040,10 +5123,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
             </label>
             <!-- Empty, it waits; ready, it sends; while Brownie reads a source it is the way to stop that reading. -->
             <button
+              v-if="!initialPrepare || composerStops"
               :type="composerStops ? 'button' : 'submit'"
               class="composer__send"
               :class="{ 'composer__send--busy': composerBusy }"
-              :aria-disabled="composerStops ? cancellationRequested : composerText.trim() === '' || assistBusy"
+              :aria-disabled="composerStops ? cancellationRequested : composerText.trim() === '' || assistBusy || sourceUploadState === 'uploading' || (initialPrepare && !canPrepare)"
               @click="composerStops && stopReadingFromComposer()"
             >
               <AppIcon name="arrow-up" :size="20" />
@@ -5093,6 +5177,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 </template>
 
 <style scoped>
+.workspace-next-action { margin: 0; padding: 0 0 var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.workspace-next-action p { margin: 0; }
+.workspace-next-action .link-button { margin-block-start: var(--space-1); min-block-size: 2.75rem; text-align: start; }
+.chat-line__form-brief { color: var(--color-text); font-size: var(--font-size-sm); }
+.composer__prepare-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.rules-card__heading { font-family: var(--font-ui); }
+
 /*
  * The page is two panes: the document, and Brownie's panel. They sit side by side only where both
  * keep a readable width -- the question is how wide this page's own region is, not the window,
@@ -5115,6 +5206,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 /* The top bar: Undo and version history at the start; how the document is shown, the save status and Export at the end. */
 .workspace-bar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
@@ -5128,6 +5220,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   align-items: center;
   gap: 0.125rem;
   margin-inline-end: auto;
+  min-inline-size: 0;
 }
 
 /* The two glyphs are drawn larger than the usual icon, so their targets carry no padding of their own. */
@@ -5144,8 +5237,10 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-bar__end {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1.125rem;
+  gap: var(--space-2) var(--space-3);
+  min-inline-size: 0;
 }
 
 .save-status {
@@ -5177,21 +5272,20 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   background: var(--color-error);
 }
 
-/*
- * The document's name under the bar: centred, light, and as large as a page title gets (the shared display size).
- * The tight line height keeps a one-line title close under the bar and the panes starting a fixed distance below it.
- */
+/* A compact file title keeps the working page in view. */
 .workspace-title {
-  margin: 0.125rem 0 var(--space-5);
-  text-align: center;
-  line-height: 1.05;
-  text-wrap: balance;
+  margin: 0 var(--space-2) 0 0;
+  font-family: var(--font-ui);
+  font-size: clamp(1.125rem, 1rem + 0.6vw, 1.5rem);
+  font-weight: 500;
+  text-align: left;
+  line-height: 1.15;
   overflow-wrap: anywhere;
 }
 
 /* Never larger than the title already is (it is smaller than this on a phone), so a long name only ever shrinks. */
 .workspace-title--long {
-  font-size: min(var(--font-size-display), var(--font-size-2xl));
+  font-size: clamp(1.125rem, 1rem + 0.6vw, 1.5rem);
   line-height: 1.2;
 }
 
@@ -5380,14 +5474,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
  */
 .workspace-switch,
 .view-toggle {
-  --segment-lift: 0 1px 2px color-mix(in srgb, var(--color-text) 14%, transparent);
   display: inline-flex;
-  padding: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--color-paper-deep);
+  gap: var(--space-2);
+  border-block-end: 1px solid var(--color-hairline);
 }
 
-/* The switch between the panes: only where they cannot sit side by side. */
 .workspace-switch {
   display: none;
   align-self: center;
@@ -5396,54 +5487,42 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 .workspace-switch__button,
 .view-toggle__button {
-  min-block-size: 1.5rem;
-  padding: 0 0.78125rem;
+  min-block-size: 2rem;
+  padding: 0 var(--space-2);
   border: 0;
-  border-radius: var(--radius-pill);
+  border-block-end: 2px solid transparent;
   background: transparent;
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
   line-height: 1.25;
   color: var(--color-text-muted);
   cursor: pointer;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    color var(--motion-fast) var(--motion-ease);
 }
 
 .workspace-switch__button:hover,
-.view-toggle__button:hover {
-  color: var(--color-text);
-}
-
-/*
- * The chosen one is a white segment lifted a hair off the track, with the main text colour. The lift is a
- * shape cue that does not rely on colour, and the pressed state is also what assistive technology reads.
- */
+.view-toggle__button:hover,
 .workspace-switch__button[aria-pressed='true'],
 .view-toggle__button[aria-pressed='true'] {
-  background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: var(--segment-lift);
 }
 
-.workspace-switch__button[aria-pressed='true']:focus-visible,
-.view-toggle__button[aria-pressed='true']:focus-visible {
-  box-shadow:
-    var(--focus-ring),
-    var(--segment-lift);
+.workspace-switch__button[aria-pressed='true'],
+.view-toggle__button[aria-pressed='true'] {
+  border-block-end-color: currentColor;
 }
 
-/* A finger needs a taller target than the 24px a pointer gets. */
+.workspace-switch__button:focus-visible,
+.view-toggle__button:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
 @media (pointer: coarse) {
   .workspace-switch__button,
   .view-toggle__button {
-    min-block-size: 2.25rem;
-    padding-inline: var(--space-4);
+    min-block-size: 2.75rem;
   }
 }
 
-/* Forced colours draw every edge alike, so the chosen one takes the system's own selected colours instead. */
 @media (forced-colors: active) {
   .workspace-switch__button[aria-pressed='true'],
   .view-toggle__button[aria-pressed='true'] {
@@ -5464,23 +5543,11 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   min-inline-size: 0;
 }
 
-/*
- * The two-pane threshold sits at 40rem (640px) of content on purpose: this container is measured on its
- * content box inside the region's own side padding, so a 768px tablet with the sidebar as a drawer still
- * shows the document and Brownie side by side. Below it, one pane at a time with the switch.
- */
-@container main (min-width: 40rem) {
-  /*
-   * The page's column is the sheet, 600px wide at its fullest and never more than 55% of the room, so it keeps
-   * its full width for as long as Brownie's panel can give way for it. The panel takes what is left (671px
-   * where the window is wide enough for both, the most it grows to) and, below that, never less than 18rem.
-   * The two stop growing together and are centred in the window. The margin to the left of the page holds the
-   * rail and page numbers that hang beside the sheet, so it never drops below their 50px; margins and the gap
-   * between the columns follow the width of the region until they reach their fullest, 75px, 69px and 65px.
-   */
+/* Keep the document readable before showing both panes side by side. */
+@container main (min-width: 55rem) {
   .workspace-panes {
     --panes-room: clamp(3.125rem, 5.2cqi, 4.6875rem);
-    grid-template-columns: minmax(0, min(37.5rem, 55%)) minmax(15rem, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 35%);
     column-gap: clamp(var(--space-4), 4.6cqi, 4.0625rem);
     inline-size: 100%;
     max-inline-size: 92.5rem;
@@ -5538,9 +5605,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
       min-block-size: 0;
     }
 
-    /* Brownie's panel starts a little lower than the page, whose first row is its status line. */
+    /* Align the panel with the document's status row. */
     .workspace-panes > .assistant-pane {
-      margin-block-start: 1.6875rem;
+      margin-block-start: 0;
     }
 
     /*
@@ -5573,7 +5640,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   }
 }
 
-@container main (max-width: 39.9999rem) {
+@container main (max-width: 54.9999rem) {
   .workspace-switch {
     display: inline-flex;
   }
@@ -5608,10 +5675,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
     margin: var(--space-2) auto 0;
   }
 
-  /* Under controls that wrap onto lines of their own, the title gets more air than it does under the single wide row. */
-  .workspace-title {
-    margin-block-start: var(--space-3);
-  }
 
   /* The face of the document means nothing while Brownie's panel is the one showing. */
   .workspace--showing-assistant .view-toggle {
@@ -5649,7 +5712,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   font-weight: var(--font-weight-medium);
 }
 
-@container main (min-width: 40rem) {
+@container main (min-width: 55rem) {
   .empty-hint {
     display: none;
   }
@@ -5709,7 +5772,27 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .single-pane-strip__action {
   margin-inline-start: auto;
 }
-@container main (min-width: 40rem) {
+@container main (max-width: 27rem) {
+  .workspace-bar__start,
+  .workspace-bar__end {
+    flex-basis: 100%;
+  }
+
+  .single-pane-strip {
+    flex-wrap: wrap;
+  }
+  .single-pane-strip__text {
+    flex-basis: 100%;
+  }
+  .single-pane-strip__action {
+    margin-inline-start: 0;
+  }
+  .single-pane-strip__action,
+  .single-pane-strip__details {
+    white-space: nowrap;
+  }
+}
+@container main (min-width: 55rem) {
   .single-pane-strip {
     display: none;
   }
@@ -5831,7 +5914,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
 }
 
-@container main (min-width: 40rem) {
+@container main (min-width: 55rem) {
   .selection-bar__rules {
     display: none;
   }
@@ -6019,8 +6102,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .assistant-pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-block-size: 0;
+  padding: var(--space-2) 0;
 }
 
 .assistant-pane__scroll {
@@ -6039,9 +6123,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 .rules-card {
   container: rules-card / inline-size;
   flex: none;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  border-block-end: 1px solid var(--color-hairline);
   font-size: var(--font-size-xs);
   line-height: 1.4;
 }
@@ -6051,8 +6133,8 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-block-size: 2.875rem;
-  padding-inline: var(--space-4);
+  min-block-size: 2.25rem;
+  padding-inline: 0;
 }
 
 .rules-card__heading {
@@ -6064,6 +6146,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
 
 /* Beside the button; where the card is narrow it wraps rather than hides what it says. */
 .rules-card__summary {
+  display: none;
   flex: 1 1 0;
   min-inline-size: 0;
   margin: 0;
@@ -6286,9 +6369,9 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   box-shadow: inset 0 0 0 2px var(--color-focus);
 }
 
-/* Short, the conversation sits at the foot of its space, just above the message box; long, it scrolls from its start. */
+/* Keep short conversations near the context instead of floating above the composer. */
 .chat > :first-child {
-  margin-block-start: auto;
+  margin-block-start: 0;
 }
 
 /* A line keeps its own height: a card that clips what overflows it would otherwise be squeezed shorter than its words. */
@@ -6746,6 +6829,13 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   padding-inline-start: 1.25rem;
 }
 
+.proposal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .proposal__status {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
@@ -6964,7 +7054,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   cursor: pointer;
 }
 
-.add-source__toggle:disabled {
+.add-source__input:disabled + .add-source__toggle {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -6976,11 +7066,7 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   border-radius: var(--radius-md);
 }
 
-.add-source__toggle:focus-visible {
-  box-shadow: none;
-}
-
-.add-source__toggle:focus-visible::after {
+.add-source__input:focus-visible + .add-source__toggle::after {
   box-shadow: var(--focus-ring);
 }
 
@@ -6997,14 +7083,6 @@ async function onVersionRestored(payload: { revision: DocumentRevisionResponse; 
   padding: 0 0.75rem 0.75rem 3.1875rem;
 }
 
-.add-source__input:focus-visible + .add-source__choose {
-  box-shadow: var(--focus-ring);
-}
-
-.add-source__choose--busy {
-  opacity: 0.4;
-  cursor: progress;
-}
 
 .add-source__status {
   color: var(--color-text-muted);

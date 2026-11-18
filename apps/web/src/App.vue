@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
+import BrownieBrand from '@/components/BrownieBrand.vue'
 import { useSessionStore } from '@/stores/session'
 import { takeSignInIntent } from '@/auth/intent'
 
@@ -152,7 +153,7 @@ onBeforeUnmount(() => {
 <template>
   <a class="visually-hidden skip-link" href="#main-content">Skip to main content</a>
 
-  <div class="shell" :class="{ 'shell--drawer': !docked }">
+  <div class="shell" :class="{ 'shell--drawer': !docked, 'shell--app': !landing }">
     <!-- It asks to be opened when something the person started in it ends while it is closed, such as a refused file. -->
     <AppSidebar
       v-if="!bare"
@@ -179,7 +180,7 @@ onBeforeUnmount(() => {
           <AppIcon :name="docked ? 'panel-expand' : 'menu'" :size="24" />
           <span class="visually-hidden">{{ openLabel }}</span>
         </button>
-        <RouterLink v-if="!docked" class="shell__brand" to="/">Brownie</RouterLink>
+        <RouterLink v-if="!docked" class="shell__brand" to="/"><BrownieBrand /></RouterLink>
       </header>
 
       <main
@@ -252,6 +253,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-block-size: 100dvh;
+  background: var(--color-paper);
 }
 
 .shell__scrim {
@@ -292,7 +294,7 @@ onBeforeUnmount(() => {
 
 /* The glyph is the text colour at 60%, like the icons in the sidebar it brings back, and full strength under the pointer. */
 .shell__bar .icon-button {
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  color: var(--color-text-muted);
 }
 
 .shell__bar .icon-button:hover {
@@ -305,8 +307,10 @@ onBeforeUnmount(() => {
 }
 
 .shell__brand {
-  font-weight: var(--font-weight-medium);
-  font-size: var(--font-size-lg);
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.625rem;
+  letter-spacing: -0.05em;
   color: var(--color-text);
   text-decoration: none;
 }

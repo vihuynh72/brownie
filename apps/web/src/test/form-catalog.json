@@ -1,0 +1,191 @@
+[
+  {
+    "id": "irs-w9",
+    "title": "Form W-9, Request for Taxpayer Identification Number and Certification",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Gives a business or client your taxpayer identification number so they can report what they pay you.",
+    "url": "https://www.irs.gov/pub/irs-pdf/fw9.pdf",
+    "keywords": ["w9", "w-9", "taxpayer id", "tin", "ssn", "ein", "freelance", "contractor", "1099"]
+  },
+  {
+    "id": "irs-w4",
+    "title": "Form W-4, Employee's Withholding Certificate",
+    "agency": "Internal Revenue Service",
+    "category": "Employment",
+    "description": "Tells a new or current employer how much federal income tax to withhold from your pay.",
+    "url": "https://www.irs.gov/pub/irs-pdf/fw4.pdf",
+    "keywords": ["w4", "w-4", "withholding", "new job", "payroll", "employee"]
+  },
+  {
+    "id": "irs-w4p",
+    "title": "Form W-4P, Withholding Certificate for Periodic Pension or Annuity Payments",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Sets the federal income tax withheld from pension or annuity payments.",
+    "url": "https://www.irs.gov/pub/irs-pdf/fw4p.pdf",
+    "keywords": ["w4p", "w-4p", "pension", "annuity", "retirement", "withholding"]
+  },
+  {
+    "id": "irs-ss4",
+    "title": "Form SS-4, Application for Employer Identification Number",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Applies for an EIN for a new business, trust, estate or other entity.",
+    "url": "https://www.irs.gov/pub/irs-pdf/fss4.pdf",
+    "keywords": ["ss4", "ss-4", "ein", "employer identification", "new business", "llc"]
+  },
+  {
+    "id": "irs-4506t",
+    "title": "Form 4506-T, Request for Transcript of Tax Return",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Asks the IRS to send your tax return transcripts, often for a mortgage or loan.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f4506t.pdf",
+    "keywords": ["4506-t", "4506t", "transcript", "mortgage", "tax return copy", "loan"]
+  },
+  {
+    "id": "irs-8822",
+    "title": "Form 8822, Change of Address",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Tells the IRS your home mailing address changed so notices reach you.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+    "keywords": ["8822", "change of address", "moved", "moving", "mailing address"]
+  },
+  {
+    "id": "irs-2848",
+    "title": "Form 2848, Power of Attorney and Declaration of Representative",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Lets an accountant or other representative talk to the IRS and act for you on your taxes.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f2848.pdf",
+    "keywords": ["2848", "power of attorney", "poa", "accountant", "cpa", "representative"]
+  },
+  {
+    "id": "irs-8821",
+    "title": "Form 8821, Tax Information Authorization",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Lets a person or business see your IRS records without acting for you.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f8821.pdf",
+    "keywords": ["8821", "tax information", "authorization", "records"]
+  },
+  {
+    "id": "irs-14039",
+    "title": "Form 14039, Identity Theft Affidavit",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Reports that someone used your identity to file taxes or commit other tax fraud.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f14039.pdf",
+    "keywords": ["14039", "identity theft", "fraud", "stolen identity", "affidavit"]
+  },
+  {
+    "id": "irs-1040es",
+    "title": "Form 1040-ES, Estimated Tax for Individuals",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Figures and pays quarterly estimated tax when income has no withholding.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f1040es.pdf",
+    "keywords": ["1040-es", "1040es", "estimated tax", "quarterly", "self-employed", "voucher"]
+  },
+  {
+    "id": "irs-941",
+    "title": "Form 941, Employer's Quarterly Federal Tax Return",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Reports wages paid and payroll taxes withheld each quarter by an employer.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f941.pdf",
+    "keywords": ["941", "payroll", "quarterly", "employer", "fica", "withholding"]
+  },
+  {
+    "id": "irs-4868",
+    "title": "Form 4868, Application for Automatic Extension of Time to File",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Asks for six more months to file your individual federal tax return.",
+    "url": "https://www.irs.gov/pub/irs-pdf/f4868.pdf",
+    "keywords": ["4868", "extension", "more time", "deadline", "april 15"]
+  },
+  {
+    "id": "irs-w7",
+    "title": "Form W-7, Application for IRS Individual Taxpayer Identification Number",
+    "agency": "Internal Revenue Service",
+    "category": "Tax",
+    "description": "Applies for an ITIN when a person must file taxes but cannot get a Social Security number.",
+    "url": "https://www.irs.gov/pub/irs-pdf/fw7.pdf",
+    "keywords": ["w7", "w-7", "itin", "taxpayer id", "no ssn", "immigrant"]
+  },
+  {
+    "id": "uscis-i9",
+    "title": "Form I-9, Employment Eligibility Verification",
+    "agency": "U.S. Citizenship and Immigration Services",
+    "category": "Employment",
+    "description": "Proves a new employee is allowed to work in the United States.",
+    "url": "https://www.uscis.gov/sites/default/files/document/forms/i-9.pdf",
+    "keywords": ["i9", "i-9", "employment eligibility", "new hire", "work authorization", "new job"]
+  },
+  {
+    "id": "va-21-4138",
+    "title": "VA Form 21-4138, Statement in Support of Claim",
+    "agency": "U.S. Department of Veterans Affairs",
+    "category": "Benefits",
+    "description": "A veteran's own written statement that supports a disability or benefits claim.",
+    "url": "https://www.vba.va.gov/pubs/forms/VBA-21-4138-ARE.pdf",
+    "keywords": ["21-4138", "va", "veteran", "statement", "claim", "buddy letter"]
+  },
+  {
+    "id": "va-21-526ez",
+    "title": "VA Form 21-526EZ, Application for Disability Compensation",
+    "agency": "U.S. Department of Veterans Affairs",
+    "category": "Benefits",
+    "description": "Applies for VA disability compensation and related benefits for service-connected conditions.",
+    "url": "https://www.vba.va.gov/pubs/forms/VBA-21-526EZ-ARE.pdf",
+    "keywords": ["21-526ez", "va", "veteran", "disability", "compensation", "claim"]
+  },
+  {
+    "id": "va-21-0781",
+    "title": "VA Form 21-0781, Statement in Support of Claim for PTSD",
+    "agency": "U.S. Department of Veterans Affairs",
+    "category": "Benefits",
+    "description": "Describes the events behind a veteran's post-traumatic stress disorder claim.",
+    "url": "https://www.vba.va.gov/pubs/forms/VBA-21-0781-ARE.pdf",
+    "keywords": ["21-0781", "va", "veteran", "ptsd", "mental health", "stressor"]
+  },
+  {
+    "id": "state-ds11",
+    "title": "Form DS-11, Application for a U.S. Passport",
+    "agency": "U.S. Department of State",
+    "category": "Immigration",
+    "description": "Applies in person for a first passport, or for a child or a replacement passport.",
+    "url": "https://eforms.state.gov/Forms/ds11_pdf.pdf",
+    "keywords": ["ds-11", "ds11", "passport", "travel", "first passport", "minor"]
+  },
+  {
+    "id": "cms-40b",
+    "title": "Form CMS-40B, Application for Enrollment in Medicare Part B",
+    "agency": "Centers for Medicare & Medicaid Services",
+    "category": "Health",
+    "description": "Signs up for Medicare Part B medical insurance outside the automatic-enrollment path.",
+    "url": "https://www.cms.gov/medicare/cms-forms/cms-forms/downloads/cms40b-e.pdf",
+    "keywords": ["40b", "medicare", "part b", "enrollment", "senior", "65"]
+  },
+  {
+    "id": "cms-l564",
+    "title": "Form CMS-L564, Request for Employment Information",
+    "agency": "Centers for Medicare & Medicaid Services",
+    "category": "Health",
+    "description": "Asks an employer to confirm group health coverage so Medicare enrollment avoids a penalty.",
+    "url": "https://www.cms.gov/medicare/cms-forms/cms-forms/downloads/cms-l564e.pdf",
+    "keywords": ["l564", "medicare", "employer", "group health", "special enrollment", "part b"]
+  },
+  {
+    "id": "cms-1696",
+    "title": "Form CMS-1696, Appointment of Representative",
+    "agency": "Centers for Medicare & Medicaid Services",
+    "category": "Health",
+    "description": "Names someone who may act for a Medicare beneficiary on claims and appeals.",
+    "url": "https://www.cms.gov/Medicare/CMS-Forms/CMS-Forms/Downloads/CMS1696.pdf",
+    "keywords": ["1696", "medicare", "representative", "appeal", "authorized"]
+  }
+]

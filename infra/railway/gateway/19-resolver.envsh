@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# Railway's resolver is supplied at runtime and can differ between environments.
+BROWNIE_DNS=$(awk '$1 == "nameserver" { if ($2 ~ /:/) print "[" $2 "]"; else print $2; exit }' /etc/resolv.conf)
+[ -n "$BROWNIE_DNS" ] || { echo 'No DNS resolver configured' >&2; exit 1; }
+export BROWNIE_DNS

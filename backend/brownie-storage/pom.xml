@@ -17,6 +17,15 @@
 
   <dependencies>
     <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>2.59.1</version>
+    </dependency>
+    <dependency>
       <groupId>io.github.vihuynh72.brownie</groupId>
       <artifactId>brownie-core</artifactId>
       <version>${project.version}</version>

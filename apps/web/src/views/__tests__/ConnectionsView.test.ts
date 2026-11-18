@@ -134,7 +134,7 @@ describe('ConnectionsView', () => {
   it('says in a line what Brownie uses the Google account for, under the page title', async () => {
     const wrapper = await mountAt()
 
-    expect(wrapper.find('h1').text()).toBe('Connections')
+    expect(wrapper.find('h1').text()).toBe('Connected apps')
     expect(text(wrapper)).toContain(
       'Brownie uses your Google account only where you allow it here, and only when you ask for it inside a document.',
     )

@@ -138,6 +138,7 @@ class FormsControllerIntegrationTest {
         assertThat(body.get("forms")).isNotEmpty();
         assertThat(body.get("forms").get(0).get("id").asText()).isEqualTo("irs-w9");
         assertThat(body.get("forms").get(0).get("agency").asText()).contains("Internal Revenue");
+        assertThat(body.get("forms").get(0).get("sourceUrl").asText()).isEqualTo("https://www.irs.gov/pub/irs-pdf/fw9.pdf");
 
         JsonNode all = readJson(mockMvc.perform(get("/api/v1/forms"))
                 .andExpect(status().isOk())
@@ -194,6 +195,61 @@ class FormsControllerIntegrationTest {
         // fetcher ran only once even though a fresh document was made each time.
         assertThat(STUB.fetches).isEqualTo(before + 1);
         assertThat(second.get("documentId").asLong()).isPositive();
+    }
+
+    @Test
+    void aKeyReplaysTheSameStartAndRejectsAnotherForm() throws Exception {
+        String subject = "subject-forms-idempotency";
+        Cookie session = loginAndGetSessionCookie(subject);
+        var user = userIdentityRepository.findByIssuerAndSubject(ISSUER, subject).orElseThrow();
+        long workspaceId = workspaceRepository.ensurePersonalWorkspace(user.id()).id();
+        STUB.fail = false;
+        int before = STUB.fetches;
+        JsonNode first = readJson(mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                        .cookie(session).header("Idempotency-Key", "form-start-key")
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk()).andReturn());
+        int templates = templateService.findAll(workspaceId, user.id()).size();
+        STUB.fail = true;
+        try {
+            JsonNode replay = readJson(mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                            .cookie(session).header("Idempotency-Key", "form-start-key")
+                            .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                    .andExpect(status().isOk()).andReturn());
+            assertThat(replay.get("documentId").asLong()).isEqualTo(first.get("documentId").asLong());
+            assertThat(templateService.findAll(workspaceId, user.id())).hasSize(templates);
+            assertThat(STUB.fetches).isEqualTo(before + 1);
+            mockMvc.perform(post("/api/v1/forms/irs-w4/start")
+                            .cookie(session).header("Idempotency-Key", "form-start-key")
+                            .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                    .andExpect(status().isConflict());
+            assertThat(templateService.findAll(workspaceId, user.id())).hasSize(templates);
+        } finally { STUB.fail = false; }
+        JsonNode fresh = readJson(mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                        .cookie(session).header("Idempotency-Key", "another-form-start-key")
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(fresh.get("documentId").asLong()).isNotEqualTo(first.get("documentId").asLong());
+        assertThat(templateService.findAll(workspaceId, user.id())).hasSize(templates + 1);
+        Cookie otherActor = loginAndGetSessionCookie("subject-forms-idempotency-other");
+        JsonNode other = readJson(mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                        .cookie(otherActor).header("Idempotency-Key", "form-start-key")
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(other.get("documentId").asLong()).isNotEqualTo(first.get("documentId").asLong());
+    }
+
+    @Test
+    void aPresentKeyMustBeNonblankAndAtMost200Characters() throws Exception {
+        Cookie session = loginAndGetSessionCookie("subject-forms-invalid-key");
+        int before = STUB.fetches;
+        for (String key : List.of(" ", "a".repeat(201))) {
+            mockMvc.perform(post("/api/v1/forms/irs-w9/start")
+                            .cookie(session).header("Idempotency-Key", key)
+                            .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(STUB.fetches).isEqualTo(before);
     }
 
     @Test

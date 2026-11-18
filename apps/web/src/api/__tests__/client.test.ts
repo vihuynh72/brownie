@@ -19,6 +19,7 @@ import {
   onSessionEnded,
   restoreRevision,
   restoreTemplate,
+  startForm,
   suggestBox,
   trashTemplate,
 } from '@/api/client'
@@ -35,6 +36,17 @@ describe('api client', () => {
     onSessionEnded(null)
     vi.unstubAllGlobals()
     document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 UTC'
+  })
+
+  it('sends the caller key when starting a catalog form', async () => {
+    document.cookie = 'XSRF-TOKEN=test-token-value'
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { documentId: 91, title: 'Form W-9' }))
+    vi.stubGlobal('fetch', fetchMock)
+    await startForm('irs-w9', 'same-start-request')
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/v1/forms/irs-w9/start')
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
+      method: 'POST', headers: { 'Idempotency-Key': 'same-start-request', 'X-XSRF-TOKEN': 'test-token-value' },
+    })
   })
 
   it('sends credentials and no CSRF header on a GET', async () => {

@@ -2,7 +2,10 @@ package io.github.vihuynh72.brownie.api.form;
 
 import io.github.vihuynh72.brownie.api.identity.AuthenticatedIdentityMissingException;
 import io.github.vihuynh72.brownie.api.job.CanonicalRequestHasher;
+import io.github.vihuynh72.brownie.api.revision.DocumentRequestValidationException;
 import io.github.vihuynh72.brownie.core.revision.DocumentMutationResult;
+import io.github.vihuynh72.brownie.core.revision.DocumentCommandType;
+import io.github.vihuynh72.brownie.core.revision.DocumentRepository;
 import io.github.vihuynh72.brownie.core.form.CatalogReadyRepository;
 import io.github.vihuynh72.brownie.core.identity.UserIdentity;
 import io.github.vihuynh72.brownie.core.identity.UserIdentityRepository;
@@ -21,6 +24,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -39,6 +43,7 @@ class FormsController {
     private final CatalogReadyService catalogReadyService;
     private final FormIntakeService intakeService;
     private final RevisionService revisionService;
+    private final DocumentRepository documentRepository;
     private final CanonicalRequestHasher canonicalRequestHasher;
     private final UserIdentityRepository userIdentityRepository;
     private final WorkspaceRepository workspaceRepository;
@@ -49,6 +54,7 @@ class FormsController {
             CatalogReadyService catalogReadyService,
             FormIntakeService intakeService,
             RevisionService revisionService,
+            DocumentRepository documentRepository,
             CanonicalRequestHasher canonicalRequestHasher,
             UserIdentityRepository userIdentityRepository,
             WorkspaceRepository workspaceRepository) {
@@ -57,6 +63,7 @@ class FormsController {
         this.catalogReadyService = catalogReadyService;
         this.intakeService = intakeService;
         this.revisionService = revisionService;
+        this.documentRepository = documentRepository;
         this.canonicalRequestHasher = canonicalRequestHasher;
         this.userIdentityRepository = userIdentityRepository;
         this.workspaceRepository = workspaceRepository;
@@ -68,10 +75,22 @@ class FormsController {
     }
 
     @PostMapping("/{id}/start")
-    StartResponse start(@PathVariable String id, @AuthenticationPrincipal OidcUser oidcUser) throws IOException {
+    StartResponse start(@PathVariable String id,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @AuthenticationPrincipal OidcUser oidcUser) throws IOException {
         FormLibraryCatalog.Entry entry = catalog.find(id).orElseThrow(() -> new FormLibraryNotFoundException(id));
         UserIdentity identity = identityOf(oidcUser);
         long workspaceId = workspaceRepository.ensurePersonalWorkspace(identity.id()).id();
+        if (idempotencyKey != null && (idempotencyKey.isBlank() || idempotencyKey.length() > 200)) {
+            throw new DocumentRequestValidationException("Idempotency-Key must contain non-blank text up to 200 characters.");
+        }
+        IdempotencyKey key = new IdempotencyKey(idempotencyKey == null ? UUID.randomUUID().toString() : idempotencyKey);
+        var requestHash = canonicalRequestHasher.hash(Map.of("op", "form_library_start", "form_id", id));
+        var replay = documentRepository.findMutationResult(workspaceId, identity.id(), DocumentCommandType.CREATE, key, requestHash);
+        if (replay.isPresent()) {
+            var document = replay.get().document();
+            return new StartResponse(document.id(), document.title());
+        }
         // Kept agency bytes skip the download while they are fresh; the take-in
         // below replays the kept preparation, so a second start only stores the
         // file and builds the template -- the read and the naming do not run again.
@@ -97,8 +116,8 @@ class FormsController {
         DocumentMutationResult mutation = revisionService.createDocument(
                 workspaceId,
                 identity.id(),
-                new IdempotencyKey("form-library-" + entry.id() + "-" + UUID.randomUUID()),
-                canonicalRequestHasher.hash(java.util.Map.of("op", "form_library_start", "form_id", entry.id())),
+                key,
+                requestHash,
                 entry.title(),
                 taken.template().id(),
                 taken.activeVersion().id(),
@@ -119,13 +138,13 @@ class FormsController {
 
     private static FormResponse formResponse(FormLibraryCatalog.Entry entry) {
         return new FormResponse(
-                entry.id(), entry.title(), entry.agency(), entry.category(), entry.description());
+                entry.id(), entry.title(), entry.agency(), entry.category(), entry.description(), entry.url());
     }
 
     record FormsResponse(List<FormResponse> forms) {
     }
 
-    record FormResponse(String id, String title, String agency, String category, String description) {
+    record FormResponse(String id, String title, String agency, String category, String description, String sourceUrl) {
     }
 
     record StartResponse(long documentId, String title) {

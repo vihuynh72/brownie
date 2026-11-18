@@ -49,4 +49,7 @@ const route = useRoute()
 .not-found__action {
   margin-block-start: var(--space-5);
 }
+
+.not-found__path { background: var(--color-honey-soft); }
+.not-found__action { min-height: 2.75rem; }
 </style>

@@ -12,8 +12,7 @@ FROM eclipse-temurin:21-jdk-noble@sha256:4d271cd5e0624598cf563342f47281b09cb364b
 WORKDIR /src
 COPY backend/ ./backend/
 WORKDIR /src/backend
-RUN --mount=type=cache,target=/root/.m2 \
-    ./mvnw -B -q -pl brownie-api -am -DskipTests package
+RUN ./mvnw -B -q -pl brownie-api -am -DskipTests package
 
 # The Docker client, and nothing else from this image. The API starts one
 # disposable container per render and needs a client to do it; it does not

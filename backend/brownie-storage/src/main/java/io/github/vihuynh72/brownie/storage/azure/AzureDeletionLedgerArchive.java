@@ -89,11 +89,11 @@ public class AzureDeletionLedgerArchive implements DeletionLedgerArchive {
         return entries;
     }
 
-    static String nameOf(ArchivedDeletion entry) {
+    public static String nameOf(ArchivedDeletion entry) {
         return NAME_TIME.format(entry.purgedAt().withOffsetSameInstant(ZoneOffset.UTC)) + "-request-" + entry.requestId() + ".json";
     }
 
-    static byte[] toJson(ArchivedDeletion entry) throws IOException {
+    public static byte[] toJson(ArchivedDeletion entry) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (JsonWriter writer = JsonProviders.createWriter(out)) {
             writer.writeStartObject();
@@ -114,7 +114,7 @@ public class AzureDeletionLedgerArchive implements DeletionLedgerArchive {
         return out.toByteArray();
     }
 
-    static ArchivedDeletion fromJson(byte[] json, String name) throws IOException {
+    public static ArchivedDeletion fromJson(byte[] json, String name) throws IOException {
         Long requestId = null;
         Long workspaceId = null;
         String scope = null;

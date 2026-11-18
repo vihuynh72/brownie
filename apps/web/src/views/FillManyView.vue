@@ -919,4 +919,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
   align-items: baseline;
   margin-top: var(--space-4);
 }
+
+.fill-many__choose { border: 1px dashed var(--color-cocoa); background: var(--color-honey-soft); padding: clamp(1.5rem, 4vw, 2.5rem); }
+.fill-many__section-title { font-family: var(--font-display); font-size: 1.4rem; font-weight: 400; }
+.fill-many__table { overflow-wrap: anywhere; }
 </style>

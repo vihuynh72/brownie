@@ -24,6 +24,15 @@ vi.mock('@/upload/learnAndStart', async () => {
   const actual = await vi.importActual<typeof import('@/upload/learnAndStart')>('@/upload/learnAndStart')
   return { ...actual, learnFormAndStartDocument: vi.fn() }
 })
+vi.mock('@/landing/findForms', async () => {
+  const actual = await vi.importActual<typeof import('@/landing/findForms')>('@/landing/findForms')
+  return {
+    ...actual,
+    findForms: (query: string) => searchForms(query),
+    findFormsForPurpose: async (purpose: import('@/landing/findForms').FormPurposeId) =>
+      (await searchForms('')).filter((form) => actual.matchesPurpose(form, purpose)),
+  }
+})
 
 import {
   ApiRequestError,
@@ -55,9 +64,9 @@ let router: Router
 // Every page mounted here listens to the window's drags until it is unmounted, so a test's drag must find only its own.
 const mounted = new Set<VueWrapper>()
 
-async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement } = '/') {
-  const path = typeof pathOrOptions === 'string' ? pathOrOptions : '/'
-  const mountOptions = typeof pathOrOptions === 'string' ? {} : pathOrOptions
+async function mountWithRouter(pathOrOptions: string | { attachTo: HTMLElement; path?: string } = '/') {
+  const path = typeof pathOrOptions === 'string' ? pathOrOptions : pathOrOptions.path ?? '/'
+  const mountOptions = typeof pathOrOptions === 'string' ? {} : { attachTo: pathOrOptions.attachTo }
   router = createRouter({
     history: createWebHistory(),
     routes: [
@@ -156,9 +165,9 @@ describe('HomeView', () => {
     const wrapper = await mountWithRouter()
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('Brownie fills your forms from what you tell it. You make the calls.')
+    expect(wrapper.get('h1').text()).toBe('Paperwork, taken care of.')
     const signIn = wrapper.get('a.button--primary')
-    expect(signIn.attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(signIn.attributes('href')).toBe('/signin?next=%2F')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
     expect(wrapper.find('a.home__upload').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
@@ -180,15 +189,15 @@ describe('HomeView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('Sign-in did not complete')
     expect(alert.text()).toContain('access_denied')
-    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Try again')
+    expect(alert.find('a[href="/signin"]').text()).toBe('Try again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
-  it('points a refused Google sign-in back at the email code', async () => {
+  it('offers configured sign-in methods after Google sign-in is refused', async () => {
     const wrapper = await mountWithRouter('/?signin=failed&reason=access_denied&provider=google')
     const googleAlert = wrapper.get('[role="alert"]')
     expect(googleAlert.text()).toContain('Google sign-in is in early access')
-    expect(googleAlert.get('a').attributes('href')).toBe('/oauth2/authorization/entra')
+    expect(googleAlert.get('a').attributes('href')).toBe('/signin')
   })
 
   /**
@@ -235,7 +244,7 @@ describe('HomeView', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('That sign-in had expired or was started twice.')
     expect(alert.text()).not.toContain('authorization_request_not_found')
-    expect(alert.find('a[href="/oauth2/authorization/entra"]').text()).toBe('Sign in again')
+    expect(alert.find('a[href="/signin"]').text()).toBe('Sign in again')
     expect(await axe(wrapper.element)).toHaveNoViolations()
   })
 
@@ -266,7 +275,7 @@ describe('HomeView', () => {
   })
 
   /** The form library opens with its popular row before the person types anything. */
-  it('shows the popular forms before any typing, six at most', async () => {
+  it('shows every catalog form before any typing', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
     vi.mocked(searchForms).mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({
@@ -279,12 +288,149 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(searchForms).toHaveBeenCalledWith('')
-    expect(wrapper.find('.home__library-popular').text()).toBe('Popular forms')
+    expect(wrapper.find('.home__library-popular').text()).toBe('8 forms shown')
     const rows = wrapper.findAll('.home__library-row')
-    expect(rows).toHaveLength(6)
+    expect(rows).toHaveLength(8)
     expect(rows[0].text()).toContain('Form 0')
     expect(rows[0].text()).toContain('Agency')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('keeps upload and continue before the closed form-library disclosure', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([summary(8, 'Club minutes', new Date().toISOString())])
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    const disclosure = wrapper.get('details.home__library')
+    expect(disclosure.attributes('open')).toBeUndefined()
+    expect(disclosure.get('summary').text()).toContain('Find a form')
+    const upload = wrapper.get('.home__upload-area').element
+    const resume = wrapper.get('.home__resume').element
+    expect(upload.compareDocumentPosition(resume) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(resume.compareDocumentPosition(disclosure.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('opens a catalog handoff on its exact entry and waits for an explicit Start', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const chosen = { id: 'state-ds11', title: 'Form DS-11', agency: 'Department of State', category: 'Travel', description: 'First passport.' }
+    vi.mocked(searchForms).mockResolvedValue([chosen, { ...chosen, id: 'state-other', title: 'Other passport form' }])
+    vi.mocked(startForm).mockResolvedValue({ documentId: 91, title: 'Passport' })
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    expect(searchForms).toHaveBeenCalledWith('ds11')
+    expect(wrapper.get('details.home__library').attributes('open')).toBeDefined()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(1)
+    expect(wrapper.get('.home__library-row').text()).toContain('Form DS-11')
+    expect(wrapper.get('.home__library-handoff').text()).toContain('Choose Start')
+    expect(startForm).not.toHaveBeenCalled()
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(startForm).toHaveBeenCalledWith('state-ds11', expect.any(String))
+    expect(router.currentRoute.value.path).toBe('/documents/91')
+  })
+
+  it('focuses the compact handoff result and returns to ordinary search through Find another form', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter({ attachTo: document.body, path: '/?form=state-ds11' })
+    await flushPromises()
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('.home').classes()).toContain('home--handoff')
+    expect(wrapper.get('#home-library-heading').text()).toBe('Your selected form')
+    expect(document.activeElement).toBe(wrapper.get('.home__library-handoff').element)
+    expect(wrapper.find('.home__library-composer').exists()).toBe(false)
+    expect(wrapper.find('.purpose-picker').exists()).toBe(false)
+    expect(wrapper.find('.home__library-examples').exists()).toBe(false)
+    expect(wrapper.find('.home__library-popular').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
+    vi.mocked(searchForms).mockResolvedValue([])
+    await wrapper.get('.home__library-another').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.form).toBeUndefined()
+    expect(wrapper.get('.home').classes()).not.toContain('home--handoff')
+    expect(wrapper.get('#home-library-heading').text()).toBe('Search official forms')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.home__library-search').element)
+    expect(searchForms).toHaveBeenLastCalledWith('')
+  })
+
+  it('resolves a catalog handoff when authentication finishes after mount', async () => {
+    useSessionStore().status = 'anonymous'
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    const wrapper = await mountWithRouter('/?form=irs-w4')
+    await flushPromises()
+    vi.mocked(searchForms).mockClear()
+    signedIn()
+    await flushPromises()
+    expect(wrapper.get('details.home__library').attributes('open')).toBeDefined()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('handles an unknown catalog ID without starting another matching form', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    const wrapper = await mountWithRouter('/?form=irs-missing')
+    await flushPromises()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(wrapper.get('.home__library-handoff').text()).toContain('not in the library')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it.each(['%3Cscript%3E', 'irs-w4&form=state-ds11'])('rejects an invalid or repeated handoff ID (%s)', async (query) => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    const wrapper = await mountWithRouter(`/?form=${query}`)
+    await flushPromises()
+    expect(searchForms).not.toHaveBeenCalled()
+    expect(wrapper.get('.home__library-handoff').text()).toContain('link is invalid')
+    expect(wrapper.get('.home__library-popular').text()).not.toBe('Searching forms…')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('discards a pending handoff when its query is removed and restores the default search', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    await router.push('/')
+    await flushPromises()
+    expect(searchForms).toHaveBeenLastCalledWith('')
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(wrapper.get('.home__library-popular').text()).toBe('1 form shown')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('keeps a delayed handoff answer from replacing a newer search', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finish!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const wrapper = await mountWithRouter('/?form=state-ds11')
+    await flushPromises()
+    await wrapper.get('.home__library-another').trigger('click')
+    await flushPromises()
+    await wrapper.get('.home__library-search').setValue('W-4')
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    await wrapper.get('form[role="search"]').trigger('submit')
+    await flushPromises()
+    finish([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State', category: 'Travel', description: 'Passport.' }])
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
+    expect(wrapper.find('.home__library-handoff').exists()).toBe(false)
+    expect(startForm).not.toHaveBeenCalled()
   })
 
   /** The search waits a quarter second, so a typed phrase is one request, not one per letter. */
@@ -306,6 +452,70 @@ describe('HomeView', () => {
     await flushPromises()
   })
 
+  it('ignores an old search response while a new query is waiting to run', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    let finishOld!: (forms: Awaited<ReturnType<typeof searchForms>>) => void
+    vi.mocked(searchForms).mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce([{ id: 'new', title: 'New result', agency: 'Agency', category: 'Tax', description: 'New.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    vi.useFakeTimers()
+    await wrapper.get('.home__library-search').setValue('new')
+    finishOld([{ id: 'old', title: 'Old result', agency: 'Agency', category: 'Tax', description: 'Old.' }])
+    await nextTick()
+    expect(wrapper.text()).not.toContain('Old result')
+    expect(wrapper.get('.home__library-popular').text()).toBe('Searching forms…')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.text()).toContain('New result')
+    expect(wrapper.get('.home__library-popular').text()).toBe('1 form shown')
+    vi.useRealTimers()
+  })
+
+  it('sends passport renewal to the agency instead of offering the first-application form', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'state-ds11', title: 'Form DS-11', agency: 'State Department', category: 'Travel', description: 'First application.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+    await wrapper.get('.home__library-search').setValue('renew my passport')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(wrapper.get('.form-guidance a').attributes('href')).toBe('https://travel.state.gov/en/passports/renew-replace.html')
+    expect(startForm).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('distinguishes state DMV services from fillable catalog forms', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    vi.useFakeTimers()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.text() === 'Driving & vehicles')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(250)
+    await nextTick()
+    expect(wrapper.get('.form-guidance').text()).toContain('DMV forms are not in Brownie’s fillable library yet.')
+    expect(wrapper.get('.form-guidance a').attributes('href')).toBe('https://www.usa.gov/state-motor-vehicle-services')
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    expect(startForm).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('retries a failed document list without leaving home', async () => {
+    signedIn()
+    vi.mocked(listDocuments).mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce([])
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__load-error button').trigger('click')
+    await flushPromises()
+    expect(listDocuments).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.home__load-error').exists()).toBe(false)
+    expect(wrapper.find('.home__empty').exists()).toBe(true)
+  })
+
   /** Start brings the form in and the person lands on the document it became. */
   it('starts a catalog form and opens the document it made', async () => {
     vi.mocked(listDocuments).mockResolvedValue([])
@@ -322,7 +532,7 @@ describe('HomeView', () => {
     expect(wrapper.get('.home__library-start').text()).toBe('Getting the form…')
     await flushPromises()
 
-    expect(startForm).toHaveBeenCalledWith('irs-w9')
+    expect(startForm).toHaveBeenCalledWith('irs-w9', expect.any(String))
     expect(router.currentRoute.value.path).toBe('/documents/42')
   })
 
@@ -349,7 +559,99 @@ describe('HomeView', () => {
     const alert = wrapper.get('[role="alert"]')
     expect(alert.text()).toContain("couldn't download this form from Internal Revenue Service")
     expect(alert.text()).toContain('upload your copy')
+    expect(wrapper.get('.home__library-start').text()).toBe('Retry')
+    vi.mocked(startForm).mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(startForm).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/documents/42')
     expect(await axe(wrapper.element)).toHaveNoViolations()
+  })
+
+  it('reuses an uncertain start after remounting and gives a deliberate new start a fresh key', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockRejectedValueOnce(new TypeError('connection lost'))
+      .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    signedIn()
+    const first = await mountWithRouter()
+    await flushPromises()
+    await first.get('.home__library-start').trigger('click')
+    await flushPromises()
+    const key = vi.mocked(startForm).mock.calls[0]![1]
+    first.unmount()
+
+    const retry = await mountWithRouter()
+    await flushPromises()
+    await retry.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[1]).toEqual(['irs-w9', key])
+    expect(router.currentRoute.value.path).toBe('/documents/42')
+    await router.push('/')
+    await retry.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[2]![1]).not.toBe(key)
+  })
+
+  it.each([400, 409])('replaces a rejected key after HTTP %i', async (status) => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockRejectedValueOnce(new ApiRequestError(status, undefined))
+      .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    const key = vi.mocked(startForm).mock.calls[0]![1]
+    await wrapper.get('.home__library-start').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(startForm).mock.calls[1]![1]).not.toBe(key)
+  })
+
+  it('keeps retry keys in memory when session storage is blocked', async () => {
+    const blocked = ['getItem', 'setItem', 'removeItem'].map((method) =>
+      vi.spyOn(Storage.prototype, method as 'getItem').mockImplementation(() => { throw new Error('blocked') }))
+    try {
+      vi.mocked(listDocuments).mockResolvedValue([])
+      vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+      vi.mocked(startForm).mockRejectedValueOnce(new TypeError('connection lost'))
+        .mockResolvedValue({ documentId: 42, title: 'Form W-9' })
+      signedIn()
+      const wrapper = await mountWithRouter()
+      await flushPromises()
+      await wrapper.get('.home__library-start').trigger('click')
+      await flushPromises()
+      await wrapper.get('.home__library-start').trigger('click')
+      await flushPromises()
+      expect(vi.mocked(startForm).mock.calls[1]![1]).toBe(vi.mocked(startForm).mock.calls[0]![1])
+    } finally { blocked.forEach((spy) => spy.mockRestore()) }
+  })
+
+  it('lets a person inspect the official PDF without starting a document', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.', sourceUrl: 'https://www.irs.gov/pub/irs-pdf/fw9.pdf' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    const source = wrapper.get('.form-source-link')
+    expect(source.attributes('href')).toBe('https://www.irs.gov/pub/irs-pdf/fw9.pdf')
+    expect(source.attributes('target')).toBe('_blank')
+    expect(source.attributes('rel')).toContain('noopener')
+    expect(startForm).not.toHaveBeenCalled()
+  })
+
+  it('does not start the same form twice while the first request is pending', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w9', title: 'Form W-9', agency: 'IRS', category: 'Tax', description: 'Taxpayer ID.' }])
+    vi.mocked(startForm).mockReturnValue(new Promise(() => {}))
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-start').trigger('click')
+    await wrapper.get('.home__library-start').trigger('click')
+    expect(startForm).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.home__library-start').attributes('aria-disabled')).toBe('true')
   })
 
   /** No answer for the query is the upload path underneath it, named plainly. */
@@ -366,8 +668,39 @@ describe('HomeView', () => {
     vi.useRealTimers()
     await flushPromises()
 
-    expect(wrapper.find('.home__library-empty').text()).toBe('No match. Upload your own copy below.')
+    expect(wrapper.find('.home__library-empty').text()).toContain('No match in this library.')
+    expect(wrapper.get('.home__library-empty button').text()).toBe('Upload your own copy')
     expect(wrapper.find('.home__library-row').exists()).toBe(false)
+  })
+
+  it('clears a selected purpose when the visitor types a new task', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w99', title: 'Form W-99', agency: 'IRS', category: 'Tax', description: 'Example.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.findAll('.purpose-picker__option').find((button) => button.text() === 'Passports & travel')!.trigger('click')
+    await wrapper.get('.home__library-search').setValue('W-99')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-99')
+  })
+
+  it('asks a clarifying question for a broad job search', async () => {
+    vi.mocked(listDocuments).mockResolvedValue([])
+    vi.mocked(searchForms).mockResolvedValue([{ id: 'irs-w4', title: 'Form W-4', agency: 'IRS', category: 'Tax', description: 'Withholding.' }])
+    signedIn()
+    const wrapper = await mountWithRouter()
+    await flushPromises()
+    await wrapper.get('.home__library-search').setValue('starting a job')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('What kind of work are you preparing for?')
+    expect(wrapper.findAll('.home__library-row')).toHaveLength(0)
+    await wrapper.findAll('button').find((button) => button.text() === 'Starting as an employee')!.trigger('click')
+    await wrapper.get('.home__library-composer').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('.home__library-row').text()).toContain('Form W-4')
   })
 
   it('greets a signed-in person by their first name only', async () => {
@@ -508,7 +841,7 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(wrapper.get('.home__hint').text()).toBe(
-      'There are no documents here. Upload a form above to start one, or choose a template under My Templates.',
+      'There are no documents here. Upload a form above to start one, or choose a saved template in the sidebar.',
     )
     expect(wrapper.find('.home__hint a').exists()).toBe(false)
 
@@ -824,7 +1157,7 @@ describe('HomeView: uploading a form', () => {
     expect(input.attributes('tabindex')).toBe('-1')
     expect(input.attributes('aria-hidden')).toBe('true')
     const button = wrapper.get('button.home__upload')
-    expect(button.text()).toBe('Upload your documents')
+    expect(button.text()).toBe('Upload a form')
     // The kinds of file it takes, and how large one may be, are said under it in plain words, and read out with it.
     expect(wrapper.get('#home-upload-kinds').text()).toBe('Word, PDF, Pages, OpenDocument or RTF, up to 10 MB')
     expect(button.attributes('aria-describedby')).toBe('home-upload-kinds')

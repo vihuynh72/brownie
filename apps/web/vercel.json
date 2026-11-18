@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/",
+      "missing": [{ "type": "header", "key": "x-brownie-gateway", "value": "1" }],
+      "destination": "https://brownie.up.railway.app/",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "missing": [{ "type": "header", "key": "x-brownie-gateway", "value": "1" }],
+      "destination": "https://brownie.up.railway.app/:path*",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    { "source": "/((?!assets/|art/).*)", "destination": "/index.html" }
+  ]
+}

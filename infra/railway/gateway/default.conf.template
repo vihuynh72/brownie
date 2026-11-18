@@ -1,0 +1,46 @@
+log_format brownie_path_only '$remote_addr - [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+resolver ${BROWNIE_DNS} valid=30s;
+resolver_timeout 5s;
+
+server {
+    listen 8080 default_server;
+    listen [::]:8080 default_server;
+    server_name _;
+    location = /healthz { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location / { return 421; }
+}
+
+server {
+    listen 8080;
+    listen [::]:8080;
+    server_name brownie.up.railway.app;
+    access_log /var/log/nginx/access.log brownie_path_only;
+    client_max_body_size 12m;
+    set $brownie_api api.railway.internal;
+    set $brownie_frontend brownie-khaki.vercel.app;
+    include /etc/nginx/brownie-security-headers.conf;
+
+    location = /healthz { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location ^~ /mcp-auth/ {
+        include /etc/nginx/brownie-api-proxy.conf;
+        include /etc/nginx/brownie-security-headers-base.conf;
+    }
+    location ~ ^/(api|oauth2|login|logout|mcp)(/|$) {
+        include /etc/nginx/brownie-api-proxy.conf;
+    }
+    location ~ ^/\.well-known/(oauth-protected-resource|oauth-authorization-server)(/|$) {
+        include /etc/nginx/brownie-api-proxy.conf;
+    }
+    location /assets/ {
+        limit_except GET { deny all; }
+        include /etc/nginx/brownie-static-proxy.conf;
+        include /etc/nginx/brownie-security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+    location / {
+        limit_except GET { deny all; }
+        include /etc/nginx/brownie-static-proxy.conf;
+        include /etc/nginx/brownie-security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+    }
+}

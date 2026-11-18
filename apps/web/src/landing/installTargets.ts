@@ -30,7 +30,7 @@ export function installTargets(mcpServerUrl: string | null): InstallTarget[] {
     line: null,
     lineParts: [],
     steps: [
-      'Sign in with a code sent to your email. There is no password to make up.',
+      'Sign in to Brownie.',
       'Drop in a form: Word, PDF, Pages, OpenDocument, RTF, or a photo of the paper.',
       'Type or say your answers, approve each value, then export.',
     ],

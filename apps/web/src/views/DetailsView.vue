@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import AppIcon from '@/components/AppIcon.vue'
 import {
   deleteAllDetails,
   deleteDetail,
@@ -212,7 +211,7 @@ function savedWhen(savedAt: string): string {
 <template>
   <section class="page-column page-column--wide details" aria-labelledby="details-title">
     <header class="page-head">
-      <h1 id="details-title" class="page-title">Your details</h1>
+      <h1 id="details-title" class="page-title">Saved details</h1>
       <p class="page-lede">Brownie saves the details from forms you approve, so the next form fills faster.</p>
     </header>
 
@@ -269,8 +268,8 @@ function savedWhen(savedAt: string): string {
         </ul>
       </div>
 
-      <section class="panel details__add">
-        <h2 class="details__add-title"><AppIcon name="plus" :size="18" />Add a detail</h2>
+      <section class="details__add">
+        <h2 class="details__add-title">Saved information</h2>
         <p v-if="!addOpen" class="field-hint">Details you add by hand fill the same way as the ones Brownie learned. Sensitive details can only be added here.</p>
         <button v-if="!addOpen" type="button" class="button button--small" @click="addOpen = true">Add a detail</button>
         <template v-else>
@@ -327,9 +326,7 @@ function savedWhen(savedAt: string): string {
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--color-hairline, #e7d8c9);
-  border-radius: var(--radius-md, 0.625rem);
-  background: var(--color-surface, #fff);
+  border-block-start: 1px solid var(--color-hairline);
   overflow: hidden;
 }
 .details__row {
@@ -338,7 +335,7 @@ function savedWhen(savedAt: string): string {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2, 0.5rem) var(--space-4, 1rem);
-  padding: var(--space-3, 0.75rem) var(--space-4, 1rem);
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--color-hairline, #e7d8c9);
 }
 .details__row:last-child {
@@ -401,4 +398,8 @@ function savedWhen(savedAt: string): string {
 .details__notice {
   padding: var(--space-4, 1rem);
 }
+
+.details__add { padding-inline: 0; border-block-start: 1px solid var(--color-hairline); }
+.details__edit, .details__confirm { flex-wrap: wrap; }
+.details__edit-input { min-width: min(12rem, 100%); }
 </style>
